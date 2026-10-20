@@ -223,6 +223,11 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
           />
         </>
       )}
+      <SidebarMenuItem className="min-w-0 flex-1">
+        <SidebarMenuButton aria-label="Factory messages" onClick={() => { closeMobileSidebar(); void navigate({ to: "/factory" }); }}>
+          <span>Messages</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
       <SidebarUpdatePill />
     </SidebarMenu>
   );

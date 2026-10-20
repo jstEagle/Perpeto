@@ -23,5 +23,65 @@
     "reason": "Integrate persistent factory messaging with existing environment auth, lifecycle and browser CORS; verify the real HTTP boundary.",
     "sha256": "b22ed47ec1ad58c4cce31fbfb5658c51e56e6fdc02b9c71e3c1e245626e737e4",
     "upstreamHash": "0c5cf30580f5abaea607111023cd9b0e7f8df5a321f1c2feaee9d641fd3745b1"
+  },
+  "apps/web/src/components/factory/FactoryMessagingPage.tsx": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "4c6e1cae4e18893fdd1e578339fa8a2e806e2da3ee33d1485865eb2880c8e9ce",
+    "upstreamHash": null
+  },
+  "apps/web/src/components/factory/factory-messaging.css": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "445c22eb60af441907647e30894fa3240b38c44600c391f2c5f03ff08b85f26c",
+    "upstreamHash": null
+  },
+  "apps/web/src/components/factory/messaging.test.ts": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "68805adb35c4ecb210b0f6e733a01e77bdfe64d04bbdece7075863ac2caddfaf",
+    "upstreamHash": null
+  },
+  "apps/web/src/components/factory/messaging.ts": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "c99171a0f26469a68d2c14a797dafb12f6e3dff6cbd37fd23a403e175aabdcbe",
+    "upstreamHash": null
+  },
+  "apps/web/src/components/sidebar/SidebarChrome.tsx": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "bcc5ea7e9812dba08ea8a80dc17f35dc52440fc3e3866c5be14447093c81e294",
+    "upstreamHash": "d8dc3d7320d4505054006b309b068468e8644b163b92e673d8b1208b4abc2764"
+  },
+  "apps/web/src/components/sidebar/mainAppLocation.ts": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "1d337ce06efb741e3f9ab93ec31e8301f7fa148d34076a216c483cf63f417ac5",
+    "upstreamHash": "93e05aaa48632bae2451a504beb207b3ed31c72f295ad5b3841b8479138707ad"
+  },
+  "apps/web/src/routeTree.gen.ts": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "1e8bc02cb373a2339dd5efbe9da1ee7df063451f4f3dd61564dd032062872094",
+    "upstreamHash": "637927f06c042b65684a65855355d73683bbdabf0e5fb6ea7458e2648b2d6656"
+  },
+  "apps/web/src/routes/factory.tsx": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "767441bbb81717fb0f24ea8544496f1bf4b934ee2ca829deea60b54b76d6c4ea",
+    "upstreamHash": null
+  },
+  "packages/client-runtime/package.json": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "41ac07ae2ee999b1dbf685a0a59edf91cafc7f1742d89ea62abbad5465951cdc",
+    "upstreamHash": "b647eab9aef3b3a843c6b567945cbab83db1d6f30ab3d86297c83ccc75b6fef9"
+  },
+  "packages/client-runtime/src/state/environmentHttpAuth.ts": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "324474eb72bb9f7dd4e1c77a7f93ed3ea4801699d7dcf096a8e24f8cd52d55b3",
+    "upstreamHash": "f442599d1de1c0a10232decbbd0d8d1bcefd509aa47192f48a188a10304b8e20"
+  },
+  "packages/client-runtime/src/state/factoryMessagingHttp.test.ts": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "76f00b571370cc354d5bc4a241def6eeabb5c51aa7168d9aa9be456f19ef5287",
+    "upstreamHash": null
+  },
+  "packages/client-runtime/src/state/factoryMessagingHttp.ts": {
+    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
+    "sha256": "d60286ceac97af463befcbb6084e77dd8b53453c771bbf76954a215b369543aa",
+    "upstreamHash": null
   }
 }

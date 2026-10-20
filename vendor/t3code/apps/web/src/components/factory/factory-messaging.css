@@ -1,0 +1,66 @@
+.perpeto-messaging { width: 100%; min-width: 0; flex: 1; display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--ink); background: var(--canvas); font-family: var(--font-sans); font-size: 14px; line-height: 1.55; }
+.perpeto-messaging :is(input, select, textarea, button) { font: inherit; border-radius: var(--radius-control); }
+.perpeto-messaging :is(input, select, textarea) { background: var(--surface); border: 1px solid var(--control-border); color: var(--ink); padding: 8px 12px; min-width: 0; }
+.perpeto-messaging :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.perpeto-messaging button { cursor: pointer; padding: 8px 12px; background: var(--action); color: var(--on-action); font-weight: 600; border: 0; }
+.perpeto-messaging button:disabled { opacity: .5; cursor: default; }
+.perpeto-messaging h1 { font-size: 24px; letter-spacing: -.04em; line-height: 1.2; font-weight: 650; margin: 0; }
+.perpeto-messaging h2 { font-size: 14px; font-weight: 650; margin: 0; }
+.perpeto-messaging p { margin: 0; }
+.factory-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px; border-bottom: 1px solid var(--border); }
+.factory-heading p { color: var(--muted); margin-top: 4px; }
+.factory-project { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+.factory-project select { max-width: 320px; }
+.factory-workspace { display: grid; grid-template-columns: 220px minmax(0, 1fr); flex: 1; min-height: 0; }
+.factory-channels { padding: 24px 12px; overflow-y: auto; border-right: 1px solid var(--border); }
+.factory-channels h2 { padding: 0 12px 12px; }
+.factory-channels nav { display: flex; flex-direction: column; gap: 4px; }
+.factory-channels nav button { background: transparent; color: var(--muted); text-align: left; overflow-wrap: anywhere; font-weight: 450; }
+.factory-channels nav button:hover { background: var(--surface); }
+.factory-channels nav button[aria-current] { background: var(--surface); color: var(--action); font-weight: 650; }
+.factory-channels nav button span { color: var(--muted); padding-right: 4px; }
+.factory-channels > p { padding: 12px; color: var(--muted); }
+.factory-channel-form { margin-top: 32px; padding: 0 12px; display: flex; flex-direction: column; gap: 8px; }
+.factory-channel-form label { font-size: 12px; color: var(--muted); }
+.factory-channel-form button { align-self: flex-start; }
+.factory-conversation { display: flex; flex-direction: column; min-height: 0; background: var(--surface); }
+.factory-channel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--border); }
+.factory-channel-heading span { color: var(--muted); font-weight: 400; }
+.factory-channel-heading > span { font-size: 12px; flex-shrink: 0; }
+.factory-history { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px; }
+.factory-message { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 24px; }
+.factory-message-avatar { display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; background: var(--canvas); color: var(--muted); border-radius: var(--radius-control); font-weight: 650; }
+.factory-message-content { min-width: 0; }
+.factory-message-content header { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; overflow-wrap: anywhere; }
+.factory-message-content strong { font-weight: 650; }
+.factory-message-content time, .factory-recipient { font-size: 12px; color: var(--muted); }
+.factory-message-content p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.factory-empty { padding: 32px 24px; color: var(--muted); }
+.factory-composer { margin: 0 24px 24px; background: var(--canvas); padding: 12px; border-radius: var(--radius-panel); }
+.factory-addresses { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.factory-addresses label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.factory-addresses input { width: 140px; padding: 4px 8px; }
+.factory-composer textarea { display: block; width: 100%; resize: vertical; max-height: 220px; }
+.factory-composer footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; }
+.factory-composer footer span { color: var(--muted); font-size: 12px; }
+.factory-error { color: var(--error) !important; overflow-wrap: anywhere; }
+.factory-message-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 24px; }
+.factory-message-error button { flex-shrink: 0; background: var(--canvas); color: var(--ink); }
+.factory-readonly { color: var(--muted); padding: 16px 24px; }
+@media (max-width: 700px) {
+  .factory-heading { padding: 16px; align-items: flex-start; flex-direction: column; gap: 12px; }
+  .factory-heading > div { padding-left: 28px; }
+  .factory-heading h1 { font-size: 20px; }
+  .factory-project, .factory-project select { width: 100%; max-width: none; }
+  .factory-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .factory-channels { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  .factory-channels h2 { display: none; }
+  .factory-channels nav { flex-direction: row; }
+  .factory-channels nav button { white-space: nowrap; }
+  .factory-channel-form { margin: 0; padding: 0; flex-direction: row; align-items: center; gap: 8px; }
+  .factory-channel-form label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .factory-channel-form input { width: 128px; }
+  .factory-history, .factory-channel-heading { padding: 16px; }
+  .factory-composer { margin: 0 12px 12px; }
+  .factory-addresses input { width: 105px; }
+}
