@@ -1,0 +1,8 @@
+{
+  "baseUrl": "http://127.0.0.1:4310",
+  "projectId": "perpeto",
+  "roleId": "implementation",
+  "channelId": "build",
+  "credentialFile": "../.perpeto/agent.secret",
+  "timeoutMs": 30000
+}

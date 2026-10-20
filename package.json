@@ -10,9 +10,10 @@
     "setup": "node scripts/runtime.mjs setup",
     "build": "node scripts/runtime.mjs build",
     "start": "node scripts/runtime.mjs start",
-    "test": "node --test packages/factory-core/test/*.test.js scripts/*.test.mjs",
+    "test": "node scripts/test.mjs",
     "test:upstream": "node scripts/runtime.mjs test",
     "verify:upstream": "node scripts/check-upstream.mjs",
-    "runtime:help": "node scripts/runtime.mjs help"
+    "runtime:help": "node scripts/runtime.mjs help",
+    "smoke:messaging": "node scripts/smoke-messaging.mjs"
   }
 }

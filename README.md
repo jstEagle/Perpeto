@@ -6,9 +6,9 @@ Perpeto is being built for sustained software development with many agents acros
 
 ## Current implementation
 
-The repository contains a pinned T3 Code foundation with its orchestrator, all nine provider drivers, supporting runtime, and clients. It also includes Perpeto's initial SQLite messaging store: project channels, stable role identities, retry-safe messages, and cursor reads that survive a restart.
+The repository contains a pinned T3 Code foundation with its orchestrator, all nine provider drivers, supporting runtime, and clients. It also includes Perpeto's persistent messaging service: project channels, role addressing, retry-safe messages, cursor reads, authenticated HTTP, and CLI/MCP clients.
 
-This is an early foundation. The inherited web interface still uses T3 branding. Factory messaging is currently a storage API; cross-device messaging, the visual factory builder, durable factory scheduling, and user-owned CI execution are not yet integrated. Imported provider support has not been validated against every live harness.
+This is an early foundation. The inherited web interface still uses T3 branding. The messaging service is integrated with environment authentication; networking between physical machines, the visual factory builder, durable factory scheduling, and user-owned CI execution remain unfinished. Imported provider support has not been validated against every live harness.
 
 ## Run locally
 
@@ -30,9 +30,12 @@ Non-secret launch settings live in [config/perpeto.json](config/perpeto.json). S
 npm test
 npm run verify:upstream
 npm run test:upstream
+npm run smoke:messaging
 ```
 
 `npm test` runs Perpeto messaging and launcher tests. Upstream checks cover selected orchestration, provider registry, and machine-grouping behavior. `npm run runtime:help` shows the inherited CLI reference after a build. See [current verification and next work](docs/status.md).
+
+Use the [messaging guide](docs/messaging.md) to connect CLI or harness clients.
 
 ## Product and brand
 

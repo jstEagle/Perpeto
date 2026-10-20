@@ -133,3 +133,28 @@ test('refuses a future database schema without discarding its data', t => {
     assert.equal(check.prepare('SELECT value FROM future_data').get().value, 'keep');
   } finally { check.close(); }
 });
+
+
+test('lists only the project channels in a stable order', t => {
+  const { store } = fixture(t);
+  store.createChannel({ projectId: 'factory', id: 'architecture', name: 'Architecture' });
+  store.createProject({ id: 'other', name: 'Other' });
+  store.createChannel({ projectId: 'other', id: 'private', name: 'Private' });
+  assert.deepEqual(store.listChannels({ projectId: 'factory' }), [
+    { projectId: 'factory', id: 'architecture', name: 'Architecture' },
+    { projectId: 'factory', id: 'build', name: 'Build' },
+  ]);
+  assert.throws(() => store.listChannels({ projectId: 'missing' }), code('NOT_FOUND'));
+});
+
+
+test('rejects URL dot segments only for project and channel identities', t => {
+  const { store } = fixture(t);
+  for (const id of ['.', '..']) {
+    assert.throws(() => store.createProject({ id, name: 'Invalid' }), code('INVALID_INPUT'));
+    assert.throws(() => store.createChannel({ projectId: 'factory', id, name: 'Invalid' }), code('INVALID_INPUT'));
+    assert.throws(() => read(store, { projectId: id }), code('INVALID_INPUT'));
+    assert.throws(() => read(store, { channelId: id }), code('INVALID_INPUT'));
+  }
+  assert.equal(send(store, { senderRoleId: '.', recipientRoleId: '..', body: '.' }).message.body, '.');
+});

@@ -1,0 +1,27 @@
+{
+  "apps/server/src/httpCors.ts": {
+    "reason": "Integrate persistent factory messaging with existing environment auth, lifecycle and browser CORS; verify the real HTTP boundary.",
+    "sha256": "2d2db23b2685952e39ce081b009c2c6f00099c1da0810f272652c87cf89b5d10",
+    "upstreamHash": "7aa0faadf442b1bc706e7606ae4cf799b98d593019b37c59c2d392a5df78b595"
+  },
+  "apps/server/src/perpeto/Messaging.ts": {
+    "reason": "Integrate persistent factory messaging with existing environment auth, lifecycle and browser CORS; verify the real HTTP boundary.",
+    "sha256": "fc38dd9c5a6dcbfc39f38b1c64766d707b9e8e6bb5f0ee3f0c6087dac26fed66",
+    "upstreamHash": null
+  },
+  "apps/server/src/perpeto/http.test.ts": {
+    "reason": "Integrate persistent factory messaging with existing environment auth, lifecycle and browser CORS; verify the real HTTP boundary.",
+    "sha256": "5f4e007358ab283da120a1b27c2f0e8ce7d0ade6a94562dc0f73b21303288ca9",
+    "upstreamHash": null
+  },
+  "apps/server/src/perpeto/http.ts": {
+    "reason": "Integrate persistent factory messaging with existing environment auth, lifecycle and browser CORS; verify the real HTTP boundary.",
+    "sha256": "ec3581c8b7e0c65af11c8bcb4cd5c9a546679a5940ea008dec7266ad8419f988",
+    "upstreamHash": null
+  },
+  "apps/server/src/server.ts": {
+    "reason": "Integrate persistent factory messaging with existing environment auth, lifecycle and browser CORS; verify the real HTTP boundary.",
+    "sha256": "b22ed47ec1ad58c4cce31fbfb5658c51e56e6fdc02b9c71e3c1e245626e737e4",
+    "upstreamHash": "0c5cf30580f5abaea607111023cd9b0e7f8df5a321f1c2feaee9d641fd3745b1"
+  }
+}

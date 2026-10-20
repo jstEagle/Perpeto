@@ -39,11 +39,13 @@ function main() {
     case 'setup':
       command = 'pnpm'; args = ['install', '--frozen-lockfile', '--filter', 't3...', '--filter', '@t3tools/scripts...']; break;
     case 'build':
-      command = 'pnpm'; args = ['exec', 'vp', 'run', '--filter', 't3', 'build']; break;
+      command = process.execPath; args = [resolve(config.directory, 'node_modules/vite-plus/bin/vp'), 'run', '--filter', 't3', 'build']; break;
     case 'test':
-      command = 'pnpm'; args = ['exec', 'vp', 'test', 'run',
+      command = process.execPath; args = [resolve(config.directory, 'node_modules/vite-plus/bin/vp'), 'test', 'run',
         'apps/server/src/orchestration-v2/runtimeLayer.test.ts',
         'apps/server/src/provider/ProviderRegistry.test.ts',
+        'apps/server/src/perpeto/http.test.ts',
+        'apps/server/src/http.test.ts',
         'packages/client-runtime/src/state/projectGrouping.test.ts']; break;
     case 'start':
     case 'help': {

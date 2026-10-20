@@ -17,6 +17,12 @@ function string(value, label, max = 200) {
   return value;
 }
 
+function identity(value, label) {
+  string(value, label);
+  if (value === '.' || value === '..') fail('INVALID_INPUT', `${label} cannot be a URL dot segment.`);
+  return value;
+}
+
 /** Durable local messaging state. Transport and caller authorization belong to the host. */
 export class MessagingStore {
   #db;
@@ -70,7 +76,7 @@ export class MessagingStore {
   close() { this.#db.close(); }
 
   createProject({ id, name }) {
-    string(id, 'project id'); string(name, 'project name');
+    identity(id, 'project id'); string(name, 'project name');
     this.#db.prepare('INSERT INTO projects(id, name) VALUES (?, ?) ON CONFLICT(id) DO NOTHING').run(id, name);
     const existing = this.#db.prepare('SELECT id, name FROM projects WHERE id = ?').get(id);
     if (existing.name !== name) fail('CONFLICT', 'Project id already has a different name.');
@@ -78,7 +84,7 @@ export class MessagingStore {
   }
 
   createChannel({ projectId, id, name }) {
-    string(projectId, 'projectId'); string(id, 'channel id'); string(name, 'channel name');
+    identity(projectId, 'projectId'); identity(id, 'channel id'); string(name, 'channel name');
     if (!this.#db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) {
       fail('NOT_FOUND', 'Project not found.');
     }
@@ -89,8 +95,17 @@ export class MessagingStore {
     return { projectId, id, name };
   }
 
+  listChannels({ projectId }) {
+    identity(projectId, 'projectId');
+    if (!this.#db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) {
+      fail('NOT_FOUND', 'Project not found.');
+    }
+    return this.#db.prepare('SELECT id, name FROM channels WHERE project_id = ? ORDER BY id').all(projectId)
+      .map(row => ({ projectId, id: row.id, name: row.name }));
+  }
+
   #channel(projectId, channelId) {
-    string(projectId, 'projectId'); string(channelId, 'channelId');
+    identity(projectId, 'projectId'); identity(channelId, 'channelId');
     const channel = this.#db.prepare('SELECT name FROM channels WHERE project_id = ? AND id = ?').get(projectId, channelId);
     if (!channel) fail('NOT_FOUND', 'Channel not found in project.');
     return channel;
