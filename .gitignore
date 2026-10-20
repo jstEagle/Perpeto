@@ -9,3 +9,8 @@ coverage/
 
 # Local motion preview artifacts
 .hyperframes/
+
+# Perpeto runtime state and generated tooling caches
+.perpeto/
+.vite-plus/
+*.tsbuildinfo

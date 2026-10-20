@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/pingdotgg/t3code",
+  "revision": "89b42bfeb4f79408af72fc7bb7a4482e22bb9493",
+  "importedAt": "2026-10-20",
+  "directory": "vendor/t3code",
+  "license": "MIT",
+  "providers": ["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravity", "pi", "muse", "acpRegistry"],
+  "excluded": [".repos/", ".agents/", ".claude/", ".cursor/", "**/AGENTS.md", "**/CLAUDE.md"],
+  "notes": "Retains the server, all provider integrations, shared runtime, clients, tests, lockfile, patches and license notices. Reference repositories and upstream agent instructions are excluded. No upstream deployment is configured."
+}

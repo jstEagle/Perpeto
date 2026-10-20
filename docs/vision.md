@@ -128,7 +128,7 @@ Justus's stated direction: all inference should come through existing agent harn
 
 Decided 20 October 2026: reuse T3 Code's orchestrator code and all of its provider integrations as Perpeto's implementation foundation. Bring over the supporting contracts, runtime services, and dependencies needed for those components to work, rather than rebuilding equivalent integrations. Build Perpeto's factory-specific behavior on that foundation. Preserve upstream license and attribution notices when importing code.
 
-This is an approved code-reuse direction, not a completed import. The upstream revision, extraction boundaries, and integration plan remain to be established during implementation. This decision does not by itself select T3's entire application or interface stack.
+Implementation began on 20 October 2026. The pinned T3 source is now imported under `vendor/t3code`, preserving its runtime and provider dependency graph. See [implementation decisions](decisions.md) and [current verification](status.md). The inherited clients are a development surface; this does not establish Perpeto's final application or interface stack.
 
 On 18 October 2026, Justus clarified that deciding when discussion becomes actionable work should happen dynamically between the user and agents. Do not build a dedicated proposal/approval workflow or intent-classification system for this distinction. Agents should use conversational judgment and clarify with the user when needed. This decision does not remove the agreed need for durable project and execution state.
 

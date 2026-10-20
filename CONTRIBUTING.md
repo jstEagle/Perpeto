@@ -1,9 +1,11 @@
 # Contributing
 
-Perpeto is currently a design-stage project. Start by reading the [product direction](docs/direction.md) and [open questions](docs/discussion.md).
+Perpeto is in early implementation. Read the [vision](docs/vision.md), [build brief](docs/brief.md), and [current status](docs/status.md) before changing direction.
 
-Feedback is most useful when it includes a real workflow, the current failure or friction, and the outcome you need. Proposed capabilities should be clearly marked as proposals. Keep documentation concise and link to a single source for each maintained decision.
+Keep proposals, implemented behavior, and verified outcomes distinct. Include a real workflow or failure case when proposing a change. New factory code lives outside `vendor/t3code`; deliberate changes to the imported foundation must include provenance and verification updates.
 
-The license and contribution terms are pending. Please wait for those terms before submitting substantive code for incorporation.
+Run `npm test` for Perpeto code. Changes involving the inherited runtime also need `npm run test:upstream` and `npm run build`. Use `npm run verify:upstream` to check the original source import; update the recorded hashes only when an upstream change is intentional and explained.
 
-For future implementation, keep non-secret configuration in appropriate configuration files. Only secrets, credentials, tokens, and other private values belong in environment variables or secret stores. Never commit secrets or private project data.
+Use configuration files for all non-secret settings. Environment variables and secret stores are reserved for credentials and private values. Never commit runtime state, pairing links, secrets, or private project data.
+
+Code is licensed under MIT. Preserve upstream and third-party attribution.

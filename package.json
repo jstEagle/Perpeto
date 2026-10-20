@@ -1,0 +1,18 @@
+{
+  "name": "perpeto",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.13.1 <25"
+  },
+  "scripts": {
+    "setup": "node scripts/runtime.mjs setup",
+    "build": "node scripts/runtime.mjs build",
+    "start": "node scripts/runtime.mjs start",
+    "test": "node --test packages/factory-core/test/*.test.js scripts/*.test.mjs",
+    "test:upstream": "node scripts/runtime.mjs test",
+    "verify:upstream": "node scripts/check-upstream.mjs",
+    "runtime:help": "node scripts/runtime.mjs help"
+  }
+}

@@ -2,33 +2,48 @@
 
 **The open-source software factory for coordinated agents.**
 
-Turn project intent into coordinated work across agents and machines—with a shared record of what was requested, what happened, and what actually passed verification.
+Perpeto is being built for sustained software development with many agents across machines. Project intent, documentation, execution, communication, and verification should remain understandable as individual agent sessions change.
 
-Perpeto is being designed for people building software with autonomous agents. A project brings together goals, requirements, context, data, events, logs, and feedback. The factory uses that shared foundation to organize work, coordinate agents, and keep progress legible as the project evolves.
+## Current implementation
 
-## Direction
+The repository contains a pinned T3 Code foundation with its orchestrator, all nine provider drivers, supporting runtime, and clients. It also includes Perpeto's initial SQLite messaging store: project channels, stable role identities, retry-safe messages, and cursor reads that survive a restart.
 
-- **Start with the project.** Give agents a durable understanding of the desired outcome, constraints, and acceptance criteria.
-- **Coordinate across machines.** Organize work across available workers, with explicit ownership, dependencies, and handoffs.
-- **Make autonomy inspectable.** Connect decisions and changes to the requirements, events, and evidence behind them.
-- **Close the feedback loop.** Use verification and human feedback to inform the next round of work.
+This is an early foundation. The inherited web interface still uses T3 branding. Factory messaging is currently a storage API; cross-device messaging, the visual factory builder, durable factory scheduling, and user-owned CI execution are not yet integrated. Imported provider support has not been validated against every live harness.
 
-These are design intentions, not implemented capabilities.
+## Run locally
 
-## Status
+Requires Node 24.13.1 or newer within Node 24, and pnpm. The upstream workspace pins pnpm 11.10.0.
 
-Perpeto is in the definition and brand exploration stage. There is no runnable product yet. The name and visual direction are provisional; the mission, requirements, architecture, and licensing decision are still open.
+```sh
+npm run setup
+npm run build
+npm start
+```
 
-## Explore
+The runtime listens on `127.0.0.1:4310` and prints a local pairing link. Open that link to authorize the inherited web client. Treat it as a credential. State lives in the ignored `.perpeto/runtime` directory, separate from a normal T3 installation.
 
-- [Product direction](docs/direction.md) — the proposed shape of the product and its boundaries.
-- [Brand direction](brand.md) — identity, visual system, and voice.
-- [Visual exploration](brand/preview.html) — open in a browser to compare three directions.
-- [Next conversation](docs/discussion.md) — the decisions we need before writing a specification.
-- [Documentation map](docs/README.md) — what exists and what comes next.
+Non-secret launch settings live in [config/perpeto.json](config/perpeto.json). Stop the server with Ctrl-C. No hosted relay or public endpoint is configured by these commands.
 
-## Contributing
+## Check the foundation
 
-For now, useful contributions are concrete workflows, failure cases, and feedback on the proposed direction. See [CONTRIBUTING.md](CONTRIBUTING.md).
+```sh
+npm test
+npm run verify:upstream
+npm run test:upstream
+```
 
-The project is intended to be open source. A license has not been selected or granted yet; the repository's availability alone does not grant an open-source license.
+`npm test` runs Perpeto messaging and launcher tests. Upstream checks cover selected orchestration, provider registry, and machine-grouping behavior. `npm run runtime:help` shows the inherited CLI reference after a build. See [current verification and next work](docs/status.md).
+
+## Product and brand
+
+- [Living vision and decisions](docs/vision.md)
+- [Build brief](docs/brief.md) and [definition of done](docs/definition-of-done.md)
+- [Brand direction](brand.md) and [visual explorations](brand/preview.html)
+- [T3 source study](docs/research/t3-code.md) and [implementation decisions](docs/decisions.md)
+- [Documentation map](docs/README.md)
+
+The visual explorations remain proposals, with [brand/tokens.css](brand/tokens.css) as the source for the proposed Workshop system.
+
+## License and contributing
+
+MIT. T3 Code's original license and attribution are retained; see [third-party notices](THIRD_PARTY_NOTICES.md) and [the source pin](config/upstream.json). Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the implementation.

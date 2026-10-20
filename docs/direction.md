@@ -2,7 +2,7 @@
 
 Status: a starting hypothesis for discussion, not an approved mission or specification.
 
-Implementation decision, 20 October 2026: reuse T3 Code's orchestrator code and all provider integrations as the foundation for Perpeto. See [the living vision and decisions](vision.md#decisions). This decision is approved; the code import has not yet been implemented.
+Implementation decision, 20 October 2026: reuse T3 Code's orchestrator code and all provider integrations as the foundation for Perpeto. The pinned source is now imported under `vendor/t3code`; see [current verification](status.md) and [the living vision and decisions](vision.md#decisions).
 
 ## The problem
 

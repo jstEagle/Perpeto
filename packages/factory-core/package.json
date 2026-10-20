@@ -1,0 +1,9 @@
+{
+  "name": "@perpeto/factory-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/messaging-store.js",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": { "test": "node --test" }
+}
