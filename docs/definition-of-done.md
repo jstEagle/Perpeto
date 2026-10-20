@@ -9,7 +9,7 @@ The user authorized beginning implementation on 20 October 2026. These criteria 
 - File-based Perpeto configuration starts an isolated local runtime without using the user's normal T3 state. Verified locally; see [build status](status.md).
 - Runtime build and focused orchestration/provider tests pass. Verified locally; see [build status](status.md).
 - Durable project-scoped messaging supports session-independent sender/recipient identities, retry-safe writes, cursor reads and restart recovery. Verified locally; see [build status](status.md).
-- Repository CI runs factory tests and focused upstream checks. Configured; hosted execution not yet verified.
+- Repository CI runs factory tests, import integrity, focused upstream checks and the runtime build. Verified on Linux for `d64c781`: [CI run](https://github.com/jstEagle/Perpeto/actions/runs/39400092882).
 
 ## Complete factory experience
 

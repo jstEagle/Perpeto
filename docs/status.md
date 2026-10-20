@@ -8,7 +8,7 @@ Updated 20 October 2026. Phase: initial foundation implemented locally; full fac
 - T3 Code source imported at `89b42bfeb4f79408af72fc7bb7a4482e22bb9493`: orchestrator, all nine provider drivers, shared packages, clients, tests, lockfile, patches and licenses. Source boundaries and hashes live under `config/`.
 - Root setup/build/start commands with file-based settings and isolated Perpeto runtime data.
 - Durable SQLite messaging store with project-scoped channels, stable role addressing, idempotent writes and cursor pagination.
-- GitHub workflow configured for Perpeto tests, upstream source integrity, focused upstream tests and runtime build. Hosted execution not yet verified.
+- GitHub workflow configured for Perpeto tests, upstream source integrity, focused upstream tests and runtime build. Both jobs passed on Linux for implementation commit `d64c781`: [CI evidence](https://github.com/jstEagle/Perpeto/actions/runs/39400092882).
 
 ## Local verification
 
@@ -17,6 +17,7 @@ Updated 20 October 2026. Phase: initial foundation implemented locally; full fac
 - Runtime web/server build passed after including the upstream scripts workspace in setup.
 - `npm start`: real server started on localhost:4310 with separate `.perpeto/runtime` state; public environment descriptor returned protocol 2 and inherited HTML loaded. Server restarted successfully with the same data directory.
 - Source comparison: all 6,350 imported files match the pinned checkout byte-for-byte.
+- Hosted CI: both factory and upstream jobs passed, including the complete runtime build, for `d64c781`.
 - Independent foundation review found an ignored browser-opening setting. Launcher now chooses the correct upstream command and explicitly disables automatic cwd project creation.
 
 HTTP responses establish local startup only. No authenticated browser journey, real harness turn, remote pairing, cross-machine delivery, or CI runner execution is claimed.

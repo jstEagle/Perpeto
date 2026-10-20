@@ -8,4 +8,6 @@ Local checks: 9 Perpeto tests, 170 focused upstream tests, complete web/server b
 
 Continue with authenticated messaging transport/tool integration; current messaging is an API for local durable storage. Factory graph execution, cross-machine scheduling, CI runners and release packaging remain unfinished.
 
+Hosted verification subsequently passed for implementation commit `d64c781`: both jobs in [the foundation workflow](https://github.com/jstEagle/Perpeto/actions/runs/39400092882), including source integrity, tests and the complete runtime build. The local smoke-test server was stopped after verification.
+
 Setup was also verified to restore the host repository's Git hook configuration after upstream prepare, which otherwise installs a hook targeting the nested upstream workspace.
