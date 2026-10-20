@@ -11,7 +11,7 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as Messaging from "./Messaging.ts";
 
 export const MAX_BODY_BYTES = 512 * 1024;
-class ApiError extends Data.TaggedError("PerpetoMessagingApiError")<{
+export class ApiError extends Data.TaggedError("PerpetoMessagingApiError")<{
   readonly status: number;
   readonly code: string;
   readonly message: string;
@@ -97,8 +97,10 @@ export const layer = Layer.effectDiscard(Effect.gen(function* () {
       if (request.method === "GET") {
         const rawLimit = url.searchParams.get("limit");
         if (rawLimit !== null && !/^\d+$/.test(rawLimit)) return yield* Effect.fail(apiError(400, "INVALID_INPUT", "limit must be an integer."));
+        const rawLatest = url.searchParams.get("latest");
+        if (rawLatest !== null && rawLatest !== "true" && rawLatest !== "false") return yield* Effect.fail(apiError(400, "INVALID_INPUT", "latest must be true or false."));
         return HttpServerResponse.jsonUnsafe(yield* storage(() => messages.readMessages({
-          projectId, channelId, after: url.searchParams.get("after"),
+          projectId, channelId, after: url.searchParams.get("after"), before: url.searchParams.get("before"), latest: rawLatest === "true",
           recipientRoleId: url.searchParams.get("recipientRoleId"),
           ...(rawLimit === null ? {} : { limit: Number(rawLimit) }),
         })));
@@ -115,3 +117,5 @@ export const layer = Layer.effectDiscard(Effect.gen(function* () {
   }).pipe(Effect.catchTag("PerpetoMessagingApiError", (error) => Effect.succeed(errorResponse(error))));
   yield* router.add("*", "/api/perpeto/*", handler);
 }));
+
+export { body as readJsonBody };

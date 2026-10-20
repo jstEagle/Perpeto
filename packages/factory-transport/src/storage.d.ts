@@ -8,7 +8,7 @@ export interface Message {
   createdAt: string;
 }
 export interface Channel { projectId: string; id: string; name: string }
-export interface MessagePage { messages: Message[]; nextCursor: string | null; hasMore: boolean }
+export interface MessagePage { messages: Message[]; previousCursor: string | null; nextCursor: string | null; hasMore: boolean }
 export class MessagingError extends Error { code: string }
 export class MessagingStore {
   constructor(filename: string, options?: { busyTimeoutMs?: number });
@@ -17,5 +17,5 @@ export class MessagingStore {
   createChannel(input: { projectId: string; id: string; name: string }): Channel;
   listChannels(input: { projectId: string }): Channel[];
   send(input: { projectId: string; channelId: string; senderRoleId: string; recipientRoleId?: string | null; body: string; idempotencyKey: string }): { message: Message; duplicate: boolean };
-  readMessages(input: { projectId: string; channelId: string; recipientRoleId?: string | null; after?: string | null; limit?: number }): MessagePage;
+  readMessages(input: { projectId: string; channelId: string; recipientRoleId?: string | null; after?: string | null; before?: string | null; latest?: boolean; limit?: number }): MessagePage;
 }

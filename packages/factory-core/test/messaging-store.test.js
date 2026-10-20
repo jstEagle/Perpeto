@@ -147,6 +147,52 @@ test('lists only the project channels in a stable order', t => {
   assert.throws(() => store.listChannels({ projectId: 'missing' }), code('NOT_FOUND'));
 });
 
+test('latest and older history pages stay bounded and gap-free across restart', t => {
+  const { store, open } = fixture(t);
+  const sent = Array.from({ length: 11 }, (_, i) => send(store, { body: `Message ${i}`, idempotencyKey: `history-${i}` }).message);
+  const newest = read(store, { latest: true, limit: 3 });
+  assert.deepEqual(newest.messages, sent.slice(-3));
+  assert.equal(newest.hasMore, true);
+  store.close();
+  const resumed = open();
+  let marker = newest.previousCursor;
+  let history = newest.messages;
+  let page;
+  do {
+    page = read(resumed, { before: marker, limit: 3 });
+    history = [...page.messages, ...history];
+    marker = page.previousCursor;
+  } while (page.hasMore);
+  assert.deepEqual(history, sent);
+  assert.equal(new Set(history.map(message => message.id)).size, 11);
+  const empty = read(resumed, { before: marker, limit: 3 });
+  assert.deepEqual(empty.messages, []);
+  assert.equal(empty.previousCursor, marker);
+  assert.equal(empty.hasMore, false);
+  const added = send(resumed, { body: 'After latest', idempotencyKey: 'tail-from-latest' }).message;
+  assert.deepEqual(read(resumed, { after: newest.nextCursor }).messages, [added]);
+  assert.deepEqual(read(resumed, { before: newest.nextCursor, limit: 2 }).messages, sent.slice(-3, -1));
+});
+
+test('history direction and cursor scopes validate without leaking filtered streams', t => {
+  const { store } = fixture(t);
+  const empty = read(store, { latest: true });
+  assert.deepEqual(empty, { messages: [], previousCursor: null, nextCursor: null, hasMore: false });
+  send(store);
+  send(store, { idempotencyKey: 'other-history', recipientRoleId: 'other' });
+  const inbox = read(store, { latest: true, recipientRoleId: 'reviewer' });
+  assert.equal(inbox.messages.length, 1);
+  assert.equal(inbox.hasMore, false);
+  const cursor = inbox.previousCursor;
+  assert.throws(() => read(store, { before: cursor }), code('INVALID_CURSOR'));
+  assert.throws(() => read(store, { before: 'malformed' }), code('INVALID_CURSOR'));
+  for (const options of [
+    { latest: 'true' }, { latest: null }, { latest: true, after: cursor },
+    { latest: true, before: cursor }, { before: cursor, after: cursor },
+  ]) assert.throws(() => read(store, options), code('INVALID_INPUT'));
+  assert.equal(read(store, { latest: false }).messages.length, 2);
+});
+
 
 test('rejects URL dot segments only for project and channel identities', t => {
   const { store } = fixture(t);

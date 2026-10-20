@@ -3,7 +3,7 @@ import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { useProjects } from "../../state/entities";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { useEnvironmentScope, usePreparedConnection } from "../../state/session";
-import { appendMessagePage, messagingRequest, type FactoryChannel, type FactoryMessage, type MessagePage } from "./messaging";
+import { applyMessageWindow, emptyMessageWindow, MESSAGE_PAGE_SIZE, windowMessages, messagingConfig, messagingRequest, type FactoryChannel, type MessagePage } from "./messaging";
 import workshopTokens from "../../../../../../../brand/tokens.css?inline";
 import "./factory-messaging.css";
 import { randomUUID } from "../../lib/utils";
@@ -72,7 +72,7 @@ function ProjectMessages({ projectId, projectName, prepared, canOperate }: {
         }
       }
       finally {
-        if (!controller.signal.aborted) { setLoading(false); timer = setTimeout(() => void refresh(), 5000); }
+        if (!controller.signal.aborted) { setLoading(false); timer = setTimeout(() => void refresh(), messagingConfig.channelPollIntervalMs); }
       }
     }
     void refresh();
@@ -117,7 +117,17 @@ function ProjectMessages({ projectId, projectName, prepared, canOperate }: {
 }
 
 function ChannelMessages({ prepared, base, name, canOperate }: { prepared: Prepared; base: string; name: string; canOperate: boolean }) {
-  const [messages, setMessages] = useState<FactoryMessage[]>([]);
+  const [history, setHistory] = useState(emptyMessageWindow);
+  const historyRef = useRef(history);
+  const messages = windowMessages(history);
+  const [historyMode, setHistoryMode] = useState(false);
+  const historyModeRef = useRef(false);
+  const [olderLoading, setOlderLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const olderRequest = useRef<AbortController | null>(null);
+  const initialized = useRef(false);
+  const requestEpoch = useRef(0);
+  const [catchingUp, setCatchingUp] = useState(false);
   const [sender, setSender] = useLocalStorage("perpeto.messaging.senderRole", "user", Schema.String);
   const [recipient, setRecipient] = useState("");
   const [body, setBody] = useState("");
@@ -130,31 +140,60 @@ function ChannelMessages({ prepared, base, name, canOperate }: { prepared: Prepa
   const cursor = useRef<string | null>(null);
   const messageEnd = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  useEffect(() => () => olderRequest.current?.abort(), []);
   useEffect(() => {
+    if (historyMode) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
+      const epoch = requestEpoch.current;
       try {
-        // Drain backlog before sleeping. Advance only from successfully applied server pages.
-        let hasMore: boolean;
-        do {
-          const query = new URLSearchParams({ limit: "100", ...(cursor.current ? { after: cursor.current } : {}) });
-          const page = await messagingRequest<MessagePage>({ prepared, path: `${base}?${query}`, signal: controller.signal });
-          if (controller.signal.aborted) return;
-          setMessages((current) => appendMessagePage(current, page.messages));
-          if (page.hasMore && page.nextCursor === cursor.current) throw new Error("Message history stopped advancing. Reconnect and retry.");
-          cursor.current = page.nextCursor;
-          hasMore = page.hasMore;
-        } while (hasMore && !controller.signal.aborted);
+        const newestPage = !initialized.current || cursor.current === null;
+        const query = new URLSearchParams({ limit: String(MESSAGE_PAGE_SIZE),
+          ...(!newestPage && cursor.current ? { after: cursor.current } : { latest: "true" }),
+        });
+        const page = await messagingRequest<MessagePage>({ prepared, path: `${base}?${query}`, signal: controller.signal });
+        if (controller.signal.aborted || historyModeRef.current || epoch !== requestEpoch.current) return;
+        if (!("previousCursor" in page)) throw new Error("Update this environment's Perpeto runtime to read bounded message history.");
+        if (!newestPage && page.hasMore && page.nextCursor === cursor.current) throw new Error("Message history stopped advancing. Refresh to the latest messages.");
+        const next = applyMessageWindow(historyRef.current, page, newestPage ? "latest" : "newer");
+        historyRef.current = next; setHistory(next);
+        setCatchingUp(!newestPage && page.hasMore);
+        cursor.current = page.nextCursor;
+        initialized.current = true;
         setPollError(null);
       } catch (cause) { if (!controller.signal.aborted) setPollError(messageError(cause)); }
       finally {
-        if (!controller.signal.aborted) { setLoading(false); timer = setTimeout(() => void poll(), 2000); }
+        if (!controller.signal.aborted && !historyModeRef.current) { setLoading(false); timer = setTimeout(() => void poll(), messagingConfig.messagePollIntervalMs); }
       }
     }
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [base, prepared, refresh]);
+  }, [base, prepared, refresh, historyMode]);
+  function latest() {
+    requestEpoch.current += 1;
+    olderRequest.current?.abort();
+    setOlderLoading(false); setHistoryError(null);
+    initialized.current = false; cursor.current = null;
+    historyModeRef.current = false; setHistoryMode(false);
+    stickToBottom.current = true; setLoading(true); setRefresh((value) => value + 1);
+  }
+  async function loadOlder() {
+    const before = historyRef.current.blocks[0]?.previousCursor;
+    if (olderLoading || !before) return;
+    requestEpoch.current += 1;
+    historyModeRef.current = true; setHistoryMode(true); stickToBottom.current = false;
+    const controller = new AbortController(); olderRequest.current = controller;
+    setOlderLoading(true); setHistoryError(null);
+    try {
+      const query = new URLSearchParams({ before, limit: String(MESSAGE_PAGE_SIZE) });
+      const page = await messagingRequest<MessagePage>({ prepared, path: `${base}?${query}`, signal: controller.signal });
+      if (controller.signal.aborted) return;
+      const next = applyMessageWindow(historyRef.current, page, "older");
+      historyRef.current = next; setHistory(next);
+    } catch (cause) { if (!controller.signal.aborted) setHistoryError(messageError(cause)); }
+    finally { if (!controller.signal.aborted) setOlderLoading(false); }
+  }
   useEffect(() => { if (stickToBottom.current) messageEnd.current?.scrollIntoView({ block: "nearest" }); }, [messages]);
   async function send(event: FormEvent) {
     event.preventDefault();
@@ -165,14 +204,20 @@ function ChannelMessages({ prepared, base, name, canOperate }: { prepared: Prepa
     setSending(true); setError(null);
     try {
       await messagingRequest({ prepared, path: base, method: "POST", body: { ...payload, idempotencyKey: retry.current.key } });
-      retry.current = null; setBody(""); stickToBottom.current = true; setRefresh((value) => value + 1);
+      retry.current = null; setBody(""); latest();
     } catch (cause) { setError(messageError(cause)); }
     finally { setSending(false); }
   }
   return <main className="factory-conversation">
-    <header className="factory-channel-heading"><h2><span aria-hidden="true">#</span> {name}</h2><span>{messages.length} messages</span></header>
-    {(pollError || error) && <div className="factory-error factory-message-error" role="alert">{error ?? pollError}<button type="button" onClick={() => setRefresh((value) => value + 1)}>Retry</button></div>}
-    <div className="factory-history" role="log" aria-label={`${name} messages`} aria-busy={loading} onScroll={(event) => {
+    <header className="factory-channel-heading"><h2><span aria-hidden="true">#</span> {name}</h2><span>{messages.length} displayed</span></header>
+    <div className="factory-history-controls">
+      <button type="button" onClick={() => void loadOlder()} disabled={!history.hasOlder || olderLoading || loading}>{olderLoading ? "Loading…" : "Load older"}</button>
+      <span role="status">{historyMode ? "Earlier messages · live updates paused" : catchingUp ? "Catching up" : "Live"}</span>
+      <button type="button" onClick={latest} disabled={loading}>Latest</button>
+    </div>
+    {historyError && <p className="factory-error factory-message-error" role="alert">{historyError}</p>}
+    {(pollError || error) && <div className="factory-error factory-message-error" role="alert">{error ?? pollError}<button type="button" onClick={() => { if (historyMode) latest(); else setRefresh((value) => value + 1); }}>Refresh</button></div>}
+    <div className="factory-history" role="log" aria-label={`${name} messages`} aria-busy={loading || olderLoading} onScroll={(event) => {
       const node = event.currentTarget; stickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
     }}>
       {loading && !messages.length ? <p className="factory-empty">Loading messages…</p>

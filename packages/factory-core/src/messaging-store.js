@@ -131,16 +131,20 @@ export class MessagingStore {
     return { message: publicMessage(row), duplicate: result.changes === 0 };
   }
 
-  readMessages({ projectId, channelId, recipientRoleId = null, after = null, limit = 100 }) {
+  readMessages({ projectId, channelId, recipientRoleId = null, after = null, before = null, latest = false, limit = 100 }) {
     this.#channel(projectId, channelId);
     if (recipientRoleId !== null) string(recipientRoleId, 'recipientRoleId');
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) fail('INVALID_INPUT', 'limit must be an integer between 1 and 500.');
+    if (typeof latest !== 'boolean') fail('INVALID_INPUT', 'latest must be a boolean.');
+    if (Number(after !== null) + Number(before !== null) + Number(latest) > 1) fail('INVALID_INPUT', 'after, before and latest are mutually exclusive.');
     const scope = [projectId, channelId, recipientRoleId];
+    const backwards = latest || before !== null;
+    const marker = after ?? before;
     let sequence = 0;
-    if (after !== null) {
-      string(after, 'after', 4096);
+    if (marker !== null) {
+      string(marker, before !== null ? 'before' : 'after', 4096);
       let cursor;
-      try { cursor = JSON.parse(Buffer.from(after, 'base64url').toString('utf8')); }
+      try { cursor = JSON.parse(Buffer.from(marker, 'base64url').toString('utf8')); }
       catch { fail('INVALID_CURSOR', 'Malformed message cursor.'); }
       if (cursor?.version !== 1 || JSON.stringify(cursor.scope) !== JSON.stringify(scope) ||
           !Number.isSafeInteger(cursor.sequence) || cursor.sequence < 1) {
@@ -149,18 +153,21 @@ export class MessagingStore {
       sequence = cursor.sequence;
     }
     const filter = recipientRoleId === null ? '' : ' AND recipient_role_id = ?';
-    const args = [projectId, channelId, sequence];
+    const boundary = latest ? '' : ` AND sequence ${backwards ? '<' : '>'} ?`;
+    const args = [projectId, channelId];
+    if (!latest) args.push(sequence);
     if (recipientRoleId !== null) args.push(recipientRoleId);
     args.push(limit + 1);
     const rows = this.#db.prepare(`SELECT * FROM messages
-      WHERE project_id = ? AND channel_id = ? AND sequence > ?${filter}
-      ORDER BY sequence ASC LIMIT ?`).all(...args);
+      WHERE project_id = ? AND channel_id = ?${boundary}${filter}
+      ORDER BY sequence ${backwards ? 'DESC' : 'ASC'} LIMIT ?`).all(...args);
     const hasMore = rows.length > limit;
     const page = rows.slice(0, limit);
-    const nextCursor = page.length ? Buffer.from(JSON.stringify({
-      version: 1, scope, sequence: page.at(-1).sequence,
-    })).toString('base64url') : after;
-    return { messages: page.map(publicMessage), nextCursor, hasMore };
+    if (backwards) page.reverse();
+    const encode = sequence => Buffer.from(JSON.stringify({ version: 1, scope, sequence })).toString('base64url');
+    const previousCursor = page.length ? encode(page[0].sequence) : marker;
+    const nextCursor = page.length ? encode(page.at(-1).sequence) : marker;
+    return { messages: page.map(publicMessage), previousCursor, nextCursor, hasMore };
   }
 }
 

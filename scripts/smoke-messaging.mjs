@@ -108,12 +108,15 @@ try {
   const liveHarness = process.argv.includes('--live-codex');
   if (liveHarness) {
     console.log('Starting optional live Codex harness check.');
-    const mcp = `{perpeto={command=${JSON.stringify(process.execPath)},args=${JSON.stringify([resolve(root, 'packages/factory-client/src/cli.js'),'--config',clientConfig,'mcp'])}}}`;
-    const result = await promisify(execFile)('codex', ['exec','--ephemeral','--skip-git-repo-check','--sandbox','read-only','--cd',home,
+    const mcp = `{perpeto={command=${JSON.stringify(process.execPath)},args=${JSON.stringify([resolve(root, 'packages/factory-client/src/cli.js'),'--config',clientConfig,'mcp'])},required=true,tools={factory_read={approval_mode="approve"},factory_send={approval_mode="approve"},factory_channels={approval_mode="approve"}}}}`;
+    let harnessFailure;
+    const invocation = promisify(execFile)('codex', ['exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only','--json','--cd',home,
       '-c',`mcp_servers=${mcp}`,
       'This is an integration test against a temporary Perpeto factory. Use only the perpeto MCP tools. Read the build channel, then send exactly one message with body "Live harness delivery verified.", idempotencyKey "live-harness-proof", recipientRoleId "review". Do not use shell tools or inspect files. Report completion briefly.'],
-      {cwd:root,encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024}).then(() => true, () => false);
-    if (!result) throw new Error('Live Codex harness test failed; authenticate the harness and retry the optional live check.');
+      {cwd:root,encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024});
+    invocation.child.stdin.end();
+    const result = await invocation.then(() => true, error => { harnessFailure = {code:error.code,signal:error.signal,killed:error.killed}; return false; });
+    if (!result) throw new Error(`Live Codex harness check failed (${JSON.stringify(harnessFailure)}). The optional check requires a working authenticated local harness.`);
     const delivered = await request(path,{token:reader});
     assert.ok(delivered.messages.some(message=>message.body==='Live harness delivery verified.' && message.recipientRoleId==='review'));
     console.log('Live Codex harness delivered a message through the Perpeto MCP client.');

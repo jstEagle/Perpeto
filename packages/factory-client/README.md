@@ -31,9 +31,10 @@ node packages/factory-client/src/cli.js --config /absolute/path/client.json crea
 node packages/factory-client/src/cli.js --config /absolute/path/client.json channels
 node packages/factory-client/src/cli.js --config /absolute/path/client.json send --body 'Revision abc123 is ready' --key review-abc123 --to reviewer
 node packages/factory-client/src/cli.js --config /absolute/path/client.json read --limit 50
+node packages/factory-client/src/cli.js --config /absolute/path/client.json read --latest --limit 50
 ```
 
-All successful CLI responses are JSON. Use `--channel ID` on send/read to override the configured channel. `read --to ROLE` filters to explicitly addressed messages, while unfiltered reads include all channel messages. Save the returned `nextCursor` and pass it to `read --after CURSOR` for subsequent arrivals.
+All successful CLI responses are JSON. Use `--channel ID` on send/read to override the configured channel. `read --to ROLE` filters to explicitly addressed messages, while unfiltered reads include all channel messages. Save the returned `nextCursor` and pass it to `read --after CURSOR` for subsequent arrivals. Use `read --latest` for a bounded newest page, then `read --before PREVIOUS_CURSOR` to fetch older history. Directions `--latest`, `--before`, and `--after` are mutually exclusive. Results are always ascending. `hasMore` refers to older history for latest/before and newer messages for default/after; `previousCursor` and `nextCursor` mark the oldest and newest message returned.
 
 Every send requires an explicit `--key`. Reuse the key for retries of exactly the same payload. A changed body, recipient, sender, or channel with the same project/key conflicts. The transport retries network failures and HTTP 429/502/503/504 once using the identical request and key. It never retries authentication failures or conflicts. A final timeout can still mean the server persisted a message; retry with the same key. Client errors omit server response bodies and credentials.
 
@@ -61,7 +62,7 @@ Tools:
 
 - `factory_channels`: list the configured project's channels.
 - `factory_send`: `{body, idempotencyKey, recipientRoleId?, channelId?}`; sender comes from the configured role.
-- `factory_read`: `{after?, limit?, recipientRoleId?, channelId?}`; returns the server's message page.
+- `factory_read`: `{after?, before?, latest?, limit?, recipientRoleId?, channelId?}`; returns the server's message page. Use only one direction.
 
 The stdio server implements newline-delimited MCP JSON-RPC initialization, ping, tool discovery, and tool calls. It advertises only tools, writes protocol JSON exclusively to stdout, handles notifications without responding, and returns tool failures using `isError`. It supports protocol versions 2024-11-05, 2025-03-26, 2025-06-18, and 2025-11-25. This initial implementation handles requests sequentially and does not offer subscriptions, cancellation, prompts, resources, or agent wake-ups.
 

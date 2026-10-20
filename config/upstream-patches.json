@@ -10,13 +10,13 @@
     "upstreamHash": null
   },
   "apps/server/src/perpeto/http.test.ts": {
-    "reason": "Integrate persistent factory messaging with existing environment auth, lifecycle and browser CORS; verify the real HTTP boundary.",
-    "sha256": "5f4e007358ab283da120a1b27c2f0e8ce7d0ade6a94562dc0f73b21303288ca9",
+    "reason": "Provide bounded newest/older message history, resumable polling and capped UI rendering; validate the authenticated history API.",
+    "sha256": "c4f9d238e6d70ca86088b55853e9c7ac12d35c2ea695e0b818e5ca445eff4670",
     "upstreamHash": null
   },
   "apps/server/src/perpeto/http.ts": {
-    "reason": "Integrate persistent factory messaging with existing environment auth, lifecycle and browser CORS; verify the real HTTP boundary.",
-    "sha256": "ec3581c8b7e0c65af11c8bcb4cd5c9a546679a5940ea008dec7266ad8419f988",
+    "reason": "Provide bounded newest/older message history, resumable polling and capped UI rendering; validate the authenticated history API.",
+    "sha256": "ebfebb658fb141297cff64fca449483505e7005c5cb7574b20549f775860eb7f",
     "upstreamHash": null
   },
   "apps/server/src/server.ts": {
@@ -25,23 +25,28 @@
     "upstreamHash": "0c5cf30580f5abaea607111023cd9b0e7f8df5a321f1c2feaee9d641fd3745b1"
   },
   "apps/web/src/components/factory/FactoryMessagingPage.tsx": {
-    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
-    "sha256": "4c6e1cae4e18893fdd1e578339fa8a2e806e2da3ee33d1485865eb2880c8e9ce",
+    "reason": "Provide bounded newest/older message history, resumable polling and capped UI rendering; validate the authenticated history API.",
+    "sha256": "9170e7e0d99587c00791ffdcc84ad857f5ed32f4e5c00bdaf40c0634cd9f4314",
     "upstreamHash": null
   },
   "apps/web/src/components/factory/factory-messaging.css": {
-    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
-    "sha256": "445c22eb60af441907647e30894fa3240b38c44600c391f2c5f03ff08b85f26c",
+    "reason": "Provide bounded newest/older message history, resumable polling and capped UI rendering; validate the authenticated history API.",
+    "sha256": "10370a15c4be8b6e9051bab0d20e65a50f7420dff796375736aae3050d29f9f0",
+    "upstreamHash": null
+  },
+  "apps/web/src/components/factory/messaging.config.json": {
+    "reason": "Provide bounded newest/older message history, resumable polling and capped UI rendering; validate the authenticated history API.",
+    "sha256": "33058f76d62232faa7720c4542e54457712f147721244e9735bbab45aab6b318",
     "upstreamHash": null
   },
   "apps/web/src/components/factory/messaging.test.ts": {
-    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
-    "sha256": "68805adb35c4ecb210b0f6e733a01e77bdfe64d04bbdece7075863ac2caddfaf",
+    "reason": "Provide bounded newest/older message history, resumable polling and capped UI rendering; validate the authenticated history API.",
+    "sha256": "ea72e64358f6c0a5f294e448aa3025a1092f6e4c39963756da09bc59d446d4ca",
     "upstreamHash": null
   },
   "apps/web/src/components/factory/messaging.ts": {
-    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
-    "sha256": "c99171a0f26469a68d2c14a797dafb12f6e3dff6cbd37fd23a403e175aabdcbe",
+    "reason": "Provide bounded newest/older message history, resumable polling and capped UI rendering; validate the authenticated history API.",
+    "sha256": "cda858c2ce3c95224d23cea0eecd1d71c163641b0288962155b500313f7cbb77",
     "upstreamHash": null
   },
   "apps/web/src/components/sidebar/SidebarChrome.tsx": {

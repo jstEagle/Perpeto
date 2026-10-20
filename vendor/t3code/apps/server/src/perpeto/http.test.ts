@@ -81,6 +81,41 @@ it.layer(ServerConfig.layerTest(process.cwd(), { prefix: "perpeto-http-" }).pipe
     finally { reopened.close(); }
   }).pipe(Effect.scoped));
 
+  it.effect("supports bounded latest/older pages and rejects ambiguous history queries", () => Effect.gen(function* () {
+    const services = yield* Layer.build(serverLayer);
+    const client = Context.get(services, HttpClient.HttpClient);
+    const auth = Context.get(services, EnvironmentAuth.EnvironmentAuth);
+    const session = yield* auth.issueSession({ scopes: ["orchestration:read", "orchestration:operate"] });
+    const headers = { authorization: `Bearer ${session.token}` };
+    const request = (method: "GET" | "POST" | "PUT", route: string, payload?: unknown) => Effect.gen(function* () {
+      const response = yield* client.execute(HttpClientRequest.make(method)(route, {
+        headers, ...(payload === undefined ? {} : { body: HttpBody.text(JSON.stringify(payload), "application/json") }),
+      }));
+      return { status: response.status, body: yield* response.json };
+    });
+    const root = "/api/perpeto/projects/history";
+    yield* request("PUT", root, { name: "History" });
+    yield* request("POST", `${root}/channels`, { id: "build", name: "Build" });
+    const route = `${root}/channels/build/messages`;
+    for (let i = 0; i < 5; i++) yield* request("POST", route, { senderRoleId: "lead", body: `Message ${i}`, idempotencyKey: `history-${i}` });
+    type Page = { messages: Array<{ body: string }>; previousCursor: string; nextCursor: string; hasMore: boolean };
+    const newest = yield* request("GET", `${route}?latest=true&limit=2`);
+    const page = newest.body as Page;
+    expect(newest.status).toBe(200);
+    expect(page.messages.map(message => message.body)).toEqual(["Message 3", "Message 4"]);
+    expect(page.hasMore).toBe(true);
+    const older = (yield* request("GET", `${route}?before=${encodeURIComponent(page.previousCursor)}&limit=2`)).body as Page;
+    expect(older.messages.map(message => message.body)).toEqual(["Message 1", "Message 2"]);
+    expect(older.hasMore).toBe(true);
+    const forward = (yield* request("GET", `${route}?after=${encodeURIComponent(older.nextCursor)}&limit=2`)).body as Page;
+    expect(forward.messages.map(message => message.body)).toEqual(["Message 3", "Message 4"]);
+    expect(forward.hasMore).toBe(false);
+    for (const query of ["latest=1", "latest=", "before=bad", `latest=true&after=${page.nextCursor}`, `after=${page.nextCursor}&before=${page.previousCursor}`]) {
+      expect((yield* request("GET", `${route}?${query}`)).status).toBe(400);
+    }
+    expect((yield* request("GET", `${route}?latest=false&limit=2`)).status).toBe(200);
+  }).pipe(Effect.scoped));
+
   it.effect("rejects malformed JSON and caps chunked requests before storage", () => Effect.gen(function* () {
     const services = yield* Layer.build(serverLayer);
     const client = Context.get(services, HttpClient.HttpClient);

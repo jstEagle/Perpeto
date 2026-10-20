@@ -25,6 +25,8 @@ node packages/factory-client/src/cli.js --config config/messaging-client.example
 node packages/factory-client/src/cli.js --config config/messaging-client.example.json read
 ```
 
+The browser opens the newest page, keeps a bounded message window, and pauses live polling while you browse older history. In the CLI, `read --latest` fetches the newest page and `read --before <previousCursor>` fetches older messages.
+
 Save `nextCursor` and use `read --after <cursor>` for later arrivals. Retrying the same message with its original key returns the original result. Reusing a key for different content returns a conflict.
 
 ## Harness tools
@@ -47,4 +49,4 @@ Factory project IDs are durable identifiers for messaging. They are currently re
 
 `npm run smoke:messaging` builds no mocks: it launches the built environment in a temporary directory, issues scoped credentials, exercises actual HTTP/CLI/MCP clients, tests permission denials and retry conflicts, and restarts the server to confirm persistence. It requires a prior `npm run build`.
 
-`npm run smoke:messaging -- --live-codex` additionally invokes an already authenticated local Codex harness to deliver a message through MCP. This optional subscription-backed check is excluded from CI. A successful local test does not establish connectivity between two physical machines.
+`npm run smoke:messaging -- --live-codex` additionally invokes an already authenticated local Codex harness to deliver a message through MCP. This optional subscription-backed check is excluded from CI. It isolates user configuration and approves only the temporary test server's three messaging tools. A live Codex delivery through MCP passed locally. A successful local test does not establish connectivity between two physical machines.

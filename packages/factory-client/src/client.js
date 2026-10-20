@@ -80,10 +80,13 @@ export class FactoryClient {
       senderRoleId: this.#config.roleId, body, idempotencyKey, ...(recipientRoleId === undefined ? {} : { recipientRoleId }),
     });
   }
-  read({ after, limit, recipientRoleId, channelId } = {}) {
+  read({ after, before, latest, limit, recipientRoleId, channelId } = {}) {
     if (after !== undefined) nonblank(after, 'after');
+    if (before !== undefined) nonblank(before, 'before');
+    if (latest !== undefined && typeof latest !== 'boolean') throw new ClientError('latest must be a boolean.');
+    if (Number(after !== undefined) + Number(before !== undefined) + Number(latest === true) > 1) throw new ClientError('after, before and latest are mutually exclusive.');
     if (recipientRoleId !== undefined) nonblank(recipientRoleId, 'recipientRoleId');
     if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)) throw new ClientError('limit must be between 1 and 500.');
-    return this.#request('GET', `${this.#channel(channelId)}/messages`, undefined, { after, limit, recipientRoleId });
+    return this.#request('GET', `${this.#channel(channelId)}/messages`, undefined, { after, before, latest, limit, recipientRoleId });
   }
 }

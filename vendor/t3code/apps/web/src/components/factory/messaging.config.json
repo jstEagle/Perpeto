@@ -1,0 +1,6 @@
+{
+  "pageSize": 100,
+  "renderWindowLimit": 500,
+  "messagePollIntervalMs": 2000,
+  "channelPollIntervalMs": 5000
+}

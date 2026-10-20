@@ -157,3 +157,30 @@ test('MCP parse errors and failed tool operations do not disclose credentials', 
   assert.equal(replies[3].result.isError, true);
   assert.ok(!`${output.stdout}${output.stderr}`.includes(token));
 });
+
+test('client, CLI and MCP expose mutually exclusive bounded history directions', async t => {
+  const f = await fixture(t);
+  const client = new FactoryClient(f.config);
+  await client.read({ latest: true, limit: 25 });
+  assert.equal(new URL(f.calls[0].url, 'http://localhost').searchParams.get('latest'), 'true');
+  await client.read({ before: 'older+cursor=' });
+  assert.equal(new URL(f.calls[1].url, 'http://localhost').searchParams.get('before'), 'older+cursor=');
+  for (const input of [{ latest: true, after: 'a' }, { before: 'b', after: 'a' }, { latest: 'true' }]) assert.throws(() => client.read(input));
+  const cliLatest = await run(f.configPath, ['read', '--latest', '--limit', '10']);
+  assert.equal(cliLatest.code, 0);
+  assert.equal(new URL(f.calls[2].url, 'http://localhost').searchParams.get('latest'), 'true');
+  const cliOlder = await run(f.configPath, ['read', '--before', 'old']);
+  assert.equal(cliOlder.code, 0);
+  assert.equal(new URL(f.calls[3].url, 'http://localhost').searchParams.get('before'), 'old');
+  const conflict = await run(f.configPath, ['read', '--latest', '--after', 'a']);
+  assert.equal(conflict.code, 1);
+  assert.equal(f.calls.length, 4);
+  const output = await run(f.configPath, ['mcp'], [
+    { jsonrpc: '2.0', id: 1, method: 'initialize' },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'factory_read', arguments: { latest: true, limit: 10 } } },
+  ].map(value => JSON.stringify(value)).join('\n') + '\n');
+  assert.equal(output.code, 0);
+  const replies = output.stdout.trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(JSON.parse(replies[1].result.content[0].text), { ok: true });
+  assert.equal(new URL(f.calls[4].url, 'http://localhost').searchParams.get('latest'), 'true');
+});
