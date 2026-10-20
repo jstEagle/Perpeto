@@ -1,0 +1,17 @@
+{
+  "status": "user-selected",
+  "icons": {
+    "queue": {
+      "file": "queue.svg",
+      "source": "../refinements/queue.svg"
+    },
+    "coordinate": {
+      "file": "coordinate.svg",
+      "source": "../refinements/coordinate-balanced.svg"
+    },
+    "exchange": {
+      "file": "exchange.svg",
+      "source": "../refinements/exchange-compact.svg"
+    }
+  }
+}

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perpeto</title>
+<meta name="description" content="Perpeto, the open-source software factory for coordinated agents. In design; the interface shown is a concept.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Plus+Jakarta+Sans:wght@200..800&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="../motion/motion.css">
+<link rel="stylesheet" href="landing.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-row">
+    <a class="brand" href="#top" aria-label="Perpeto home"><span class="spindle" data-motion=""></span><span class="wordmark"></span></a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#how">Product <svg class="chev" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg></a>
+      <a href="#principles">Principles <svg class="chev" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg></a>
+      <a href="../../docs/README.md">Docs <svg class="chev" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg></a>
+      <a href="../../brand.md">Brand</a>
+      <a href="../../docs/discussion.md">Discussion</a>
+      <a href="../../CONTRIBUTING.md">Contribute</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="nav-text" href="../../README.md">README</a>
+      <a class="btn btn-ghost btn-sm" href="../../brand.md">Brand</a>
+      <a class="btn btn-primary btn-sm" href="../../docs/direction.md">Read the direction</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="wrap">
+      <h1 class="title hero-title">Built to keep building, with agents on every machine</h1>
+      <p class="hero-sub">Perpeto is an open-source software factory. It coordinates agents across your machines and keeps a record of what actually passed verification.</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="../../docs/direction.md">Read the direction</a>
+        <a class="btn btn-ghost" href="../../docs/discussion.md">Join the discussion</a>
+      </div>
+      <p class="hero-status"><span class="spindle" data-motion="pulse"></span>In design. Nothing to install yet, and the interface below is a concept.</p>
+    </div>
+
+    <div class="stage wrap">
+      <!-- background collage -->
+      <div class="collage" aria-hidden="true">
+        <pre class="tile printout">fn assign(item: WorkItem, pool: &amp;Workers) {
+  let w = pool.idle().filter(|w|
+    w.can_run(&amp;item.requires));
+  // explicit ownership, one owner
+  item.owner = w.first()?.id;
+  events.push(Assigned(item.id));
+}
+
+run 4812  build-01  started 20:04
+run 4813  mbp-14    started 20:05
+run 4813  mbp-14    lost    20:12
+run 4814  build-01  resumed 20:12
+check sso.settings     pass
+check saml.handshake   pass
+check email.login      pass</pre>
+        <div class="tile strip"><img src="assets/plate.jpg" alt=""></div>
+        <div class="tile t-right"><img src="assets/card.jpg" alt=""></div>
+        <div class="tile t-left blur"><img src="assets/tee.jpg" alt=""></div>
+        <div class="tile t-right2"><img src="assets/jacket.jpg" alt=""></div>
+        <div class="tile t-right3 blur"><img src="assets/banner.jpg" alt=""></div>
+        <div class="tile t-left2 blur"><img src="assets/cap.jpg" alt=""></div>
+        <div class="tile extra x1"><img src="assets/console.jpg" alt=""></div>
+        <div class="tile extra x2"><img src="assets/plate.jpg" alt=""></div>
+      </div>
+
+      <!-- app window -->
+      <div class="window" role="img" aria-label="Concept of the Perpeto project view: a goal broken into work items across three machines, with requirement evidence.">
+        <aside class="side">
+          <div class="chrome">
+            <span class="lights"><i></i><i></i><i></i></span>
+            <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+            <svg class="ic" viewBox="0 0 24 24"><path d="M19 12H5m6-6-6 6 6 6"/></svg>
+            <svg class="ic" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+            <span class="grow"></span>
+            <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg>
+            <svg class="ic" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20h4"/></svg>
+          </div>
+          <ul class="side-nav">
+            <li><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New project</li>
+            <li><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".5"/></svg>Goals</li>
+            <li><svg class="ic" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>Requirements</li>
+            <li><svg class="ic" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/></svg>Workers</li>
+            <li><svg class="ic" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z"/><path d="m9 12 2 2 4-4"/></svg>Evidence</li>
+            <li><svg class="ic" viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>Context</li>
+            <li class="dim"><svg class="ic" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01"/></svg>More</li>
+          </ul>
+          <div class="side-head"><span>Projects</span><span class="side-tools"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><svg class="ic" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01"/></svg></span></div>
+          <ul class="side-list">
+            <li class="small"><svg class="ic" viewBox="0 0 24 24"><path d="m14 4 6 6-3 1-3 3 1 4-2 2-4-4-5 5M9 11l4 4"/></svg>Pinned <em>3</em></li>
+            <li class="active"><span class="spindle st" data-motion="pulse"></span>Add enterprise SSO<b class="dot"></b></li>
+            <li><span class="spindle st" data-motion="pulse"></span>Multi-region failover<b class="dot"></b></li>
+            <li><span class="st-ic ok"></span>Upgrade Node across services</li>
+            <li><span class="st-ic block"></span>Investigate API latency spike</li>
+            <li><span class="st-ic plan"></span>Patch vulnerable dependencies</li>
+            <li><span class="st-ic ok"></span>Fix flaky checkout tests</li>
+            <li><span class="st-ic plan"></span>Review authentication changes<b class="dot"></b></li>
+            <li><span class="st-ic plan"></span>Expand payment test coverage</li>
+            <li><span class="st-ic ok"></span>Document service architecture</li>
+            <li class="dim"><svg class="ic" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01"/></svg>More</li>
+          </ul>
+          <div class="side-foot"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>Participated <em>12</em></div>
+        </aside>
+
+        <div class="main">
+          <div class="main-head">
+            <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/></svg>
+            <strong>Add enterprise SSO</strong>
+            <span class="chip mono">acme/platform</span>
+            <span class="machines"><i>mb</i><i>b1</i><i>b2</i><i>r3</i></span>
+            <span class="grow"></span>
+            <svg class="ic" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01"/></svg>
+            <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+          </div>
+          <div class="thread">
+            <p class="bubble" data-at="0.6">Add SAML SSO for enterprise customers.</p>
+            <p class="bubble" data-at="1.9">Follow our existing auth patterns. Keep email login working for everyone.</p>
+            <p class="step" data-at="3.1" data-states="3.1:busy,4.3:done"><span class="sicon"><span class="spindle st" data-motion="pulse"></span><svg class="ic" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span>Read 3 requirements and 2 earlier decisions</p>
+            <p class="step" data-at="4.4" data-states="4.4:busy,5.5:done"><span class="sicon"><span class="spindle st" data-motion="pulse"></span><svg class="ic" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span>Planned 4 work items across 3 workers <span class="pos">+4</span></p>
+
+            <div class="msg" data-at="5.7">
+              <span class="avatar"><span class="spindle" data-motion="pulse"></span></span>
+              <div>
+                <p class="who">Perpeto <span>20:05</span></p>
+                <p data-at="5.7" data-type="1.8">Two workers are building SSO settings and the SAML handshake on separate machines. A third is preparing browser checks for sign-in and account linking.</p>
+                <div class="work">
+                  <div class="row" data-at="7.6" data-states="7.6:run,10.5:ok"><span class="sicon"><span class="st-ic plan"></span><span class="spindle st" data-motion="pulse"></span><span class="st-ic ok"></span><span class="st-ic block"></span></span><span>SSO settings</span><span class="mono m">build-01</span><span class="badge"></span></div>
+                  <div class="row" data-at="8" data-states="8:plan,9.2:run,12.2:wait,12.8:run,15.5:ok"><span class="sicon"><span class="st-ic plan"></span><span class="spindle st" data-motion="pulse"></span><span class="st-ic ok"></span><span class="st-ic block"></span></span><span>SAML handshake</span><span class="mono m" data-texts="8:mbp-14,12.8:build-01">mbp-14</span><span class="badge"></span></div>
+                  <div class="row" data-at="8.4" data-states="8.4:plan,16:run"><span class="sicon"><span class="st-ic plan"></span><span class="spindle st" data-motion="pulse"></span><span class="st-ic ok"></span><span class="st-ic block"></span></span><span>Account linking</span><span class="mono m">build-02</span><span class="badge"></span></div>
+                  <div class="row" data-at="8.8" data-states="8.8:wait,16:run,19:ok"><span class="sicon"><span class="st-ic plan"></span><span class="spindle st" data-motion="pulse"></span><span class="st-ic ok"></span><span class="st-ic block"></span></span><span>Browser checks</span><span class="mono m">runner-03</span><span class="badge"></span></div>
+                </div>
+              </div>
+            </div>
+
+            <p class="step" data-at="12.2" data-states="12.2:busy,12.8:done"><span class="sicon"><span class="spindle st" data-motion="pulse"></span><svg class="ic" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span>Worker mbp-14 disconnected. Its last reported progress is saved. <span class="note" data-at="12.8">Reassigned to build-01</span></p>
+
+            <div class="pr" data-at="17">
+              <div>
+                <p class="pr-title">feat: add SAML SSO for enterprise</p>
+                <p class="pr-meta"><svg class="ic" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 8v8M18 16V9a3 3 0 0 0-3-3h-4m2-2-2 2 2 2"/></svg>acme/platform #2922 · <span class="pos">+412</span> <span class="neg">-38</span></p>
+                <span class="btn-mini">Review change</span>
+              </div>
+              <span class="spindle pr-mark" data-motion=""></span>
+            </div>
+            <p class="final" data-at="19.6" data-type="1.2">Approval needed before admins can require SSO. Email login checks still pass.</p>
+          </div>
+          <div class="composer">
+            <span class="ph" data-compose="Require SSO for every admin in acme/platform">Describe a goal, a requirement, or a fix</span>
+            <div class="modes"><span class="on">Plan</span><span>Build</span><span>Verify</span><b class="send"><svg viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></b></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- evidence card -->
+      <div class="evidence" aria-hidden="true">
+        <p class="ev-top"><span class="spindle st" data-motion="pulse"></span><span class="accent-text" data-texts="0:Planning,7.6:Running,15.5:Verifying">Planning</span> · acme/platform #2922</p>
+        <h3 class="title ev-title">Add enterprise SSO</h3>
+        <p class="ev-meta"><span class="who-av"></span>justus <span class="chip mono">main</span> ← <span class="chip mono">enterprise-sso</span> <span class="ev-files">14 files</span></p>
+        <p class="ev-label"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z"/><path d="m9 12 2 2 4-4"/></svg>Evidence against requirements</p>
+        <ul class="reqs">
+          <li data-states="0:plan,7.6:run,10.5:ok"><span class="sicon"><span class="st-ic plan"></span><span class="spindle st" data-motion="pulse"></span><span class="st-ic ok"></span><span class="st-ic block"></span></span><span>Admins can configure an identity provider</span><span class="mono">sso.settings</span></li>
+          <li data-states="0:plan,9.2:run,15.5:ok"><span class="sicon"><span class="st-ic plan"></span><span class="spindle st" data-motion="pulse"></span><span class="st-ic ok"></span><span class="st-ic block"></span></span><span>Members can sign in through SSO</span><span class="mono">saml.handshake</span></li>
+          <li data-states="0:plan,16:run,19:ok"><span class="sicon"><span class="st-ic plan"></span><span class="spindle st" data-motion="pulse"></span><span class="st-ic ok"></span><span class="st-ic block"></span></span><span>Email login keeps working</span><span class="mono">email.login</span></li>
+          <li data-states="0:plan,19.6:run"><span class="sicon"><span class="st-ic plan"></span><span class="spindle st" data-motion="pulse"></span><span class="st-ic ok"></span><span class="st-ic block"></span></span><span>Admins can require SSO</span><span class="mono" data-texts="0:planned,19.6:approval">planned</span></li>
+        </ul>
+        <div class="lanes">
+          <p class="lanes-head"><span>Workers</span><span class="mono" data-clock>20:00</span></p>
+          <div class="lane"><span class="mono">mbp-14</span><div class="track"><i class="bar" data-seg="9.2,12.2,run,run"></i><i class="cut" data-cut="12.2"></i></div></div>
+          <div class="lane"><span class="mono">build-01</span><div class="track"><i class="bar" data-seg="7.6,10.5,run,ok"></i><i class="bar" data-seg="12.8,15.5,run,ok"></i></div></div>
+          <div class="lane"><span class="mono">build-02</span><div class="track"><i class="bar" data-seg="16,21.5,run,run"></i></div></div>
+          <div class="lane"><span class="mono">runner-03</span><div class="track"><i class="bar" data-seg="8.8,16,wait,wait"></i><i class="bar" data-seg="16,19,run,ok"></i></div></div>
+          <i class="playhead" aria-hidden="true"></i>
+          <p class="lanes-foot"><span><i class="k ok"></i>Verified</span><span><i class="k run"></i>Running</span><span><i class="k wait"></i>Waiting</span><span><i class="k cut"></i>Handoff</span></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="how">
+    <div class="wrap">
+      <h2 class="title h2">From intent to evidence, in one loop</h2>
+      <p class="lede">A project holds goals, requirements, context and feedback. Perpeto would turn that into bounded work, run it across machines, and check the result against what was asked.</p>
+      <ol class="loop">
+        <li><span class="spindle" data-motion=""></span><strong>Define</strong><span>Describe the outcome, constraints and acceptance criteria.</span></li>
+        <li><span class="spindle" data-motion="assemble"></span><strong>Plan</strong><span>Break goals into work items with owners and dependencies.</span></li>
+        <li><span class="spindle" data-motion="reverse"></span><strong>Assign</strong><span>Hand bounded assignments to workers on available machines.</span></li>
+        <li><span class="spindle" data-motion="spin"></span><strong>Execute</strong><span>Produce changes, artifacts, events and logs.</span></li>
+        <li><span class="spindle" data-motion="pulse"></span><strong>Verify</strong><span>Run checks and review against each requirement.</span></li>
+        <li><span class="spindle" data-motion="breathe"></span><strong>Learn</strong><span>Feed corrections back into the project.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="band" id="principles">
+    <div class="wrap split">
+      <div class="cards">
+        <article class="card">
+          <h3>Start with the project</h3>
+          <p>Agents get a durable picture of the outcome, the constraints, and what counts as done.</p>
+          <div class="viz viz-req">
+            <p><span class="st-ic ok"></span>Admins configure an IdP</p>
+            <p><span class="st-ic ok"></span>Email login keeps working</p>
+            <p><span class="st-ic plan"></span>Admins can require SSO</p>
+          </div>
+        </article>
+        <article class="card">
+          <h3>Coordinate across machines</h3>
+          <p>Work moves between workers with explicit ownership and handoffs, so nothing runs twice.</p>
+          <div class="viz viz-machines">
+            <span class="node"><span class="spindle" data-motion="pulse"></span>mbp-14</span>
+            <span class="node"><span class="spindle" data-motion="pulse"></span>build-01</span>
+            <span class="node"><span class="spindle" data-motion=""></span>runner-03</span>
+          </div>
+        </article>
+        <article class="card">
+          <h3>Make autonomy inspectable</h3>
+          <p>Every change links back to the requirement, decision and run behind it.</p>
+          <pre class="viz viz-log mono">20:04  assigned  mbp-14
+20:12  lost      progress saved
+20:12  resumed   build-01
+20:27  <b>verified</b>  saml.handshake</pre>
+        </article>
+        <article class="card">
+          <h3>Close the feedback loop</h3>
+          <p>Reviews and failed checks become new input, not a lost conversation.</p>
+          <div class="viz viz-states">
+            <span class="badge">Planned</span><span class="badge run">Running</span><span class="badge warn">Blocked</span><span class="badge err">Failed</span><span class="badge ok">Verified</span>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="band mark-band">
+    <div class="wrap mark-row">
+      <div>
+        <h2 class="title h2">Running is not the same as done</h2>
+        <p class="lede">Perpeto keeps planned, running, blocked, failed and verified apart. “Verified” is reserved for results backed by named checks. Give the mark a spin.</p>
+        <div class="loaders">
+          <figure><span class="spindle" data-motion="spin"></span><figcaption>Flywheel</figcaption></figure>
+          <figure><span class="spindle" data-motion="pulse"></span><figcaption>Relay</figcaption></figure>
+          <figure><span class="spindle" data-motion="assemble"></span><figcaption>Assembly</figcaption></figure>
+          <figure><span class="spindle" data-motion="reverse"></span><figcaption>Ratchet</figcaption></figure>
+        </div>
+      </div>
+      <button class="flywheel" type="button" aria-label="Spin the Perpeto mark. Move the pointer across it, or press the arrow keys."><span class="spindle" data-motion=""></span></button>
+    </div>
+  </section>
+
+  <section class="band cta">
+    <div class="wrap cta-box">
+      <span class="spindle cta-mark" data-motion="assemble"></span>
+      <h2 class="title h2">Help shape the first proof</h2>
+      <p class="lede">The first milestone we're considering: two workers on separate machines take one requirement to a reviewable, checked change. Concrete workflows and failure cases help most right now.</p>
+      <div class="hero-actions center">
+        <a class="btn btn-primary" href="../../CONTRIBUTING.md">How to contribute</a>
+        <a class="btn btn-ghost" href="../../docs/discussion.md">Open questions</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-row">
+    <a class="brand" href="#top" aria-label="Perpeto home"><span class="spindle" data-motion=""></span><span class="wordmark"></span></a>
+    <p>The open-source software factory for coordinated agents. Working name; license not yet selected.</p>
+  </div>
+</footer>
+
+<script src="marks.js"></script>
+<script src="landing.js"></script>
+<script src="stage.js"></script>
+</body>
+</html>

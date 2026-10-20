@@ -1,0 +1,16 @@
+
+.loader {color:var(--logo-color,#202521);overflow:visible}
+.loader .rotor{transform-origin:627px 594px}
+.loader .arm{transform-origin:627px 594px}
+.motion-spin .rotor{animation:perpeto-spin 2.4s linear infinite}
+.motion-index .rotor{animation:perpeto-spin 3.2s steps(8,end) infinite}
+.motion-pulse .arm{animation:perpeto-pulse 1.6s linear infinite;animation-delay:calc(var(--i)*.2s - 1.6s)}
+.motion-assemble .arm{animation:perpeto-assemble 3.2s cubic-bezier(.22,1,.36,1) infinite;animation-delay:calc(var(--i)*.08s - 3.2s)}
+.motion-breathe .arm{animation:perpeto-breathe 2.8s ease-in-out infinite}
+.motion-reverse .rotor{animation:perpeto-reverse 3.6s cubic-bezier(.65,0,.35,1) infinite}
+@keyframes perpeto-spin{to{transform:rotate(360deg)}}
+@keyframes perpeto-pulse{0%,100%{opacity:1}20%{opacity:.72}65%{opacity:.2}85%{opacity:.2}}
+@keyframes perpeto-assemble{0%,100%{opacity:0;transform:translate(var(--dx),var(--dy))}24%,70%{opacity:1;transform:translate(0,0)}90%{opacity:0;transform:translate(var(--dx),var(--dy))}}
+@keyframes perpeto-breathe{0%,100%{transform:translate(0,0);opacity:1}50%{transform:translate(var(--bx),var(--by));opacity:.65}}
+@keyframes perpeto-reverse{0%,12%{transform:rotate(0)}42%{transform:rotate(120deg)}57%{transform:rotate(90deg)}90%,100%{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.loader .rotor,.loader .arm{animation:none!important;transform:none!important;opacity:1!important}}

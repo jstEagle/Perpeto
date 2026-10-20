@@ -1,0 +1,104 @@
+/* Texture lab. Every effect is off until its class is set on <html> by experiments.js. */
+
+/* Grain */
+.grain-page body::after,
+.grain-dark :is(.window, .flywheel, .cta-box, .btn-primary, .viz-log)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-size: 220px 220px;
+  opacity: var(--grain-op);
+  border-radius: inherit;
+}
+.grain-page body::after { position: fixed; z-index: 40; background-image: var(--grain-on-light); }
+.grain-dark :is(.window, .flywheel, .cta-box, .btn-primary, .viz-log)::after { z-index: 3; background-image: var(--grain-on-dark); }
+.grain-dark :is(.btn-primary, .flywheel, .cta-box, .viz-log) { position: relative; overflow: hidden; }
+.grain-move body::after,
+.grain-move :is(.window, .flywheel, .cta-box, .btn-primary, .viz-log)::after { animation: grain-jitter .5s steps(1) infinite; }
+@keyframes grain-jitter {
+  0% { background-position: 0 0; }
+  20% { background-position: -61px 37px; }
+  40% { background-position: 83px -19px; }
+  60% { background-position: -27px -93px; }
+  80% { background-position: 47px 71px; }
+}
+
+/* Dithered photos */
+.collage canvas.dithered { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.dither-photos .collage img { display: none; }
+.dither-photos .tile.blur { filter: none; opacity: .85; }
+
+/* Dithered dark panels */
+.dither-panels :is(.window, .flywheel, .cta-box) {
+  background-image: var(--dither-bg);
+  background-size: var(--dither-size);
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+.dither-panels .window .side { background: rgba(8, 9, 11, .35); }
+.dither-panels .window .composer { background: rgba(8, 9, 11, .5); }
+
+/* ASCII hero mark */
+.ascii-spindle { display: none; }
+.ascii-mark .ascii-spindle {
+  display: block;
+  position: absolute;
+  top: 36px;
+  right: max(16px, calc(50% - 650px));
+  margin: 0;
+  font: 8.5px/9px "JetBrains Mono", var(--font-mono);
+  letter-spacing: 0;
+  color: #8d9199;
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+[data-ascii-tone="silver"] .ascii-spindle { color: #b4b7be; }
+[data-ascii-tone="ink"] .ascii-spindle { color: var(--black); }
+.ascii-mark .hero > .wrap { position: relative; z-index: 1; }
+
+/* ASCII factory floor */
+.floor-band { display: none; }
+.ascii-floor .floor-band { display: block; }
+.floor { margin-top: 40px; border-radius: 16px; overflow: hidden; background: var(--metal-panel); box-shadow: var(--metal-edge), 0 40px 80px -40px rgba(10, 11, 14, .45); }
+.floor-bar { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-bottom: 1px solid #25272b; color: #8b8f96; font-size: 12.5px; }
+.floor-screen { font-family: "JetBrains Mono", var(--font-mono); margin: 0; padding: 20px 8px 24px; color: #c9ccd2; font-size: 13px; line-height: 1.5; white-space: pre; overflow-x: auto; min-height: 330px; }
+.floor-screen b { font-weight: 400; }
+.floor-screen .p { color: #ffffff; }
+.floor-screen .v { color: #86d4a5; }
+.floor-screen .f { color: #e88a7a; }
+
+/* Lab panel */
+.lab {
+  position: fixed; z-index: 60; right: 16px; bottom: 16px; width: 316px;
+  max-height: calc(100vh - 32px); overflow: auto;
+  background: #fff; color: var(--ink);
+  border: 1px solid var(--line-2); border-radius: 14px;
+  box-shadow: 0 24px 60px -20px rgba(10, 11, 14, .35);
+  font: 12.5px/1.3 var(--font-ui);
+}
+.lab-head { position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #fff; border-bottom: 1px solid var(--line); }
+.lab-head button { all: unset; cursor: pointer; font-weight: 600; font-size: 13px; }
+.lab-head .lab-reset { font-weight: 500; color: var(--muted); font-size: 12px; }
+.lab-head button:focus-visible, .seg button:focus-visible { outline: 2px solid #2459c4; outline-offset: 2px; border-radius: 4px; }
+.lab.closed .lab-body { display: none; }
+.lab.closed .lab-head { border-bottom: 0; }
+.lab fieldset { border: 0; margin: 0; padding: 10px 12px 12px; }
+.lab fieldset + fieldset { border-top: 1px solid var(--line); }
+.lab legend { padding: 0; margin-bottom: 8px; font-weight: 600; }
+.lab-row { display: grid; grid-template-columns: 64px 1fr auto; align-items: center; gap: 8px; margin-top: 6px; color: var(--muted); }
+.lab-row input { width: 100%; accent-color: var(--black); }
+.lab-row output { width: 20px; text-align: right; font-family: var(--font-mono); font-size: 11px; }
+.seg { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 3px; }
+.seg button { all: unset; cursor: pointer; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink-2); text-transform: none; }
+.seg button:hover { border-color: var(--line-2); }
+.seg button[aria-pressed="true"] { background: var(--metal); color: #fff; border-color: transparent; box-shadow: var(--metal-edge); }
+
+@media (max-width: 1180px) {
+  .ascii-mark .ascii-spindle { display: none; }
+}
+@media (max-width: 760px) {
+  .lab { left: 8px; right: 8px; width: auto; bottom: 8px; max-height: 46vh; }
+  .floor-screen { font-size: 10px; }
+}
