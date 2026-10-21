@@ -4,6 +4,9 @@ import { dirname } from 'node:path';
 import { MessagingStore, MessagingError } from '@perpeto/messaging';
 import { HubStore } from './store.js';
 import { Credentials } from './credentials.js';
+import { HubTls } from './tls.js';
+import { encodeJoinCode } from './join.js';
+import { publicOrigin } from './config.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
@@ -62,7 +65,7 @@ export class Hub {
     this.signals = { work: [], machines: new Set(), events: false };
     // An engine that persists run state (the workflow adapter's RunStore) gets its own private database.
     const databases = [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, ...(engine.open ? [config.workflowDatabasePath] : [])];
-    for (const path of [...databases, config.ownerTokenPath, config.credentialKeyPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    for (const path of [...databases, config.ownerTokenPath, config.credentialKeyPath, ...(config.tlsEnabled ? [config.tlsCertPath, config.tlsKeyPath] : [])]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     for (const path of databases) prepareDatabase(path);
     this.store = new HubStore(config.databasePath);
     this.store.onPut = (kind, value) => this.observe(kind, value);
@@ -86,6 +89,9 @@ export class Hub {
       if (owner && owner.hash !== hash(this.ownerToken)) fail(500, 'OWNER_TOKEN_MISMATCH', 'Owner token file does not match this hub.');
       this.store.db.prepare("INSERT OR IGNORE INTO tokens(hash,kind) VALUES(?,'owner')").run(hash(this.ownerToken));
       this.credentials = new Credentials(config.credentialKeyPath, this.store);
+      // Built-in HTTPS uses a self-signed certificate created on first start; machines pin its fingerprint.
+      this.tls = config.tlsEnabled ? new HubTls({ certPath: config.tlsCertPath, keyPath: config.tlsKeyPath }) : null;
+      this.listenUrl = `${this.tls ? 'https' : 'http'}://127.0.0.1:${config.port}`;
       // Tokens from before random issue were HMACs of the owner secret. Tag their generation once so rotation can retire them.
       for (const row of this.store.db.prepare("SELECT hash, machine_id FROM tokens WHERE kind='node' AND generation IS NULL").all()) {
         const top = this.store.get('machine', row.machine_id)?.tokenGeneration ?? 0;
@@ -255,12 +261,14 @@ export class Hub {
     // Replays must return the credential first issued; it is kept sealed under the credential key, never in the clear.
     if (body.token) { body._token = this.credentials.seal(body.token); delete body.token; }
     if (body.code) { body._code = this.credentials.seal(body.code); delete body.code; }
+    if (body.joinCode) { body._joinCode = this.credentials.seal(body.joinCode); delete body.joinCode; }
     return { ...result, body };
   }
   restoreResponse(result) {
     const body = { ...result.body };
     if (body._token) { body.token = this.credentials.open(body._token); delete body._token; }
     if (body._code) { body.code = this.credentials.open(body._code); delete body._code; }
+    if (body._joinCode) { body.joinCode = this.credentials.open(body._joinCode); delete body._joinCode; }
     // Records written before random credentials hold only the ids their credential was derived from.
     if (body._tokenMachineId) { body.token = this.legacyNodeToken(body._tokenMachineId, body._tokenGeneration); delete body._tokenMachineId; delete body._tokenGeneration; }
     if (body._codeId) { body.code = this.legacySecret('enrollment', body._codeId); delete body._codeId; }
@@ -625,10 +633,18 @@ export class Hub {
     if (path === '/machines' && method === 'GET') return reply({ machines: this.store.list('machine') });
     if (path === '/machines/enrollment-codes' && method === 'POST') {
       const codeId = id('enr'); const code = this.credentials.issue();
+      // Machines join at the URL given here, the configured public URL (for example a tailnet URL), or this hub's own
+      // address. Only the hub's own HTTPS address is pinned: a proxy such as tailscale serve presents its own certificate.
+      if (body.url !== undefined) publicOrigin(body.url);
+      if (body.pin !== undefined) requireValue(typeof body.pin === 'boolean', 'pin must be a boolean.');
+      const joinUrl = body.url !== undefined ? publicOrigin(body.url) : this.config.publicUrl ?? this.listenUrl;
+      const pin = body.pin ?? (body.url === undefined && this.config.publicUrl === null);
+      const fingerprint = this.tls && pin && joinUrl.startsWith('https:') ? this.tls.current.fingerprint : undefined;
       const ttl = integer(body.ttlMs ?? this.config.enrollmentTtlMs, 'ttlMs', 1, this.config.enrollmentTtlMs);
       const expiresAt = new Date(Date.now() + ttl).toISOString();
       this.store.db.prepare('INSERT INTO enrollment_codes(hash,id,expires_at) VALUES(?,?,?)').run(hash(code), codeId, expiresAt);
-      this.store.event('enrollment.created', { kind: 'enrollment', id: codeId }); return reply({ id: codeId, code, expiresAt }, 201);
+      this.store.event('enrollment.created', { kind: 'enrollment', id: codeId });
+      return reply({ id: codeId, code, expiresAt, joinCode: encodeJoinCode({ url: joinUrl, fingerprint, code }) }, 201);
     }
     if (collection === 'machines' && entityId && action === 'drain' && segments.length === 3 && method === 'POST') {
       const machine = this.store.need('machine', entityId); machine.status = 'draining'; machine.drainRequested = true; this.store.put('machine', machine); this.emit('machine.draining', 'machine', machine); return reply(machine);
@@ -703,7 +719,9 @@ export class Hub {
       // Liveness lives in machine state; the log records only transitions (machine.offline comes from maintenance).
       if (wasOffline) this.emit('machine.online', 'machine', machine, { status: machine.status });
       const cancelled = this.store.list('cancellation', value => value.machineId === machine.id && Date.parse(value.leaseExpiresAt) > Date.now());
-      return reply({ status: machine.status, cancel: { assignments: cancelled.filter(value => value.kind === 'assignment').map(value => value.entityId), jobs: cancelled.filter(value => value.kind === 'job').map(value => value.entityId) } });
+      return reply({ status: machine.status, cancel: { assignments: cancelled.filter(value => value.kind === 'assignment').map(value => value.entityId), jobs: cancelled.filter(value => value.kind === 'job').map(value => value.entityId) },
+        // The served and next certificate fingerprints, so pinned machines follow a rotation without re-joining.
+        ...(this.tls ? { tls: { fingerprints: this.tls.fingerprints } } : {}) });
     }
     if (path === '/accounts' && method === 'GET') return reply({ accounts: this.store.list('account') });
     if (path === '/jobs' && method === 'GET') {
@@ -842,6 +860,20 @@ export class Hub {
         if (body.type !== 'log') this.emit(`${kind}.${body.type}`, kind, value, data);
         return reply({ accepted: true, status: value.status, ...(refused ? { reason: refused } : {}) });
       }
+    }
+    if (path === '/tls') {
+      if (method === 'GET') return reply(this.tls ? { enabled: true, ...this.tls.status() } : { enabled: false });
+      if (!this.tls) fail(409, 'TLS_DISABLED', 'This hub does not serve HTTPS itself.');
+    }
+    // Rotation is two steps: announce the next certificate to pinned machines, then serve it.
+    if (path === '/tls/rotate' && method === 'POST') {
+      if (!this.tls) fail(409, 'TLS_DISABLED', 'This hub does not serve HTTPS itself.');
+      const status = this.tls.rotate(); this.emit('hub.certificate-next', 'hub', { id: 'tls' }, { next: status.next }); return reply(status);
+    }
+    if (path === '/tls/activate' && method === 'POST') {
+      if (!this.tls) fail(409, 'TLS_DISABLED', 'This hub does not serve HTTPS itself.');
+      const status = this.tls.activate(); this.onTlsChange?.(); this.emit('hub.certificate-rotated', 'hub', { id: 'tls' }, { fingerprint: status.fingerprint, previous: status.previous });
+      return reply(status);
     }
     if (path === '/session') {
       if (method === 'GET') return reply({ kind: 'owner', expiresAt: auth.session?.expiresAt ?? null });
