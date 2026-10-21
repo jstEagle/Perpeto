@@ -1,0 +1,8 @@
+{
+  "maxNodes": 500,
+  "maxEdges": 2000,
+  "maxDefinitionBytes": 524288,
+  "maxFactoriesPerProject": 100,
+  "maxSubagents": 1000,
+  "maxConcurrent": 1000
+}

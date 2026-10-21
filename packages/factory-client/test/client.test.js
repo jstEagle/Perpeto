@@ -133,7 +133,7 @@ test('MCP stdio actual process negotiates, lists tools, calls HTTP and emits onl
   assert.equal(replies.length, 5);
   assert.ok(replies.every(reply => reply.jsonrpc === '2.0'));
   assert.equal(replies[0].result.protocolVersion, '2025-06-18');
-  assert.equal(replies[1].result.tools.length, 3);
+  assert.equal(replies[1].result.tools.length, 6);
   assert.deepEqual(JSON.parse(replies[2].result.content[0].text), { ok: true });
   assert.equal(replies[3].error.code, -32602);
   assert.deepEqual(replies[4].result, {});
@@ -183,4 +183,91 @@ test('client, CLI and MCP expose mutually exclusive bounded history directions',
   const replies = output.stdout.trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(JSON.parse(replies[1].result.content[0].text), { ok: true });
   assert.equal(new URL(f.calls[4].url, 'http://localhost').searchParams.get('latest'), 'true');
+});
+
+const ciSubmission = { repositoryId: 'app', revision: 'a'.repeat(40), command: ['node', '--test'], requiredLabels: ['linux'], idempotencyKey: 'ci-revision-1' };
+const ciJob = { id: 'job-1', projectId: 'project / one', ...ciSubmission, status: 'queued', attempt: 0, result: null };
+
+test('CI submissions pin configured project and full revision with identical retry payload', async t => {
+  const f = await fixture(t);
+  const mutableInput = { ...ciSubmission, command: [...ciSubmission.command] };
+  f.respond(() => {
+    if (f.calls.length === 1) { mutableInput.command.push('--later-edit'); return { status: 503, body: {} }; }
+    return { status: 200, body: { job: ciJob, duplicate: true } };
+  });
+  const client = new FactoryClient(f.config);
+  const result = await client.submitCi(mutableInput);
+  assert.equal(result.job.revision, ciSubmission.revision);
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls[0].url, '/api/perpeto/runner/jobs');
+  assert.deepEqual(f.calls[0].body, { projectId: f.config.projectId, ...ciSubmission });
+  assert.deepEqual(f.calls[0].body, f.calls[1].body);
+  assert.ok(f.calls.every(call => call.auth === `Bearer ${token}`));
+  for (const change of [
+    { command: 'node --test' }, { command: [] }, { command: [''] }, { revision: 'main' }, { revision: 'A'.repeat(40) },
+    { requiredLabels: [''] }, { requiredLabels: 'linux' }, { projectId: 'other' },
+  ]) assert.throws(() => client.submitCi({ ...ciSubmission, ...change }));
+  assert.equal(f.calls.length, 2);
+});
+
+test('CI status and explicit retry respect configured project; ambiguous retry is not repeated', async t => {
+  const f = await fixture(t);
+  f.respond(call => call.method === 'GET' ? { status: 200, body: { ...ciJob, status: 'failed' } } : { status: 503, body: { error: token } });
+  const client = new FactoryClient(f.config);
+  await assert.rejects(client.retryCi('job-1'), /HTTP 503/);
+  assert.deepEqual(f.calls.map(call => `${call.method} ${call.url}`), ['GET /api/perpeto/runner/jobs/job-1', 'POST /api/perpeto/runner/jobs/job-1/retry']);
+  assert.deepEqual(f.calls[1].body, {});
+  f.respond(() => ({ status: 200, body: { ...ciJob, projectId: 'other' } }));
+  await assert.rejects(client.retryCi('job-1'), /configured project/);
+  assert.equal(f.calls.length, 3);
+  f.respond(() => ({ status: 200, body: { jobs: [ciJob] } }));
+  await client.ciJobs({ limit: 25 });
+  const url = new URL(f.calls[3].url, 'http://localhost');
+  assert.equal(url.searchParams.get('projectId'), f.config.projectId);
+  assert.equal(url.searchParams.get('limit'), '25');
+});
+
+test('CI CLI JSON jobs and MCP tools use runner API without shell strings or credential output', async t => {
+  const f = await fixture(t);
+  f.respond(call => ({ status: 200, body: call.url === '/api/perpeto/runner/jobs' && call.method === 'POST' ? { job: ciJob, duplicate: false } : ciJob }));
+  const jobPath = join(f.directory, 'job.json');
+  writeFileSync(jobPath, JSON.stringify(ciSubmission));
+  const submitted = await run(f.configPath, ['ci-submit', '--job', jobPath]);
+  assert.equal(submitted.code, 0);
+  assert.equal(JSON.parse(submitted.stdout).job.id, ciJob.id);
+  const status = await run(f.configPath, ['ci-status', '--id', ciJob.id]);
+  assert.equal(status.code, 0);
+  const retried = await run(f.configPath, ['ci-retry', '--id', ciJob.id]);
+  assert.equal(retried.code, 0);
+  const beforeMcp = f.calls.length;
+  const output = await run(f.configPath, ['mcp'], [
+    { jsonrpc: '2.0', id: 1, method: 'initialize' },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'factory_submit_ci', arguments: ciSubmission } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'factory_ci_status', arguments: { jobId: ciJob.id } } },
+    { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'factory_retry_ci', arguments: { jobId: ciJob.id } } },
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'factory_submit_ci', arguments: { ...ciSubmission, command: 'node --test' } } },
+    { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'factory_submit_ci', arguments: { ...ciSubmission, revision: 'main' } } },
+  ].map(value => JSON.stringify(value)).join('\n') + '\n');
+  assert.equal(output.code, 0);
+  const replies = output.stdout.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(JSON.parse(replies[1].result.content[0].text).job.id, ciJob.id);
+  assert.equal(JSON.parse(replies[2].result.content[0].text).status, 'queued');
+  assert.equal(JSON.parse(replies[3].result.content[0].text).id, ciJob.id);
+  assert.equal(replies[4].error.code, -32602);
+  assert.equal(replies[5].error.code, -32602);
+  assert.equal(f.calls.length - beforeMcp, 4);
+  for (const process of [submitted, status, retried, output]) assert.ok(!`${process.stdout}${process.stderr}`.includes(token));
+});
+
+test('CI MCP failures redact server bodies and preserve tool error shape', async t => {
+  const f = await fixture(t);
+  f.respond(() => ({ status: 403, body: { error: token } }));
+  const output = await run(f.configPath, ['mcp'], [
+    { jsonrpc: '2.0', id: 1, method: 'initialize' },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'factory_submit_ci', arguments: ciSubmission } },
+  ].map(value => JSON.stringify(value)).join('\n') + '\n');
+  const reply = JSON.parse(output.stdout.trim().split('\n')[1]);
+  assert.equal(reply.result.isError, true);
+  assert.ok(!`${output.stdout}${output.stderr}`.includes(token));
+  assert.equal(f.calls.length, 1);
 });

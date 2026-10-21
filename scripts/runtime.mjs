@@ -45,6 +45,8 @@ function main() {
         'apps/server/src/orchestration-v2/runtimeLayer.test.ts',
         'apps/server/src/provider/ProviderRegistry.test.ts',
         'apps/server/src/perpeto/http.test.ts',
+        'apps/server/src/perpeto/factories.test.ts',
+        'apps/server/src/perpeto/runnerHttp.test.ts',
         'apps/server/src/http.test.ts',
         'apps/web/src/components/factory/messaging.test.ts',
         'packages/client-runtime/src/state/factoryMessagingHttp.test.ts',

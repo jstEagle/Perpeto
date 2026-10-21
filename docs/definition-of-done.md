@@ -13,7 +13,7 @@ The user authorized beginning implementation on 20 October 2026. These criteria 
 
 ## Complete factory experience
 
-All items below remain unverified and incomplete:
+The complete outcomes below remain incomplete. Implemented portions and evidence are tracked in [build status](status.md):
 
 - Connect two execution machines, authenticate them, reconnect after interruption, and coordinate project work across them.
 - Run real authenticated harness sessions and preserve their approvals, questions, outputs and failures. Imported adapters alone do not establish compatibility.

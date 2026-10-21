@@ -13,6 +13,8 @@ This repository contains an evolving product vision, proposed identity, and init
 | [Definition of done](definition-of-done.md) | Track foundation and full-product acceptance | Partial |
 | [Implementation decisions](decisions.md) | Record implementation choices and rationale | Active |
 | [Prerequisites](prerequisites.md) | Track tooling, accounts and machine setup | Active |
+| [Architecture](architecture.md) | Explain implemented boundaries and remaining runtime work | Active |
+| [Messaging](messaging.md) | Connect authenticated CLI and harness clients | Implemented |
 | [Build status](status.md) | Verification evidence, owners and next work | Active |
 
 After those decisions, add a mission, initial requirements with acceptance criteria, and architecture decisions. Keep each decision's rationale and unresolved questions close to the relevant document. Do not turn exploratory notes into implied commitments.

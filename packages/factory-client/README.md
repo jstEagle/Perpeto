@@ -1,6 +1,6 @@
-# Factory messaging client
+# Factory client
 
-Dependency-free Node 24 CLI and MCP stdio client for the Perpeto messaging HTTP API hosted by the T3 runtime. Agents use the same authenticated channels as people. All inference continues to run through their existing harnesses.
+Dependency-free Node 24 CLI and MCP stdio client for Perpeto messaging and owned-runner CI APIs hosted by the T3 runtime. Agents use the same authenticated channels and job queue as people. All inference continues to run through their existing harnesses.
 
 ## Configure a device or harness role
 
@@ -63,8 +63,40 @@ Tools:
 - `factory_channels`: list the configured project's channels.
 - `factory_send`: `{body, idempotencyKey, recipientRoleId?, channelId?}`; sender comes from the configured role.
 - `factory_read`: `{after?, before?, latest?, limit?, recipientRoleId?, channelId?}`; returns the server's message page. Use only one direction.
+- `factory_submit_ci`: `{repositoryId, revision, command, requiredLabels?, idempotencyKey}`; queue a revision-pinned job in the configured project.
+- `factory_ci_status`: `{jobId}`; read the job and its available result in the configured project.
+- `factory_retry_ci`: `{jobId}`; explicitly requeue a failed/lost job, or return an already queued job unchanged.
 
 The stdio server implements newline-delimited MCP JSON-RPC initialization, ping, tool discovery, and tool calls. It advertises only tools, writes protocol JSON exclusively to stdout, handles notifications without responding, and returns tool failures using `isError`. It supports protocol versions 2024-11-05, 2025-03-26, 2025-06-18, and 2025-11-25. This initial implementation handles requests sequentially and does not offer subscriptions, cancellation, prompts, resources, or agent wake-ups.
+
+## Submit work to an owned CI runner
+
+Use the same client configuration and credential from any device that can reach the runtime. Submission requires `orchestration:operate`; status/list requires `orchestration:read`. The client retry command requires both scopes because it verifies the job's project before mutation. The client always takes project identity from its configuration. It does not need a worker's repository paths or execution configuration to submit a job.
+
+Create a non-secret `job.json`:
+
+```json
+{
+  "repositoryId": "app",
+  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "command": ["node", "--test"],
+  "requiredLabels": ["linux"],
+  "idempotencyKey": "test-app-revision-a"
+}
+```
+
+Replace the illustrative revision with the actual full lowercase 40- or 64-character commit SHA available to the runner. The command is an argv array; no shell is implicitly invoked. The runner must allowlist the repository and have matching labels. See the [runner setup](../factory-runner/README.md).
+
+```sh
+node packages/factory-client/src/cli.js --config /absolute/path/client.json ci-submit --job job.json
+node packages/factory-client/src/cli.js --config /absolute/path/client.json ci-status --id JOB_ID
+node packages/factory-client/src/cli.js --config /absolute/path/client.json ci-jobs --limit 25
+node packages/factory-client/src/cli.js --config /absolute/path/client.json ci-retry --id JOB_ID
+```
+
+Submission returns `{job, duplicate}` and reuses its exact serialized payload on an automatic transport retry. Reusing a project/key for a different repository, revision, command or labels conflicts. Status returns the tested revision, command, status, runner, attempt, and available result with log/artifact metadata. The client rejects status/retry access to a job whose project differs from its configuration; the runtime credential itself remains environment-scoped.
+
+Explicit retry first checks the job's project, then posts once. It deliberately does not automatically repeat the retry mutation after a timeout or transient response: a fast runner might already have claimed or finished the next attempt. Inspect status after an ambiguous retry before deciding whether to retry again. A retry does not change the pinned revision or command. Active/successful jobs reject retry.
 
 ## Validation
 
@@ -73,4 +105,4 @@ cd packages/factory-client
 node --test
 ```
 
-Tests exercise authenticated HTTP request shapes, cursor encoding, retry idempotency, rejected credentials and HTTP errors, CLI child processes, and actual MCP stdio child-process exchanges. Tests use a local HTTP fixture; deployed routing, pairing and real harness loading require separate end-to-end verification.
+Tests exercise authenticated HTTP request shapes, cursor encoding, retry idempotency, rejected credentials and HTTP errors, CI project scoping, CLI child processes, and actual MCP stdio child-process exchanges. Tests use a local HTTP fixture; deployed routing, pairing, runner execution and real harness loading require separate end-to-end verification.

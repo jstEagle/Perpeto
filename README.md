@@ -8,7 +8,7 @@ Perpeto is being built for sustained software development with many agents acros
 
 The repository contains a pinned T3 Code foundation with its orchestrator, all nine provider drivers, supporting runtime, and clients. It also includes Perpeto's persistent messaging service: project channels, role addressing, retry-safe messages, cursor reads, authenticated HTTP, and CLI/MCP clients.
 
-This is an early foundation. The inherited web interface still uses T3 branding. The messaging service is integrated with environment authentication; networking between physical machines, the visual factory builder, durable factory scheduling, and user-owned CI execution remain unfinished. Imported provider support has not been validated against every live harness.
+This is an early foundation. The inherited web interface still uses T3 branding. Messaging has a working browser view and harness tools. Versioned factory definitions and an initial user-owned CI queue/worker are implemented. Networking between physical machines, visual factory editing, graph execution and durable factory scheduling remain unfinished. Imported provider support has not been validated against every live harness.
 
 ## Run locally
 
@@ -31,11 +31,12 @@ npm test
 npm run verify:upstream
 npm run test:upstream
 npm run smoke:messaging
+npm run smoke:factory
 ```
 
 `npm test` runs Perpeto messaging and launcher tests. Upstream checks cover selected orchestration, provider registry, and machine-grouping behavior. `npm run runtime:help` shows the inherited CLI reference after a build. See [current verification and next work](docs/status.md).
 
-Use the [messaging guide](docs/messaging.md) to connect CLI or harness clients.
+Use the [messaging guide](docs/messaging.md) to connect CLI or harness clients, and the [runner guide](packages/factory-runner/README.md) to execute revision-pinned CI on an owned machine. See the [architecture](docs/architecture.md) for current boundaries.
 
 ## Product and brand
 

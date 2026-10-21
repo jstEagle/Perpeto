@@ -39,22 +39,24 @@ export class FactoryClient {
     } catch { throw new ClientError('Credential file must be a readable owner-only regular file containing one session token.'); }
   }
 
-  async #request(method, path, body, query = {}) {
+  async #request(method, path, body, query = {}, retryable = true) {
     const url = new URL(`${this.#config.baseUrl}/api/perpeto${path}`);
+    const encodedBody = body === undefined ? undefined : JSON.stringify(body);
     for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const attempts = retryable ? 2 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
       let response;
       try {
         response = await fetch(url, {
           method, redirect: 'error', signal: AbortSignal.timeout(this.#config.timeoutMs ?? 30000),
           headers: { Authorization: `Bearer ${this.#token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          ...(encodedBody === undefined ? {} : { body: encodedBody }),
         });
       } catch {
-        if (attempt === 0) continue;
+        if (attempt + 1 < attempts) continue;
         throw new ClientError('Factory request failed or timed out.');
       }
-      if ([429, 502, 503, 504].includes(response.status) && attempt === 0) {
+      if ([429, 502, 503, 504].includes(response.status) && attempt + 1 < attempts) {
         await response.body?.cancel();
         await new Promise(resolve => setTimeout(resolve, 100));
         continue;
@@ -89,4 +91,47 @@ export class FactoryClient {
     if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)) throw new ClientError('limit must be between 1 and 500.');
     return this.#request('GET', `${this.#channel(channelId)}/messages`, undefined, { after, before, latest, limit, recipientRoleId });
   }
+
+  submitCi(input) {
+    const { repositoryId, revision, command, requiredLabels = [], idempotencyKey } = validateCiSubmission(input);
+    return this.#request('POST', '/runner/jobs', {
+      projectId: this.#config.projectId, repositoryId, revision, command, requiredLabels, idempotencyKey,
+    });
+  }
+  async ciStatus(jobId) {
+    const job = await this.#request('GET', `/runner/jobs/${jobPath(jobId)}`);
+    if (job?.projectId !== this.#config.projectId) throw new ClientError('CI job does not belong to the configured project.');
+    return job;
+  }
+  async retryCi(jobId) {
+    // Verify project scope before mutation. Retrying this POST automatically could
+    // retry another failed attempt if a fast runner completes before recovery.
+    await this.ciStatus(jobId);
+    return this.#request('POST', `/runner/jobs/${jobPath(jobId)}/retry`, {}, {}, false);
+  }
+  ciJobs({ limit = 100 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ClientError('CI job limit must be between 1 and 100.');
+    return this.#request('GET', '/runner/jobs', undefined, { projectId: this.#config.projectId, limit });
+  }
+}
+
+function jobPath(jobId) {
+  nonblank(jobId, 'jobId');
+  if (jobId.length > 200 || jobId === '.' || jobId === '..') throw new ClientError('Invalid jobId.');
+  return encodeURIComponent(jobId);
+}
+
+function validateCiSubmission(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['repositoryId', 'revision', 'command', 'requiredLabels', 'idempotencyKey'].includes(key))) throw new ClientError('Invalid CI job fields. Project comes from client configuration.');
+  const { repositoryId, revision, command, requiredLabels = [], idempotencyKey } = input;
+  for (const [key, value] of Object.entries({ repositoryId, idempotencyKey })) {
+    nonblank(value, key);
+    if (value.length > 200) throw new ClientError(`Invalid ${key}.`);
+  }
+  if (typeof revision !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision)) throw new ClientError('revision must be a full lowercase Git commit SHA.');
+  if (!Array.isArray(command) || command.length < 1 || command.length > 100 || command.some(arg => typeof arg !== 'string' || arg.includes('\0') || arg.length > 8192)) throw new ClientError('command must be an argv array of 1–100 strings.');
+  nonblank(command[0], 'executable');
+  if (command[0].length > 200) throw new ClientError('Invalid executable.');
+  if (!Array.isArray(requiredLabels) || requiredLabels.length > 32 || requiredLabels.some(label => typeof label !== 'string' || !label.trim() || label.includes('\0') || label.length > 200)) throw new ClientError('requiredLabels must be at most 32 nonblank strings.');
+  return { repositoryId, revision, command, requiredLabels, idempotencyKey };
 }

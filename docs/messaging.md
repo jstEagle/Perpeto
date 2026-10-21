@@ -50,3 +50,5 @@ Factory project IDs are durable identifiers for messaging. They are currently re
 `npm run smoke:messaging` builds no mocks: it launches the built environment in a temporary directory, issues scoped credentials, exercises actual HTTP/CLI/MCP clients, tests permission denials and retry conflicts, and restarts the server to confirm persistence. It requires a prior `npm run build`.
 
 `npm run smoke:messaging -- --live-codex` additionally invokes an already authenticated local Codex harness to deliver a message through MCP. This optional subscription-backed check is excluded from CI. It isolates user configuration and approves only the temporary test server's three messaging tools. A live Codex delivery through MCP passed locally. A successful local test does not establish connectivity between two physical machines.
+
+The client also exposes CI submission/status/retry tools; see [the runner guide](../packages/factory-runner/README.md) and [client commands](../packages/factory-client/README.md). Codex tool policy settings follow the [official MCP configuration reference](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).

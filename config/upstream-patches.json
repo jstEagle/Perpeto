@@ -9,6 +9,21 @@
     "sha256": "fc38dd9c5a6dcbfc39f38b1c64766d707b9e8e6bb5f0ee3f0c6087dac26fed66",
     "upstreamHash": null
   },
+  "apps/server/src/perpeto/Runner.ts": {
+    "reason": "Mount authenticated versioned factory definitions and durable user-owned CI queue using inherited environment services.",
+    "sha256": "bfd1d59f1f6be7e7f9545ccd9c3ca57a0101facd18459fc7bd5ed1e2b9345cab",
+    "upstreamHash": null
+  },
+  "apps/server/src/perpeto/factories.test.ts": {
+    "reason": "Mount authenticated versioned factory definitions and durable user-owned CI queue using inherited environment services.",
+    "sha256": "8df0c800edc453a8ff55c280eb97254f4930b2446145d11a9d6d7630d4d5bce7",
+    "upstreamHash": null
+  },
+  "apps/server/src/perpeto/factories.ts": {
+    "reason": "Mount authenticated versioned factory definitions and durable user-owned CI queue using inherited environment services.",
+    "sha256": "f7a64de2d86a4cb4769d23e19d09a02a850530f4e2d5f58e23f0c336995935a6",
+    "upstreamHash": null
+  },
   "apps/server/src/perpeto/http.test.ts": {
     "reason": "Provide bounded newest/older message history, resumable polling and capped UI rendering; validate the authenticated history API.",
     "sha256": "c4f9d238e6d70ca86088b55853e9c7ac12d35c2ea695e0b818e5ca445eff4670",
@@ -19,9 +34,19 @@
     "sha256": "ebfebb658fb141297cff64fca449483505e7005c5cb7574b20549f775860eb7f",
     "upstreamHash": null
   },
+  "apps/server/src/perpeto/runnerHttp.test.ts": {
+    "reason": "Mount authenticated versioned factory definitions and durable user-owned CI queue using inherited environment services.",
+    "sha256": "950972f5510b0730d71afe753497413ab825b94d5d2e717087f8b90c2d6a8cd4",
+    "upstreamHash": null
+  },
+  "apps/server/src/perpeto/runnerHttp.ts": {
+    "reason": "Mount authenticated versioned factory definitions and durable user-owned CI queue using inherited environment services.",
+    "sha256": "ab35b099264aabf32d1d688cd809bc870a7023bd23c17ac3968c354fafa9bb07",
+    "upstreamHash": null
+  },
   "apps/server/src/server.ts": {
-    "reason": "Integrate persistent factory messaging with existing environment auth, lifecycle and browser CORS; verify the real HTTP boundary.",
-    "sha256": "b22ed47ec1ad58c4cce31fbfb5658c51e56e6fdc02b9c71e3c1e245626e737e4",
+    "reason": "Mount authenticated versioned factory definitions and durable user-owned CI queue using inherited environment services.",
+    "sha256": "51ea38b542b20486ac435281f6f752a532b2f106df34320a47626aa3b853c88e",
     "upstreamHash": "0c5cf30580f5abaea607111023cd9b0e7f8df5a321f1c2feaee9d641fd3745b1"
   },
   "apps/web/src/components/factory/FactoryMessagingPage.tsx": {

@@ -1,37 +1,36 @@
 # Build status
 
-Updated 20 October 2026. Phase: initial foundation implemented locally; full factory product incomplete.
+Updated 21 October 2026. Phase: working messaging and initial CI execution; complete factory runtime unfinished.
 
-## Delivered in this milestone
+## Implemented
 
-- Brand assets and product documentation committed and pushed as `c12899d`.
-- T3 Code source imported at `89b42bfeb4f79408af72fc7bb7a4482e22bb9493`: orchestrator, all nine provider drivers, shared packages, clients, tests, lockfile, patches and licenses. Source boundaries and hashes live under `config/`.
-- Root setup/build/start commands with file-based settings and isolated Perpeto runtime data.
-- Durable SQLite messaging store with project-scoped channels, stable role addressing, idempotent writes and cursor pagination.
-- GitHub workflow configured for Perpeto tests, upstream source integrity, focused upstream tests and runtime build. Both jobs passed on Linux for implementation commit `d64c781`: [CI evidence](https://github.com/jstEagle/Perpeto/actions/runs/39400092882).
+- Pinned T3 Code runtime with all nine provider drivers, source provenance and preserved licenses. Existing T3 client branding remains in the inherited shell.
+- Authenticated persistent project channels, role addressing, retry deduplication, cursor history and standalone CLI/MCP clients.
+- Browser messages view using selected environment authentication. Newest history first, bounded rendering, explicit older-history browsing and bounded forward polling.
+- Durable versioned factory definitions: agent/context/check/merge-queue nodes, typed edges, graph validation, immutable revisions and optimistic editing. Definitions are configuration, not executed workflows. A visual editor is in progress.
+- User-owned CI queue and one-shot macOS/Linux worker: exact revision checkout, executable/repository mapping, atomic claims, fenced leases, timeout/cancellation, bounded logs, persisted results and artifact summaries. Expired work requires explicit retry.
+- Agent CLI/MCP tools can submit CI, inspect status and explicitly retry jobs within the configured project.
 
-## Local verification
+## Verified
 
-- `npm test`: 9 tests passed, including on-disk SQLite restart/retry/isolation/cursor cases and launcher validation.
-- Focused upstream suite: 170 tests passed across runtime-layer hydration, provider registry, and machine/project grouping.
-- Runtime web/server build passed after including the upstream scripts workspace in setup.
-- `npm start`: real server started on localhost:4310 with separate `.perpeto/runtime` state; public environment descriptor returned protocol 2 and inherited HTML loaded. Server restarted successfully with the same data directory.
-- Source comparison: all 6,350 imported files match the pinned checkout byte-for-byte.
-- Hosted CI: both factory and upstream jobs passed, including the complete runtime build, for `d64c781`.
-- Independent foundation review found an ignored browser-opening setting. Launcher now chooses the correct upstream command and explicitly disables automatic cwd project creation.
+- Brand and docs pushed as `c12899d`; foundation `d64c781`; messaging service `ce6f1ef`; messages UI `26dd12b`; bounded history `32be691`.
+- Hosted CI passed for the foundation, messaging service and messages UI commits. Newer increments must be checked separately; [workflow history](https://github.com/jstEagle/Perpeto/actions).
+- Latest local root suite: 36 tests passed across messaging storage/client/CLI/MCP, factory definitions, CI runner processes and launcher settings.
+- Latest focused inherited suite: 215 tests passed, including real HTTP/session scope/revocation, body limits, factory version conflicts, runner fencing and selected-environment auth behavior.
+- Complete web/server production build passed. The packaged runtime starts with isolated state and passes actual client/server restart checks.
+- A real Codex harness delivered a message through Perpeto MCP. The optional live check uses a temporary credential and explicitly approved messaging tools; it is excluded from CI.
+- Real browser create/send/reload and inbound API polling passed on desktop and mobile layouts. Bounded-history browser checks used 1,800 synthetic messages: newest page, older navigation, paused historical polling, live catch-up and a capped DOM.
+- Packaged factory smoke passed: authenticated versioned definition save/update, stale edit rejection, actual MCP CI submission, real runner subprocess, pinned revision despite a dirty source tree, CLI status and persisted results after restart.
+- Runner review regressions passed: normal-exit descendant cleanup, stalled heartbeat termination before confirmed lease expiry, and completion of control-heavy logs within the request budget.
 
-HTTP responses establish local startup only. No authenticated browser journey, real harness turn, remote pairing, cross-machine delivery, or CI runner execution is claimed.
+These tests use one physical machine with independent runtime/client/worker processes. Two-physical-host networking, production relay use, real remote DPoP sessions and all live provider adapters remain unverified.
 
-## Owners and next work
+## Next work
 
-- Lead: root agent; owns import, launcher, integration, repository CI and documentation.
-- Messaging worker: initial storage implementation complete; see its handoff.
-- Review worker: initial source-boundary and foundation review complete; see its handoff.
+Complete the visual definition editor, then connect persistent roles/assignments and replaceable orchestrator sessions to the inherited harness runtime. Add continuous runner operation, retained artifact delivery and runnable graph transitions. Provision and test a second real execution environment and owned runner. Verify full define/build/review/test/merge journeys before calling Perpeto a complete software factory.
 
-Next: integrate messaging with the inherited authenticated server and agent tool surface, then verify communication between two real environments. Define durable factory roles/assignments and graph execution around the existing harness adapters. Add user-owned runner registration, job lifecycle and revision-bound evidence. Build UI only against working services, preserving the proposed brand status until a direction is selected.
+## Ownership and handoffs
 
-## Remaining prerequisites and limits
+Lead owns integration, provenance, verification and pushes. Worker handoffs cover [transport](handoffs/messaging-transport.md), [client tools](handoffs/ci-agent-tools.md), [messages UI](handoffs/messaging-ui.md), [history UI](handoffs/messaging-history-ui.md), [factory definitions](handoffs/factory-definitions.md), and [CI runner](handoffs/ci-runner.md).
 
-Local harness executables were detected; their authentication and execution were not tested. A second machine and user-owned CI runner have not been enrolled. Hosted identity, relay, app signing and release distribution are not configured. See [prerequisites](prerequisites.md) and [definition of done](definition-of-done.md).
-
-Setup was also verified to restore the host repository's Git hook configuration after upstream prepare, which otherwise installs a hook targeting the nested upstream workspace.
+Hosted identity, relay deployment, app signing and release distribution are not configured. See [prerequisites](prerequisites.md) and [definition of done](definition-of-done.md).

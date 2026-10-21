@@ -1,0 +1,40 @@
+{
+  "queue": {
+    "busyTimeoutMs": 5000,
+    "journalMode": "WAL",
+    "synchronous": "FULL",
+    "defaultLeaseMs": 30000,
+    "minLeaseMs": 1000,
+    "maxLeaseMs": 300000,
+    "maxIdentityCharacters": 200,
+    "maxLabels": 32,
+    "maxRepositoryIds": 100,
+    "maxArguments": 100,
+    "maxArgumentCharacters": 8192,
+    "defaultListLimit": 100,
+    "maxListLimit": 100,
+    "maxExitCodeMagnitudeExclusive": 65536,
+    "maxLogCharacters": 262144,
+    "maxArtifacts": 50,
+    "maxArtifactPathCharacters": 1024
+  },
+  "worker": {
+    "requestTimeoutMs": 10000,
+    "maxCompletionBytes": 393216,
+    "revisionCaptureBytes": 1024,
+    "leaseSafetyMarginMs": 100,
+    "heartbeatDivisor": 3,
+    "validationRanges": {
+      "timeoutMs": [100, 3600000],
+      "maxOutputBytes": [1000, 262144],
+      "leaseMs": [3000, 300000]
+    },
+    "environment": {
+      "LANG": "C.UTF-8",
+      "CI": "true",
+      "GIT_CONFIG_NOSYSTEM": "1"
+    },
+    "gitExecutable": "git",
+    "gitHooksPath": "/dev/null"
+  }
+}
