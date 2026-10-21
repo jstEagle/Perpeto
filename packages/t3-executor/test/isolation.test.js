@@ -29,6 +29,7 @@ test('the default factory identity is Perpeto Agent, configurable per node, and 
   }
   assert.throws(() => resolveIsolation({ agentIsolation: 'none' }), /agentIsolation/);
   assert.throws(() => resolveIsolation({ agentHomesDir: 'relative' }), /absolute/);
+  assert.throws(() => resolveIsolation({ agentHomesDir: '/h', personalSkillDirs: ['rel'] }), /personalSkillDirs/);
 });
 
 test('git commits with the factory environment use the factory identity and are never signed', async t => {
@@ -77,16 +78,25 @@ test('a Codex factory home holds only a minimal config and a link to the login',
   for (const [name, text] of [['auth.json', '{"tokens":{}}'], ['AGENTS.md', 'Use the messaging skill.'], ['config.toml', '[mcp_servers.cooler]\ncommand = "cooler"\n'], ['hooks.json', '{}']]) {
     await writeFile(join(source, name), text);
   }
-  const isolation = resolveIsolation({ agentHomesDir: join(dir, 'homes') });
+  // Codex also reads ~/.agents/skills whatever CODEX_HOME is; the live check found the messaging skill there.
+  const shared = join(dir, 'agents-skills');
+  await mkdir(join(shared, 'messaging'), { recursive: true });
+  await writeFile(join(shared, 'messaging', 'SKILL.md'), '---\nname: messaging\n---\n');
+  await mkdir(join(shared, 'not-a-skill'));
+  const isolation = resolveIsolation({ agentHomesDir: join(dir, 'homes'), personalSkillDirs: [shared, join(dir, 'missing')] });
   const first = await factoryInstance({ instanceId: 'codex', driver: 'codex', config: { homePath: source } }, isolation);
   const home = first.codexHome;
   assert.ok(home.startsWith(join(dir, 'homes', 'codex-')));
   assert.deepEqual(first.mutation.instance.config, {
     homePath: home, shadowHomePath: '',
-    launchArgs: '-c features.memories=false -c features.hooks=false -c features.plugins=false -c features.apps=false -c features.multi_agent=false',
+    launchArgs: '-c features.memories=false -c features.hooks=false -c features.plugins=false -c features.apps=false -c features.multi_agent=false -c features.multi_agent_v2=false',
   });
   assert.equal(await readlink(join(home, 'auth.json')), join(source, 'auth.json'));
-  assert.match(await readFile(join(home, 'config.toml'), 'utf8'), /^# Written by @perpeto\/t3-executor[\s\S]*cli_auth_credentials_store = "file"\n$/);
+  const config = await readFile(join(home, 'config.toml'), 'utf8');
+  assert.match(config, /^# Written by @perpeto\/t3-executor[\s\S]*cli_auth_credentials_store = "file"\n/);
+  assert.match(config, /\[skills\.bundled\]\nenabled = false\n/);
+  assert.ok(config.includes(`[[skills.config]]\npath = ${JSON.stringify(join(shared, 'messaging', 'SKILL.md'))}\nenabled = false\n`), config);
+  assert.doesNotMatch(config, /not-a-skill/);
   for (const personal of ['AGENTS.md', 'hooks.json', 'skills', 'memories']) await assert.rejects(lstat(join(home, personal)), personal);
   assert.equal((await lstat(home)).mode & 0o777, 0o700);
   // Idempotent, and a home whose auth.json Codex replaced with a copy is refused rather than trusted.

@@ -29,6 +29,7 @@ The node passes its `runtime` section as `config`. Executor settings can sit at 
 | `gitIdentity` | `{ "name": "Perpeto Agent", "email": "agents@perpeto.local" }` | Author and committer of agent commits. An assignment's `gitIdentity`, or `context.project.gitIdentity`, overrides it per project |
 | `agentHomesDir` | `<baseDir>/perpeto-agent-homes`, else `~/.perpeto/agent-homes` | Where factory Codex homes live |
 | `codexHome` | the base instance's home, else `CODEX_HOME`, else `~/.codex` | Codex home whose login an unpooled factory instance uses |
+| `personalSkillDirs` | `["~/.agents/skills"]` (absolute) | Shared skill folders whose skills factory Codex instances disable |
 | `turnTimeoutMs` | 4 hours | Assignment time limit |
 | `settleMs`, `pollMs`, `accountReadyTimeoutMs` | 2000, 1000, 60000 | Timing |
 
@@ -68,12 +69,24 @@ Live acceptance run 1 showed factory agents reading the operator's personal inst
 | Layer | Operator setup that stays out | What still loads |
 | --- | --- | --- |
 | Claude | `--setting-sources=project,local`: `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, user hooks, skills and plugins. The Claude Agent SDK loads every source when T3 passes none | The repository's `CLAUDE.md` and `.claude/` settings. The login, from the base instance's `homePath` |
-| Codex | A factory `CODEX_HOME` with a minimal `config.toml` and `auth.json` linked to the source home's: `~/.codex/AGENTS.md`, skills, memories, hooks, plugins, MCP servers, rollout history. `-c features.{memories,hooks,plugins,apps,multi_agent}=false` also disables account-level plugins and apps | The repository's `AGENTS.md`. The one login: token refreshes write through the link. Pooled accounts keep their Perpeto-owned homes |
+| Codex | A factory `CODEX_HOME` with a minimal `config.toml` and `auth.json` linked to the source home's: `~/.codex/AGENTS.md`, skills, memories, hooks, plugins, MCP servers, rollout history. The config also disables bundled skills and every skill in `~/.agents/skills` (`personalSkillDirs`), which Codex reads whatever `CODEX_HOME` is. `-c features.{memories,hooks,plugins,apps,multi_agent,multi_agent_v2}=false` disables account-level plugins and apps | The repository's `AGENTS.md` and skills. The one login: token refreshes write through the link. Pooled accounts keep their Perpeto-owned homes |
 | Git | `GIT_AUTHOR_*` and `GIT_COMMITTER_*` from `gitIdentity`, and `commit.gpgsign`, `tag.gpgsign` off through `GIT_CONFIG_*`, so the operator's identity and signing key never touch agent commits | The operator's other Git config, such as credential helpers |
 
 The executor reports `isolation.bound` with the instance and identity. A factory home whose `auth.json` became a regular file is refused (`blocked`), since that copy would drift from the operator's login. Base-instance environment variables T3 marks sensitive are redacted for clients, so they are not copied; their names are reported in `droppedEnvironment`.
 
-Measured on the recorded live run (`~/.codex/sessions`, nine turns): the first model call of every turn carried about 31,400 input tokens before the agent did anything. The operator's skills list was 41,160 characters, memories about 12,000, `~/.codex/AGENTS.md` 4,939, the Cooler SessionStart hook about 1,800 and native multi-agent instructions 2,671, plus tool schemas from personal MCP servers. A factory instance removes all of these. T3's own context stays (`t3_code_orchestration`, `t3_code_runtime`, `t3_code_tools`, about 7,500 characters, and the `t3-code` MCP tools); dropping it needs a per-thread switch in T3 (finding 3).
+Context before the agent does anything, from Codex rollouts (`gpt-6.1-sol`, low effort):
+
+| Part of the first model call | Live run 1 (operator setup) | Factory instance |
+| --- | --- | --- |
+| Input tokens, first call | 27,710 to 31,545 (nine turns; builder 31,347) | 15,252 (builder) |
+| Skills list | 41,160 characters | none |
+| Memories | about 12,000 characters | none |
+| `~/.codex/AGENTS.md` | 4,939 characters | none |
+| SessionStart hook output | about 1,780 characters | none |
+| T3 orchestration, runtime and tool notes | 7,559 characters | 7,559 characters |
+| Multi-agent role and mode notes | 2,671 characters | 2,671 characters |
+
+The factory column is `node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low`, one builder turn on 21 October 2026, which also showed the commit authored and committed by `Perpeto Agent <agents@perpeto.local>`. T3's own context stays, as do its `t3-code` MCP tools; dropping them needs a per-thread switch in T3 (finding 3). The multi-agent notes come from the model catalog (`multi_agent_version: v2`) and survive both feature flags.
 
 Not verified live: Claude isolation (configured and unit-tested only), and whether `--setting-sources` also hides user-scope MCP servers in `~/.claude.json`.
 
@@ -173,4 +186,5 @@ Source: `vendor/t3code` at the pinned commit. Verified live where noted.
   ```sh
   npm run setup && npm run build
   node packages/t3-executor/scripts/live-check.mjs --policy --roles [--provider claudeAgent --model claude-haiku-5-5] [--native]
+  node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low [--server-entry other/checkout/bin.mjs]
   ```
