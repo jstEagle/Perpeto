@@ -35,19 +35,34 @@ public struct LiveOverlay: Equatable {
         self.workItems = workItems
         var counts: [String: Unplanned] = [:]
         for event in events where event.isUnplanned {
-            guard let from = event.data["fromNode"]?.stringValue, let to = event.data["toNode"]?.stringValue else { continue }
+            guard let from = event.sourceNodeId, let to = event.targetNodeId else { continue }
             let kind: GraphEdge.Kind = event.interaction == .agentDelegated ? .delegates : event.interaction == .agentMessaged ? .messages : .flow
             let key = "\(from)>\(to):\(kind.rawValue)"
             counts[key, default: Unplanned(from: from, to: to, kind: kind, count: 0)].count += 1
         }
         // Prefer the hub's measured count when it reports the same pair.
         for metric in metrics.edges where metric.unplanned {
-            let parts = metric.edgeId.split(separator: ">").map(String.init)
-            guard parts.count == 2 else { continue }
-            let key = "\(parts[0])>\(parts[1]):\(metric.kind.rawValue)"
-            counts[key] = Unplanned(from: parts[0], to: parts[1], kind: metric.kind, count: metric.count)
+            guard let from = metric.from, let to = metric.to, from != "?", to != "?" else { continue }
+            counts["\(from)>\(to):\(metric.kind.rawValue)"] = Unplanned(from: from, to: to, kind: metric.kind, count: metric.count)
         }
         unplanned = counts.values.sorted { $0.id < $1.id }
+    }
+
+    /// Unplanned interactions drawn like role edges, outside the flow band.
+    var edges: [GraphEdge] {
+        unplanned.map { GraphEdge(id: "unplanned:" + $0.id, from: .init(node: $0.from), to: .init(node: $0.to), kind: $0.kind) }
+    }
+}
+
+/// Which delegates and messages edges the canvas draws.
+public enum RoleEdgeScope: String, CaseIterable, Hashable, Sendable {
+    case all, selected
+
+    public var title: String {
+        switch self {
+        case .all: "All roles"
+        case .selected: "Selected node"
+        }
     }
 }
 
@@ -79,6 +94,7 @@ public struct GraphCanvas: View {
     var minSize: CGSize
     var editable: Bool
     var connectKind: GraphEdge.Kind
+    var roleScope: RoleEdgeScope
     var onMove: (String, GraphNode.Position) -> Void
     var onConnect: (GraphEdge.Endpoint, GraphEdge.Endpoint, GraphEdge.Kind) -> Void
 
@@ -89,7 +105,7 @@ public struct GraphCanvas: View {
 
     public init(
         graph: WorkflowGraph, mode: GraphMode, selection: Binding<GraphSelection?>, zoom: CGFloat = 1, minSize: CGSize = .zero, editable: Bool = false,
-        connectKind: GraphEdge.Kind = .messages,
+        connectKind: GraphEdge.Kind = .messages, roleScope: RoleEdgeScope = .all,
         onMove: @escaping (String, GraphNode.Position) -> Void = { _, _ in },
         onConnect: @escaping (GraphEdge.Endpoint, GraphEdge.Endpoint, GraphEdge.Kind) -> Void = { _, _, _ in }
     ) {
@@ -100,14 +116,38 @@ public struct GraphCanvas: View {
         self.minSize = minSize
         self.editable = editable
         self.connectKind = connectKind
+        self.roleScope = roleScope
         self.onMove = onMove
         self.onConnect = onConnect
     }
 
-    private var layout: GraphLayout {
+    private var layout: GraphLayout { Self.layout(graph: graph, mode: mode, overrides: dragOverrides) }
+
+    /// The one layout used by the canvas and the viewport's fit calculation.
+    static func layout(graph: WorkflowGraph, mode: GraphMode, overrides: [String: CGPoint] = [:]) -> GraphLayout {
         var g = graph
-        if case .diff(let diff) = mode { g.nodes += diff.removedNodes.filter { r in !g.nodes.contains { $0.id == r.id } } }
-        return GraphLayout(graph: g, nodeHeight: mode.nodeHeight, overrides: dragOverrides)
+        var extra: [GraphEdge] = []
+        switch mode {
+        case .diff(let diff):
+            // Removed nodes and edges are routed too, so they draw as ghosts.
+            g.nodes += diff.removedNodes.filter { r in !g.nodes.contains { $0.id == r.id } }
+            g.edges += diff.removedEdges.filter { r in !g.edges.contains { $0.id == r.id } }
+        case .live(let live): extra = live.edges
+        default: break
+        }
+        return GraphLayout(graph: g, nodeHeight: mode.nodeHeight, overrides: overrides, extraRoleEdges: extra)
+    }
+
+    private func isRole(_ edge: GraphEdge) -> Bool { edge.kind == .delegates || edge.kind == .messages }
+
+    /// Role edges follow the scope; flow edges are always drawn.
+    private func isVisible(_ edge: GraphEdge) -> Bool {
+        guard isRole(edge) || edge.id.hasPrefix("unplanned:"), roleScope == .selected else { return true }
+        switch selection {
+        case .node(let id): return edge.from.node == id || edge.to.node == id
+        case .edge(let id): return edge.id == id
+        case nil: return false
+        }
     }
 
     public var body: some View {
@@ -129,7 +169,7 @@ public struct GraphCanvas: View {
         .coordinateSpace(name: "graph")
         .contentShape(Rectangle())
         .onTapGesture(coordinateSpace: .named("graph")) { location in
-            selection = layout.edge(at: location).map { .edge($0.id) }
+            selection = layout.edge(at: location, where: isVisible).map { .edge($0.id) }
         }
         .scaleEffect(zoom, anchor: .topLeading)
         .frame(width: size.width * zoom, height: size.height * zoom, alignment: .topLeading)
@@ -203,16 +243,25 @@ public struct GraphCanvas: View {
             let selectedEdge = selection?.edgeId
             let selectedNode = selection?.nodeId
 
+            /// Paper-coloured halo first, so a line drawn later breaks the
+            /// lines it crosses, like a bridge on a wiring drawing.
+            func draw(_ points: [CGPoint], kind: GraphEdge.Kind, color: Color, width: CGFloat, style: StrokeStyle? = nil) {
+                let path = Path.rounded(points)
+                context.stroke(path, with: .color(PerpetoColor.surface), style: StrokeStyle(lineWidth: width + 4, lineCap: .butt, lineJoin: .round))
+                context.stroke(path, with: .color(color), style: style ?? EdgeStyle.stroke(kind, width: kind == .messages ? width + 0.75 : width))
+                EdgeStyle.drawMarkers(&context, kind: kind, points: points, color: color)
+            }
+
             if case .diff(let diff) = mode {
                 for edge in diff.removedEdges {
                     guard let route = layout.route(edge) else { continue }
-                    let path = Path.rounded(route.points)
-                    context.stroke(path, with: .color(PerpetoColor.error.opacity(0.7)), style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
-                    EdgeStyle.drawMarkers(&context, kind: edge.kind, points: route.points, color: PerpetoColor.error.opacity(0.7))
+                    draw(route.points, kind: edge.kind, color: PerpetoColor.error.opacity(0.7), width: 1.5, style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
                 }
             }
 
-            for edge in graph.edges {
+            // Roles first, flow on top: work movement is the primary reading.
+            let ordered = graph.edges.filter { isRole($0) } + graph.edges.filter { !isRole($0) }
+            for edge in ordered where isVisible(edge) {
                 guard let route = layout.route(edge) else { continue }
                 var color = EdgeStyle.color(edge.kind)
                 var width: CGFloat = 1.5
@@ -235,21 +284,26 @@ public struct GraphCanvas: View {
                     if let selectedNode, edge.from.node != selectedNode, edge.to.node != selectedNode { opacity *= 0.35 }
                 case .edit(let issues):
                     if issues.contains(where: { $0.edgeId == edge.id && $0.severity == .error }) { color = PerpetoColor.error }
-                case .view: break
+                    if let selectedNode, isRole(edge), edge.from.node != selectedNode, edge.to.node != selectedNode { opacity = 0.35 }
+                case .view:
+                    if let selectedNode, isRole(edge), edge.from.node != selectedNode, edge.to.node != selectedNode { opacity = 0.35 }
                 }
                 if selectedEdge == edge.id {
-                    context.stroke(Path.rounded(route.points), with: .color(PerpetoColor.focus.opacity(0.25)), style: StrokeStyle(lineWidth: width + 6, lineCap: .round, lineJoin: .round))
+                    // Selection is accent at the selection stroke, like selected nodes.
+                    color = PerpetoColor.accent
+                    width = max(width, 2)
+                    opacity = 1
                 }
-                let shaded = color.opacity(opacity)
-                context.stroke(Path.rounded(route.points), with: .color(shaded), style: EdgeStyle.stroke(edge.kind, width: edge.kind == .messages ? width + 0.75 : width))
-                EdgeStyle.drawMarkers(&context, kind: edge.kind, points: route.points, color: shaded)
+                draw(route.points, kind: edge.kind, color: color.opacity(opacity), width: width)
             }
 
             if case .live(let live) = mode {
-                for (index, item) in live.unplanned.enumerated() {
-                    guard let route = layout.unplannedRoute(fromId: item.from, toId: item.to, index: index) else { continue }
-                    context.stroke(Path.rounded(route.points), with: .color(PerpetoColor.error), style: StrokeStyle(lineWidth: 1.75, lineCap: .round, dash: [0.5, 4.5]))
-                    EdgeStyle.drawMarkers(&context, kind: .flow, points: route.points, color: PerpetoColor.error)
+                for edge in live.edges where isVisible(edge) {
+                    guard let route = layout.route(edge) else { continue }
+                    var opacity = 1.0
+                    if let selectedNode, edge.from.node != selectedNode, edge.to.node != selectedNode { opacity = 0.35 }
+                    draw(route.points, kind: .flow, color: PerpetoColor.error.opacity(opacity), width: 1.75,
+                         style: StrokeStyle(lineWidth: 1.75, lineCap: .round, dash: [0.5, 4.5]))
                 }
             }
 
@@ -262,19 +316,34 @@ public struct GraphCanvas: View {
         }
     }
 
+    private func liveLabels(_ live: LiveOverlay) -> [EdgeLabel] {
+        let flow = graph.edges.filter { !isRole($0) }
+        let roles = graph.edges.filter { isRole($0) && isVisible($0) }
+        let counts = (flow + roles).compactMap { edge in
+            live.metrics.edge(edge.id).map { EdgeLabel(id: edge.id, text: "\($0.count)", color: EdgeStyle.color(edge.kind)) }
+        }
+        let unplanned = zip(live.unplanned, live.edges).filter { isVisible($0.1) }.map {
+            EdgeLabel(id: $0.1.id, text: "Unplanned \($0.0.count)", color: PerpetoColor.error)
+        }
+        return counts + unplanned
+    }
+
+    private struct EdgeLabel: Identifiable {
+        var id: String
+        var text: String
+        var color: Color
+    }
+
+    /// Counts on the live map. Flow first so it gets the preferred spots,
+    /// then roles, then unplanned interactions; no two labels overlap.
     @ViewBuilder
     private func edgeLabels(_ layout: GraphLayout) -> some View {
         if case .live(let live) = mode {
-            ForEach(graph.edges) { edge in
-                if let metric = live.metrics.edge(edge.id), let route = layout.route(edge) {
-                    CountPill(text: "\(metric.count)", color: EdgeStyle.color(edge.kind))
-                        .position(route.labelPoint)
-                }
-            }
-            ForEach(Array(live.unplanned.enumerated()), id: \.element.id) { index, item in
-                if let route = layout.unplannedRoute(fromId: item.from, toId: item.to, index: index) {
-                    CountPill(text: "Unplanned \(item.count)", color: PerpetoColor.error)
-                        .position(route.labelPoint)
+            let labels = liveLabels(live)
+            let positions = layout.placeLabels(labels.map { .init(edgeId: $0.id, size: CountPill.size(for: $0.text)) })
+            ForEach(labels) { label in
+                if let point = positions[label.id] {
+                    CountPill(text: label.text, color: label.color).position(point)
                 }
             }
         }
@@ -284,6 +353,9 @@ public struct GraphCanvas: View {
 struct CountPill: View {
     var text: String
     var color: Color
+
+    /// Measured size of the pill for label placement: 12 pt mono is 7.2 pt per glyph.
+    static func size(for text: String) -> CGSize { CGSize(width: CGFloat(text.count) * 7.25 + 10, height: 18) }
     var body: some View {
         Text(text)
             .font(PerpetoFont.mono().monospacedDigit())

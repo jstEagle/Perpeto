@@ -8,22 +8,26 @@ struct GraphViewport: View {
     @Binding var selection: GraphSelection?
     var editable = false
     var connectKind: GraphEdge.Kind = .messages
+    /// Initial role-edge scope; the legend toggles it.
+    var initialRoleScope: RoleEdgeScope = .all
     var onMove: (String, GraphNode.Position) -> Void = { _, _ in }
     var onConnect: (GraphEdge.Endpoint, GraphEdge.Endpoint, GraphEdge.Kind) -> Void = { _, _, _ in }
 
     @State private var zoom: CGFloat?
+    @State private var roleScope: RoleEdgeScope?
 
     var body: some View {
         GeometryReader { proxy in
-            let content = GraphLayout(graph: graph, nodeHeight: mode.nodeHeight).contentSize
+            let content = GraphCanvas.layout(graph: graph, mode: mode).contentSize
+            let scope = roleScope ?? initialRoleScope
             let fit = min(1, max(0.5, min(proxy.size.width / content.width, (proxy.size.height - 40) / content.height)))
             let scale = zoom ?? fit
             ScrollView([.horizontal, .vertical]) {
                 GraphCanvas(graph: graph, mode: mode, selection: $selection, zoom: scale,
                             minSize: CGSize(width: proxy.size.width / scale, height: proxy.size.height / scale),
-                            editable: editable, connectKind: connectKind, onMove: onMove, onConnect: onConnect)
+                            editable: editable, connectKind: connectKind, roleScope: scope, onMove: onMove, onConnect: onConnect)
             }
-            .overlay(alignment: .bottomLeading) { EdgeLegend(live: mode.isLive).padding(PerpetoSpacing.x(3)) }
+            .overlay(alignment: .bottomLeading) { EdgeLegend(live: mode.isLive, scope: Binding(get: { scope }, set: { roleScope = $0 })).padding(PerpetoSpacing.x(3)) }
             .overlay(alignment: .bottomTrailing) {
                 ZoomControl(zoom: scale, fit: { zoom = nil }, change: { zoom = min(1.5, max(0.4, scale + $0)) })
                     .padding(PerpetoSpacing.x(3))
@@ -36,6 +40,7 @@ struct GraphViewport: View {
 
 struct EdgeLegend: View {
     var live: Bool
+    @Binding var scope: RoleEdgeScope
 
     var body: some View {
         HStack(spacing: PerpetoSpacing.x(4)) {
@@ -70,6 +75,15 @@ struct EdgeLegend: View {
                     Text("Active, queued item").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.ink)
                 }
             }
+            Rule(vertical: true).frame(height: 16)
+            Picker("Show role edges for", selection: $scope) {
+                ForEach(RoleEdgeScope.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .fixedSize()
+            .help("Show delegates and messages for every role, or only for the selected node")
         }
         .padding(.horizontal, PerpetoSpacing.x(3))
         .padding(.vertical, PerpetoSpacing.x(1.5))
