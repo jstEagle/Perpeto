@@ -17,6 +17,8 @@
   },
   "devDependencies": {
     "@perpeto/accounts": "*",
-    "@perpeto/node": "*"
+    "@perpeto/hub": "*",
+    "@perpeto/node": "*",
+    "@perpeto/sdk": "*"
   }
 }

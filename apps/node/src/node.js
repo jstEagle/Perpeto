@@ -285,6 +285,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         if (!Number.isFinite(expires) || expires <= Date.now()) { lose(record); return; }
         record.expires = expires;
         armExpiry(record);
+        // Messages that reached this assignment's role since the last renewal; the hub re-offers them until the
+        // executor reports them delivered, and the executor delivers each id once.
+        if (Array.isArray(result.inbox) && result.inbox.length) record.inbox.push(result.inbox);
       } catch (error) {
         if (record.lease.signal.aborted || record.cancelRequested) return;
         // A rejected renewal cannot establish ownership, regardless of its HTTP status.
@@ -304,6 +307,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       await persistSeen(record);
       if (record.kind === 'assignment') await mkdir(workspace, { recursive: true, mode: 0o700 });
       const ctx = { signal: record.work.signal, report: event => report(record, event), workspace,
+        inbox: { take: () => record.inbox.take(), subscribe: listener => record.inbox.subscribe(listener) },
+        // Where the agent's run-scoped messaging credential reaches the hub, with this machine's certificate pins.
+        messaging: { baseUrl: config.hubUrl, ...(pins ? { tlsFingerprints: [...pins] } : {}) },
         runtimeUrl: machine.runtimeUrl, accountProvider,
         // Jobs whose revision lives on the hub fetch it over the job's authenticated route, for this lease's attempt.
         fetchSource: (path, file) => hub.download(`${path}?attempt=${record.attempt}`, file,
@@ -400,7 +406,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
             continue;
           }
           const record = { kind, item, key: `${kind}:${item.id}`, attempt: item.attempt, expires: Date.parse(item.leaseExpiresAt),
-            work: new AbortController(), lease: new AbortController(), lost: false };
+            work: new AbortController(), lease: new AbortController(), lost: false, inbox: createInbox() };
           active.set(record.key, record);
           record.task = execute(record);
           notify();
@@ -507,6 +513,20 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       })();
       return stopping;
     },
+  };
+}
+
+/** Messages relayed from renewals to a running executor: a queue it takes from and a wake-up when more arrive. */
+function createInbox() {
+  let queue = [];
+  const listeners = new Set();
+  return {
+    push(messages) {
+      queue.push(...messages.filter(message => typeof message?.id === 'string'));
+      for (const listener of listeners) { try { listener(); } catch { /* A listener cannot affect lease ownership. */ } }
+    },
+    take() { const taken = queue; queue = []; return taken; },
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
 }
 

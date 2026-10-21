@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import { closeSync, lstatSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { fail, requireValue } from './errors.js';
 
@@ -33,6 +33,11 @@ export class Credentials {
     if (!known) store.setKeyFingerprint('credentials', fingerprint(key));
     this.#key = key;
   }
+  /**
+   * A credential derived from the key for one label, 43 URL-safe characters. Used for agent messaging credentials,
+   * which the hub re-derives on replay and checks against live assignment state rather than storing.
+   */
+  derive(label) { return createHmac('sha256', this.#key).update(`perpeto-derived:${label}`).digest('base64url'); }
   /** A new random credential: 256 bits, URL-safe. */
   issue() { return randomBytes(32).toString('base64url'); }
   seal(text) {

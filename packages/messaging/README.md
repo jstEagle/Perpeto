@@ -40,7 +40,14 @@ Page size defaults to 100 and is limited to 500. An optional `recipientRoleId` s
 
 SQLite uses foreign keys, WAL journaling, full synchronization, a five-second busy timeout, and a transactional schema migration. The optional constructor setting `busyTimeoutMs` accepts 0–60000. Keep the database and its WAL files on the owning machine's local disk; this is not a shared-network-filesystem database.
 
-This is a storage component, not yet a Slack-like application or cross-device transport. It has no authentication, role membership enforcement, network delivery, wake-ups, acknowledgments, attachments, threads, editing, or UI. The eventual server must authorize callers before using this API. A recipient is routing metadata, not a confidentiality boundary: authorized channel reads expose all channel messages. Cursors are opaque pagination markers, not signed credentials or proof of delivery. Message persistence does not assign executable work or verify its results.
+Schema v2 adds threads and delivery state; v1 databases migrate in place, each earlier message becoming its own thread and each addressed one waiting in its recipient's inbox.
+
+- `send({ …, parentId? })` joins the parent's thread (`threadId` is the root id). With `parentId` and no `recipientRoleId`, the reply answers the parent's sender. Hosts may record `senderKind`, `senderAssignmentId`, `targetAssignmentId` and `unplanned`.
+- `readMessages({ …, threadId })` pages one thread; its cursors bind the thread.
+- Addressed messages carry `receipt: { state: 'stored'|'delivered'|'acked', … }`. `claimPending` claims a role's undelivered messages for one live assignment, `markDelivered` records the first delivery (`prompt`, `steer` or `read`), and `ack` records the recipient's acknowledgement once.
+- `unread` and `markRead` keep a forward-only read cursor per role and channel. `countSentSince` supports host rate limits.
+
+This is a storage component. It has no authentication, role membership enforcement, network delivery, attachments, editing, or UI; the hub adds control and delivery (see [messaging](../../docs/architecture/messaging.md)). The eventual server must authorize callers before using this API. A recipient is routing metadata, not a confidentiality boundary: authorized channel reads expose all channel messages. Cursors are opaque pagination markers, not signed credentials or proof of delivery. Message persistence does not assign executable work or verify its results.
 
 Run the actual temporary-database tests:
 

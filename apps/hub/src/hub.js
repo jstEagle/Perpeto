@@ -10,6 +10,7 @@ import { readGoals, writeGoals, initialsOf } from './goals.js';
 import { publicOrigin } from './config.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
+import { HubMessaging } from './messaging.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings, gitIdentity } from './errors.js';
 
@@ -73,7 +74,7 @@ export class Hub {
     this.store.onEvent = () => { this.signals.events = true; };
     this.store.onCommit = () => this.flush();
     this.store.onRollback = () => { this.signals = { work: [], machines: new Set(), events: false }; };
-    this.workflows = new Workflows(this); this.observation = new Observation(this);
+    this.workflows = new Workflows(this); this.observation = new Observation(this); this.agentMessaging = new HubMessaging(this);
     try {
       try {
         const stat = lstatSync(config.ownerTokenPath);
@@ -135,6 +136,7 @@ export class Hub {
       return { kind: 'owner', via: 'cookie', scope: key, session: { hash: key, value, expiresAt, refreshed } };
     }
     const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(header ?? '');
+    if (match && this.agentMessaging.isAgentToken(match[1])) return this.agentMessaging.authenticate(match[1]);
     const token = match && this.store.db.prepare('SELECT kind,machine_id FROM tokens WHERE hash=?').get(hash(match[1]));
     if (!token) fail(401, 'UNAUTHORIZED', 'A valid bearer token is required.');
     if (token.kind === 'node') this.retireOlderTokens(token.machine_id, hash(match[1]));
@@ -252,7 +254,7 @@ export class Hub {
         if (this.delivery.dirty) this.delivery.schedule();
         return result;
       } catch (error) {
-        if (error instanceof MessagingError) throw new HubError(error.code.includes('CONFLICT') ? 409 : error.code === 'NOT_FOUND' ? 404 : 400, error.code, error.message);
+        if (error instanceof MessagingError) throw new HubError(error.code.includes('CONFLICT') ? 409 : error.code === 'NOT_FOUND' ? 404 : error.code === 'NOT_RECIPIENT' ? 403 : 400, error.code, error.message);
         throw error;
       }
     });
@@ -263,6 +265,8 @@ export class Hub {
     if (body.token) { body._token = this.credentials.seal(body.token); delete body.token; }
     if (body.code) { body._code = this.credentials.seal(body.code); delete body.code; }
     if (body.joinCode) { body._joinCode = this.credentials.seal(body.joinCode); delete body.joinCode; }
+    // Agent messaging credentials are derived, so a replayed lease re-derives them instead of storing them.
+    if (Array.isArray(body.assignments)) body.assignments = body.assignments.map(value => value.messaging ? { ...value, messaging: { ...value.messaging, token: undefined } } : value);
     return { ...result, body };
   }
   restoreResponse(result) {
@@ -270,6 +274,7 @@ export class Hub {
     if (body._token) { body.token = this.credentials.open(body._token); delete body._token; }
     if (body._code) { body.code = this.credentials.open(body._code); delete body._code; }
     if (body._joinCode) { body.joinCode = this.credentials.open(body._joinCode); delete body._joinCode; }
+    if (Array.isArray(body.assignments)) body.assignments = body.assignments.map(value => value.messaging ? { ...value, messaging: { ...value.messaging, token: this.agentMessaging.agentToken(value) } } : value);
     // Records written before random credentials hold only the ids their credential was derived from.
     if (body._tokenMachineId) { body.token = this.legacyNodeToken(body._tokenMachineId, body._tokenGeneration); delete body._tokenMachineId; delete body._tokenGeneration; }
     if (body._codeId) { body.code = this.legacySecret('enrollment', body._codeId); delete body._codeId; }
@@ -513,7 +518,9 @@ export class Hub {
           value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
           this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
           if (kind === 'assignment') this.observation.assignment(value);
-          result[kind === 'assignment' ? 'assignments' : 'jobs'].push(value); remaining--; available--;
+          // Run assignments carry their messaging credential and whatever waits in their role's inbox.
+          const credential = kind === 'assignment' ? this.agentMessaging.credential(value) : null;
+          result[kind === 'assignment' ? 'assignments' : 'jobs'].push(credential ? { ...value, messaging: credential, inbox: this.agentMessaging.inbox(value) } : value); remaining--; available--;
         }
         if (page.length < 200) break;
       }
@@ -527,10 +534,11 @@ export class Hub {
     // Deny by default: only owner tokens reach routes outside the machine protocol.
     if (auth.kind === 'node' && !nodeRoute(method, segments)) fail(403, 'FORBIDDEN', 'Node tokens cannot access owner APIs.');
     if (auth.kind === 'enroll' && !(method === 'POST' && path === '/nodes/enroll')) fail(403, 'FORBIDDEN', 'Enrollment codes only enroll machines.');
-    if (!['owner', 'node', 'enroll'].includes(auth.kind)) fail(403, 'FORBIDDEN', 'Unknown token kind.');
+    if (auth.kind === 'agent' && segments[0] !== 'messaging') fail(403, 'FORBIDDEN', 'Agent credentials reach only messaging.');
+    if (!['owner', 'node', 'enroll', 'agent'].includes(auth.kind)) fail(403, 'FORBIDDEN', 'Unknown token kind.');
     const [collection, entityId, action, childId, childAction] = segments;
     const reply = (value, status = 200) => ({ status, body: value });
-    if (collection === 'messaging') return reply(this.messagingRoute(method, segments.slice(1), body, query));
+    if (collection === 'messaging') return reply(this.agentMessaging.route(method, segments.slice(1), body, query, auth));
     if (path === '/projects') {
       if (method === 'GET') return reply({ projects: this.store.list('project').map(project => this.projectView(project)) });
       if (method === 'POST') {
@@ -573,7 +581,7 @@ export class Hub {
         this.workflowFields(body);
         const validation = await this.engine.validate(body.graph);
         if (!validation.valid) fail(400, 'INVALID_WORKFLOW', 'Workflow graph is invalid.');
-        const workflow = this.workflows.save({ id: id('wf'), projectId: entityId, name: body.name, purpose: body.purpose ?? 'custom', graph: body.graph, authoredBy: { kind: 'user' }, ...(body.rationale ? { rationale: body.rationale } : {}) });
+        const workflow = this.workflows.save({ id: id('wf'), projectId: entityId, name: body.name, purpose: body.purpose ?? 'custom', graph: body.graph, ...HubMessaging.fields(body), authoredBy: { kind: 'user' }, ...(body.rationale ? { rationale: body.rationale } : {}) });
         this.emit('workflow.created', 'workflow', workflow); return reply(workflow, 201);
       }
       if (action === 'merge-queue' && method === 'GET') return reply({ entries: this.store.forProject('merge-entry', entityId) });
@@ -585,7 +593,7 @@ export class Hub {
         const next = { ...workflow, ...body }; this.workflowFields(next);
         const validation = await this.engine.validate(next.graph);
         if (!validation.valid) fail(400, 'INVALID_WORKFLOW', 'Workflow graph is invalid.');
-        const value = this.workflows.save({ id: workflow.id, projectId: workflow.projectId, name: next.name, purpose: next.purpose, graph: next.graph, authoredBy: { kind: 'user' }, parentVersion: workflow.version, ...(body.rationale ? { rationale: body.rationale } : {}) });
+        const value = this.workflows.save({ id: workflow.id, projectId: workflow.projectId, name: next.name, purpose: next.purpose, graph: next.graph, ...HubMessaging.fields(next), authoredBy: { kind: 'user' }, parentVersion: workflow.version, ...(body.rationale ? { rationale: body.rationale } : {}) });
         this.emit('workflow.updated', 'workflow', value); return reply(value);
       }
       if (action === 'versions' && method === 'GET') return reply({ versions: this.workflows.versions(workflow.id) });
@@ -787,13 +795,15 @@ export class Hub {
       if (action === 'renew' && method === 'POST') {
         const value = this.fenced(kind, entityId, auth, body); value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
         // Renewals write no event and wake nobody: they change neither the queue nor free capacity.
-        this.store.put(kind, value); return reply({ leaseExpiresAt: value.leaseExpiresAt });
+        this.store.put(kind, value);
+        // Messages that reached the role since the last renewal, for the node to deliver into the running turn.
+        return reply({ leaseExpiresAt: value.leaseExpiresAt, ...(kind === 'assignment' && value.runId ? { inbox: this.agentMessaging.inbox(value) } : {}) });
       }
       if (action === 'events' && method === 'POST') {
         const acknowledgement = this.cancellationAck(kind, entityId, auth, body);
         if (acknowledgement) return acknowledgement;
         const value = this.fenced(kind, entityId, auth, body); object(body.data ?? {}, 'event data');
-        const types = kind === 'assignment' ? ['started', 'progress', 'usage', 'message', 'completed', 'failed', 'workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'] : ['started', 'log', 'step', 'completed', 'gate.result'];
+        const types = kind === 'assignment' ? ['started', 'progress', 'usage', 'message', 'delivered', 'completed', 'failed', 'workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'] : ['started', 'log', 'step', 'completed', 'gate.result'];
         requireValue(types.includes(body.type), 'Invalid work event type.');
         let data = body.data ?? {};
         if (['workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'].includes(body.type)) {
@@ -802,14 +812,13 @@ export class Hub {
           return reply({ accepted: true, status: value.status });
         }
         if (body.type === 'message') {
+          // The node path is the agent path: the same role, policy and rate limits as an agent credential.
           requireValue(Boolean(value.runId), 'Messages require a run.');
-          nonblank(data.recipientRoleId, 'recipientRoleId', 200);
-          if (!(value.policy?.canMessage ?? []).includes(data.recipientRoleId)) fail(403, 'FORBIDDEN', 'Assignment policy does not allow messaging this role.');
-          const sent = this.messaging.send({ projectId: value.projectId, channelId: `run-${value.runId}`, senderRoleId: value.role, recipientRoleId: data.recipientRoleId, body: data.body,
-            idempotencyKey: body.idempotencyKey ?? data.idempotencyKey ?? id('msg') });
-          this.messageInteraction(value.runId, sent.message);
+          const sent = this.agentMessaging.send({ projectId: value.projectId, channelId: `run-${value.runId}`, auth: { kind: 'agent', assignment: value },
+            body: { recipientRoleId: data.recipientRoleId, body: data.body, ...(data.parentId !== undefined ? { parentId: data.parentId } : {}), idempotencyKey: body.idempotencyKey ?? data.idempotencyKey ?? id('msg') } });
           return reply({ accepted: true, message: sent.message });
         }
+        if (body.type === 'delivered') return reply({ accepted: true, delivered: this.agentMessaging.delivered(value, data) });
         if (body.type === 'started') value.status = 'running';
         if (kind === 'assignment' && body.type === 'usage') { this.recordUsage(value, data); if (data.accountId) { value.accountId = data.accountId; this.observation.assignment(value); } }
         if (kind === 'job' && body.type === 'log') {
@@ -993,7 +1002,7 @@ export class Hub {
     return { ...item, ...(run ? { projectId: run.projectId } : {}), ...(item.waiting?.decisionId ? { decisionId: item.waiting.decisionId } : {}) };
   }
   workflowFields(value) {
-    nonblank(value.name, 'workflow name', 200); object(value.graph, 'graph');
+    nonblank(value.name, 'workflow name', 200); object(value.graph, 'graph'); HubMessaging.fields(value);
     requireValue(['build', 'improve', 'maintain', 'custom'].includes(value.purpose ?? 'custom'), 'Invalid workflow purpose.');
     requireValue(['draft', 'active', 'paused'].includes(value.status ?? 'draft'), 'Invalid workflow status.');
   }
@@ -1025,28 +1034,10 @@ export class Hub {
     const run = this.store.need('run', runId);
     // Observation resolves both roles to their nodes through the run's graph, or records an end as unknown.
     this.observation.interaction('agent.messaged', { id: message.id, projectId: run.projectId, runId, role: message.senderRoleId },
-      { messageId: message.id, senderRoleId: message.senderRoleId, recipientRoleId: message.recipientRoleId });
-  }
-  messagingRoute(method, segments, body, query) {
-    const [collection, projectId, channels, channelId, messages] = segments;
-    if (collection !== 'projects' || !projectId) fail(404, 'NOT_FOUND', 'Messaging route not found.');
-    if (segments.length === 2 && method === 'PUT') return this.messaging.createProject({ id: projectId, name: body.name });
-    if (channels === 'channels' && segments.length === 3) {
-      if (method === 'GET') return { channels: this.messaging.listChannels({ projectId }) };
-      if (method === 'POST') return this.messaging.createChannel({ projectId, id: body.id, name: body.name });
-    }
-    if (channels === 'channels' && channelId && messages === 'messages' && segments.length === 5) {
-      if (method === 'POST') {
-        const result = this.messaging.send({ ...body, projectId, channelId });
-        if (channelId.startsWith('run-')) {
-          const runId = channelId.slice(4); const run = this.store.get('run', runId);
-          if (run?.projectId === projectId) this.messageInteraction(runId, result.message);
-        }
-        return result;
-      }
-      if (method === 'GET') return this.messaging.readMessages({ projectId, channelId, recipientRoleId: query.get('recipientRoleId'), after: query.get('after'), before: query.get('before'), latest: query.get('latest') === 'true', limit: query.has('limit') ? Number(query.get('limit')) : 100 });
-    }
-    fail(404, 'NOT_FOUND', 'Messaging route not found.');
+      { messageId: message.id, threadId: message.threadId, senderRoleId: message.senderRoleId, recipientRoleId: message.recipientRoleId,
+        ...(message.senderKind ? { senderKind: message.senderKind } : {}), ...(message.parentId ? { parentId: message.parentId } : {}),
+        // `unplanned` is the graph's view (no edge between the nodes); `flagged` is the messaging policy's verdict on an agent send.
+        ...(message.unplanned ? { flagged: true } : {}) });
   }
   async close() { await this.delivery.close(); await this.pending; this.engine.close?.(); this.messaging.close(); this.store.close(); }
 }
