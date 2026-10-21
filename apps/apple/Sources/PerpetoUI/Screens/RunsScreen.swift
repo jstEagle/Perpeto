@@ -71,12 +71,12 @@ struct RunsList: View {
                 }
                 HStack(spacing: 5) {
                     Mono(run.id)
-                    Text("· Started \(Format.relative(run.startedAt))" + (active > 0 ? " · \(Format.plural(active, "agent")) working" : ""))
+                    Text("· " + RunMeta.times(run) + (active > 0 ? " · \(Format.plural(active, "agent")) working" : ""))
                         .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).lineLimit(1)
                 }
             }
             Spacer(minLength: PerpetoSpacing.x(2))
-            StatusLabel(run.status.label)
+            StatusLabel(run.isBudgetHeld ? ("Intake paused", .paused) : run.status.label)
             Image(systemName: "chevron.right").font(.system(size: 11, weight: .medium)).foregroundStyle(PerpetoColor.faint)
         }
         .contentShape(Rectangle())
@@ -101,6 +101,8 @@ struct RunDetail: View {
     @State private var focusToken = 0
     @State private var focusNodeId: String?
     @State private var mapWidth: CGFloat = 960
+    @State private var editingSettings = false
+    @Environment(\.readOnlySettings) private var readOnly
     @Environment(\.compactLayout) private var compact
 
     private var workflow: Workflow? {
@@ -118,6 +120,7 @@ struct RunDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: PerpetoGap.cards) {
                 header.padding(.bottom, PerpetoSpacing.x(compact ? 0 : 2))
+                intakeCard
                 if let top = bottlenecks.first { attentionCard(top) }
                 switcher
                 switch tab {
@@ -127,6 +130,14 @@ struct RunDetail: View {
                 }
             }
             .screenPadding()
+        }
+        .onChange(of: navigator.runSettingsRequest) { _, _ in if !readOnly { editingSettings = true } }
+        // "Show on map" from elsewhere (the overview) pans like the button here.
+        .onChange(of: navigator.selectedNodeId) { _, id in if let id { showOnMap(id) } }
+        .sheet(isPresented: $editingSettings) {
+            RunSettingsSheet(title: "Run settings", confirm: "Save settings", settings: run.settings) { settings in
+                Task { await store.updateRun(run, settings: settings) }
+            }
         }
         .confirmationDialog("Stop this run?", isPresented: $confirmStop) {
             Button("Stop run", role: .destructive) { Task { await store.control(run, .stop) } }
@@ -151,10 +162,42 @@ struct RunDetail: View {
         ScreenHeader(
             "\(workflow?.name ?? "Workflow") run",
             back: ("Runs", { navigator.selectedRunId = nil }),
-            status: run.status.label,
+            status: run.isBudgetHeld ? ("Running, intake paused", .paused) : run.status.label,
             meta: { RunMeta(run: run) }
         ) {
-            HStack(spacing: PerpetoSpacing.x(3)) { controls }.fullWidthButtons(compact)
+            HStack(spacing: PerpetoSpacing.x(3)) {
+                if !readOnly, run.status == .running || run.status == .paused {
+                    Button { editingSettings = true } label: { Label("Settings", systemImage: "slider.horizontal.3") }
+                        .buttonStyle(.perpetoSecondary)
+                }
+                controls
+            }
+            .fullWidthButtons(compact)
+        }
+    }
+
+    /// Keep running, intake source and budget, with today's use.
+    @ViewBuilder
+    private var intakeCard: some View {
+        let hasBudget = !(run.settings.budget?.isEmpty ?? true)
+        if run.settings.keepOpen || run.settings.source != nil || hasBudget {
+            VStack(alignment: .leading, spacing: PerpetoSpacing.x(5)) {
+                if run.isBudgetHeld { BudgetHoldNote(run: run) }
+                let summary = VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
+                    Text("Intake and budget").font(PerpetoFont.heading).foregroundStyle(PerpetoColor.ink)
+                    RunSettingsSummary(settings: run.settings)
+                }
+                if compact || !hasBudget {
+                    summary
+                    if hasBudget { BudgetLine(run: run) }
+                } else {
+                    HStack(alignment: .top, spacing: PerpetoSpacing.x(10)) {
+                        summary.frame(maxWidth: .infinity, alignment: .leading)
+                        BudgetLine(run: run).frame(width: 360)
+                    }
+                }
+            }
+            .card()
         }
     }
 
@@ -199,7 +242,7 @@ struct RunDetail: View {
             HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
                 StatusIcon(.warning, size: 20).padding(.top, 1)
                 VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
-                    Text("\(label) is \(top.reason.title.lowercased())").font(PerpetoType.text(PerpetoType.text16, weight: .medium)).foregroundStyle(PerpetoColor.ink)
+                    Text(top.reason.headline(label)).font(PerpetoType.text(PerpetoType.text16, weight: .medium)).foregroundStyle(PerpetoColor.ink)
                     Text(top.evidence).perpetoBody(PerpetoType.text14, color: PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: PerpetoLayout.readingMax, alignment: .leading)
                     if compact { actions.padding(.top, PerpetoSpacing.x(2)) }
@@ -214,7 +257,7 @@ struct RunDetail: View {
                     VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
                         ForEach(bottlenecks.dropFirst()) { b in
                             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
-                                Text("\(workflow?.graph.node(b.nodeId)?.label ?? b.nodeId) is \(b.reason.title.lowercased())")
+                                Text(b.reason.headline(workflow?.graph.node(b.nodeId)?.label ?? b.nodeId))
                                     .font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
                                 Text(b.evidence).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
                             }

@@ -35,7 +35,7 @@ PERPETO_HUB_URL=http://127.0.0.1:4320 PERPETO_HUB_TOKEN_FILE=.perpeto/hub/owner.
 apps/apple/scripts/snapshots.sh /tmp/shots http://127.0.0.1:4320 .perpeto/hub/owner.secret --live-check
 ```
 
-The seed script uses only the public API: a project, the build template as the active workflow, an architect-drafted version 2, two simulated machines and a live run. It keeps the machines heartbeating until stopped (`--minutes`, default 20). The live tests read every route the app uses and run a human decision round trip; they create a small project on the hub.
+The seed script uses only the public API: a project, the build template as the active workflow, an architect-drafted version 2, two simulated machines and a live run with a daily budget and a saturated reviewer (a bottleneck for the map to open on). It keeps the machines heartbeating until stopped (`--minutes`, default 20). The live tests read every route the app uses and run a human decision round trip; they create a small project on the hub.
 
 SwiftPM builds the Mac app; the iOS app is the only Xcode project. Open `Package.swift` in Xcode to edit and debug. `build-app.sh` wraps the SwiftPM executable in an app bundle with an icon and `Info.plist`.
 

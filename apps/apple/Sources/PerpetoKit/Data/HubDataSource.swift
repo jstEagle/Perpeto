@@ -100,8 +100,10 @@ public struct HubDataSource: FactoryDataSource {
         async let day = client.usage(projectId: projectId, groupBy: .day)
         async let provider = client.usage(projectId: projectId, groupBy: .provider)
         async let model = client.usage(projectId: projectId, groupBy: .model)
+        // Older hubs reject role grouping.
+        async let role = (try? client.usage(projectId: projectId, groupBy: .role)) ?? []
         async let machine = client.usage(projectId: projectId, groupBy: .machine)
-        return try await UsageBundle(byDay: day.sorted { $0.key < $1.key }, byProvider: provider, byModel: model, byMachine: machine)
+        return try await UsageBundle(byDay: day.sorted { $0.key < $1.key }, byProvider: provider, byModel: model, byMachine: machine, byRole: role)
     }
 
     /// Requests a draft, then follows the architect assignment with
@@ -131,7 +133,14 @@ public struct HubDataSource: FactoryDataSource {
                             if let workflowId = assignment.draftWorkflowId, let version = assignment.draftVersion {
                                 continuation.yield(DraftProgress(assignmentId: assignment.id, stage: .validating, attempt: attempt, detail: detail))
                                 let draft = try await client.versions(workflowId: workflowId).first { $0.version == version }
-                                continuation.yield(DraftProgress(assignmentId: assignment.id, stage: draft == nil ? .failed : .ready, attempt: attempt, draft: draft))
+                                var progress = DraftProgress(assignmentId: assignment.id, stage: draft == nil ? .failed : .ready, attempt: attempt, draft: draft)
+                                // Additional workflows the architect proposed, saved as separate drafts.
+                                for ref in (assignment.drafts ?? []) where ref.workflowId != workflowId {
+                                    if let extra = try? await client.versions(workflowId: ref.workflowId).first(where: { $0.version == ref.version }) {
+                                        progress.alsoSuggested.append(extra)
+                                    }
+                                }
+                                continuation.yield(progress)
                             } else {
                                 let reason = assignment.architectErrors?.first?.message ?? assignment.result?.summary
                                 continuation.yield(DraftProgress(assignmentId: assignment.id, stage: .failed, attempt: attempt, detail: reason))
@@ -156,7 +165,13 @@ public struct HubDataSource: FactoryDataSource {
     public func save(_ workflow: Workflow) async throws -> Workflow { try await client.saveWorkflow(workflow) }
     public func validate(_ workflow: Workflow) async throws -> ValidationResult { try await client.validate(workflowId: workflow.id, graph: workflow.graph) }
     public func control(runId: String, _ action: HubClient.RunControl) async throws -> Run { try await client.control(runId: runId, action) }
-    public func startRun(workflowId: String) async throws -> Run { try await client.startRun(workflowId: workflowId) }
+    public func startRun(workflowId: String, settings: RunSettings) async throws -> Run { try await client.startRun(workflowId: workflowId, settings: settings) }
+    public func updateRun(runId: String, settings: RunSettings) async throws -> Run { try await client.updateRun(runId: runId, settings: settings) }
+    public func templates() async throws -> [WorkflowTemplate] { try await client.templates() }
+    public func createWorkflow(projectId: String, from template: WorkflowTemplate) async throws -> Workflow {
+        guard let graph = template.graph else { throw HubError.http(status: 400, code: "TEMPLATE_GRAPH", message: "This hub did not send the template's graph.") }
+        return try await client.createWorkflow(projectId: projectId, name: template.name, purpose: template.purpose, graph: graph, rationale: template.description)
+    }
     public func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws {
         try await client.decide(workItemId: workItemId, decision, decisionId: decisionId)
     }

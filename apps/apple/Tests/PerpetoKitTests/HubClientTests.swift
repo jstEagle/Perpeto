@@ -318,11 +318,14 @@ actor CountingSource: FactoryDataSource {
     func save(_ workflow: Workflow) async throws -> Workflow { try await demo.save(workflow) }
     func validate(_ workflow: Workflow) async throws -> ValidationResult { try await demo.validate(workflow) }
     func control(runId: String, _ action: HubClient.RunControl) async throws -> Run { try await demo.control(runId: runId, action) }
-    func startRun(workflowId: String) async throws -> Run { try await demo.startRun(workflowId: workflowId) }
+    func startRun(workflowId: String, settings: RunSettings) async throws -> Run { try await demo.startRun(workflowId: workflowId, settings: settings) }
     func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws { try await demo.decide(workItemId: workItemId, decision, decisionId: decisionId) }
     func sendMessage(projectId: String, channelId: String, body: String, to recipient: MessageRecipient, parentId: String?) async throws -> Message {
         try await demo.sendMessage(projectId: projectId, channelId: channelId, body: body, to: recipient, parentId: parentId)
     }
+    func updateRun(runId: String, settings: RunSettings) async throws -> Run { try await demo.updateRun(runId: runId, settings: settings) }
+    func templates() async throws -> [WorkflowTemplate] { try await demo.templates() }
+    func createWorkflow(projectId: String, from template: WorkflowTemplate) async throws -> Workflow { try await demo.createWorkflow(projectId: projectId, from: template) }
     func ackMessage(projectId: String, channelId: String, messageId: String) async throws -> Message { try await demo.ackMessage(projectId: projectId, channelId: channelId, messageId: messageId) }
     func markRead(projectId: String, channelId: String, messageId: String) async throws -> UnreadState { try await demo.markRead(projectId: projectId, channelId: channelId, messageId: messageId) }
     func enrollmentCode() async throws -> EnrollmentCode { try await demo.enrollmentCode() }
@@ -427,5 +430,82 @@ struct MessagingTests {
         let reply = try #require(store.state(project).messages[channel]?.last)
         #expect(reply.threadId == question.threadId)
         #expect(reply.recipientRoleId == question.senderRoleId)
+    }
+}
+
+
+@Suite("Continuous runs and budgets")
+struct ContinuousRunTests {
+    static let run = """
+    { "id": "run_1", "projectId": "p", "workflowId": "w", "workflowVersion": 2, "status": "running", "startedAt": "2026-10-21T08:00:00Z",
+      "keepOpen": true, "source": "schedule", "schedule": "0 9 * * 1-5", "budget": { "maxTokensPerDay": 2000000, "maxActiveItems": 3 },
+      "intake": { "paused": true, "requests": {}, "lastTicks": {}, "reason": { "limit": "maxTokensPerDay", "used": 2040000, "maximum": 2000000, "requested": 1, "day": "2026-10-21" } },
+      "budgetUsage": { "day": "2026-10-21", "tokens": 2040000, "items": 2 } }
+    """
+
+    @Test func runDecodesSettingsIntakeAndUsage() throws {
+        let run = try HubCoding.decoder().decode(Run.self, from: Data(Self.run.utf8))
+        #expect(run.settings.keepOpen)
+        #expect(run.settings.source == .schedule)
+        #expect(run.settings.budget?.maxActiveItems == 3)
+        #expect(run.isBudgetHeld)
+        #expect(run.intake?.reason?.limit == .maxTokensPerDay)
+        #expect(run.budgetUsage?.tokens == 2_040_000)
+        let done = try HubCoding.decoder().decode(Run.self, from: Data("""
+        { "id": "r", "projectId": "p", "workflowId": "w", "workflowVersion": 1, "status": "completed", "startedAt": "2026-10-21T08:00:00Z",
+          "stoppedAt": "2026-10-21T09:30:00Z", "completedAt": "2026-10-21T09:30:00Z" }
+        """.utf8))
+        #expect(done.completedAt != nil)
+        #expect(!done.settings.keepOpen)
+        #expect(!done.isBudgetHeld)
+    }
+
+    @Test func startAndPatchSendTheContract() async throws {
+        let stub = StubTransport { request in
+            request.url!.path().hasSuffix("/workflow-templates")
+                ? (200, #"{"templates":[{"id":"security-audit","description":"Audit for vulnerabilities."}]}"#)
+                : (200, ContinuousRunTests.run)
+        }
+        let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: "t", transport: stub)
+        let settings = RunSettings(keepOpen: true, source: .schedule, schedule: "30 7 * * *", budget: RunBudget(maxTokensPerDay: 1_000_000))
+        _ = try await client.startRun(workflowId: "w", settings: settings)
+        let start = try JSONSerialization.jsonObject(with: stub.requests[0].httpBody!) as! [String: Any]
+        let input = try #require(start["input"] as? [String: Any])
+        #expect(input["keepOpen"] as? Bool == true)
+        #expect(input["schedule"] as? String == "30 7 * * *")
+        #expect((input["budget"] as? [String: Any])?["maxTokensPerDay"] as? Int == 1_000_000)
+        _ = try await client.updateRun(runId: "run_1", settings: RunSettings(keepOpen: false, source: .goals))
+        #expect(stub.requests[1].httpMethod == "PATCH")
+        let patch = try JSONSerialization.jsonObject(with: stub.requests[1].httpBody!) as! [String: Any]
+        #expect((patch["budget"] as? [String: Any])?.isEmpty == true, "an empty budget removes the limits")
+        #expect(patch["schedule"] == nil)
+        let templates = try await client.templates()
+        #expect(templates.first?.name == "Security audit")
+        #expect(templates.first?.purpose == .securityAudit)
+    }
+
+    @Test func scheduleRulesRoundTrip() {
+        for cron in ["15 * * * *", "0 9 * * *", "30 7 * * 1-5", "0 18 * * 5"] {
+            #expect(ScheduleRule(cron: cron).cron == cron)
+        }
+        #expect(ScheduleRule(cron: "0 9 * * 1-5").summary == "weekdays at 09:00 UTC")
+        let odd = ScheduleRule(cron: "*/10 8-17 * * *")
+        #expect(odd.custom != nil)
+        #expect(odd.cron == "*/10 8-17 * * *")
+    }
+
+    @MainActor @Test func raisingTheBudgetReleasesTheHoldInTheDemo() async throws {
+        let store = FactoryStore(source: DemoDataSource(stageDelay: .zero))
+        await store.refresh()
+        let project = DemoFixtures.primaryProjectId
+        let held = try #require(store.state(project).runs.first { $0.id == DemoFixtures.improveRunId })
+        #expect(held.isBudgetHeld)
+        var settings = held.settings
+        settings.budget?.maxTokensPerDay = 5_000_000
+        await store.updateRun(held, settings: settings)
+        let after = try #require(store.state(project).runs.first { $0.id == DemoFixtures.improveRunId })
+        #expect(!after.isBudgetHeld)
+        #expect(after.settings.budget?.maxTokensPerDay == 5_000_000)
+        #expect(store.factory.usage.byRole.map(\.key).contains("reviewer"))
     }
 }

@@ -12,6 +12,22 @@ public enum DemoFixtures {
     public static let buildWorkflowId = "wf_build"
     public static let improveWorkflowId = "wf_improve"
     public static let liveRunId = "run_7kq2m"
+    public static let improveRunId = "run_imp42"
+
+    static func utcDay(_ date: Date) -> String { Calendar.utc.startOfDay(for: date).formatted(Date.ISO8601FormatStyle().year().month().day()) }
+
+    /// The template library, as `GET /workflow-templates` returns it.
+    public static func templates(now: Date) -> [WorkflowTemplate] {
+        let build = buildGraphV3(), improve = improveWorkflow(now: now).graph
+        return [
+            WorkflowTemplate(id: "build", description: "Plan and build features with bounded review, CI and a serial merge queue.", graph: build),
+            WorkflowTemplate(id: "improve", description: "Continuously propose measurable improvements against unfinished goals, metrics and prior outcomes.", graph: improve),
+            WorkflowTemplate(id: "bugfix", description: "Triage a bug, reproduce it in a failing test, fix it, review, run CI and merge.", graph: build),
+            WorkflowTemplate(id: "docs", description: "Write and verify documentation, review accuracy and links, then merge.", graph: improve),
+            WorkflowTemplate(id: "security-audit", description: "Audit for vulnerabilities, verify findings, fix confirmed issues, review, run CI and merge.", graph: build),
+            WorkflowTemplate(id: "dependency-upgrade", description: "Plan scoped dependency upgrades, apply migrations, review compatibility, run CI and merge.", graph: build),
+        ]
+    }
     public static let studioId = "mch_studio"
     public static let linuxId = "mch_linux01"
 
@@ -242,7 +258,7 @@ public enum DemoFixtures {
                     GraphEdge(id: "e7", from: .init(node: "mq"), to: .init(node: "out"), kind: .flow),
                     GraphEdge(id: "d1", from: .init(node: "audit", port: "role"), to: .init(node: "fix", port: "role"), kind: .delegates),
                 ]),
-            status: .paused, authoredBy: Authorship(kind: .agent, assignmentId: "asg_arch3", prompt: "Once a week, pick one improvement from the goals and ship it."),
+            status: .active, authoredBy: Authorship(kind: .agent, assignmentId: "asg_arch3", prompt: "Once a week, pick one improvement from the goals and ship it."),
             rationale: "A small weekly loop: one auditor proposes up to three items, two improvers build them.", parentVersion: nil,
             createdAt: now.addingTimeInterval(-86400 * 2))
     }
@@ -461,9 +477,17 @@ public enum DemoFixtures {
             workflows: [versions.last!, improve],
             versions: [buildWorkflowId: versions, improveWorkflowId: [improve]],
             runs: [
-                Run(id: liveRunId, projectId: primaryProjectId, workflowId: buildWorkflowId, workflowVersion: 3, status: .running, startedAt: now.addingTimeInterval(-3600 * 26)),
+                Run(id: liveRunId, projectId: primaryProjectId, workflowId: buildWorkflowId, workflowVersion: 3, status: .running, startedAt: now.addingTimeInterval(-3600 * 26),
+                    settings: RunSettings(keepOpen: true, source: .goals, budget: RunBudget(maxTokensPerDay: 12_000_000, maxItemsPerDay: 20, maxActiveItems: 15)),
+                    intake: RunIntake(paused: false), budgetUsage: BudgetUsage(day: utcDay(now), tokens: 7_400_000, items: 9)),
+                // The improvement loop reached its daily token budget: intake waits for UTC midnight.
+                Run(id: improveRunId, projectId: primaryProjectId, workflowId: improveWorkflowId, workflowVersion: 1, status: .running, startedAt: now.addingTimeInterval(-86400 * 2),
+                    settings: RunSettings(keepOpen: true, source: .schedule, schedule: "0 9 * * 1-5", budget: RunBudget(maxTokensPerDay: 2_000_000, maxActiveItems: 3)),
+                    intake: RunIntake(paused: true, reason: .init(limit: .maxTokensPerDay, used: 2_040_000, maximum: 2_000_000, day: utcDay(now))),
+                    budgetUsage: BudgetUsage(day: utcDay(now), tokens: 2_040_000, items: 2)),
                 Run(id: "run_5hd8a", projectId: primaryProjectId, workflowId: buildWorkflowId, workflowVersion: 2, status: .stopped, startedAt: now.addingTimeInterval(-86400 * 5), stoppedAt: now.addingTimeInterval(-86400 * 3)),
-                Run(id: "run_2bf1c", projectId: primaryProjectId, workflowId: improveWorkflowId, workflowVersion: 1, status: .completed, startedAt: now.addingTimeInterval(-86400 * 2), stoppedAt: now.addingTimeInterval(-86400 * 2 + 5400)),
+                Run(id: "run_2bf1c", projectId: primaryProjectId, workflowId: improveWorkflowId, workflowVersion: 1, status: .completed, startedAt: now.addingTimeInterval(-86400 * 3),
+                    stoppedAt: now.addingTimeInterval(-86400 * 3 + 5400), completedAt: now.addingTimeInterval(-86400 * 3 + 5400)),
             ],
             workItems: workItems(),
             assignments: assignments(now: now),
@@ -530,7 +554,7 @@ public enum DemoFixtures {
                 records.append(UsageRecord(
                     id: "use_\(projectId)_\(day)_\(index)", projectId: projectId, machineId: combo.2, provider: combo.0, model: combo.1,
                     inputTokens: Int(base * 0.28), outputTokens: Int(base * 0.09), cacheReadTokens: Int(base * 0.55), cacheWriteTokens: Int(base * 0.08),
-                    at: date.addingTimeInterval(Double(index) * 1800)))
+                    at: date.addingTimeInterval(Double(index) * 1800), role: ["builder", "builder", "reviewer", "planner"][index]))
             }
         }
         return records

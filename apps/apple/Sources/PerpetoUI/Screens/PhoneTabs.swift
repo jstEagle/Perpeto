@@ -25,6 +25,7 @@ struct PhoneTabs: View {
             more.tabItem { Label("More", systemImage: "ellipsis") }.tag(Tab.more)
         }
         .environment(\.compactLayout, true)
+        .environment(\.readOnlySettings, true)
         .environment(\.symbolVariants, .none)
         .onChange(of: tab) { _, tab in
             guard let projectId else { return }

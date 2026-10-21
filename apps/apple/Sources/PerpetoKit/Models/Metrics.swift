@@ -178,6 +178,7 @@ public struct Bottleneck: Codable, Hashable, Identifiable, Sendable {
         case waitingOnHuman = "waiting-on-human"
         case noCapacity = "no-capacity"
         case reworkLoop = "rework-loop"
+        case conflictChurn = "conflict-churn"
         case unknown
         public static var unknownCase: Self { .unknown }
 
@@ -189,7 +190,22 @@ public struct Bottleneck: Codable, Hashable, Identifiable, Sendable {
             case .waitingOnHuman: "Waiting on a person"
             case .noCapacity: "No machine can run this"
             case .reworkLoop: "Rework loop"
+            case .conflictChurn: "Merge conflicts"
             case .unknown: "Bottleneck"
+            }
+        }
+
+        /// A sentence about the step: "Reviewer is saturated".
+        public func headline(_ step: String) -> String {
+            switch self {
+            case .saturated: "\(step) is saturated"
+            case .queueGrowing: "\(step)'s queue is growing"
+            case .highFailure: "\(step) has a high failure rate"
+            case .waitingOnHuman: "\(step) is waiting on a person"
+            case .noCapacity: "No machine can run \(step)"
+            case .reworkLoop: "\(step) is in a rework loop"
+            case .conflictChurn: "\(step) keeps hitting merge conflicts"
+            case .unknown: "\(step) is a bottleneck"
             }
         }
     }

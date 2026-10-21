@@ -17,6 +17,9 @@ struct WorkflowsScreen: View {
     @State private var selection: GraphSelection?
     @FocusState private var promptFocused: Bool
     @Environment(\.compactLayout) private var compact
+    @Environment(\.readOnlySettings) private var readOnly
+    /// The workflow whose run settings sheet is open before starting.
+    @State private var startingRun: String?
 
     private var workflowId: String? {
         if composingNew { return nil }
@@ -63,21 +66,38 @@ struct WorkflowsScreen: View {
                 }
                 .card()
                 .frame(maxWidth: PerpetoLayout.readingMax + 120, alignment: .leading)
+                if !readOnly && !store.templates.isEmpty {
+                    TemplatePicker(templates: store.templates) { template in
+                        Task {
+                            if let created = await store.createWorkflow(projectId: project.id, from: template) {
+                                composingNew = false
+                                navigator.selectedWorkflowId = created.id
+                                viewingVersion = nil
+                            }
+                        }
+                    }
+                }
                 if let progress = draftProgress {
-                    ArchitectProgressView(progress: progress) {
+                    ArchitectProgressView(progress: progress, dismiss: {
                         store.clearDraft(projectId: project.id)
                         if let draft = progress.draft {
                             composingNew = false
                             navigator.selectedWorkflowId = draft.id
                             viewingVersion = nil
                         }
-                    }
+                    }, openSuggestion: { workflow in
+                        store.clearDraft(projectId: project.id)
+                        composingNew = false
+                        navigator.selectedWorkflowId = workflow.id
+                        viewingVersion = nil
+                    })
                     .frame(maxWidth: PerpetoLayout.readingMax + 120, alignment: .leading)
                 }
             }
             .screenPadding()
         }
         .onAppear { promptFocused = true }
+        .task { await store.loadTemplates() }
         .onChange(of: navigator.composeWorkflowRequest) { _, _ in promptFocused = true }
     }
 
@@ -101,10 +121,14 @@ struct WorkflowsScreen: View {
                 header(id: id, active: active, shown: shown)
                 askBar(id: id, name: active?.name ?? shown?.name ?? "this workflow")
                 if let progress = draftProgress {
-                    ArchitectProgressView(progress: progress) {
+                    ArchitectProgressView(progress: progress, dismiss: {
                         store.clearDraft(projectId: project.id)
                         if let draft = progress.draft { viewingVersion = draft.version }
-                    }
+                    }, openSuggestion: { workflow in
+                        store.clearDraft(projectId: project.id)
+                        navigator.selectedWorkflowId = workflow.id
+                        viewingVersion = nil
+                    })
                 }
                 if let shown {
                     let base = shown.status == .active ? nil : (active ?? shown.parentVersion.flatMap { p in versions.first { $0.version == p } })
@@ -115,7 +139,13 @@ struct WorkflowsScreen: View {
                         activate: { Task { await store.activate(shown); viewingVersion = nil } },
                         askForChanges: { promptFocused = true },
                         editByHand: { editing = shown },
-                        startRun: { Task { await store.startRun(projectId: project.id, workflowId: id); navigator.selectedRunId = nil; navigator.route = .project(project.id, .runs) } })
+                        startRun: {
+                            if readOnly {
+                                Task { await store.startRun(projectId: project.id, workflowId: id); navigator.selectedRunId = nil; navigator.route = .project(project.id, .runs) }
+                            } else {
+                                startingRun = id
+                            }
+                        })
                     panel
                     if compact {
                         StepList(graph: shown.graph, live: nil, selection: $selection)
@@ -130,6 +160,16 @@ struct WorkflowsScreen: View {
         }
         .onChange(of: navigator.composeWorkflowRequest) { _, _ in composingNew = true }
         .onChange(of: navigator.editWorkflowRequest) { _, _ in editing = shown }
+        .sheet(isPresented: Binding(get: { startingRun != nil }, set: { if !$0 { startingRun = nil } })) {
+            RunSettingsSheet(title: "Start a run", confirm: "Start run", settings: RunSettings(keepOpen: true, source: .goals)) { settings in
+                guard let workflowId = startingRun else { return }
+                Task {
+                    await store.startRun(projectId: project.id, workflowId: workflowId, settings: settings)
+                    navigator.selectedRunId = nil
+                    navigator.route = .project(project.id, .runs)
+                }
+            }
+        }
     }
 
     private func header(id: String, active: Workflow?, shown: Workflow?) -> some View {
@@ -143,8 +183,7 @@ struct WorkflowsScreen: View {
                     .help("Describe a new workflow for the architect (⌘N)")
             }
             if state.workflows.count > 1 {
-                PillPicker(state.workflows.map { ($0.id, $0.name) },
-                           selection: Binding(get: { id }, set: { navigator.selectedWorkflowId = $0; viewingVersion = nil; selection = nil }))
+                ActiveWorkflows(state: state, selected: id) { navigator.selectedWorkflowId = $0; viewingVersion = nil; selection = nil }
             }
         }
     }
@@ -230,6 +269,8 @@ struct ArchitectContext: View {
 struct ArchitectProgressView: View {
     var progress: DraftProgress
     var dismiss: () -> Void
+    /// Opens one of the additional workflows the architect proposed.
+    var openSuggestion: (Workflow) -> Void = { _ in }
 
     private let stages: [DraftProgress.Stage] = [.queued, .reading, .drafting, .validating, .ready]
 
@@ -259,6 +300,20 @@ struct ArchitectProgressView: View {
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(progress.stage.title)
+            if !progress.alsoSuggested.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Also suggested").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
+                    RowList(progress.alsoSuggested) { workflow in
+                        HStack(alignment: .top, spacing: PerpetoSpacing.x(3)) {
+                            IconTile(ProjectSection.workflows.systemImage)
+                            RowText(workflow.name, meta: workflow.rationale)
+                            Spacer(minLength: PerpetoSpacing.x(2))
+                            Button("Review") { openSuggestion(workflow) }.buttonStyle(.perpetoSecondary).controlSize(.small)
+                        }
+                    }
+                    Text("Each suggestion is a separate draft. Nothing runs until you activate it.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                }
+            }
             if let detail = progress.detail {
                 Text(detail).font(PerpetoFont.body).foregroundStyle(progress.stage == .failed ? PerpetoColor.error : PerpetoColor.muted)
             }
@@ -514,6 +569,79 @@ struct ConfigList: View {
         case .null: "None"
         case .array(let a): a.map(render).joined(separator: ", ")
         case .object(let o): o.sorted { $0.key < $1.key }.map { "\($0.key): \(render($0.value))" }.joined(separator: "; ")
+        }
+    }
+}
+
+/// Every workflow of the project side by side: what it does, whether it is
+/// active, and how its current run is doing.
+struct ActiveWorkflows: View {
+    var state: ProjectState
+    var selected: String
+    var select: (String) -> Void
+    @Environment(\.compactLayout) private var compact
+
+    var body: some View {
+        let columns = compact ? [GridItem(.flexible())] : [GridItem(.flexible(), spacing: PerpetoGap.cards), GridItem(.flexible(), spacing: PerpetoGap.cards), GridItem(.flexible())]
+        LazyVGrid(columns: Array(columns.prefix(compact ? 1 : min(3, max(2, state.workflows.count)))), alignment: .leading, spacing: PerpetoGap.cards) {
+            ForEach(state.workflows) { workflow in
+                Button { select(workflow.id) } label: { card(workflow) }.buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func card(_ workflow: Workflow) -> some View {
+        let active = state.activeVersion(of: workflow.id)
+        let run = state.runs.first { $0.workflowId == workflow.id && ($0.status == .running || $0.status == .paused) }
+        return VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(workflow.name).font(PerpetoFont.heading).foregroundStyle(PerpetoColor.ink)
+                Spacer()
+                StatusLabel(active.map { ("Active, v\($0.version)", .ok) } ?? ("Draft", .neutral))
+            }
+            if let run {
+                HStack(spacing: PerpetoSpacing.x(2)) {
+                    StatusLabel(run.isBudgetHeld ? ("Intake paused", .paused) : run.status.label)
+                    Text(RunSettingsSummary.text(run.settings)).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).lineLimit(1)
+                }
+                BudgetLine(run: run)
+            } else {
+                Text(state.pendingDraft(of: workflow.id) != nil ? "A new version waits for review." : "No run in progress.")
+                    .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .card()
+        .overlay(
+            RoundedRectangle(cornerRadius: PerpetoRadius.panel, style: .continuous)
+                .strokeBorder(PerpetoColor.ink, lineWidth: PerpetoStroke.selection)
+                .opacity(workflow.id == selected ? 1 : 0))
+        .contentShape(Rectangle())
+        .accessibilityAddTraits(workflow.id == selected ? .isSelected : [])
+    }
+}
+
+/// The template library: start from a proven shape instead of a prompt.
+struct TemplatePicker: View {
+    var templates: [WorkflowTemplate]
+    var use: (WorkflowTemplate) -> Void
+    @Environment(\.compactLayout) private var compact
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
+            Text("Or start from a template").font(PerpetoFont.heading).foregroundStyle(PerpetoColor.ink)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: PerpetoGap.cards), count: compact ? 1 : 3), alignment: .leading, spacing: PerpetoGap.cards) {
+                ForEach(templates) { template in
+                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
+                        Text(template.name).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
+                        Text(template.description).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button("Use template") { use(template) }.buttonStyle(.perpetoSecondary).controlSize(.small)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
+                    .card(padding: PerpetoLayout.cardPaddingCompact)
+                }
+            }
         }
     }
 }

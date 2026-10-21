@@ -36,6 +36,8 @@ shot 02-workflow-proposal --route workflows
 shot 03a-runs-list --route runs-list
 shot 03-run-live-map --route runs
 shot 03b-run-node-selected --route runs --node "${NODE:-review}"
+# The demo's Improve run, held by its daily budget.
+if [ -z "$HUB_ARGS" ]; then shot 03c-budget-paused-run --route runs --run run_imp42; fi
 if [ "${WIDE:-0}" = 1 ]; then
   shot 01w-overview-full-width --route overview --detail-only
   shot 03w-run-live-map-full-width --route runs --detail-only

@@ -171,14 +171,38 @@ public final class HubClient: Sendable {
 
     // MARK: Runs
 
-    /// Starts a run of the active version, optionally with first work items.
-    public func startRun(workflowId: String, items: [String] = [], idempotencyKey: String = UUID().uuidString) async throws -> Run {
+    /// Starts a run of the active version, optionally with first work items
+    /// and continuous intake settings.
+    public func startRun(workflowId: String, items: [String] = [], settings: RunSettings? = nil, idempotencyKey: String = UUID().uuidString) async throws -> Run {
         struct Item: Encodable { var title: String }
-        struct Input: Encodable { var items: [Item] }
+        struct Input: Encodable {
+            var items: [Item]?
+            var keepOpen: Bool?
+            var source: RunSettings.Source?
+            var schedule: String?
+            var budget: RunBudget?
+        }
         struct Body: Encodable { var input: Input? }
-        let body = Body(input: items.isEmpty ? nil : Input(items: items.map(Item.init)))
+        let input = Input(items: items.isEmpty ? nil : items.map(Item.init), keepOpen: settings?.keepOpen, source: settings?.source,
+                          schedule: settings?.source == .schedule ? settings?.schedule : nil, budget: settings?.budget)
+        let body = Body(input: items.isEmpty && settings == nil ? nil : input)
         return try await send("POST", "/workflows/\(escape(workflowId))/runs", body: body, idempotencyKey: idempotencyKey)
     }
+
+    /// Changes a running or paused run's settings. The budget replaces the previous one; an empty budget removes limits.
+    public func updateRun(runId: String, settings: RunSettings, idempotencyKey: String = UUID().uuidString) async throws -> Run {
+        struct Body: Encodable {
+            var keepOpen: Bool
+            var source: RunSettings.Source?
+            var schedule: String?
+            var budget: RunBudget
+        }
+        let body = Body(keepOpen: settings.keepOpen, source: settings.source, schedule: settings.source == .schedule ? settings.schedule : nil,
+                        budget: settings.budget ?? RunBudget())
+        return try await send("PATCH", "/runs/\(escape(runId))", body: body, idempotencyKey: idempotencyKey)
+    }
+
+    public func templates() async throws -> [WorkflowTemplate] { try await list("/workflow-templates", key: "templates") }
 
     public func run(_ id: String) async throws -> Run { try await get("/runs/\(escape(id))") }
 

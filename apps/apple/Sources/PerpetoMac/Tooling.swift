@@ -62,11 +62,15 @@ struct Snapshotter {
         let state = store.state(project)
         let run = state.runs.first?.id
         let busiest = run.flatMap { state.runMetrics[$0]?.nodes.max { $0.active < $1.active }?.nodeId }
+        let bottleneck = run.flatMap { state.runMetrics[$0]?.bottlenecks.first { $0.severity != .info }?.nodeId }
+        let firstStep = state.runs.first.flatMap { state.version($0.workflowVersion, of: $0.workflowId)?.graph.nodes.first?.id }
         return [
             ("hub-01-overview", { navigator.route = .project(project, .overview) }),
             ("hub-02-workflow-proposal", { navigator.route = .project(project, .workflows) }),
             ("hub-03-run-live-map", { navigator.selectedRunId = run; navigator.route = .project(project, .runs) }),
-            ("hub-03b-run-node-selected", { navigator.selectedNodeId = busiest }),
+            // The map opens on the bottleneck; panning away and back uses "Show on map".
+            ("hub-03a-run-map-panned-away", { navigator.selectedNodeId = firstStep }),
+            ("hub-03b-run-show-on-map", { navigator.selectedNodeId = bottleneck ?? busiest }),
             ("hub-03c-run-window-1h", { Task { await store.setMetricsWindow(.hour) } }),
             ("hub-04-work", { navigator.route = .project(project, .work) }),
             ("hub-05-messages", { navigator.route = .project(project, .messages) }),
@@ -114,6 +118,8 @@ struct Snapshotter {
                 navigator.route = .project("prj_docs", .workflows)
             }),
             ("14-editor", { navigator.route = .project(project, .workflows); navigator.editWorkflowRequest += 1 }),
+            ("15a-budget-paused-run", { navigator.selectedRunId = DemoFixtures.improveRunId; navigator.route = .project(project, .runs) }),
+            ("15b-run-settings-sheet", { navigator.runSettingsRequest += 1 }),
             ("15-runs-list", { navigator.selectedRunId = nil; navigator.route = .project(project, .runs) }),
             ("16-empty-runs", { navigator.route = .project("prj_docs", .runs) }),
             ("17-error", {
@@ -131,7 +137,9 @@ struct Snapshotter {
         // The settings shot captures the Settings window; every other shot the main window.
         let candidates = NSApp.windows.filter { $0.isVisible && $0.contentView != nil && !$0.isSheet && $0.frame.width > 200 }
         let settings = candidates.first { $0.identifier?.rawValue.contains("Settings") == true || $0.title.contains("Settings") || $0.title.contains("General") }
-        guard let window = name.contains("settings") ? (settings ?? NSApp.keyWindow) : candidates.first(where: { $0.title != "" && $0 != settings }) ?? candidates.first else { return }
+        let sheet = NSApp.windows.first { $0.isSheet && $0.isVisible }
+        let main = candidates.first(where: { $0.title != "" && $0 != settings }) ?? candidates.first
+        guard let window = name.contains("sheet") ? (sheet ?? main) : name.contains("settings") ? (settings ?? NSApp.keyWindow) : main else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         process.arguments = ["-x", "-o", "-l", String(window.windowNumber), directory.appendingPathComponent("\(name).png").path]

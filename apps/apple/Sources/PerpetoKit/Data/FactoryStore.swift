@@ -49,6 +49,7 @@ public final class FactoryStore {
         factory = .empty
         projectStates = [:]
         drafts = [:]
+        templates = []
         await refresh()
     }
 
@@ -224,10 +225,33 @@ public final class FactoryStore {
         }
     }
 
-    public func startRun(projectId: String, workflowId: String) async {
+    public func startRun(projectId: String, workflowId: String, settings: RunSettings = RunSettings()) async {
         await perform("Starting a run", projectId: projectId) {
-            _ = try await self.source.startRun(workflowId: workflowId)
+            _ = try await self.source.startRun(workflowId: workflowId, settings: settings)
         }
+    }
+
+    public func updateRun(_ run: Run, settings: RunSettings) async {
+        await perform("Saving the run settings", projectId: run.projectId) {
+            _ = try await self.source.updateRun(runId: run.id, settings: settings)
+        }
+    }
+
+    /// The template library, cached after the first read.
+    public private(set) var templates: [WorkflowTemplate] = []
+
+    public func loadTemplates() async {
+        guard templates.isEmpty else { return }
+        templates = (try? await source.templates()) ?? []
+    }
+
+    /// Creates a workflow from a template and returns it, as draft version 1.
+    public func createWorkflow(projectId: String, from template: WorkflowTemplate) async -> Workflow? {
+        var created: Workflow?
+        await perform("Creating the workflow", projectId: projectId) {
+            created = try await self.source.createWorkflow(projectId: projectId, from: template)
+        }
+        return created
     }
 
     /// Answers the wait the person saw: sends the item's `decisionId`. If the

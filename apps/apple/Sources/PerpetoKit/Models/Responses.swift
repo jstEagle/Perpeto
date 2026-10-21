@@ -16,6 +16,8 @@ public struct OwnerProfile: Codable, Hashable, Sendable {
 /// `GET /overview`: counts for dashboards, and the owner.
 public struct FactoryOverview: Codable, Hashable, Sendable {
     public var owner: OwnerProfile?
+    /// Active and paused runs with their settings, intake and budget use.
+    public var runs: [Run]?
     public var activeAgents: Int
     public var queuedWork: Int
     public var tokensToday: Int
@@ -29,11 +31,12 @@ public struct FactoryOverview: Codable, Hashable, Sendable {
         self.machinesOnline = machinesOnline
     }
 
-    enum CodingKeys: String, CodingKey { case owner, activeAgents, queuedWork, tokensToday, machinesOnline }
+    enum CodingKeys: String, CodingKey { case owner, runs, activeAgents, queuedWork, tokensToday, machinesOnline }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         owner = try? c.decodeIfPresent(OwnerProfile.self, forKey: .owner)
+        runs = (try? c.decodeIfPresent(Lossy<Run>.self, forKey: .runs))?.elements
         activeAgents = try c.decodeIfPresent(Int.self, forKey: .activeAgents) ?? 0
         queuedWork = try c.decodeIfPresent(Int.self, forKey: .queuedWork) ?? 0
         tokensToday = try c.decodeIfPresent(Int.self, forKey: .tokensToday) ?? 0
@@ -42,7 +45,7 @@ public struct FactoryOverview: Codable, Hashable, Sendable {
 }
 
 public enum UsageGrouping: String, CaseIterable, Sendable, Identifiable {
-    case provider, model, machine, day
+    case provider, model, machine, day, role
     public var id: String { rawValue }
 }
 
@@ -78,6 +81,7 @@ public struct UsageGroup: Codable, Hashable, Identifiable, Sendable {
             case .provider: record.provider
             case .model: record.model
             case .machine: record.machineId
+            case .role: record.role ?? "unknown"
             case .day: calendar.startOfDay(for: record.at).formatted(dayFormat)
             }
         }

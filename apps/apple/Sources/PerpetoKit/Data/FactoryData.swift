@@ -26,8 +26,10 @@ public struct UsageBundle: Sendable, Hashable {
     public var byProvider: [UsageGroup]
     public var byModel: [UsageGroup]
     public var byMachine: [UsageGroup]
+    public var byRole: [UsageGroup]
 
-    public init(byDay: [UsageGroup], byProvider: [UsageGroup], byModel: [UsageGroup], byMachine: [UsageGroup]) {
+    public init(byDay: [UsageGroup], byProvider: [UsageGroup], byModel: [UsageGroup], byMachine: [UsageGroup], byRole: [UsageGroup] = []) {
+        self.byRole = byRole
         self.byDay = byDay
         self.byProvider = byProvider
         self.byModel = byModel
@@ -39,6 +41,7 @@ public struct UsageBundle: Sendable, Hashable {
         byProvider = UsageGroup.group(records, by: .provider)
         byModel = UsageGroup.group(records, by: .model)
         byMachine = UsageGroup.group(records, by: .machine)
+        byRole = UsageGroup.group(records, by: .role)
     }
 
     public static let empty = UsageBundle(byDay: [], byProvider: [], byModel: [], byMachine: [])
@@ -157,6 +160,8 @@ public struct DraftProgress: Sendable, Hashable {
 
     public var assignmentId: String?
     public var stage: Stage
+    /// Further workflows the architect proposed alongside the primary draft.
+    public var alsoSuggested: [Workflow] = []
     public var attempt: Int
     public var detail: String?
     public var draft: Workflow?
@@ -183,7 +188,12 @@ public protocol FactoryDataSource: Sendable {
     func save(_ workflow: Workflow) async throws -> Workflow
     func validate(_ workflow: Workflow) async throws -> ValidationResult
     func control(runId: String, _ action: HubClient.RunControl) async throws -> Run
-    func startRun(workflowId: String) async throws -> Run
+    func startRun(workflowId: String, settings: RunSettings) async throws -> Run
+    /// Changes a running or paused run's intake settings.
+    func updateRun(runId: String, settings: RunSettings) async throws -> Run
+    func templates() async throws -> [WorkflowTemplate]
+    /// Creates draft version 1 of a new workflow from a template.
+    func createWorkflow(projectId: String, from template: WorkflowTemplate) async throws -> Workflow
     func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws
     /// Sends as the owner. With `parentId` the message is a reply in that thread.
     func sendMessage(projectId: String, channelId: String, body: String, to recipient: MessageRecipient, parentId: String?) async throws -> Message

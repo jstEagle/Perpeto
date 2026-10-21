@@ -81,8 +81,11 @@ const machines = [studio, linux];
 const held = new Map();
 const keepAlive = setInterval(async () => {
   for (const machine of machines) await heartbeat(machine).catch(error => console.warn(error.message));
-  for (const { machine, assignment } of held.values()) {
-    await call('POST', `/assignments/${assignment.id}/renew`, { attempt: assignment.attempt }, machine.token).catch(error => console.warn(error.message));
+  for (const [id, { machine, assignment }] of held) {
+    await call('POST', `/assignments/${assignment.id}/renew`, { attempt: assignment.attempt }, machine.token).catch(error => {
+      // The hub can requeue a lease; stop renewing it rather than fail.
+      if (error.message.includes('lease_lost')) { held.delete(id); machine.running--; } else console.warn(error.message);
+    });
   }
 }, 8000);
 
@@ -132,7 +135,9 @@ proposed.edges.push({ id: 'builder-planner-messages', from: { node: 'builder' },
 }
 
 // A run with six ideas, split by the planner.
-const run = await call('POST', `/workflows/${workflow.id}/runs`, { input: { items: [{ title: 'Observability for runs' }] } });
+const run = await call('POST', `/workflows/${workflow.id}/runs`, {
+  input: { items: [{ title: 'Observability for runs' }], keepOpen: true, source: 'manual', budget: { maxTokensPerDay: 2_000_000, maxActiveItems: 8 } },
+});
 const planner = await lease(studio, 'planner');
 await post(studio, planner, 'started');
 await usage(studio, planner, 'claudeAgent', 'claude-opus-5-5', 0.6, 'acct_claude_1');
@@ -149,9 +154,10 @@ await finish(studio, planner, {
 });
 
 // Simulate the machines: lease whatever the hub offers and act by node.
-// Builders finish their first four items, reviewers pass, fail, pass, and
-// everything after that stays running so the run is live.
-const plan = { builderDone: 4, reviews: ['pass', 'fail', 'pass'], unplanned: 2 };
+// Builders finish their first six items and reviewers pass one and fail one,
+// so work queues up at the reviewers (a bottleneck). Everything after that
+// stays running so the run is live.
+const plan = { builderDone: 6, reviews: ['pass', 'fail'], unplanned: 2 };
 let idle = 0;
 for (let turn = 0; turn < 40 && idle < 4; turn++) {
   const machine = machines[turn % 2];
@@ -185,13 +191,14 @@ for (let turn = 0; turn < 40 && idle < 4; turn++) {
 {
   const holding = nodeId => [...held.values()].find(h => h.assignment.nodeId === nodeId);
   const builder = holding('builder'), reviewer = holding('reviewer');
-  const say = async (h, recipientRoleId, body) => (await post(h.machine, h.assignment, 'message', { recipientRoleId, body })).message;
+  const say = async (h, recipientRoleId, body) => (await post(h.machine, h.assignment, 'message', { recipientRoleId, body })
+    .catch(error => { console.warn(error.message); return {}; })).message;
   let fix;
   if (builder) fix = await say(builder, 'reviewer', 'Pushed the fix for the empty window; ready for another look.');
   if (reviewer) {
     await say(reviewer, 'owner', 'Two items touch the API contract. Should I hold them for you?');
     await say(reviewer, 'planner', 'Item 4 is really two changes. Can you split it?');
-    if (fix) await post(reviewer.machine, reviewer.assignment, 'delivered', { messageIds: [fix.id], via: 'steer' });
+    if (fix) await post(reviewer.machine, reviewer.assignment, 'delivered', { messageIds: [fix.id], via: 'steer' }).catch(error => console.warn(error.message));
   }
   await call('POST', `/messaging/projects/${project.id}/channels/run-${run.id}/messages`, {
     senderRoleId: 'owner', recipientRoleId: 'builder', body: 'Keep the change behind the flag until review passes.',
