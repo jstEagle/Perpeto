@@ -64,11 +64,15 @@ Several findings were found independently by more than one reviewer and are merg
 
 ### One failed lease-journal write fails every later lease until restart (H5)
 
+**Fixed in 958dbf8.**
+
 - **Where:** `factory-node/src/node.js:108-111` chains journal writes on one promise and never recovers from a rejection.
 - **Failure:** one transient write error, such as a full disk or a briefly read-only data dir, makes every later `persistSeen` reject. The node keeps heartbeating and leasing, then fails each item immediately, so it burns engine retries for work that other machines could run. Confirmed: after restoring the data dir, jobs 2 and 3 still ended `error`, and `leases.json` was never written again.
 - **Fix:** keep the chain alive with `.catch(() => {})` on the stored promise, and return the per-write promise to the caller.
 
 ### CI steps can read the node token, which cannot be revoked (H6)
+
+**Fixed in dfc41ca.** Node-side CI exposure is addressed; hub token revocation/rotation remains a contract request. See [node isolation limits](../../apps/node/README.md#ci-jobs-and-logs).
 
 - **Where:** job workspaces live under the node `dataDir` (`factory-node/src/job.js:79-81`), next to `machine.json`. Steps inherit the daemon's full environment (`job.js:98-99`), and `perpeto node start` passes the operator's shell environment to the daemon. Node tokens are `HMAC(ownerToken, machineId)` (`factory-hub/src/hub.js:61`, `404`), with no revocation route. Rotating the owner token is refused at startup (`hub.js:53`).
 - **Failure:** CI runs agent-authored code at `headSha` by design. A step that reads `../../../machine.json` printed the token unredacted into the hub job log (confirmed by reproduction). With C1, that token reaches owner routes. Without C1, it still lets the holder lease and report any work matching that machine.
@@ -94,17 +98,25 @@ Batch jobs carry no `runId` (`factory-delivery/src/jobs.js:45`, `queue.js:99`), 
 
 ### The node ignores heartbeat cancellations and never acknowledges them (M5)
 
+**Fixed in 958dbf8.**
+
 The hub returns `cancel: { assignments, jobs }` (`factory-hub/src/hub.js:435-436`), as the architecture requires, but `factory-node/src/node.js:118` only reads `status`. Work stops only when the next renew gets `409 lease_lost`, about 20 s with default timing, and no `cancellation-acknowledged` event is ever sent. Confirmed: about 23 heartbeats carried the cancel, the abort came 4.6 s later on a renew, and no acknowledgement followed. **Fix:** abort the listed records and report `cancelled` with the attempt.
 
 ### The node advertises providers it cannot run, and their work parks on a human (M6)
+
+**Fixed in 958dbf8.**
 
 `node.js:278-282` advertises every provider CLI found on PATH, while a missing `@perpeto/factory-t3` is skipped silently (`executors.js:73-77`). Leased work comes back `blocked` with "No compatible executor is installed" (`node.js:179`), and the engine routes blocked work to a human gate or holds it (`engine.js:96`, `523-531`). Confirmed with a fake `codex` on PATH. **Fix:** advertise only providers with a registered executor, and report a missing executor as a failure the engine retries elsewhere.
 
 ### Account snapshot errors and hub 409s kill the node and its running work (M7)
 
+**Fixed in 958dbf8.**
+
 `node.js:115` and `127` treat any account-provider error, or any non-retryable heartbeat response, as fatal, and a fatal stop drops every running record (`node.js:46-51`). The hub answers 409 when an account ID already belongs to another machine (`factory-hub/src/hub.js:424-425`), and `importAccount({ id })` lets operators choose IDs (`factory-accounts/src/index.js:130`). Confirmed: one thrown `LOCAL_STORAGE_ERROR` abandoned a running job, and a duplicate explicit account ID on a second machine kept that node from starting (real hub over HTTP). **Fix:** send heartbeats with the last good snapshot or none, treat account-related 4xx as non-fatal, and namespace account IDs by machine.
 
 ### A background child holding stdout times out the step (M8)
+
+**Fixed in dfc41ca.**
 
 `factory-node/src/process.js:35` waits for `close`, not `exit`. `sh -c 'sleep 30 & echo hi; exit 0'` returned `timedOut: true` after the full timeout, which `job.js:104` maps to `error`. Patterns like `server & npm test` hit this. Confirmed by reproduction. **Fix:** on `exit`, kill the process group and close the pipes after a short grace period.
 
@@ -148,6 +160,8 @@ Every select, release and observe adds a permanent receipt (`factory-accounts/sr
 
 ### CI logs cost one HTTP request per line, inside the step timeout (M18)
 
+**Fixed in dfc41ca.**
+
 `factory-node/src/job.js:28-44` awaits one POST per line. Measured: 3,000 lines took 985 ms against 3 ms locally, and that time counts toward the step timeout. On a remote hub it scales with round-trip time. **Fix:** batch by size or time.
 
 ## Low
@@ -156,18 +170,18 @@ Every select, release and observe adds a permanent receipt (`factory-accounts/sr
 | --- | --- | --- | --- |
 | L1 | `factory-delivery/src/queue.js:72` | One PR head moving during batch publication rejects every batch member, because the reject has no `entryId`. Confirmed. Testing-phase handling at `queue.js:88` is correct. | Return the changed `entryId` from `merge()` and reject only that entry. |
 | L2 | `factory-hub/src/delivery/index.js:191-197` | `record()` commits to the delivery DB inside the hub transaction. After a hub rollback, a later result with a different body throws `IDEMPOTENCY_CONFLICT`, which isn't swallowed, so the job is re-leased indefinitely. Confirmed for the double-record throw; the rollback window is by trace. | Treat a conflict on a resolved job as ignored and cancel the hub job. |
-| L3 | `factory-node/src/node.js:189`, `307` | `stop({ drain: false })` reports run work as `blocked`, which the engine holds for a human instead of retrying. Trace. | Report `failure` for forced stops. |
+| L3 | `factory-node/src/node.js:189`, `307` | `stop({ drain: false })` reports run work as `blocked`, which the engine holds for a human instead of retrying. Trace. | Report `failure` for forced stops. **Fixed in 958dbf8.** |
 | L4 | `factory-hub/src/hub.js:208`, `246`; `engine.js:537-544` | Escalations are logged as unplanned `workitem.moved` events with no endpoints, and metrics show `unplanned:flow:?->?`. Confirmed. | Count escalated items as reported moves. |
 | L5 | `factory-workflow/src/architect.js:223` | The `FENCE` regex backtracks quadratically. A 64 KiB architect summary blocked the hub's serialized loop for 2.5 s per attempt. Confirmed. | Use a single whitespace class, or scan line by line. |
-| L6 | `factory-node/src/config.js:46-48`, `factory-hub/src/hub.js:261` | Node capacity above 1,000 is accepted, but the lease `max` caps at 1,000, so leasing gets 400 and the node goes fatal. Confirmed. | Clamp `max`, or validate capacity against the hub limit. |
+| L6 | `factory-node/src/config.js:46-48`, `factory-hub/src/hub.js:261` | Node capacity above 1,000 is accepted, but the lease `max` caps at 1,000, so leasing gets 400 and the node goes fatal. Confirmed. | Clamp `max`, or validate capacity against the hub limit. **Fixed in 958dbf8.** |
 | L7 | `factory-hub/src/hub.js:269` | `Math.max(held, machine.running)` keeps a finished slot idle until the next heartbeat, up to 10 s by default. Measured 1.6 s with a 3 s heartbeat. | Use held leases only, or refresh `running` on final events. |
-| L8 | `factory-node/src/hub.js:36-46`, `node.js:121-130`, `238-243` | Retries back off without jitter, so nodes retry in lockstep after a hub outage. Trace. | Add full jitter. |
+| L8 | `factory-node/src/hub.js:36-46`, `node.js:121-130`, `238-243` | Retries back off without jitter, so nodes retry in lockstep after a hub outage. Trace. | Add full jitter. **Fixed in 958dbf8.** |
 | L9 | `factory-accounts/src/index.js:66` | Re-enrolling on the same data dir gives a new machine ID, and the pool then fails with `INVALID_REGISTRY` at startup. Confirmed. | Rebind or reset the pool explicitly on re-enrollment. |
 | L10 | `factory-node/src/node.js:166-169` | Assignment workspaces (random per attempt) are never removed, and the lease journal is rewritten in full on every lease. The journal limit is already noted in the handoff. | Prune finished workspaces and journal entries. |
 | L11 | `factory-accounts/src/signals.js:67-76`, `index.js:212-215` | Claude's permitted overage still cools the account on the next unrelated observation, about an hour in the repro, contradicting the comment and README. Confirmed. | Store an overage flag per window and exclude it from the exhausted check. |
 | L12 | `perpeto-cli/src/service.js:27`, `50` | The systemd ownership check is a prefix match, so the default `service uninstall` disabled and removed a `~/.perpeto-staging` unit. Confirmed with a stubbed `systemctl`. | Match the whole marker line. |
 | L13 | `perpeto-cli/src/api.js:49-50`, `config.js:44` | A join retry rebuilds `name` from `hostname()` and requires an exact match, so a retry after a macOS hostname change fails until `join.secret` is deleted by hand. Confirmed. | Reuse `pending.config` on retry. |
-| L14 | `perpeto-cli/src/process.js:20-23`, `factory-node/src/node.js:82-83` | Stale-lock checks are PID-only, so a reused PID (PID 1 in the repro) blocks startup after an unclean shutdown. Partly documented. | Store a boot or start-time identity with the PID. |
+| L14 | `perpeto-cli/src/process.js:20-23`, `factory-node/src/node.js:82-83` | Stale-lock checks are PID-only, so a reused PID (PID 1 in the repro) blocks startup after an unclean shutdown. Partly documented. | Store a boot or start-time identity with the PID. Node: **Fixed in 958dbf8.** CLI remains outside this worker scope. |
 | L15 | `perpeto-cli/src/config.js:30-31` | The CLI hub config omits `deliveryDatabasePath`, so the delivery DB lands outside `hub/`, and the backup in `docs/install.md` misses it. Trace. | Set `./hub/delivery.sqlite`. |
 | L16 | `factory-workflow/src/run-store.js:132` | `canonicalJson` sorts event keys, but warning order depends on key order (`graph.js:159`, `187-189`), so `verify()` reports a false mismatch. Confirmed. | Compare canonicalized warnings. |
 | L17 | `perpeto-cli/src/api.js:56`; `factory-hub/src/hub.js:399`, `496` | The CLI enrolls with `os: platform()`, so Windows sends `win32` and the hub rejects anything but `windows`. Separately, job results may omit `configHash` and still be accepted. Trace. | Map `win32` to `windows` as the node does (`node.js:279`). Require `configHash` on final job results. |
