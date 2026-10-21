@@ -14,7 +14,7 @@ Keep all non-secret configuration in appropriate configuration files. Only sensi
 
 Never use small numbered or indexed labels above titles or tiny tracked-out mono section kickers. Let titles stand on their own. If a section needs context, put it in the title.
 
-Use brand/tokens.css as the source of truth for the proposed Workshop visual system. Alternative concepts are explorations, not approved themes.
+Use brand/tokens.css as the source of truth for Perpeto Mono, the product UI direction Justus selected on 2026-10-21, and follow docs/architecture/design-system.md for components. Keep it minimal, spacious, monochrome, rounded and smooth: signal orange marks only live activity and the brand, and red only failure. Other boards and concepts are explorations, not approved themes.
 
 ## Validation
 

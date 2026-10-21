@@ -2,7 +2,7 @@
   "name": "@perpeto/design-tokens",
   "version": "0.1.0",
   "private": true,
-  "description": "Workshop design tokens, Spindle assets and component specimen for the Perpeto web and Apple clients.",
+  "description": "Perpeto Mono design tokens, Spindle assets and component specimen for the Perpeto web and Apple clients.",
   "type": "module",
   "exports": {
     ".": "./dist/tokens.ts",

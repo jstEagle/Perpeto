@@ -1,6 +1,6 @@
 # Perpeto brand direction
 
-Status: proposed. Perpeto is the working name inherited from this repository. No naming, trademark, or domain clearance has been performed.
+Status: the product UI direction, Perpeto Mono, was selected on 2026-10-21. The rest of the brand is proposed. Perpeto is the working name inherited from this repository; no naming, trademark, or domain clearance has been performed.
 
 ## The idea
 
@@ -18,41 +18,43 @@ The descriptor and sentence describe the intended product. Until it exists, publ
 
 | Direction | Character | Visual language | Tradeoff |
 | --- | --- | --- | --- |
-| **Workshop — recommended** | Precise, grounded, approachable | Warm paper, ink, signal orange; strong type; ruled work surfaces | Needs disciplined spacing to avoid becoming generic developer tooling |
+| **Workshop**, the basis for Perpeto Mono | Precise, grounded, approachable | Warm paper, ink, signal orange; strong type | Needs disciplined spacing to avoid becoming generic developer tooling |
 | **Current** | Continuous, distributed, calm | Deep blue, pale blue, electric blue; connected paths; open layouts | Networking imagery can overwhelm the software-building story |
 | **Commons** | Open, collaborative, durable | Cream, forest green, restrained serif headlines; editorial layouts | Less immediately associated with agent orchestration |
 
-See [the visual exploration](preview.html). It compares concepts; it does not imply approval of any direction.
+See [the visual exploration](preview.html). It compares the original concepts; the selected product UI direction is below.
 
-## Workshop visual system
+## Perpeto Mono: the product UI direction
 
-The initial [CSS tokens](tokens.css) are the canonical color, spacing, radius, and typography values for this proposal. The preview uses them directly. Alternatives are scoped within the preview and are not implementation themes.
+**Decision, 2026-10-21:** Justus selected Perpeto Mono as the product UI direction for the web and Apple clients, after reviewing the existing clients and asking for an interface that is minimal, spacious, monochrome, simple, elegant, rounded, smooth and clean. The [Monochrome Orange board](overviews/favorites/monochrome-orange.png) is the primary reference, with [Monochrome Blue](overviews/favorites/monochrome-blue.png) and the [monochrome set](overviews/monochrome/) as secondary references.
+
+Perpeto Mono keeps Workshop's warm paper, ink and signal orange, and drops its orange buttons, ruled surfaces and coloured status roles. [brand/tokens.css](tokens.css) is the source of truth; [packages/design-tokens](../packages/design-tokens/README.md) generates the client formats and a specimen, and [docs/architecture/design-system.md](../docs/architecture/design-system.md) specifies the components. The clients have not been restyled yet.
+
+This decision covers the product interface. The name, trademark and domain clearance, the small Spindle variant and dark mode remain open.
 
 ### Typography
 
-Use the system sans-serif stack for interface and display text; use the system monospace stack only for identifiers, paths, timestamps, and logs. This keeps the initial assets portable and avoids font downloads.
+Use the system sans-serif stack for interface and display text, in three weights: regular, medium and semibold. Use the system monospace stack only for identifiers such as run IDs, paths, branches and machine names. This keeps the assets portable and avoids font downloads.
 
-Display type is bold, tightly spaced, and sentence case. Interface type is regular or medium. Body text uses a 1.55 line height; headings use 1.05–1.2. The interface scale is 12, 14, 16, 20, 24, and 32 px. Large brand headlines may scale from 40 to 72 px. Do not use uppercase microcopy, numbered eyebrows, or tracked-out section kickers.
+Titles are large, semibold, tightly spaced and sentence case: 40 px page titles, 32 px metrics, 16 px card titles. Body text is 14 px in the app and 16 px for reading, at a 1.5 line height. Display sizes from 48 to 72 px are for brand moments. Do not use uppercase microcopy or table headers, numbered eyebrows, or tracked-out section kickers.
 
 ### Color and semantics
 
-Warm paper is the default canvas; white surfaces carry editable work. Ink carries primary text, and muted ink carries secondary text. Orange identifies the brand and primary actions. Status colors have separate success, warning, and error roles; always pair them with a readable label or icon.
+Warm off-white is the canvas; white cards carry the work. Six warm greys run between them and near-black ink. Ink carries text, primary buttons and keyboard focus.
 
-Use the darker action token for filled buttons with white text. The brighter orange is decorative, not a text color on white. The stronger border token is for interactive boundaries; the subtle border token is for nonessential separators. Focus uses a blue outline with an offset. Dark mode is intentionally undefined until the product needs it.
+Signal orange is the only hue, reserved for a small dot that marks live activity and for the brand mark. It is never a button, link, text colour, fill, border or selection. States are told in greys by icon, word and weight: things that need a person are filled and medium weight, quiet states are outlined and muted. One restrained red appears only where a failure would otherwise be missed. Text meets WCAG AA contrast on every surface. Dark mode is intentionally undefined until the product needs it.
 
 ### Mark and wordmark
 
-Start with a lowercase **perpeto** wordmark in a bold sans-serif. Explore a compact symbol made from two offset, interlocking right-angle forms: separate work units forming one system. Avoid infinity signs, robot faces, brains, and dense node meshes.
-
-This is a logo brief, not a finished logo. Before adoption, test black, white, and orange variants at 16, 24, and 32 px, alongside the wordmark and on their own. Use clearspace at least equal to one symbol stroke on every side. Do not ship an untested symbol as a favicon.
+The lowercase **perpeto** wordmark and the eight-arm Spindle live in [identity/](identity/). In the product they appear in ink on paper; orange is for display-size brand moments. Use clearspace at least equal to one arm width on every side. The master Spindle muddies below 24 px; the simplified small variant in `packages/design-tokens/assets/proposed/` is not approved. Avoid infinity signs, robot faces, brains and dense node meshes.
 
 ### Interface character
 
-Favor compact navigation, readable tables, stable columns, restrained borders, and clear ownership. Use a 4 px spacing base, 6 px control radii, and 12 px panel radii. Avoid floating dashboards full of decorative metrics.
+Generous space does the separating: 48 px page padding, 28 px card padding, 20 px card radii, soft shadows instead of borders, pill buttons and 12 px controls. Each view has one black primary action. Show what is live, what needs a person and at most three numbers; secondary metrics, tables and older events wait behind a disclosure.
 
-Primary navigation should reflect project work. Detailed events and logs belong near the work they explain, with deeper information available on demand. Running states should occupy reserved space so updates do not move controls. Prefer explicit status labels over animated activity. Motion, when useful, should be brief and respect reduced-motion preferences.
+Primary navigation should reflect project work. Detailed events and logs belong near the work they explain, with deeper information available on demand. Running states should occupy reserved space so updates do not move controls. Prefer explicit status labels over animated activity. Motion is short, eased out, and disappears under reduced-motion preferences.
 
-An empty state should offer one useful next action. An error should explain the affected operation and recovery path. Tables must remain usable at narrow widths through deliberate scrolling or alternate layouts, not illegible compression.
+An empty state should offer one useful next action. An error should explain the affected operation and recovery path. Tables must remain usable at narrow widths through deliberate scrolling or alternate layouts, not illegible compression. The workflow map is a calm drawing: a barely visible dot grid, soft rounded nodes and thin grey edges, and on narrow screens a list of steps.
 
 ## Voice
 
@@ -68,6 +70,6 @@ Be direct, specific, and calm. Describe observable outcomes. Distinguish planned
 
 These are copy examples, not promises about implemented recovery behavior. Avoid claims such as “fully autonomous,” “self-healing,” and “production-ready” without clear scope and evidence.
 
-## Next brand decision
+## Next brand decisions
 
-Choose a direction before developing a final mark, custom typography, or a full product interface. Workshop is the recommendation because it connects the factory idea to clear, useful tools without relying on familiar AI imagery.
+The product UI direction is decided. Still open: clearing the name, trademark and domain; approving or rejecting the small Spindle for favicons; and defining dark mode when the product needs it.
