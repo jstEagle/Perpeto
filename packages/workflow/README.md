@@ -29,7 +29,13 @@ import {
 | `LOOP_CONDITION_UNMATCHED` | `until: review-pass` without a review gate whose fail edge returns to the loop, and likewise for `ci-pass` and `manual` (human) |
 | `INVALID_DELEGATION`, `INVALID_MESSAGES_EDGE` | `delegates` must run from a planner or agent to an agent, and `messages` must connect planner, agent or review roles |
 
-Warnings, which don't block a graph: `UNKNOWN_KEY`, `UNKNOWN_CONFIG_KEY`, `DUPLICATE_EDGE`, `NO_PATH_TO_OUTPUT`, `LOOP_NEVER_REPEATS`, `POLICY_CANMESSAGE_DERIVED`, `POLICY_SUBAGENTS_WITHOUT_DELEGATION`, `DELEGATION_UNUSED` and `DELEGATE_PROVIDER_NOT_ALLOWED`.
+Warnings, which don't block a graph: `UNKNOWN_KEY`, `UNKNOWN_CONFIG_KEY`, `DUPLICATE_EDGE`, `NO_PATH_TO_OUTPUT`, `LOOP_NEVER_REPEATS`, `POLICY_CANMESSAGE_DERIVED`, `POLICY_SUBAGENTS_WITHOUT_DELEGATION`, `DELEGATION_UNUSED` and `DELEGATE_PROVIDER_NOT_ALLOWED`. These flag valid values that are fragile in unattended runs:
+
+| Code | When |
+| --- | --- |
+| `NO_RETRY` | A planner, agent, review or CI node makes one attempt (`retry` missing or `maxAttempts: 1`) and has no `onExhausted` target |
+| `RETRY_WITHOUT_BACKOFF` | It retries with `backoffSec` 0 |
+| `LOOP_LIMIT_HIGH` | A loop allows more than `SAFE_MAX_ITERATIONS` (10) passes |
 
 These semantics go beyond the contract table:
 
@@ -183,7 +189,7 @@ Reads: `getRun`, `listRuns({ projectId?, status? })`, `getState`, `listWorkItems
 - Each `changed` entry lists leaf `changes: [{ path, before?, after? }]`, such as `config.harness.model`. `layoutOnly` is true when only `position` moved.
 - `a` may be `null` when there is no active version.
 
-`buildArchitectPrompt({ project, docs, goals, machines, providers, existingWorkflow?, userPrompt, previousErrors? })` builds a deterministic prompt for the `workflow-architect` role. It includes the graph guide (`describeGraphSchema()`), the build template as an example, previous validation errors and the answer format: one fenced json block holding `{ rationale, graph }`.
+`buildArchitectPrompt({ project, docs, goals, machines, providers, existingWorkflow?, userPrompt, previousErrors? })` builds a deterministic prompt for the `workflow-architect` role. It includes the graph guide (`describeGraphSchema()`), defaults for unattended runs (three attempts with 30 s backoff for agent roles and two for CI, loops of 3 passes, concurrency within machine capacity, strong models for builders and escalations and cheaper ones for planning and first-pass review), the build template as an example, previous validation errors and the answer format: one fenced json block holding `{ rationale, graph }`. When the repository is a local path, it explains that delivery uses published `local:<branch>` branches and asks for prompts that never mention pull requests.
 
 - `parseArchitectResult(text)` extracts `{ graph, rationale }`. It takes the last usable fenced block, accepting either a wrapper object or a bare graph with prose as the rationale. It throws `ARCHITECT_PARSE_ERROR`.
 - `evaluateArchitectResult(text, { providers? })` parses and validates in one step for the hub's retry loop, which is capped by `ARCHITECT_MAX_ATTEMPTS`.

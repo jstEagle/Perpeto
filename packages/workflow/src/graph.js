@@ -18,6 +18,8 @@ export const ESCALATION_TARGET_TYPES = Object.freeze(['human', 'agent', 'review'
 const PORTED = new Set([...GATE_TYPES, 'merge-queue']);
 /** Node types that accept a `retry` policy for infrastructure and agent errors. */
 const RETRY_TYPES = Object.freeze([...ROLE_TYPES, 'ci']);
+/** Loop limits above this draw a `LOOP_LIMIT_HIGH` warning. */
+export const SAFE_MAX_ITERATIONS = 10;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 /** Ids become keys of plain objects in plans and run state, so they must not shadow `Object.prototype` members. */
 const RESERVED_IDS = new Set(Object.getOwnPropertyNames(Object.prototype));
@@ -417,6 +419,21 @@ function analyse(graph, { providers } = {}) {
       if (allowed && target && !allowed.includes(target)) {
         warn('DELEGATE_PROVIDER_NOT_ALLOWED', `Node "${node.id}" delegates to "${edge.to.node}" on ${target}, which its allowedSubagentProviders excludes.`, { nodeId: node.id, edgeId: edge.id });
       }
+    }
+  }
+
+  // Values that are valid but fragile or costly in an unattended run; drafts keep them, people see why.
+  for (const node of nodes.values()) {
+    if (RETRY_TYPES.includes(node.type) && !delegateOnly.has(node.id)) {
+      const attempts = node.config.retry?.maxAttempts ?? 1;
+      if (attempts === 1 && node.config.onExhausted === undefined) {
+        warn('NO_RETRY', `${node.type} node "${node.id}" makes one attempt, so one transient harness, Git or CI error fails the item. Set retry.maxAttempts to 2 or 3, or an onExhausted target.`, { nodeId: node.id });
+      } else if (attempts > 1 && !(node.config.retry?.backoffSec > 0)) {
+        warn('RETRY_WITHOUT_BACKOFF', `${node.type} node "${node.id}" retries immediately; a rate-limited provider fails every attempt. Set retry.backoffSec, for example 30.`, { nodeId: node.id });
+      }
+    }
+    if (node.type === 'loop' && node.config.maxIterations > SAFE_MAX_ITERATIONS) {
+      warn('LOOP_LIMIT_HIGH', `loop "${node.id}" allows ${node.config.maxIterations} passes; rework that has not converged after ${SAFE_MAX_ITERATIONS} rarely does, and each pass costs agent turns.`, { nodeId: node.id });
     }
   }
 
