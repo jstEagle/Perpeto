@@ -140,7 +140,7 @@ test('verify replays graphs whose warnings depend on key order', t => {
   builder.config = { zulu: 1, ...builder.config, alpha: 2 };
   const run = storeDriver(holder);
   run.start({ graph });
-  assert.equal(run.state.plan.warnings.length, 3);
+  assert.equal(run.state.plan.warnings.filter(warning => warning.code !== 'NO_RETRY').length, 3);
   assert.deepEqual(holder.store.verify('run_test1'), { ok: true, events: 1 });
 });
 

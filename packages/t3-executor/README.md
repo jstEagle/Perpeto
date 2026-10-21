@@ -25,6 +25,11 @@ The node passes its `runtime` section as `config`. Executor settings can sit at 
 | `onRuntimeRequest` | `interrupt` | When an agent asks for approval or input: `interrupt` the run and return `blocked`, or `leave` it pending for a person in T3 |
 | `onNativeSubagentViolation` | `interrupt` | `interrupt` or `report` |
 | `publishBranch` | `true` | Push new commits on the work branch to `origin`, without force |
+| `agentIsolation` | `factory` | `factory` runs agents on an isolated T3 provider instance (see [agent isolation](#agent-isolation)). `inherit` uses the operator's instance as is; keep it for debugging |
+| `gitIdentity` | `{ "name": "Perpeto Agent", "email": "agents@perpeto.local" }` | Author and committer of agent commits. An assignment's `gitIdentity`, or `context.project.gitIdentity`, overrides it per project |
+| `agentHomesDir` | `<baseDir>/perpeto-agent-homes`, else `~/.perpeto/agent-homes` | Where factory Codex homes live |
+| `codexHome` | the base instance's home, else `CODEX_HOME`, else `~/.codex` | Codex home whose login an unpooled factory instance uses |
+| `personalSkillDirs` | `["~/.agents/skills"]` (absolute) | Shared skill folders whose skills factory Codex instances disable |
 | `turnTimeoutMs` | 4 hours | Assignment time limit |
 | `settleMs`, `pollMs`, `accountReadyTimeoutMs` | 2000, 1000, 60000 | Timing |
 
@@ -38,7 +43,10 @@ A minted session gets `orchestration:read`, `orchestration:operate` and `provide
    - waits until that instance is `ready`, then rechecks `bindingFor(accountId, { reservationId })` just before launch;
    - renews its reservation halfway through each confirmed lease, throughout setup, the turn and cancellation cleanup. The default pool lease is five minutes. Each renewal has a fresh idempotency key; if renewal hangs, a separate deadline cancels work after three quarters of the confirmed lifetime, leaving time for interrupt cleanup before expiry.
 
+   With `agentIsolation: factory` the bound instance gets the factory Git identity and project-only settings, as below; the pool's Perpeto-owned home is kept.
+
    It sends every provider failure to `observe`, so the pool decides between rate-limit cooldown and auth invalidation. Binding checks, observations and release carry the selected reservation token. It always stops renewal and releases the reservation in `finally`. Renewal loss interrupts followed root and child runs and returns an assignment `failure`. `ACCOUNT_POOL_EXHAUSTED` also returns `failure` with a retry-with-backoff summary and never selects the operator's default login. With no enrolled accounts or no pool support (`acquire` returns `null`), it uses a ready instance of the harness's driver.
+   Without a pool it picks a ready operator instance of the driver and, in `factory` mode, registers and waits for its factory instance (`perpeto_<base>_<hash>`) instead.
 2. **Workspace from `assignment.repo`.**
    - A local working checkout (`localPath`) gets a T3-managed worktree on the work branch. An existing branch or worktree is reused.
    - Otherwise the executor clones `url` (or a bare `localPath`) into `ctx.workspace/repo`, starting from `origin/<branch>` when an earlier attempt published it.
@@ -53,6 +61,34 @@ A minted session gets `orchestration:read`, `orchestration:operate` and `provide
    - **Workflow architect** (`role: 'workflow-architect'` or `architectRequestId`): `graph` and `rationale` come from fenced JSON. Otherwise the whole reply goes back in `summary`, so the hub's parser can return its errors.
    - **Work**: the executor reports uncommitted changes, pushes new commits on the work branch, and returns `branch`, `headSha`, the last PR URL the agent mentioned, and `threadRef` (`t3-thread://v1/<threadId>`). When it pushed to a local bare origin (an absolute or `file://` path, not GitHub) and the agent named no PR, `prUrl` is `local:<branch>`, the address the merge queue's local adapter expects.
 6. **Cancellation.** When `ctx.signal` aborts, the executor interrupts every active run (`run.interrupt`, `holdQueue: true`), waits briefly, then rejects with the abort reason.
+
+### Agent isolation
+
+Live acceptance run 1 showed factory agents reading the operator's personal instructions and committing as the operator. T3 provider instances accept their own `environment`, home and launch arguments, so the executor isolates agents without patching T3:
+
+| Layer | Operator setup that stays out | What still loads |
+| --- | --- | --- |
+| Claude | `--setting-sources=project,local`: `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, user hooks, skills and plugins. The Claude Agent SDK loads every source when T3 passes none | The repository's `CLAUDE.md` and `.claude/` settings. The login, from the base instance's `homePath` |
+| Codex | A factory `CODEX_HOME` with a minimal `config.toml` and `auth.json` linked to the source home's: `~/.codex/AGENTS.md`, skills, memories, hooks, plugins, MCP servers, rollout history. The config also disables bundled skills and every skill in `~/.agents/skills` (`personalSkillDirs`), which Codex reads whatever `CODEX_HOME` is. `-c features.{memories,hooks,plugins,apps,multi_agent,multi_agent_v2}=false` disables account-level plugins and apps | The repository's `AGENTS.md` and skills. The one login: token refreshes write through the link. Pooled accounts keep their Perpeto-owned homes |
+| Git | `GIT_AUTHOR_*` and `GIT_COMMITTER_*` from `gitIdentity`, and `commit.gpgsign`, `tag.gpgsign` off through `GIT_CONFIG_*`, so the operator's identity and signing key never touch agent commits | The operator's other Git config, such as credential helpers |
+
+The executor reports `isolation.bound` with the instance and identity. A factory home whose `auth.json` became a regular file is refused (`blocked`), since that copy would drift from the operator's login. Base-instance environment variables T3 marks sensitive are redacted for clients, so they are not copied; their names are reported in `droppedEnvironment`.
+
+Context before the agent does anything, from Codex rollouts (`gpt-6.1-sol`, low effort):
+
+| Part of the first model call | Live run 1 (operator setup) | Factory instance |
+| --- | --- | --- |
+| Input tokens, first call | 27,710 to 31,545 (nine turns; builder 31,347) | 15,252 (builder) |
+| Skills list | 41,160 characters | none |
+| Memories | about 12,000 characters | none |
+| `~/.codex/AGENTS.md` | 4,939 characters | none |
+| SessionStart hook output | about 1,780 characters | none |
+| T3 orchestration, runtime and tool notes | 7,559 characters | 7,559 characters |
+| Multi-agent role and mode notes | 2,671 characters | 2,671 characters |
+
+The factory column is `node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low`, one builder turn on 21 October 2026, which also showed the commit authored and committed by `Perpeto Agent <agents@perpeto.local>`. T3's own context stays, as do its `t3-code` MCP tools; dropping them needs a per-thread switch in T3 (finding 3). The multi-agent notes come from the model catalog (`multi_agent_version: v2`) and survive both feature flags.
+
+Not verified live: Claude isolation (configured and unit-tested only), and whether `--setting-sources` also hides user-scope MCP servers in `~/.claude.json`.
 
 ### Local account-provider contract
 
@@ -150,4 +186,5 @@ Source: `vendor/t3code` at the pinned commit. Verified live where noted.
   ```sh
   npm run setup && npm run build
   node packages/t3-executor/scripts/live-check.mjs --policy --roles [--provider claudeAgent --model claude-haiku-5-5] [--native]
+  node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low [--server-entry other/checkout/bin.mjs]
   ```

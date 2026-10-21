@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { EDGE_KINDS, GRAPH_SCHEMA, LIMITS, NODE_TYPES, validateGraph } from './graph.js';
+import { EDGE_KINDS, GRAPH_SCHEMA, LIMITS, NODE_TYPES, SAFE_MAX_ITERATIONS, validateGraph } from './graph.js';
 import { WorkflowError, fail, isPlainObject, isText } from './util.js';
 
 export const ARCHITECT_ROLE = 'workflow-architect';
@@ -144,6 +144,21 @@ Edges are { "id", "kind", "from": { "node", "port"? }, "to": { "node" } }:
 
 Rules: every node must be reachable from an input, through flow edges or escalation targets; every cycle, including one through an escalation, must return into a loop node from inside that loop's body; a loop with until "review-pass" needs a review gate in its body whose fail edge returns to the loop ("ci-pass" needs a ci gate, "manual" a human gate). Work items carry branch, pull request URL and head commit from the agent that built them; ci and merge-queue nodes need those, so put an agent before them.`;
 
+const DEFAULTS_GUIDE = `Unless the request says otherwise, use these values. Runs are unattended, so a single transient error should never end an item.
+
+- Retries: every planner, agent and review node gets "retry": { "maxAttempts": 3, "backoffSec": 30 }; every ci node gets "retry": { "maxAttempts": 2, "backoffSec": 30 }. Never set retry.maxAttempts to 1 unless the node has an onExhausted target. A request for fewer loop passes or lower cost is not a request for fewer retries: retries cover errors, not verdicts.
+- Loops: a review loop with maxIterations 3 and a delivery loop (until ci-pass) with maxIterations 3. Stay between 2 and 5; above ${SAFE_MAX_ITERATIONS} rework rarely converges.
+- Concurrency: keep the sum of agent concurrency within the machines' capacity. Planner 1. Builders up to the planner's maxItems. One reviewer per two or three builders.
+- Models: give the strongest model and higher reasoning effort to builders and to escalation targets such as a senior reviewer. Planners, first-pass reviewers and triage can use a cheaper, faster model or lower effort when one is available.
+- Escalation: when the request allows a person in the loop, send exhausted and blocked work to a human triage node through onExhausted and onBlocked.`;
+
+const repoIsLocal = repo => [repo?.url, repo?.localPath].some(value => typeof value === 'string' && (value.startsWith('/') || value.startsWith('file://'))) &&
+  !/^(?:https:\/\/|ssh:\/\/git@|git@)/.test(repo?.url ?? '');
+
+const LOCAL_DELIVERY = 'This project uses a local repository, not a forge such as GitHub. There are no pull requests: the factory publishes each work branch to the local origin, ' +
+  'addresses it as local:<branch>, and the merge queue merges it after review and CI. Write prompts that ask builders to commit on their work branch and report what they did; ' +
+  'do not ask agents to open, register or merge pull requests, or to push.';
+
 /** Plain-language description of graph v1 for agent prompts. */
 export function describeGraphSchema() { return GRAPH_GUIDE; }
 
@@ -176,7 +191,7 @@ export function buildArchitectPrompt({ project, docs = [], goals = [], machines 
   ];
   const repo = project.repo ?? {};
   const repoLine = [repo.url ?? repo.localPath, repo.defaultBranch && `default branch ${repo.defaultBranch}`].filter(Boolean).join(', ');
-  parts.push(`## Project\n\nName: ${project.name}${repoLine ? `\nRepository: ${repoLine}` : ''}`);
+  parts.push(`## Project\n\nName: ${project.name}${repoLine ? `\nRepository: ${repoLine}` : ''}${repoIsLocal(repo) ? `\n\n${LOCAL_DELIVERY}` : ''}`);
   if (goals.length) parts.push(`## Goals\n\n${list(goals.map(String))}`);
   if (docs.length) {
     parts.push(`## Docs\n\n${docs.map(doc => {
@@ -210,6 +225,7 @@ export function buildArchitectPrompt({ project, docs = [], goals = [], machines 
       `${error.code}${error.nodeId ? ` at node ${error.nodeId}` : ''}${error.edgeId ? ` at edge ${error.edgeId}` : ''}: ${error.message}`))}`);
   }
   parts.push(`## Graph format\n\n${GRAPH_GUIDE}`);
+  parts.push(`## Defaults\n\n${DEFAULTS_GUIDE}`);
   parts.push(`## Example: the default build workflow\n\n\`\`\`json\n${buildExample()}\n\`\`\``);
   parts.push('## Answer format\n\n' +
     'Reply with exactly one fenced json block containing { "rationale": string, "graph": object }. The rationale explains, in a few short paragraphs, ' +

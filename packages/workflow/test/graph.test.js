@@ -155,7 +155,7 @@ test('warnings do not fail validation', () => {
   });
   const result = validateGraph(graph);
   assert.equal(result.ok, true);
-  assert.deepEqual(result.warnings.map(w => w.code).sort(), ['POLICY_CANMESSAGE_DERIVED', 'POLICY_SUBAGENTS_WITHOUT_DELEGATION', 'UNKNOWN_CONFIG_KEY']);
+  assert.deepEqual(result.warnings.map(w => w.code).sort(), ['NO_RETRY', 'POLICY_CANMESSAGE_DERIVED', 'POLICY_SUBAGENTS_WITHOUT_DELEGATION', 'UNKNOWN_CONFIG_KEY']);
   assert.equal(compileGraph(graph).roles.dev.policy.maxSubagents, 0);
 });
 
