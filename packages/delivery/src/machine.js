@@ -34,6 +34,7 @@ export function selectEntries(state) {
 /** Pure deterministic transition. All IDs and external observations arrive in the action. */
 export function reduceQueue(previous, action) {
   const state = structuredClone(previous);
+  if (action.rejectionKind !== undefined) requireValue(['conflict', 'ci', 'other'].includes(action.rejectionKind), 'Invalid rejection kind.');
   if (action.type === 'enqueue') {
     const entry = structuredClone(action.entry);
     requireValue(entry && typeof entry === 'object', 'Merge entry is required.');
@@ -57,7 +58,7 @@ export function reduceQueue(previous, action) {
     state.groups = state.groups.map(ids => ids.filter(id => !selected.includes(id))).filter(ids => ids.length);
     state.active = { id: action.attemptId, entryIds: selected, baseSha: action.baseSha, phase: 'preparing' };
     for (const entry of state.entries.filter(entry => selected.includes(entry.id))) {
-      entry.status = 'testing'; delete entry.reason; delete entry.jobId;
+      entry.status = 'testing'; delete entry.reason; delete entry.jobId; delete entry.rejectionKind;
     }
     return state;
   }
@@ -67,9 +68,9 @@ export function reduceQueue(previous, action) {
     requireValue(!['merged', 'rejected'].includes(entry.status), 'Merge entry is already terminal.', 'CONFLICT');
     string(action.reason, 'reason');
     if (state.active?.entryIds.includes(entry.id)) {
-      return reduceQueue(state, { type: 'reject', attemptId: state.active.id, entryId: entry.id, reason: action.reason });
+      return reduceQueue(state, { type: 'reject', attemptId: state.active.id, entryId: entry.id, reason: action.reason, rejectionKind: action.rejectionKind ?? 'other' });
     }
-    entry.status = 'rejected'; entry.reason = action.reason; delete entry.jobId;
+    entry.status = 'rejected'; entry.reason = action.reason; entry.rejectionKind = action.rejectionKind ?? 'other'; delete entry.jobId;
     state.groups = state.groups.map(ids => ids.filter(id => id !== entry.id)).filter(ids => ids.length);
     return state;
   }
@@ -116,7 +117,7 @@ export function reduceQueue(previous, action) {
       requireValue(rejected.length > 0, 'Rejected entry is not in this attempt.');
       for (const entry of entries) {
         entry.status = rejected.includes(entry) ? 'rejected' : 'queued';
-        if (entry.status === 'rejected') entry.reason = action.reason;
+        if (entry.status === 'rejected') { entry.reason = action.reason; entry.rejectionKind = action.rejectionKind ?? 'other'; }
         else delete entry.jobId;
       }
       const remaining = active.entryIds.filter(id => !rejected.some(entry => entry.id === id));
@@ -125,7 +126,7 @@ export function reduceQueue(previous, action) {
       break;
     }
     case 'ci-failed':
-      if (entries.length === 1) { entries[0].status = 'rejected'; entries[0].reason = action.reason; }
+      if (entries.length === 1) { entries[0].status = 'rejected'; entries[0].reason = action.reason; entries[0].rejectionKind = action.rejectionKind ?? 'ci'; }
       else {
         entries.forEach(entry => { entry.status = 'queued'; entry.reason = 'Batch failed; testing a smaller group.'; delete entry.jobId; });
         const middle = Math.ceil(active.entryIds.length / 2);

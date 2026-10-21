@@ -115,7 +115,7 @@ export class MergeQueue {
         candidate = await this.adapter.prepare({ baseSha: active.baseSha, entries, method: config.method, idempotencyKey: active.id, publication: config.publication });
       } catch (error) {
         if (error.code !== 'MERGE_CONFLICT') throw error;
-        transition('reject', { ...(error.entryId ? { entryId: error.entryId } : {}), reason: 'Merge conflict with the speculative base.' }); return;
+        transition('reject', { ...(error.entryId ? { entryId: error.entryId } : {}), reason: 'Merge conflict with the speculative base.', rejectionKind: 'conflict' }); return;
       }
       const workItem = { headSha: candidate.revision, ...(entries.length === 1 ? { id: entries[0].workItemId, runId: entries[0].runId } : {}) };
       // Optional IDs are omitted rather than serialized as undefined.
@@ -128,7 +128,7 @@ export class MergeQueue {
       const job = state.jobs.find(job => job.id === active.jobId);
       if (['queued', 'leased', 'running'].includes(job.status)) return;
       if (!isEvidenceCurrent(job, { revision: active.revision, configHash: stableHash(config.ci) }) || !checksPass(job, config.requiredChecks)) {
-        transition('ci-failed', { reason: job.status === 'passed' ? 'Required checks are missing or stale.' : `Speculative CI ${job.status}.` });
+        transition('ci-failed', { rejectionKind: ['failed', 'passed'].includes(job.status) ? 'ci' : 'other', reason: job.status === 'passed' ? 'Required checks are missing or stale.' : `Speculative CI ${job.status}.` });
         return;
       }
       transition('approve'); return;

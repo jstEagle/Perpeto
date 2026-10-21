@@ -31,6 +31,7 @@
  * @property {string} headSha
  * @property {string} baseBranch
  * @property {'queued'|'testing'|'merging'|'merged'|'rejected'} status
+ * @property {'conflict'|'ci'|'other'} [rejectionKind]
  * @property {string} [jobId]
  * @property {string} [reason]
  * @property {string} [testedRevision] Perpeto speculative candidate.
