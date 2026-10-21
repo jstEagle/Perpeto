@@ -4,6 +4,8 @@
   "databasePath": "../.perpeto/hub/hub.sqlite",
   "messagingDatabasePath": "../.perpeto/hub/messaging.sqlite",
   "deliveryDatabasePath": "../.perpeto/hub/delivery.sqlite",
+  "deliveryMaxStepFailures": 5,
+  "deliveryRetryBackoffMs": 2000,
   "deliveryRepositoriesPath": "../.perpeto/hub/repositories",
   "deliveryLeaseDurationMs": 60000,
   "ownerTokenPath": "../.perpeto/hub/owner.secret",
