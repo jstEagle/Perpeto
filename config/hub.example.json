@@ -11,6 +11,7 @@
   "idempotencyRetentionMs": 86400000,
   "archiveFinished": true,
   "retentionSweepIntervalMs": 60000,
+  "sessionTtlMs": 43200000,
   "deliveryMaxStepFailures": 5,
   "deliveryRetryBackoffMs": 2000,
   "deliveryRepositoriesPath": "../.perpeto/hub/repositories",
