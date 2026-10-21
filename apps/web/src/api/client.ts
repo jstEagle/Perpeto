@@ -25,6 +25,7 @@ import type {
   Project,
   Run,
   RunInput,
+  RunSettings,
   UnreadState,
   UsageRow,
   UsageSummary,
@@ -32,7 +33,9 @@ import type {
   WorkItem,
   Workflow,
   WorkflowGraph,
+  WorkflowTemplate,
 } from './types';
+import { localTemplates } from '../workflow/templates';
 
 /**
  * How requests prove they come from the owner. `cookie` relies on an
@@ -245,8 +248,20 @@ export class HttpHub implements HubApi {
     return await this.#request<Workflow>('POST', `/workflows/${enc(workflowId)}/activate`, { body: { version } });
   }
 
-  async startRun(workflowId: string) {
-    return await this.#request<Run>('POST', `/workflows/${enc(workflowId)}/runs`, { body: {} });
+  async listTemplates(): Promise<WorkflowTemplate[]> {
+    try {
+      return list<WorkflowTemplate>(await this.#request('GET', '/workflow-templates'), 'templates');
+    } catch (error) {
+      if (error instanceof HubError && error.status === 404) return localTemplates();
+      throw error;
+    }
+  }
+
+  async startRun(workflowId: string, settings: RunSettings = {}) {
+    return await this.#request<Run>('POST', `/workflows/${enc(workflowId)}/runs`, { body: settings });
+  }
+  async updateRun(id: string, settings: RunSettings) {
+    return await this.#request<Run>('PATCH', `/runs/${enc(id)}`, { body: settings });
   }
 
   async listRuns(projectId: string): Promise<Run[]> {

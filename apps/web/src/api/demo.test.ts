@@ -47,4 +47,44 @@ describe('DemoHub', () => {
     await hub.stopRun(DEMO_IDS.run);
     await expect(hub.resumeRun(DEMO_IDS.run)).rejects.toMatchObject({ status: 409 });
   });
+
+  it('pauses intake when a budget is used and says which limit', async () => {
+    const hub = new DemoHub();
+    const run = await hub.getRun(DEMO_IDS.improveRun);
+    expect(run.keepOpen).toBe(true);
+    expect(run.intake).toMatchObject({ paused: true, reason: { limit: 'maxTokensPerDay', maximum: 400_000 } });
+    expect(run.budgetUsage!.tokens).toBeGreaterThan(400_000);
+    const raised = await hub.updateRun(DEMO_IDS.improveRun, { budget: { maxTokensPerDay: 2_000_000 } });
+    expect(raised.intake?.paused).toBe(false);
+    const removed = await hub.updateRun(DEMO_IDS.improveRun, { budget: {} });
+    expect(removed.budget).toBeUndefined();
+    expect((await hub.overview(DEMO_IDS.perpeto)).runs?.map((r) => r.workflowId).sort()).toEqual([DEMO_IDS.build, DEMO_IDS.improve].sort());
+  });
+
+  it('refuses settings the hub would refuse', async () => {
+    const hub = new DemoHub();
+    await expect(hub.updateRun(DEMO_IDS.run, { source: 'schedule' })).rejects.toMatchObject({ status: 400 });
+    await expect(hub.updateRun(DEMO_IDS.run, { budget: { maxItemsPerDay: 0 } })).rejects.toMatchObject({ status: 400 });
+    await expect(hub.updateRun(DEMO_IDS.runOld, { keepOpen: true })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('groups usage by role and lists the template library', async () => {
+    const hub = new DemoHub();
+    const roles = (await hub.usage({ groupBy: 'role', projectId: DEMO_IDS.perpeto })).rows.map((r) => r.key);
+    expect(roles).toEqual(expect.arrayContaining(['builder', 'reviewer', 'planner', 'auditor', 'improver']));
+    expect((await hub.listTemplates()).map((t) => t.id)).toEqual(['build', 'improve', 'bugfix', 'docs', 'security-audit', 'dependency-upgrade']);
+  });
+
+  it('saves the architect’s extra proposal as its own draft', async () => {
+    vi.useFakeTimers();
+    const hub = new DemoHub();
+    const assignment = await settle(hub.requestDraft(DEMO_IDS.notes, { prompt: 'Build from the goals.' }));
+    await vi.advanceTimersByTimeAsync(8000);
+    const done = await settle(hub.getAssignment(assignment.id));
+    expect(done.drafts).toHaveLength(2);
+    expect(done.drafts![0].workflowId).toBe(done.draftWorkflowId);
+    expect(done.result?.additionalWorkflows?.[0]).toMatchObject({ name: 'Improve', templateId: 'improve' });
+    const workflows = await settle(hub.listWorkflows(DEMO_IDS.notes));
+    expect(workflows.map((w) => w.status)).toEqual(['draft', 'draft']);
+  });
 });

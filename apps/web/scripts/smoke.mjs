@@ -14,7 +14,7 @@ const step = (name) => console.log(`ok  ${name}`);
 
 // 1. Architect: describe, follow progress, review the draft, activate it.
 await page.goto(`${base}/projects/prj_perpeto/workflows`);
-await page.getByRole('textbox', { name: 'Describe a new workflow' }).fill('Nothing merges without my approval. Review with a second model.');
+await page.getByRole('textbox', { name: 'Describe another workflow' }).fill('Nothing merges without my approval. Review with a second model.');
 await page.getByRole('button', { name: 'Draft workflow' }).click();
 await page.getByRole('heading', { name: 'Workflow architect' }).waitFor();
 await page.getByText('Checking 2 online machines').waitFor({ timeout: 10000 });
@@ -112,6 +112,67 @@ await page.getByText('Paused. No new assignments start until you resume.').waitF
 await page.getByRole('button', { name: 'Resume' }).click();
 await page.getByRole('button', { name: 'Pause' }).waitFor();
 step('pause and resume');
+
+// Workflows: active ones side by side, the architect's extra proposal, the template library.
+await page.goto(`${base}/projects/prj_perpeto/workflows`);
+const cards = page.locator('.wf-grid .wf-card');
+await cards.first().waitFor();
+const tops = await cards.evaluateAll((els) => els.map((e) => ({ name: e.querySelector('.card-title')?.textContent, top: Math.round(e.getBoundingClientRect().top) })));
+const buildTop = tops.find((c) => c.name === 'Build')?.top;
+assert.equal(tops.find((c) => c.name === 'Improve')?.top, buildTop, `active workflows share a row: ${JSON.stringify(tops)}`);
+await page.getByRole('heading', { name: 'Also suggested' }).waitFor();
+assert.ok(await page.locator('.suggested').getByText('Bugfix', { exact: true }).isVisible(), 'the extra proposal is listed');
+await page.getByRole('button', { name: 'Start from a template' }).click();
+await page.getByText('Security audit').waitFor();
+assert.equal(await page.locator('.template-option').count(), 7, 'six library templates and a blank canvas');
+await page.getByRole('button', { name: 'Cancel' }).click();
+step('workflows: active side by side, also suggested, template library');
+
+// With two live runs, each overview issue opens the run it belongs to.
+await page.goto(`${base}/projects/prj_perpeto`);
+await page.getByRole('heading', { name: '2 workflows are live' }).waitFor();
+assert.match(await page.getByRole('link', { name: 'Show on map' }).first().getAttribute('href'), /runs\/run_7q4m2x\?node=reviewer/);
+assert.equal(await page.locator('.live-runs > li').count(), 2, 'each live run lists its intake and budget');
+step('overview: live runs side by side, issues open their own run');
+
+// Budget: the exhausted run says when it resumes; raising the limit resumes intake.
+await page.goto(`${base}/projects/prj_perpeto/runs/run_8f2k4t`);
+await page.getByText('New work is paused. Today’s token budget is used.').waitFor();
+assert.match(await page.locator('.callout-intake').innerText(), /Resumes (today|tomorrow) at \d\d:\d\d/);
+await page.getByRole('button', { name: 'Change budget' }).click();
+await page.getByLabel('Tokens per day').fill('2M');
+await page.getByRole('button', { name: 'Save settings' }).click();
+await page.locator('.callout-intake').waitFor({ state: 'detached' });
+assert.match(await page.locator('.run-intake .budget-text').innerText(), /of 2M tokens/);
+step('budget exhausted shows when intake resumes; raising it resumes intake');
+
+// Start a scheduled, continuous run from an active workflow that has none. Demo state lives in the page, so navigate in-app.
+await page.getByRole('button', { name: 'Stop' }).click();
+await page.getByRole('dialog').getByRole('button', { name: 'Stop run' }).click();
+await page.getByText('Stopped', { exact: true }).first().waitFor();
+await page.locator('.sidebar').getByRole('link', { name: 'Workflows' }).click();
+await page.locator('.wf-card', { hasText: 'Improve' }).getByRole('button', { name: 'Start run' }).click();
+await page.getByRole('radio', { name: 'Schedule' }).click();
+await page.getByLabel('Repeat').selectOption('daily');
+await page.getByLabel('Time').fill('07:30');
+assert.ok(await page.getByLabel('Keep running when the work is done').isChecked(), 'scheduled runs keep running by default');
+await page.getByText('Daily budget').click();
+await page.getByLabel('Items per day').fill('5');
+await page.getByRole('dialog').getByRole('button', { name: 'Start run' }).click();
+await page.waitForURL(/\/runs\/run_/);
+await page.getByText('Keeps running · New work every day at 07:30').waitFor();
+await page.getByText('0 of 5 items').waitFor();
+step('start a run with a schedule, keep running and a budget');
+
+// Usage by role, and when runs ended.
+await page.goto(`${base}/usage`);
+await page.getByRole('radio', { name: 'Role' }).click();
+await page.getByRole('columnheader', { name: 'Role' }).waitFor();
+await page.getByRole('cell', { name: 'Builder' }).waitFor();
+await page.goto(`${base}/projects/prj_perpeto/runs`);
+await page.getByRole('columnheader', { name: 'Ended' }).waitFor();
+assert.ok(await page.locator('tr', { hasText: 'run_3c8w1n' }).locator('[title^="Completed"]').isVisible(), 'completed runs show when they completed');
+step('usage by role; runs list shows completed and stopped times');
 
 // Messages: reply in a thread, see the receipt move, acknowledge a message addressed to you.
 await page.goto(`${base}/projects/prj_perpeto/messages`);

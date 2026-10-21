@@ -1,4 +1,5 @@
 import { Link, useParams } from '@tanstack/react-router';
+import type { Run } from '../api/types';
 import { useResource } from '../app/hub-context';
 import { Async, btn, Empty, PageHeader } from '../components/ui';
 import { RunStatusLabel } from '../components/status';
@@ -33,13 +34,14 @@ export function RunsPage() {
                     <th scope="col">Workflow</th>
                     <th scope="col">Status</th>
                     <th scope="col" className="hide-sm">Started</th>
+                    <th scope="col" className="hide-sm">Ended</th>
                     <th scope="col" className="num hide-sm">Duration</th>
-
                   </tr>
                 </thead>
                 <tbody>
                   {list.map((r) => {
-                    const end = r.stoppedAt ? new Date(r.stoppedAt).getTime() : Date.now();
+                    const ended = r.completedAt ?? r.stoppedAt;
+                    const end = ended ? new Date(ended).getTime() : Date.now();
                     return (
                       <tr key={r.id}>
                         <td>
@@ -56,8 +58,10 @@ export function RunsPage() {
                         <td className="hide-sm" title={dateTime(r.startedAt)}>
                           {relative(r.startedAt)}
                         </td>
+                        <td className="hide-sm">
+                          <EndedCell run={r} />
+                        </td>
                         <td className="num hide-sm">{duration((end - new Date(r.startedAt).getTime()) / 1000)}</td>
-
                       </tr>
                     );
                   })}
@@ -70,4 +74,11 @@ export function RunsPage() {
       </Async>
     </div>
   );
+}
+
+/** When a run ended and how: completed is success only; stopped covers any other end. */
+function EndedCell({ run }: { run: Run }) {
+  if (run.completedAt) return <span title={`Completed ${dateTime(run.completedAt)}`}>{relative(run.completedAt)}</span>;
+  if (run.stoppedAt) return <span title={`${run.status === 'failed' ? 'Failed' : 'Stopped'} ${dateTime(run.stoppedAt)}`}>{relative(run.stoppedAt)}</span>;
+  return <span className="muted">{run.keepOpen ? 'Keeps running' : '—'}</span>;
 }

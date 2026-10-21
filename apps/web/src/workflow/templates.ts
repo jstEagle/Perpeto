@@ -1,4 +1,4 @@
-import type { GraphEdge, GraphNode, WorkflowGraph, WorkflowPurpose } from '../api/types';
+import type { WorkflowTemplate, GraphEdge, GraphNode, WorkflowGraph, WorkflowPurpose } from '../api/types';
 import { NODE_SPECS } from './registry';
 
 /**
@@ -129,3 +129,14 @@ export const TEMPLATES: { purpose: WorkflowPurpose; name: string; description: s
   { purpose: 'improve', name: 'Improve', description: 'Goals, auditor, improver, review, CI, merge queue.', graph: improveTemplate },
   { purpose: 'custom', name: 'Blank', description: 'An input and an output. Add the rest yourself.', graph: blankTemplate },
 ];
+
+/** Library template ids as names: `security-audit` reads "Security audit". */
+export function templateName(id: string): string {
+  const words = id.replace(/[-_]+/g, ' ').trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** The web's own templates, for hubs that predate GET /workflow-templates. */
+export function localTemplates(): WorkflowTemplate[] {
+  return TEMPLATES.filter((t) => t.purpose !== 'custom').map((t) => ({ id: t.purpose, description: t.description, graph: t.graph() }));
+}

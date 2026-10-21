@@ -50,7 +50,7 @@ export interface Project {
   updatedAt: IsoTime;
 }
 
-export type WorkflowPurpose = 'build' | 'improve' | 'maintain' | 'custom';
+export type WorkflowPurpose = 'build' | 'improve' | 'maintain' | 'custom' | 'bugfix' | 'docs' | 'security-audit' | 'dependency-upgrade';
 export type WorkflowStatus = 'draft' | 'active' | 'paused';
 
 export interface Workflow {
@@ -64,6 +64,8 @@ export interface Workflow {
   authoredBy?: AuthoredBy;
   rationale?: string;
   parentVersion?: number;
+  /** The library template the architect started from. */
+  templateId?: string;
   /** On the workflow head: the version new runs use. */
   activeVersion?: number;
   /** Demo data only; hub version records carry no timestamp. */
@@ -145,7 +147,58 @@ export interface Run {
   workflowVersion: number;
   status: RunStatus;
   startedAt: IsoTime;
+  /** Any terminal end. */
   stoppedAt?: IsoTime;
+  /** Successful completion only. */
+  completedAt?: IsoTime;
+  /** Waits for new input instead of completing when the work is done. */
+  keepOpen?: boolean;
+  source?: RunSource;
+  /** Five numeric UTC cron fields. */
+  schedule?: string;
+  budget?: RunBudget;
+  /** Run detail and /overview.runs only. */
+  intake?: RunIntake;
+  budgetUsage?: BudgetUsage;
+}
+
+export type RunSource = 'goals' | 'schedule' | 'manual';
+
+/** Daily intake limits. These pause new work; work already admitted continues. */
+export interface RunBudget {
+  maxTokensPerDay?: number;
+  maxItemsPerDay?: number;
+  maxActiveItems?: number;
+}
+
+export type BudgetLimit = keyof RunBudget;
+
+export interface RunIntake {
+  /** True after `budget.exhausted`, until `budget.available`. Separate from the run's own pause. */
+  paused: boolean;
+  reason?: { limit: BudgetLimit; used: number; maximum: number; requested?: number; day: string };
+}
+
+/** Today's use, in UTC days. Tokens are input plus output. */
+export interface BudgetUsage {
+  day: string;
+  tokens: number;
+  items: number;
+}
+
+/** PATCH /runs/:id, and the settings a run starts with. `budget: {}` removes every limit. */
+export interface RunSettings {
+  keepOpen?: boolean;
+  source?: RunSource;
+  schedule?: string;
+  budget?: RunBudget;
+}
+
+/** GET /workflow-templates. */
+export interface WorkflowTemplate {
+  id: string;
+  description: string;
+  graph: WorkflowGraph;
 }
 
 export type WorkItemStatus = 'queued' | 'active' | 'blocked' | 'done' | 'failed';
@@ -194,6 +247,8 @@ export interface AssignmentResult {
   headSha?: string;
   threadRef?: string;
   verdict?: 'pass' | 'fail';
+  templateId?: string;
+  additionalWorkflows?: { name: string; rationale: string; templateId?: string }[];
 }
 
 export type AssignmentStatus = 'queued' | 'leased' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -218,6 +273,8 @@ export interface Assignment {
   /** Workflow architect: the draft this attempt produced. */
   draftWorkflowId?: Id;
   draftVersion?: number;
+  /** Workflow architect: every draft saved, the primary first, then its additional proposals. */
+  drafts?: { workflowId: Id; version: number }[];
   /** Workflow architect: validation errors and the follow-up attempt. */
   architectErrors?: (string | { code?: string; message: string })[];
   retryAssignmentId?: Id;
@@ -307,6 +364,8 @@ export interface UsageRecord {
   assignmentId?: Id;
   machineId: Id;
   accountId?: Id;
+  /** Assignment role, else its node id. */
+  role?: string;
   provider: string;
   model: string;
   inputTokens: number;
@@ -317,7 +376,7 @@ export interface UsageRecord {
   at: IsoTime;
 }
 
-export type UsageGroupBy = 'provider' | 'model' | 'machine' | 'day';
+export type UsageGroupBy = 'provider' | 'model' | 'machine' | 'day' | 'role';
 
 export interface UsageRow {
   key: string;
@@ -343,6 +402,8 @@ export interface Overview {
   machinesTotal?: number;
   /** Hubs from 3af3db0 on. */
   owner?: Owner;
+  /** Active and paused runs with their settings, intake and budget use. */
+  runs?: Run[];
 }
 
 export interface HubEvent {
@@ -509,6 +570,8 @@ export type BottleneckReason =
 
 export interface Bottleneck {
   nodeId: string;
+  /** Project metrics: the run the bottleneck is in. */
+  runId?: Id;
   reason: BottleneckReason;
   evidence: string;
   severity: 'info' | 'warning' | 'critical';

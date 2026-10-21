@@ -18,14 +18,20 @@ import type {
   Project,
   Run,
   RunInput,
+  RunSettings,
   UsageRow,
   WorkItem,
   Workflow,
   WorkflowGraph,
+  WorkflowTemplate,
 } from './types';
+import { libraryTemplates } from './library';
 import { diffGraphs } from '../workflow/diff';
 import { validateGraph } from '../workflow/validate';
 import { COL, buildTemplate } from '../workflow/templates';
+
+const today = () => new Date().toISOString().slice(0, 10);
+const LIMITS = ['maxTokensPerDay', 'maxActiveItems', 'maxItemsPerDay'] as const;
 
 const clone = <T>(value: T): T => structuredClone(value);
 const latency = (ms = 140) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -107,7 +113,26 @@ export class DemoHub implements HubApi {
       machinesOnline: this.#state.machines.filter((m) => m.status === 'online').length,
       machinesTotal: this.#state.machines.length,
       owner: DEMO_OWNER,
+      runs: runs.filter((r) => r.status === 'running' || r.status === 'paused').map((r) => this.#view(r)),
     };
+  }
+
+  /** A run as the hub's detail and overview report it: today's budget use and whether intake is paused. */
+  #view(run: Run): Run {
+    const view = clone(run);
+    if (!run.budget || !Object.keys(run.budget).length) {
+      delete view.budgetUsage;
+      return view;
+    }
+    const day = today();
+    const tokens = this.#state.usage.filter((u) => u.runId === run.id && u.at.startsWith(day)).reduce((sum, u) => sum + u.inputTokens + u.outputTokens, 0);
+    const items = run.budgetUsage?.day === day || !run.budgetUsage?.day ? (run.budgetUsage?.items ?? 0) : 0;
+    const active = this.#state.workItems.filter((w) => w.runId === run.id && w.status !== 'done' && w.status !== 'failed').length;
+    const used = { maxTokensPerDay: tokens, maxActiveItems: active, maxItemsPerDay: items };
+    const limit = LIMITS.find((key) => run.budget?.[key] !== undefined && used[key] >= run.budget[key]!);
+    view.budgetUsage = { day, tokens, items };
+    view.intake = limit ? { paused: true, reason: { limit, used: used[limit], maximum: run.budget[limit]!, requested: 1, day } } : { paused: false };
+    return view;
   }
 
   async listProjects() {
@@ -139,7 +164,7 @@ export class DemoHub implements HubApi {
   async listWorkflows(projectId: string) {
     await latency();
     const ids = [...new Set(this.#state.versions.filter((v) => v.projectId === projectId).map((v) => v.id))];
-    return ids.map((id) => clone(this.#latest(id)));
+    return ids.map((id) => this.#head(id));
   }
   async createWorkflow(projectId: string, input: NewWorkflow) {
     await latency();
@@ -161,7 +186,12 @@ export class DemoHub implements HubApi {
   }
   async getWorkflow(id: string) {
     await latency(80);
-    return clone(this.#latest(id));
+    return this.#head(id);
+  }
+  /** The newest version, carrying the active pointer as the hub's head does. */
+  #head(id: string): Workflow {
+    const active = this.#state.versions.find((v) => v.id === id && v.status === 'active');
+    return { ...clone(this.#latest(id)), ...(active ? { activeVersion: active.version } : {}) };
   }
   async saveWorkflow(id: string, update: WorkflowUpdate) {
     await latency();
@@ -230,11 +260,19 @@ export class DemoHub implements HubApi {
         wf = { id: shortId('wf'), projectId, name: 'Build', purpose: 'build', version: 1, graph, status: 'draft', rationale, authoredBy: { kind: 'agent', assignmentId: assignment.id, prompt: input.prompt }, createdAt: new Date().toISOString() };
       }
       this.#state.versions.push(wf);
-      assignment.result = { outcome: 'success', summary: `Draft version ${wf.version} of ${wf.name} saved.` };
+      // A new workflow comes with one more proposal, saved as its own draft.
+      const extra = base ? [] : suggestAlongside(input.prompt, projectId, assignment.id, this.#state.versions);
+      this.#state.versions.push(...extra);
+      assignment.result = {
+        outcome: 'success',
+        summary: `Draft version ${wf.version} of ${wf.name} saved.`,
+        additionalWorkflows: extra.map((x) => ({ name: x.name, rationale: x.rationale ?? '', templateId: x.templateId })),
+      };
       assignment.status = 'succeeded';
       assignment.draftWorkflowId = wf.id;
       assignment.draftVersion = wf.version;
-      this.#emit('workflow.version.saved', { kind: 'workflow', id: wf.id }, { version: wf.version, authoredBy: wf.authoredBy }, scope);
+      assignment.drafts = [wf, ...extra].map((x) => ({ workflowId: x.id, version: x.version }));
+      for (const x of [wf, ...extra]) this.#emit('workflow.version.saved', { kind: 'workflow', id: x.id }, { version: x.version, authoredBy: x.authoredBy }, scope);
       this.#emit('assignment.state', { kind: 'assignment', id: assignment.id }, { state: 'succeeded', nodeId: assignment.nodeId, role: assignment.role, attempt: 1, machineId: assignment.machineId, summary: assignment.result.summary }, scope);
     });
     return clone(assignment);
@@ -267,16 +305,47 @@ export class DemoHub implements HubApi {
     return clone(target);
   }
 
-  async startRun(workflowId: string) {
+  async listTemplates(): Promise<WorkflowTemplate[]> {
+    await latency(60);
+    return libraryTemplates();
+  }
+
+  async startRun(workflowId: string, settings: RunSettings = {}) {
     await latency();
     const versions = this.#state.versions.filter((v) => v.id === workflowId);
     const active = versions.find((v) => v.status === 'active');
     if (!active) throw new HubError(409, 'NO_ACTIVE_VERSION', 'Activate a version of this workflow before starting a run.');
-    const run: Run = { id: shortId('run'), projectId: active.projectId, workflowId, workflowVersion: active.version, status: 'running', startedAt: new Date().toISOString() };
+    const run: Run = {
+      id: shortId('run'),
+      projectId: active.projectId,
+      workflowId,
+      workflowVersion: active.version,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      keepOpen: false,
+      ...checkSettings(settings),
+    };
+    if (run.budget) run.budgetUsage = { day: today(), tokens: 0, items: 0 };
     this.#state.runs.unshift(run);
     this.#state.channels[active.projectId]?.push({ id: `run-${run.id}`, name: `Run ${run.id}` });
     this.#emit('run.started', { kind: 'run', id: run.id }, {}, { projectId: run.projectId, runId: run.id });
-    return clone(run);
+    return this.#view(run);
+  }
+  async updateRun(id: string, settings: RunSettings) {
+    await latency();
+    const run = this.#run(id);
+    if (run.status !== 'running' && run.status !== 'paused') throw new HubError(400, 'INVALID_REQUEST', 'Run is already terminal.');
+    const next = checkSettings(settings);
+    const wasPaused = !!this.#view(run).intake?.paused;
+    Object.assign(run, next);
+    if (next.budget && !Object.keys(next.budget).length) delete run.budget;
+    if (run.budget && !run.budgetUsage) run.budgetUsage = { day: today(), tokens: 0, items: 0 };
+    const view = this.#view(run);
+    const scope = { projectId: run.projectId, runId: id };
+    this.#emit('run.configured', { kind: 'run', id }, { ...next, summary: 'Run settings changed' }, scope);
+    if (wasPaused && !view.intake?.paused) this.#emit('budget.available', { kind: 'run', id }, { summary: 'Intake resumed' }, scope);
+    if (!wasPaused && view.intake?.reason) this.#emit('budget.exhausted', { kind: 'run', id }, { ...view.intake.reason, summary: 'Intake paused by the budget' }, scope);
+    return view;
   }
   async listRuns(projectId: string) {
     await latency();
@@ -284,7 +353,7 @@ export class DemoHub implements HubApi {
   }
   async getRun(id: string) {
     await latency(80);
-    return clone(this.#run(id));
+    return this.#view(this.#run(id));
   }
   async #setRun(id: string, status: Run['status'], from: Run['status'][]) {
     await latency();
@@ -292,6 +361,7 @@ export class DemoHub implements HubApi {
     if (!from.includes(run.status)) throw new HubError(409, 'INVALID_STATE', `This run is ${run.status} and cannot change to ${status}.`);
     run.status = status;
     if (status === 'stopped') run.stoppedAt = new Date().toISOString();
+    if (status === 'completed') run.completedAt = run.stoppedAt = new Date().toISOString();
     this.#emit(`run.${status}`, { kind: 'run', id }, { summary: `Run ${status}` }, { projectId: run.projectId, runId: id });
     return clone(run);
   }
@@ -376,8 +446,11 @@ export class DemoHub implements HubApi {
   }
   async projectMetrics(projectId: string): Promise<MetricsSnapshot> {
     await latency(80);
-    const run = this.#state.runs.find((r) => r.projectId === projectId && (r.status === 'running' || r.status === 'paused'));
-    return clone((run && this.#state.metrics[run.id]) ?? emptyMetrics());
+    // The project's main run carries the numbers; every live run contributes its bottlenecks, tagged with the run as the hub does.
+    const live = this.#state.runs.filter((r) => r.projectId === projectId && (r.status === 'running' || r.status === 'paused'));
+    const snapshot = clone((live[0] && this.#state.metrics[live[0].id]) ?? emptyMetrics());
+    snapshot.bottlenecks = live.flatMap((r) => (this.#state.metrics[r.id]?.bottlenecks ?? []).map((b) => ({ ...clone(b), runId: r.id })));
+    return snapshot;
   }
 
   async usage(query: UsageQuery) {
@@ -387,7 +460,16 @@ export class DemoHub implements HubApi {
     for (const u of this.#state.usage) {
       if (query.projectId && u.projectId !== query.projectId) continue;
       if (query.runId && u.runId !== query.runId) continue;
-      const key = query.groupBy === 'day' ? u.at.slice(0, 10) : query.groupBy === 'machine' ? machineName(u.machineId) : query.groupBy === 'model' ? u.model : u.provider;
+      const key =
+        query.groupBy === 'day'
+          ? u.at.slice(0, 10)
+          : query.groupBy === 'machine'
+            ? machineName(u.machineId)
+            : query.groupBy === 'model'
+              ? u.model
+              : query.groupBy === 'role'
+                ? (u.role ?? 'unknown')
+                : u.provider;
       const row = rows.get(key) ?? { key, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
       row.inputTokens += u.inputTokens;
       row.outputTokens += u.outputTokens;
@@ -532,6 +614,46 @@ export class DemoHub implements HubApi {
     if (all.findIndex((m) => m.id === messageId) > current) this.#state.readCursors[key] = messageId;
     return this.#unread(projectId, channelId);
   }
+}
+
+/** The hub's run setting checks, so the demo refuses what the hub would. */
+function checkSettings(settings: RunSettings): RunSettings {
+  const invalid = (message: string): never => {
+    throw new HubError(400, 'INVALID_REQUEST', message);
+  };
+  if (settings.keepOpen !== undefined && typeof settings.keepOpen !== 'boolean') invalid('keepOpen must be a boolean.');
+  if (settings.source !== undefined && !['goals', 'schedule', 'manual'].includes(settings.source)) invalid('Invalid run source.');
+  if (settings.schedule !== undefined && !/^(\S+\s+){4}\S+$/.test(settings.schedule.trim())) invalid('A schedule is five numeric UTC cron fields.');
+  if (settings.source === 'schedule' && !settings.schedule) invalid('A schedule source needs a schedule.');
+  if (settings.budget && !Object.values(settings.budget).every((n) => Number.isSafeInteger(n) && n > 0)) invalid('Budget limits must be positive safe integers.');
+  return clone(settings);
+}
+
+/** One extra proposal next to a new workflow: a bugfix path, else improvement from the goals. */
+function suggestAlongside(prompt: string, projectId: string, assignmentId: string, existing: Workflow[]): Workflow[] {
+  const has = (purpose: string) => existing.some((w) => w.projectId === projectId && w.purpose === purpose);
+  const pick = !has('improve')
+    ? { templateId: 'improve', name: 'Improve', rationale: 'Between features, an auditor turns unfinished goals into small, measured improvements. Run it with a daily token budget so it never competes with Build for capacity.' }
+    : !has('bugfix')
+      ? { templateId: 'bugfix', name: 'Bugfix', rationale: 'Bugs take a shorter path than features: reproduce in a failing test, fix, review and merge, without the planner.' }
+      : null;
+  const template = pick && libraryTemplates().find((t) => t.id === pick.templateId);
+  if (!pick || !template) return [];
+  return [
+    {
+      id: shortId('wf'),
+      projectId,
+      name: pick.name,
+      purpose: pick.templateId as Workflow['purpose'],
+      templateId: pick.templateId,
+      version: 1,
+      graph: template.graph,
+      status: 'draft',
+      rationale: pick.rationale,
+      authoredBy: { kind: 'agent', assignmentId, prompt },
+      createdAt: new Date().toISOString(),
+    },
+  ];
 }
 
 function emptyMetrics(): MetricsSnapshot {

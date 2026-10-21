@@ -23,6 +23,8 @@ import type {
   RunInput,
   UnreadState,
   UsageGroupBy,
+  RunSettings,
+  WorkflowTemplate,
   UsageSummary,
   ValidationResult,
   WorkItem,
@@ -104,7 +106,12 @@ export interface HubApi {
   diffVersions(workflowId: string, from: number, to: number): Promise<GraphDiff>;
   activateVersion(workflowId: string, version: number): Promise<Workflow>;
 
-  startRun(workflowId: string): Promise<Run>;
+  /** Library templates; an older hub without the route gets the web's own. */
+  listTemplates(): Promise<WorkflowTemplate[]>;
+
+  startRun(workflowId: string, settings?: RunSettings): Promise<Run>;
+  /** Change keep-running, intake and budget on a running or paused run. */
+  updateRun(id: string, settings: RunSettings): Promise<Run>;
   listRuns(projectId: string): Promise<Run[]>;
   getRun(id: string): Promise<Run>;
   pauseRun(id: string): Promise<Run>;

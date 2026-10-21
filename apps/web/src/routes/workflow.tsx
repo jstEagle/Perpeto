@@ -10,6 +10,8 @@ import { StepList } from '../workflow/step-list';
 import type { Selection } from '../workflow/graph-canvas';
 import { diffGraphs, diffIsEmpty } from '../workflow/diff';
 import { validateGraph } from '../workflow/validate';
+import { AlsoSuggested } from '../workflow/suggested';
+import { RunSettingsDialog } from '../run/intake';
 import { ArchitectProgress, ArchitectPrompt } from '../workflow/architect';
 import { NODE_SPECS } from '../workflow/registry';
 import { dateTime, relative } from '../lib/format';
@@ -66,18 +68,6 @@ function WorkflowDetail({ projectId, versions, requested, follow, reload }: { pr
     }
   }
 
-  async function startRun() {
-    setStarting(true);
-    setActionError(null);
-    try {
-      const run = await api.startRun(viewing.id);
-      await navigate({ to: '/projects/$projectId/runs/$runId', params: { projectId, runId: run.id } });
-    } catch (err) {
-      setActionError(`The run did not start. ${(err as Error).message}`);
-      setStarting(false);
-    }
-  }
-
   return (
     <>
       <PageHeader
@@ -106,7 +96,7 @@ function WorkflowDetail({ projectId, versions, requested, follow, reload }: { pr
               </Button>
             ) : (
               viewing.status === 'active' && (
-                <Button variant="primary" onClick={startRun} busy={starting}>
+                <Button variant="primary" onClick={() => setStarting(true)}>
                   <IconPlay /> Start run
                 </Button>
               )
@@ -121,6 +111,15 @@ function WorkflowDetail({ projectId, versions, requested, follow, reload }: { pr
       )}
 
       {follow && <ArchitectProgress assignmentId={follow} projectId={projectId} onDone={(_, version) => goVersion(version)} onDismiss={() => goVersion(viewing.version)} />}
+      {viewing.status === 'draft' && <AlsoSuggested projectId={projectId} workflow={viewing} />}
+      {starting && (
+        <RunSettingsDialog
+          open
+          onClose={() => setStarting(false)}
+          target={{ kind: 'start', workflow: viewing }}
+          onDone={(run) => void navigate({ to: '/projects/$projectId/runs/$runId', params: { projectId, runId: run.id } })}
+        />
+      )}
 
       <div className="hide-sm">
         <GraphCanvas
