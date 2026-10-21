@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Background, BackgroundVariant, ReactFlow, ReactFlowProvider, applyNodeChanges, useReactFlow } from '@xyflow/react';
-import type { Connection, EdgeChange, IsValidConnection, NodeChange } from '@xyflow/react';
-import type { Bottleneck, EdgeKind, GraphDiff, GraphEdge, MetricsSnapshot, NodeType, WorkItem, WorkflowGraph } from '../api/types';
+import { Background, BackgroundVariant, ReactFlow, ReactFlowProvider, applyNodeChanges, useReactFlow, useStore } from '@xyflow/react';
+import type { Connection, EdgeChange, IsValidConnection, NodeChange, ReactFlowState } from '@xyflow/react';
+import type { Bottleneck, EdgeKind, GraphDiff, GraphEdge, GraphNode, MetricsSnapshot, NodeType, WorkItem, WorkflowGraph } from '../api/types';
 import { StepNode, NODE_WIDTH } from './step-node';
 import type { StepData, StepNodeType } from './step-node';
 import { RuledEdge } from './ruled-edge';
@@ -9,6 +9,10 @@ import type { RuledEdgeType } from './ruled-edge';
 import { changedKeys } from './diff';
 import { graphPort } from './registry';
 import { IconFit, IconMinus, IconPlus } from '../components/icons';
+import { Segmented } from '../components/ui';
+import { autoLayout, nodesOverlap } from './layout';
+import type { Size } from './layout';
+import { routeEdges } from './router';
 
 export type Selection = { kind: 'node' | 'edge'; id: string } | null;
 
@@ -24,6 +28,8 @@ export interface GraphCanvasProps {
   onSelect?(selection: Selection): void;
   onGraphChange?(graph: WorkflowGraph): void;
   roleKind?: Exclude<EdgeKind, 'flow'>;
+  /** Which delegates and messages to draw at first. Live maps default to the selected node's. */
+  connections?: Connections;
   /** Palette drops in the editor. */
   onDropNode?(type: NodeType, position: { x: number; y: number }): void;
   className?: string;
@@ -34,93 +40,34 @@ export const DRAG_MIME = 'application/x-perpeto-node';
 const nodeTypes = { step: StepNode };
 const edgeTypes = { ruled: RuledEdge };
 
-const MARKERS: { id: string; tone: string; shape: 'arrow' | 'open' | 'dot' }[] = [
-  { id: 'pp-arrow-ink', tone: 'ink', shape: 'arrow' },
-  { id: 'pp-arrow-muted', tone: 'muted', shape: 'arrow' },
-  { id: 'pp-arrow-success', tone: 'success', shape: 'arrow' },
-  { id: 'pp-arrow-error', tone: 'error', shape: 'arrow' },
-  { id: 'pp-open-ink', tone: 'ink', shape: 'open' },
-  { id: 'pp-open-success', tone: 'success', shape: 'open' },
-  { id: 'pp-open-error', tone: 'error', shape: 'open' },
-  { id: 'pp-dot-muted', tone: 'muted', shape: 'dot' },
-  { id: 'pp-dot-warning', tone: 'warning', shape: 'dot' },
-  { id: 'pp-dot-success', tone: 'success', shape: 'dot' },
-  { id: 'pp-dot-error', tone: 'error', shape: 'dot' },
-];
+type EdgeMeta = { edge: GraphEdge; diff?: 'added' | 'removed'; unplanned?: boolean; traffic?: number };
+export type Connections = 'selected' | 'all';
 
-function MarkerDefs() {
-  return (
-    <svg className="marker-defs" aria-hidden="true" width="0" height="0">
-      <defs>
-        {MARKERS.map((m) => (
-          <marker key={m.id} id={m.id} viewBox="0 0 10 10" refX={m.shape === 'dot' ? 5 : 9} refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
-            {m.shape === 'arrow' && <path d="M0 0 10 5 0 10z" className={`mk mk-fill-${m.tone}`} />}
-            {m.shape === 'open' && <path d="M1 1 9 5 1 9" className={`mk mk-stroke-${m.tone}`} fill="none" strokeWidth="1.5" />}
-            {m.shape === 'dot' && <circle cx="5" cy="5" r="3" className={`mk mk-fill-${m.tone}`} />}
-          </marker>
-        ))}
-      </defs>
-    </svg>
-  );
+/** Height before React Flow has measured a node; close to the real one so the first frame barely moves. */
+const ESTIMATED_HEIGHT = { edit: 88, view: 88, live: 172 } as const;
+const TRAFFIC_WORD: Record<EdgeKind, [string, string]> = { flow: ['moved', 'moved'], delegates: ['delegated', 'delegated'], messages: ['message', 'messages'] };
+
+function labelFor(m: EdgeMeta, live: boolean): string | undefined {
+  if (m.diff) return m.diff === 'added' ? 'Added' : 'Removed';
+  if (!live) return undefined;
+  const c = m.traffic ?? 0;
+  if (m.unplanned) return `Unplanned · ${c}`;
+  if (c === 0) return undefined;
+  if (m.edge.kind === 'flow') return m.edge.from.port === 'fail' ? `${c} returned` : String(c);
+  return `${c} ${TRAFFIC_WORD[m.edge.kind][c === 1 ? 0 : 1]}`;
 }
 
-function markerFor(kind: EdgeKind, opts: { diff?: 'added' | 'removed'; unplanned?: boolean; fail?: boolean }) {
-  const tone = opts.diff === 'added' ? 'success' : opts.diff === 'removed' ? 'error' : opts.unplanned ? 'warning' : kind === 'messages' || opts.fail ? 'muted' : 'ink';
-  if (kind === 'flow') return { end: `url(#pp-arrow-${tone})` };
-  if (kind === 'delegates') return { end: `url(#pp-open-${tone === 'muted' || tone === 'warning' ? 'ink' : tone})` };
-  return { start: `url(#pp-dot-${tone})`, end: `url(#pp-dot-${tone})` };
-}
-
-type Positions = Map<string, { x: number; y: number }>;
-
-const sameRow = (pos: Positions, a: string, b: string) => Math.abs((pos.get(a)?.y ?? 0) - (pos.get(b)?.y ?? 0)) < 40;
-
-/**
- * Lanes for routed edges. Edges under a row and edges in the channel between
- * rows are numbered separately; shorter spans sit closer to the nodes.
- */
-function assignLanes(edges: GraphEdge[], pos: Positions): Map<string, number> {
-  const x = (id: string) => pos.get(id)?.x ?? 0;
-  const lanes = new Map<string, number>();
-  const groups = new Map<string, { id: string; span: number; role: boolean }[]>();
-  for (const e of edges) {
-    const same = sameRow(pos, e.from.node, e.to.node);
-    if (e.kind === 'flow' && same && x(e.to.node) > x(e.from.node)) continue;
-    const rowKey = same ? `below:${pos.get(e.from.node)?.y ?? 0}` : `channel:${Math.max(pos.get(e.from.node)?.y ?? 0, pos.get(e.to.node)?.y ?? 0)}`;
-    groups.set(rowKey, [...(groups.get(rowKey) ?? []), { id: e.id, span: Math.abs(x(e.to.node) - x(e.from.node)), role: e.kind !== 'flow' }]);
-  }
-  for (const list of groups.values()) {
-    list.sort((a, b) => Number(a.role) - Number(b.role) || a.span - b.span);
-    list.forEach((e, i) => lanes.set(e.id, i));
-  }
-  return lanes;
-}
-
-function roleHandles(pos: Positions, from: string, to: string) {
-  if (sameRow(pos, from, to)) return { sourceHandle: 'role-out', targetHandle: 'role-in' };
-  return (pos.get(to)?.y ?? 0) > (pos.get(from)?.y ?? 0) ? { sourceHandle: 'role-out', targetHandle: 'role-in-top' } : { sourceHandle: 'role-out-top', targetHandle: 'role-in' };
-}
-
-function toRfEdge(e: GraphEdge, lane: number, pos: Positions, extra: Partial<RuledEdgeType['data']> = {}): RuledEdgeType {
-  const flow = e.kind === 'flow';
-  const role = roleHandles(pos, e.from.node, e.to.node);
-  const markers = markerFor(e.kind, { diff: extra.diff, unplanned: extra.unplanned, fail: e.from.port === 'fail' });
-  return {
-    id: e.id,
-    type: 'ruled',
-    source: e.from.node,
-    sourceHandle: flow ? (e.from.port ?? 'out') : role.sourceHandle,
-    target: e.to.node,
-    targetHandle: flow ? 'in' : role.targetHandle,
-    markerEnd: markers.end,
-    markerStart: markers.start,
-    data: { kind: e.kind, port: e.from.port, lane, ...extra },
-  };
+/** Unplanned interactions may name a role rather than a node. */
+function resolveNode(graph: WorkflowGraph, ref?: string | null): string | undefined {
+  if (!ref) return undefined;
+  if (graph.nodes.some((n) => n.id === ref)) return ref;
+  return graph.nodes.find((n) => n.config?.role === ref)?.id;
 }
 
 function CanvasInner(props: GraphCanvasProps) {
   const { graph, mode, diff, live, issuesByNode, selection, onSelect, onGraphChange, roleKind = 'delegates', label } = props;
   const flow = useReactFlow();
+  const [connections, setConnections] = useState<Connections>(props.connections ?? (mode === 'live' ? 'selected' : 'all'));
 
   const bottlenecks = useMemo(() => new Map<string, Bottleneck>((live?.metrics.bottlenecks ?? []).map((b) => [b.nodeId, b])), [live]);
   const metricsByNode = useMemo(() => new Map((live?.metrics.nodes ?? []).map((m) => [m.nodeId, m])), [live]);
@@ -130,111 +77,177 @@ function CanvasInner(props: GraphCanvasProps) {
     return map;
   }, [live]);
 
-  const focusNodeIds = useMemo(() => {
-    if (!selection || mode !== 'live') return null;
-    if (selection.kind === 'node') return new Set([selection.id]);
-    const e = graph.edges.find((x) => x.id === selection.id);
-    const u = live?.metrics.edges.find((x) => x.edgeId === selection.id);
-    return new Set([e?.from.node ?? u?.from, e?.to.node ?? u?.to].filter(Boolean) as string[]);
-  }, [selection, mode, graph, live]);
-
-  const builtNodes = useMemo<StepNodeType[]>(() => {
-    const out: StepNodeType[] = graph.nodes.map((n) => {
-      let mark: StepData['diff'];
-      let keys: string[] | undefined;
-      if (diff) {
-        if (diff.diff.nodes.added.includes(n.id)) mark = 'added';
-        else if (diff.diff.nodes.changed.includes(n.id)) {
-          mark = 'changed';
-          const before = diff.base.nodes.find((b) => b.id === n.id);
-          keys = before ? changedKeys(before, n) : undefined;
-        }
+  // Everything drawn: the graph, ghosts of removed nodes and edges, and unplanned interactions.
+  const ghostNodes = useMemo<GraphNode[]>(
+    () => (diff ? diff.diff.nodes.removed.flatMap((id) => diff.base.nodes.filter((n) => n.id === id)).map((n) => ({ ...n, id: `removed:${n.id}` })) : []),
+    [diff],
+  );
+  const allNodes = useMemo(() => [...graph.nodes, ...ghostNodes], [graph, ghostNodes]);
+  const allEdges = useMemo<EdgeMeta[]>(() => {
+    const traffic = new Map((live?.metrics.edges ?? []).map((m) => [m.edgeId, m]));
+    const out: EdgeMeta[] = graph.edges.map((e) => ({ edge: e, diff: diff?.diff.edges.added.includes(e.id) ? 'added' : undefined, traffic: live ? (traffic.get(e.id)?.count ?? 0) : undefined }));
+    if (diff) {
+      const exists = (id: string) => graph.nodes.some((n) => n.id === id);
+      for (const id of diff.diff.edges.removed) {
+        const e = diff.base.edges.find((b) => b.id === id);
+        if (!e) continue;
+        out.push({
+          edge: { ...e, id: `removed:${e.id}`, from: { ...e.from, node: exists(e.from.node) ? e.from.node : `removed:${e.from.node}` }, to: { ...e.to, node: exists(e.to.node) ? e.to.node : `removed:${e.to.node}` } },
+          diff: 'removed',
+        });
       }
-      return {
-        id: n.id,
-        type: 'step',
-        position: n.position,
-        draggable: mode === 'edit',
-        selectable: true,
-        deletable: mode === 'edit',
-        selected: selection?.kind === 'node' && selection.id === n.id,
-        data: {
-          node: n,
-          mode,
-          issues: issuesByNode?.get(n.id),
-          diff: mark,
-          changedKeys: keys,
-          metrics: metricsByNode.get(n.id),
-          bottleneck: bottlenecks.get(n.id),
-          items: itemsByNode.get(n.id),
-          dimmed: !!focusNodeIds && !focusNodeIds.has(n.id) && selection?.kind === 'edge',
-        },
-      };
-    });
-    if (diff)
-      for (const id of diff.diff.nodes.removed) {
-        const n = diff.base.nodes.find((b) => b.id === id);
-        if (n)
-          out.push({
-            id: `removed:${n.id}`,
-            type: 'step',
-            position: n.position,
-            zIndex: -1,
-            draggable: false,
-            selectable: false,
-            deletable: false,
-            data: { node: n, mode: 'view', diff: 'removed' },
-          });
-      }
+    }
+    for (const m of live?.metrics.edges ?? []) {
+      if (!m.unplanned) continue;
+      const from = resolveNode(graph, m.from);
+      const to = resolveNode(graph, m.to);
+      if (!from || !to || from === to) continue;
+      out.push({ edge: { id: m.edgeId, kind: m.kind, from: { node: from }, to: { node: to } }, unplanned: true, traffic: m.count });
+    }
     return out;
-  }, [graph, mode, diff, issuesByNode, metricsByNode, bottlenecks, itemsByNode, selection, focusNodeIds]);
+  }, [graph, diff, live]);
+
+  const focusNodeIds = useMemo(() => {
+    if (!selection) return null;
+    if (selection.kind === 'node') return new Set([selection.id]);
+    const e = allEdges.find((x) => x.edge.id === selection.id)?.edge;
+    return new Set([e?.from.node, e?.to.node].filter(Boolean) as string[]);
+  }, [selection, allEdges]);
+
+  // Delegates and messages: all, or only the selected node's. Unplanned ones always show.
+  const roleCount = allEdges.filter((m) => m.edge.kind !== 'flow' && !m.unplanned).length;
+  const visible = useMemo(
+    () =>
+      allEdges.filter((m) => {
+        if (m.edge.kind === 'flow' || m.unplanned || connections === 'all') return true;
+        if (selection?.kind === 'edge') return selection.id === m.edge.id;
+        return selection?.kind === 'node' && (m.edge.from.node === selection.id || m.edge.to.node === selection.id);
+      }),
+    [allEdges, connections, selection],
+  );
+
+  const sizesKey = useStore((s: ReactFlowState) => {
+    let out = '';
+    for (const n of s.nodeLookup.values()) out += `${n.id}:${Math.round(n.measured.width ?? 0)}:${Math.round(n.measured.height ?? 0)}|`;
+    return out;
+  });
+  const size = useMemo(() => {
+    const measured = new Map<string, Size>();
+    for (const part of sizesKey.split('|')) {
+      const [id, w, h] = part.split(':');
+      if (id && Number(w) > 0 && Number(h) > 0) measured.set(id, { w: Number(w), h: Number(h) });
+    }
+    return (id: string): Size => measured.get(id) ?? { w: NODE_WIDTH, h: ESTIMATED_HEIGHT[mode] };
+  }, [sizesKey, mode]);
+
+  // View and live screens re-lay graphs whose stored positions would overlap
+  // at this node size, widening the gaps between rows until the lanes fit.
+  const positions = useMemo(() => {
+    const stored = new Map(allNodes.map((n) => [n.id, n.position]));
+    if (mode === 'edit' || !nodesOverlap(allNodes, size)) return stored;
+    const layoutEdges = visible.map((m) => m.edge);
+    const toRoute = (pos: Map<string, { x: number; y: number }>) =>
+      routeEdges(
+        allNodes.map((n) => ({ id: n.id, ...pos.get(n.id)!, ...size(n.id) })),
+        layoutEdges.map((e) => ({ id: e.id, kind: e.kind, from: e.from.node, to: e.to.node, port: e.from.port })),
+      );
+    const first = autoLayout(allNodes, layoutEdges, size);
+    return autoLayout(allNodes, layoutEdges, size, toRoute(first).gutterNeeds);
+  }, [allNodes, visible, size, mode]);
+
+  const builtNodes = useMemo<StepNodeType[]>(
+    () =>
+      allNodes.map((n) => {
+        const removed = n.id.startsWith('removed:');
+        let mark: StepData['diff'];
+        let keys: string[] | undefined;
+        if (removed) mark = 'removed';
+        else if (diff) {
+          if (diff.diff.nodes.added.includes(n.id)) mark = 'added';
+          else if (diff.diff.nodes.changed.includes(n.id)) {
+            mark = 'changed';
+            const before = diff.base.nodes.find((b) => b.id === n.id);
+            keys = before ? changedKeys(before, n) : undefined;
+          }
+        }
+        return {
+          id: n.id,
+          type: 'step',
+          position: positions.get(n.id) ?? n.position,
+          draggable: mode === 'edit' && !removed,
+          selectable: !removed,
+          deletable: mode === 'edit' && !removed,
+          zIndex: removed ? -1 : undefined,
+          selected: selection?.kind === 'node' && selection.id === n.id,
+          data: {
+            node: n,
+            mode: removed ? 'view' : mode,
+            issues: issuesByNode?.get(n.id),
+            diff: mark,
+            changedKeys: keys,
+            metrics: metricsByNode.get(n.id),
+            bottleneck: bottlenecks.get(n.id),
+            items: itemsByNode.get(n.id),
+            dimmed: mode === 'live' && !!focusNodeIds && selection?.kind === 'edge' && !focusNodeIds.has(n.id),
+          },
+        };
+      }),
+    [allNodes, positions, mode, diff, issuesByNode, metricsByNode, bottlenecks, itemsByNode, selection, focusNodeIds],
+  );
 
   const [nodes, setNodes] = useState<StepNodeType[]>(builtNodes);
   useEffect(() => {
     setNodes((prev) => builtNodes.map((n) => ({ ...n, measured: prev.find((p) => p.id === n.id)?.measured })));
   }, [builtNodes]);
 
-  const edges = useMemo<RuledEdgeType[]>(() => {
-    const pos: Positions = new Map(graph.nodes.map((n) => [n.id, n.position]));
-    if (diff) for (const n of diff.base.nodes) if (!pos.has(n.id)) pos.set(`removed:${n.id}`, n.position);
-    const unplanned = (live?.metrics.edges ?? []).filter((m) => m.unplanned && m.from && m.to);
-    const lanes = assignLanes([...graph.edges, ...unplanned.map((m) => ({ id: m.edgeId, kind: m.kind, from: { node: m.from! }, to: { node: m.to! } }))], pos);
-    const traffic = new Map((live?.metrics.edges ?? []).map((m) => [m.edgeId, m]));
-    const out = graph.edges.map((e) =>
-      toRfEdge(e, lanes.get(e.id) ?? 0, pos, {
-        diff: diff?.diff.edges.added.includes(e.id) ? 'added' : undefined,
-        traffic: live ? (traffic.get(e.id)?.count ?? 0) : undefined,
-        highlighted: selection?.kind === 'edge' && selection.id === e.id,
-        dimmed: mode === 'live' && !!focusNodeIds && !(focusNodeIds.has(e.from.node) || focusNodeIds.has(e.to.node)),
-      }),
+  // Routes follow the nodes as drawn, including while a node is dragged in the editor.
+  const routing = useMemo(() => {
+    const priority = (m: EdgeMeta) => (selection?.kind === 'edge' && selection.id === m.edge.id ? 3 : m.unplanned ? 2 : m.edge.kind === 'flow' ? 1 : 0);
+    return routeEdges(
+      nodes.map((n) => ({ id: n.id, x: n.position.x, y: n.position.y, ...size(n.id) })),
+      visible.map((m) => ({ id: m.edge.id, kind: m.edge.kind, from: m.edge.from.node, to: m.edge.to.node, port: m.edge.from.port, label: labelFor(m, !!live), priority: priority(m) })),
     );
-    if (diff)
-      for (const id of diff.diff.edges.removed) {
-        const e = diff.base.edges.find((b) => b.id === id);
-        if (!e) continue;
-        const exists = (nid: string) => graph.nodes.some((n) => n.id === nid);
-        const ghost: GraphEdge = {
-          ...e,
-          id: `removed:${e.id}`,
-          from: { ...e.from, node: exists(e.from.node) ? e.from.node : `removed:${e.from.node}` },
-          to: { ...e.to, node: exists(e.to.node) ? e.to.node : `removed:${e.to.node}` },
+  }, [nodes, visible, size, selection, live]);
+
+  const edges = useMemo<RuledEdgeType[]>(
+    () =>
+      visible.map(({ edge: e, diff: mark, unplanned, traffic }) => {
+        const flowEdge = e.kind === 'flow';
+        const highlighted = selection?.kind === 'edge' && selection.id === e.id;
+        const removed = mark === 'removed';
+        return {
+          id: e.id,
+          type: 'ruled',
+          source: e.from.node,
+          sourceHandle: flowEdge ? (e.from.port ?? 'out') : 'role-out',
+          target: e.to.node,
+          targetHandle: flowEdge ? 'in' : 'role-in',
+          selectable: !removed,
+          selected: highlighted,
+          deletable: mode === 'edit' && !removed,
+          data: {
+            kind: e.kind,
+            port: e.from.port,
+            route: routing.routes.get(e.id),
+            diff: mark,
+            unplanned,
+            traffic,
+            highlighted,
+            dimmed: mode === 'live' && !!focusNodeIds && !(focusNodeIds.has(e.from.node) || focusNodeIds.has(e.to.node)),
+          },
         };
-        out.push({ ...toRfEdge(ghost, lanes.get(e.id) ?? 0, pos, { diff: 'removed' }), selectable: false });
-      }
-    if (live)
-      unplanned.forEach((m) => {
-          const ghost: GraphEdge = { id: m.edgeId, kind: m.kind, from: { node: m.from! }, to: { node: m.to! } };
-          out.push(
-            toRfEdge(ghost, lanes.get(m.edgeId) ?? 0, pos, {
-              unplanned: true,
-              traffic: m.count,
-              highlighted: selection?.kind === 'edge' && selection.id === m.edgeId,
-              dimmed: !!focusNodeIds && !(focusNodeIds.has(m.from!) || focusNodeIds.has(m.to!)),
-            }),
-          );
-        });
-    return out.map((e) => ({ ...e, selected: selection?.kind === 'edge' && selection.id === e.id, deletable: mode === 'edit' }));
-  }, [graph, diff, live, selection, mode, focusNodeIds]);
+      }),
+    [visible, routing, selection, mode, focusNodeIds],
+  );
+
+  // Refit once the measured layout settles, so a re-laid graph is framed.
+  const layoutKey = useMemo(() => [...positions.entries()].map(([id, p]) => `${id}:${p.x}:${p.y}`).join('|'), [positions]);
+  const [narrow] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches);
+  useEffect(() => {
+    if (mode === 'edit' || narrow) return;
+    const frame = requestAnimationFrame(() => void flow.fitView({ padding: 0.08, maxZoom: 1 }));
+    return () => cancelAnimationFrame(frame);
+  }, [layoutKey, mode, narrow, flow]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<StepNodeType>[]) => {
@@ -313,12 +326,24 @@ function CanvasInner(props: GraphCanvasProps) {
   );
 
   const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  // On phones a fitted graph is too small to read; open at a legible zoom from the start of the flow.
-  const [narrow] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches);
+  const showToggle = mode !== 'edit' && roleCount > 0;
 
   return (
-    <div className={`graph ${props.className ?? ''} graph-${mode}`} role="group" aria-label={label}>
-      <MarkerDefs />
+    <div className={`graph ${props.className ?? ''} graph-${mode} ${showToggle ? 'has-bar' : ''}`} role="group" aria-label={label}>
+      {showToggle && (
+        <div className="graph-bar">
+          <span className="graph-bar-label">{connections === 'selected' && !selection ? 'Select a node to show its delegates and messages' : 'Delegates and messages'}</span>
+          <Segmented<Connections>
+            label="Delegates and messages"
+            value={connections}
+            onChange={setConnections}
+            options={[
+              { value: 'selected', label: 'Selected node' },
+              { value: 'all', label: `All ${roleCount}` },
+            ]}
+          />
+        </div>
+      )}
       <ReactFlow<StepNodeType, RuledEdgeType>
         nodes={nodes}
         edges={edges}
@@ -342,7 +367,7 @@ function CanvasInner(props: GraphCanvasProps) {
           if (!props.onDropNode || !type) return;
           e.preventDefault();
           const p = flow.screenToFlowPosition({ x: e.clientX, y: e.clientY });
-          props.onDropNode(type, { x: Math.round((p.x - NODE_WIDTH / 2) / 8) * 8, y: Math.round((p.y - 30) / 8) * 8 });
+          props.onDropNode(type, { x: Math.round((p.x - NODE_WIDTH / 2) / 16) * 16, y: Math.round((p.y - 20) / 16) * 16 });
         }}
         nodesDraggable={mode === 'edit'}
         nodesConnectable={mode === 'edit'}
@@ -352,16 +377,17 @@ function CanvasInner(props: GraphCanvasProps) {
         multiSelectionKeyCode={null}
         fitView={!narrow}
         defaultViewport={narrow ? { x: 16, y: 48, zoom: 0.62 } : undefined}
-        fitViewOptions={{ padding: 0.12, maxZoom: 1 }}
+        fitViewOptions={{ padding: 0.08, maxZoom: 1 }}
         minZoom={0.3}
         maxZoom={1.6}
         snapToGrid
-        snapGrid={[8, 8]}
+        snapGrid={[16, 16]}
         connectionLineStyle={{ strokeWidth: 1.5 }}
         proOptions={{ hideAttribution: false }}
         ariaLabelConfig={{ 'node.a11yDescription.default': 'Press Enter to select this node. Use arrow keys to move a selected node in the editor.' }}
       >
-        <Background variant={BackgroundVariant.Lines} gap={24} lineWidth={1} className="graph-grid" />
+        <Background id="minor" variant={BackgroundVariant.Lines} gap={16} lineWidth={1} className="graph-grid-minor" />
+        <Background id="major" variant={BackgroundVariant.Lines} gap={64} lineWidth={1} className="graph-grid-major" />
       </ReactFlow>
       <div className="graph-controls" role="toolbar" aria-label="Canvas zoom">
         <button className="icon-btn" aria-label="Zoom in" onClick={() => flow.zoomIn({ duration: reduced ? 0 : 120 })}>
@@ -370,7 +396,7 @@ function CanvasInner(props: GraphCanvasProps) {
         <button className="icon-btn" aria-label="Zoom out" onClick={() => flow.zoomOut({ duration: reduced ? 0 : 120 })}>
           <IconMinus />
         </button>
-        <button className="icon-btn" aria-label="Fit graph to view" onClick={() => flow.fitView({ padding: 0.12, maxZoom: 1, duration: reduced ? 0 : 160 })}>
+        <button className="icon-btn" aria-label="Fit graph to view" onClick={() => flow.fitView({ padding: 0.08, maxZoom: 1, duration: reduced ? 0 : 160 })}>
           <IconFit />
         </button>
       </div>
@@ -386,22 +412,28 @@ export function GraphCanvas(props: GraphCanvasProps) {
   );
 }
 
-export function EdgeLegend({ unplanned }: { unplanned?: boolean }) {
+export function EdgeLegend({ live }: { live?: boolean }) {
   return (
     <ul className="edge-legend" aria-label="Connection kinds">
       <li>
-        <svg width="28" height="8" aria-hidden="true"><path d="M0 4h22" className="gedge gedge-flow" /><path d="M21 0.5 28 4 21 7.5z" className="mk mk-fill-ink" /></svg>
+        <svg width="28" height="8" aria-hidden="true"><path d="M0 4h28" className="gedge gedge-flow" /></svg>
         Flow
       </li>
+      {live && (
+        <li>
+          <svg width="28" height="8" aria-hidden="true"><path d="M0 4h28" className="gedge gedge-flow gedge-unreached" /></svg>
+          Not reached yet
+        </li>
+      )}
       <li>
-        <svg width="28" height="8" aria-hidden="true"><path d="M0 4h26" className="gedge gedge-delegates" /><path d="M21 0.5 27 4 21 7.5" className="mk mk-stroke-ink" fill="none" strokeWidth="1.5" /></svg>
-        Delegates
+        <svg width="28" height="8" aria-hidden="true"><rect x="0.5" y="1" width="6" height="6" rx="1" className="gedge-end gedge-end-delegates gedge-end-source" /><path d="M6 4h16" className="gedge gedge-delegates" /><rect x="21.5" y="1" width="6" height="6" rx="1" className="gedge-end gedge-end-delegates gedge-end-target" /></svg>
+        Delegates, from the filled end
       </li>
       <li>
-        <svg width="28" height="8" aria-hidden="true"><circle cx="3" cy="4" r="2.5" className="mk mk-fill-muted" /><path d="M3 4h22" className="gedge gedge-messages" /><circle cx="25" cy="4" r="2.5" className="mk mk-fill-muted" /></svg>
+        <svg width="28" height="8" aria-hidden="true"><rect x="0.5" y="1" width="6" height="6" rx="1" className="gedge-end gedge-end-messages" /><path d="M6 4h16" className="gedge gedge-messages" /><rect x="21.5" y="1" width="6" height="6" rx="1" className="gedge-end gedge-end-messages" /></svg>
         Messages
       </li>
-      {unplanned && (
+      {live && (
         <li>
           <svg width="28" height="8" aria-hidden="true"><path d="M0 4h28" className="gedge gedge-messages gedge-unplanned" /></svg>
           Unplanned

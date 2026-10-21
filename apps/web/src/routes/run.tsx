@@ -188,7 +188,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
                   className="graph-map"
                 />
                 <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <EdgeLegend unplanned />
+                  <EdgeLegend live />
                   <ul className="edge-legend" aria-label="Work item markers">
                     <li>
                       <span className="marker marker-active" aria-hidden="true" /> Active
@@ -571,9 +571,8 @@ function AddInputDialog({ open, onClose, runId }: { open: boolean; onClose(): vo
           </p>
         )}
         {done && (
-          <p className="status status-success" role="status">
-            <span className="status-mark" aria-hidden="true" />
-            {done}
+          <p role="status">
+            <StatusLabel tone="success">{done}</StatusLabel>
           </p>
         )}
       </form>

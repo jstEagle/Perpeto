@@ -4,6 +4,9 @@ import type { Node, NodeProps } from '@xyflow/react';
 import type { Bottleneck, GraphNode, NodeMetrics, NodeType, WorkItem } from '../api/types';
 import { NODE_SPECS, nodeSummary } from './registry';
 import { duration, pct, rate } from '../lib/format';
+import { StatusLabel } from '../components/status';
+import { NODE_W } from './layout';
+import { PORT_Y } from './router';
 
 export type DiffMark = 'added' | 'removed' | 'changed';
 
@@ -21,12 +24,11 @@ export interface StepData extends Record<string, unknown> {
 
 export type StepNodeType = Node<StepData, 'step'>;
 
-export const NODE_WIDTH = 208;
-/** Vertical offset of flow ports, so edges stay straight between nodes in a row. */
-export const PORT_TOP = 30;
-const GATE_PORTS: Record<string, number> = { pass: 30, fail: 56 };
+export const NODE_WIDTH = NODE_W;
+/** Flow ports sit at the centre of the 40 px header; `fail` sits in the body. */
+export const PORT_TOP = PORT_Y.out;
 
-const TYPE_LABEL: Record<NodeType, string> = {
+export const TYPE_LABEL: Record<NodeType, string> = {
   input: 'Input',
   planner: 'Planner',
   agent: 'Agent',
@@ -47,9 +49,9 @@ export const BOTTLENECK_LABEL: Record<Bottleneck['reason'], string> = {
   'rework-loop': 'Rework loop',
 };
 
-/** Small geometric glyph per node type, drawn on the 12 px grid. */
+/** Geometric glyph per node type, drawn on a 12 unit grid and shown at 16 px. */
 export function TypeGlyph({ type }: { type: NodeType }) {
-  const common = { width: 12, height: 12, viewBox: '0 0 12 12', 'aria-hidden': true, focusable: false } as const;
+  const common = { width: 16, height: 16, viewBox: '0 0 12 12', 'aria-hidden': true, focusable: false } as const;
   switch (type) {
     case 'input':
       return <svg {...common}><path d="M1 6h7M5.5 3 8.5 6l-3 3M10.5 1v10" stroke="currentColor" strokeWidth="1.5" fill="none" /></svg>;
@@ -75,8 +77,8 @@ export function TypeGlyph({ type }: { type: NodeType }) {
 function LiveStrip({ metrics, items, bottleneck, type }: { metrics?: NodeMetrics; items?: WorkItem[]; bottleneck?: Bottleneck; type: NodeType }) {
   if (!metrics) return null;
   const terminal = type === 'input' || type === 'output';
-  const showsCapacity = metrics.concurrency > 0 && type !== 'loop';
-  const high = metrics.utilization >= 0.9;
+  const showsCapacity = !!metrics.concurrency && type !== 'loop';
+  const high = (metrics.utilization ?? 0) >= 0.9;
   const shown = (items ?? []).filter((i) => i.status !== 'done').slice(0, 14);
   const extra = (items ?? []).filter((i) => i.status !== 'done').length - shown.length;
   return (
@@ -105,7 +107,7 @@ function LiveStrip({ metrics, items, bottleneck, type }: { metrics?: NodeMetrics
           {showsCapacity && (
             <div className="gnode-util" title={`Utilization: ${metrics.active} active of ${metrics.concurrency}`}>
               <span className="meter meter-sm" aria-hidden="true">
-                <span className={`meter-fill ${high ? 'meter-error' : 'meter-ink'}`} style={{ width: `${Math.min(1, metrics.utilization) * 100}%` }} />
+                <span className={`meter-fill ${high ? 'meter-error' : 'meter-ink'}`} style={{ width: `${Math.min(1, metrics.utilization ?? 0) * 100}%` }} />
               </span>
               <span className="gnode-util-num">
                 {pct(metrics.utilization)} of {metrics.concurrency}
@@ -133,11 +135,12 @@ function LiveStrip({ metrics, items, bottleneck, type }: { metrics?: NodeMetrics
   );
 }
 
+const SEVERITY_TONE = { critical: 'error', warning: 'warning', info: 'neutral' } as const;
+
 function StepNodeView({ data, selected }: NodeProps<StepNodeType>) {
   const { node, mode, issues, diff, changedKeys, metrics, bottleneck, items, dimmed } = data;
   const spec = NODE_SPECS[node.type];
   const editable = mode === 'edit';
-  const ports = spec.outputs;
   const classes = [
     'gnode',
     `gnode-${node.type}`,
@@ -146,38 +149,43 @@ function StepNodeView({ data, selected }: NodeProps<StepNodeType>) {
     diff ? `is-${diff}` : '',
     bottleneck ? `has-bottleneck bottleneck-${bottleneck.severity}` : '',
     dimmed ? 'is-dimmed' : '',
+    spec.outputs.includes('fail') ? 'has-fail-port' : '',
   ].join(' ');
 
   return (
     <div className={classes} style={{ width: NODE_WIDTH }}>
-      {bottleneck && (
-        <span className={`gnode-flag flag-${bottleneck.severity}`} title={bottleneck.evidence}>
-          {BOTTLENECK_LABEL[bottleneck.reason]}
-        </span>
-      )}
-      {diff && <span className={`gnode-flag flag-diff-${diff}`}>{diff === 'added' ? 'Added' : diff === 'removed' ? 'Removed' : 'Changed'}</span>}
-      {spec.input && <Handle type="target" position={Position.Left} id="in" className="port port-in" style={{ top: PORT_TOP }} isConnectable={editable} />}
+      {spec.input && <Handle type="target" position={Position.Left} id="in" className="port port-in" style={{ top: PORT_Y.in }} isConnectable={editable} />}
       <div className="gnode-head">
-        <span className="gnode-type">
+        <span className="gnode-glyph">
           <TypeGlyph type={node.type} />
-          {TYPE_LABEL[node.type]}
         </span>
-        {issues && (issues.errors > 0 || issues.warnings > 0) && (
-          <span className={`gnode-issues ${issues.errors ? 'is-error' : 'is-warning'}`}>
-            {issues.errors ? `${issues.errors} ${issues.errors === 1 ? 'error' : 'errors'}` : `${issues.warnings} ${issues.warnings === 1 ? 'warning' : 'warnings'}`}
-          </span>
-        )}
+        <span className="gnode-label">{node.label || spec.title}</span>
+        <span className="gnode-kind">{node.type}</span>
       </div>
-      <div className="gnode-label">{node.label || spec.title}</div>
-      <div className="gnode-summary">{nodeSummary(node)}</div>
-      {diff === 'changed' && changedKeys && changedKeys.length > 0 && <div className="gnode-changed">Changed: {changedKeys.join(', ')}</div>}
-      {mode === 'live' && <LiveStrip metrics={metrics} items={items} bottleneck={bottleneck} type={node.type} />}
-      {ports.map((port) =>
+      <div className="gnode-body">
+        <div className="gnode-summary">{nodeSummary(node)}</div>
+        {(diff || bottleneck || (issues && (issues.errors > 0 || issues.warnings > 0))) && (
+          <div className="gnode-status">
+            {diff === 'added' && <StatusLabel tone="success">Added</StatusLabel>}
+            {diff === 'removed' && <StatusLabel tone="error">Removed</StatusLabel>}
+            {diff === 'changed' && <StatusLabel tone="warning">{changedKeys?.length ? `Changed: ${changedKeys.join(', ')}` : 'Changed'}</StatusLabel>}
+            {bottleneck && (
+              <StatusLabel tone={SEVERITY_TONE[bottleneck.severity]} title={bottleneck.evidence}>
+                {BOTTLENECK_LABEL[bottleneck.reason]}
+              </StatusLabel>
+            )}
+            {issues && issues.errors > 0 && <StatusLabel tone="error">{issues.errors === 1 ? '1 error' : `${issues.errors} errors`}</StatusLabel>}
+            {issues && !issues.errors && issues.warnings > 0 && <StatusLabel tone="warning">{issues.warnings === 1 ? '1 warning' : `${issues.warnings} warnings`}</StatusLabel>}
+          </div>
+        )}
+        {mode === 'live' && <LiveStrip metrics={metrics} items={items} bottleneck={bottleneck} type={node.type} />}
+      </div>
+      {spec.outputs.map((port) =>
         port === 'out' ? (
-          <Handle key={port} type="source" position={Position.Right} id="out" className="port port-out" style={{ top: PORT_TOP }} isConnectable={editable} />
+          <Handle key={port} type="source" position={Position.Right} id="out" className="port port-out" style={{ top: PORT_Y.out }} isConnectable={editable} />
         ) : (
-          <Handle key={port} type="source" position={Position.Right} id={port} className={`port port-out port-${port}`} style={{ top: GATE_PORTS[port] }} isConnectable={editable}>
-            <span className="port-label">{port}</span>
+          <Handle key={port} type="source" position={Position.Right} id={port} className={`port port-out port-${port}`} style={{ top: PORT_Y[port] }} isConnectable={editable}>
+            {port === 'fail' && <span className="port-label">fail</span>}
           </Handle>
         ),
       )}

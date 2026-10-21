@@ -9,16 +9,19 @@ export function count(n: number): string {
   return whole.format(n);
 }
 
-export function pct(ratio: number): string {
+export function pct(ratio: number | null | undefined): string {
+  if (ratio === null || ratio === undefined || Number.isNaN(ratio)) return '—';
   return `${Math.round(ratio * 100)}%`;
 }
 
-export function rate(n: number, digits = 1): string {
+export function rate(n: number | null | undefined, digits = 1): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return '—';
   return n.toFixed(digits).replace(/\.0$/, '');
 }
 
 /** Seconds as "45 s", "14 min", "6.4 h", "2.1 d". */
-export function duration(sec: number): string {
+export function duration(sec: number | null | undefined): string {
+  if (sec === null || sec === undefined || Number.isNaN(sec)) return '—';
   if (sec < 60) return `${Math.round(sec)} s`;
   if (sec < 3600) return `${Math.round(sec / 60)} min`;
   if (sec < 86_400) return `${rate(sec / 3600)} h`;

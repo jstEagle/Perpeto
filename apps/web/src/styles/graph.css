@@ -38,8 +38,12 @@
   font-family: var(--font-sans);
 }
 
-.graph-grid {
-  --xy-background-pattern-color: var(--grid-line);
+.graph-grid-minor {
+  --xy-background-pattern-color: var(--grid-minor);
+}
+
+.graph-grid-major {
+  --xy-background-pattern-color: var(--grid-major);
 }
 
 .react-flow__pane {
@@ -71,7 +75,8 @@
 
 .react-flow__edge:focus-visible .gedge,
 .react-flow__edge.selected .gedge {
-  stroke-width: 2.5;
+  stroke: var(--accent);
+  stroke-width: var(--stroke-selection);
 }
 
 .react-flow__edge:focus-visible {
@@ -83,19 +88,19 @@
   stroke-opacity: 0.25;
 }
 
-/* Nodes */
+/* Nodes: white work surface, 40 px header with a 16 px glyph, the name in
+   14 medium and the step kind in mono 12. Status is an inline label in the
+   body; the node itself is never filled with a status colour. */
 
 .gnode {
   position: relative;
   background: var(--surface);
-  border: 1px solid var(--border-strong);
+  border: var(--stroke-hairline) solid var(--control-border);
   border-radius: var(--radius-control);
-  padding: var(--space-2) var(--space-3) var(--space-3);
-  box-shadow: 0 1px 0 var(--shadow-color);
   font-size: var(--text-12);
   line-height: 1.4;
   color: var(--ink);
-  transition: opacity var(--duration-base) ease;
+  transition: opacity var(--duration-base) var(--ease-standard);
 }
 
 .graph-edit .gnode {
@@ -108,21 +113,16 @@
 }
 
 .gnode.is-selected {
-  border-color: var(--ink);
-  box-shadow: 0 0 0 1px var(--ink), var(--shadow-raised);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
-.gnode-input,
-.gnode-output {
-  background: var(--surface-sunken);
+.react-flow__node-step.dragging .gnode {
+  box-shadow: var(--shadow-overlay);
 }
 
 .gnode.has-errors {
   border-color: var(--error);
-}
-
-.gnode.has-errors.is-selected {
-  box-shadow: 0 0 0 1px var(--error), var(--shadow-raised);
 }
 
 .gnode.is-dimmed {
@@ -132,150 +132,104 @@
 .gnode-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
-  min-height: 20px;
+  height: 40px;
+  padding: 0 var(--space-3);
+  border-bottom: var(--stroke-hairline) solid var(--border);
 }
 
-.gnode-type {
+.gnode-glyph {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-}
-
-.gnode-type svg {
+  flex: none;
   color: var(--ink);
-}
-
-.gnode-issues {
-  font-weight: 500;
-}
-
-.gnode-issues.is-error {
-  color: var(--error);
-}
-
-.gnode-issues.is-warning {
-  color: var(--warning);
 }
 
 .gnode-label {
+  flex: 1;
+  min-width: 0;
   font-size: var(--text-14);
-  font-weight: 600;
-  letter-spacing: -0.005em;
-  margin-top: 2px;
-  padding-right: var(--space-8);
+  font-weight: var(--weight-medium);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.gnode-kind {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-12);
+  color: var(--muted);
+}
+
+.gnode-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
 }
 
 .gnode-summary {
-  font-family: var(--font-mono);
   color: var(--muted);
-  margin-top: 2px;
-  padding-right: var(--space-8);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 20px;
 }
 
-.gnode-changed {
-  margin-top: var(--space-1);
-  color: var(--warning);
+.has-fail-port .gnode-summary {
+  padding-right: var(--space-8);
 }
 
-/* Flags above a node: bottleneck reason or diff mark. */
-
-.gnode-flag {
-  position: absolute;
-  left: -1px;
-  bottom: calc(100% + 6px);
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 var(--space-2);
-  border-radius: 4px;
-  font-size: var(--text-12);
-  font-weight: 600;
-  white-space: nowrap;
-  border: 1px solid currentColor;
-  background: var(--surface);
+.gnode-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
 }
 
-.flag-critical {
-  color: var(--error);
-  background: var(--error-tint);
-}
-
-.flag-warning {
-  color: var(--warning);
-  background: var(--warning-tint);
-}
-
-.flag-info {
-  color: var(--ink);
-}
-
-.flag-diff-added {
-  color: var(--success);
-  background: var(--success-tint);
-}
-
-.flag-diff-changed {
-  color: var(--warning);
-  background: var(--warning-tint);
-}
-
-.flag-diff-removed {
-  color: var(--error);
-  background: var(--error-tint);
+.gnode-status .status {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .gnode.bottleneck-critical {
   border-color: var(--error);
-  box-shadow: 0 0 0 1px var(--error);
 }
 
 .gnode.bottleneck-warning {
   border-color: var(--warning);
-  box-shadow: 0 0 0 1px var(--warning);
-}
-
-.gnode.bottleneck-critical.is-selected,
-.gnode.bottleneck-warning.is-selected {
-  box-shadow: 0 0 0 2px var(--ink), var(--shadow-raised);
 }
 
 .gnode.is-added {
   border-color: var(--success);
-  box-shadow: 0 0 0 1px var(--success);
-  background: var(--success-tint);
 }
 
 .gnode.is-changed {
   border-color: var(--warning);
-  box-shadow: 0 0 0 1px var(--warning);
 }
 
 .gnode.is-removed {
-  border: 1px dashed var(--error);
-  background: var(--surface);
+  border-style: dashed;
+  border-color: var(--error);
   opacity: 0.6;
-  box-shadow: none;
 }
 
 .gnode.is-removed .gnode-label {
   text-decoration: line-through;
 }
 
+.gnode.is-selected.bottleneck-critical,
+.gnode.is-selected.bottleneck-warning,
+.gnode.is-selected.is-added,
+.gnode.is-selected.is-changed {
+  border-color: var(--accent);
+}
+
 /* Live strip */
 
 .gnode-live {
-  margin-top: var(--space-2);
   padding-top: var(--space-2);
-  border-top: 1px solid var(--border);
+  border-top: var(--stroke-hairline) solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -355,21 +309,22 @@
   margin-left: 2px;
 }
 
-/* Ports */
+/* Ports: 8 px squares on the node edge. Open is surface with an outline,
+   connected is solid ink, a valid drop target is accent. */
 
 .react-flow__handle.port {
-  width: 8px;
-  height: 8px;
+  width: var(--editor-port);
+  height: var(--editor-port);
   min-width: 0;
   min-height: 0;
   border-radius: 1px;
-  background: var(--surface);
+  background: var(--ink);
   border: 1.5px solid var(--ink);
 }
 
 .react-flow__handle.port-role {
-  border-radius: 50%;
-  border-color: var(--muted);
+  background: var(--surface);
+  border-color: var(--control-border);
 }
 
 .graph-view .react-flow__handle.port,
@@ -383,18 +338,15 @@
 }
 
 .graph-edit .react-flow__handle.port {
-  width: 10px;
-  height: 10px;
+  background: var(--surface);
+  border-color: var(--control-border);
 }
 
 .graph-edit .react-flow__handle.port:hover,
 .react-flow__handle.connectingto,
 .react-flow__handle.valid {
-  background: var(--ink);
-}
-
-.react-flow__handle.port-fail {
-  border-color: var(--control-border);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .port-label {
@@ -402,6 +354,7 @@
   right: 12px;
   top: 50%;
   transform: translateY(-50%);
+  font-family: var(--font-mono);
   font-size: var(--text-12);
   color: var(--muted);
   pointer-events: none;
@@ -409,23 +362,24 @@
   line-height: 1;
 }
 
-/* Edges */
+/* Edges: 1.5 px orthogonal runs with 6 px elbows, no arrowheads. */
 
 .gedge,
 .react-flow__edge-path.gedge {
   fill: none;
   stroke: var(--ink);
-  stroke-width: 1.5;
-  transition: opacity var(--duration-base) ease;
+  stroke-width: var(--stroke-edge);
+  transition: opacity var(--duration-base) var(--ease-standard);
 }
 
-.gedge-fail {
+.gedge-unreached {
   stroke: var(--control-border);
+  stroke-dasharray: 4 4;
 }
 
 .gedge-delegates {
-  stroke: var(--ink);
-  stroke-dasharray: 6 4;
+  stroke: var(--muted);
+  stroke-dasharray: 8 4;
 }
 
 .gedge-messages {
@@ -438,13 +392,12 @@
 .gedge-unplanned {
   stroke: var(--warning);
   stroke-width: 1.75;
-  stroke-dasharray: 5 3 0.5 3;
+  stroke-dasharray: 6 3 0.5 3;
   stroke-linecap: round;
 }
 
 .gedge-added {
   stroke: var(--success);
-  stroke-width: 2;
 }
 
 .gedge-removed {
@@ -454,21 +407,37 @@
 }
 
 .gedge.is-selected {
-  stroke-width: 2.5;
+  stroke: var(--accent);
+  stroke-width: var(--stroke-selection);
 }
 
-.gedge.is-dimmed {
+.gedge.is-dimmed,
+.gedge-end.is-dimmed {
   opacity: 0.2;
 }
 
-.mk-fill-ink { fill: var(--ink); }
-.mk-fill-muted { fill: var(--muted); }
-.mk-fill-success { fill: var(--success); }
-.mk-fill-error { fill: var(--error); }
-.mk-fill-warning { fill: var(--warning); }
-.mk-stroke-ink { stroke: var(--ink); }
-.mk-stroke-success { stroke: var(--success); }
-.mk-stroke-error { stroke: var(--error); }
+.gedge-end {
+  fill: var(--muted);
+  stroke: none;
+}
+
+.gedge-end-delegates.gedge-end-target {
+  fill: var(--surface);
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+
+.gedge-end.is-unplanned {
+  fill: var(--warning);
+}
+
+.gedge-end.is-added {
+  fill: var(--success);
+}
+
+.gedge-end.is-removed {
+  fill: var(--error);
+}
 
 .gedge-label {
   position: absolute;
@@ -479,7 +448,7 @@
   font-size: var(--text-12);
   font-variant-numeric: tabular-nums;
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: var(--stroke-hairline) solid var(--border);
   border-radius: 4px;
   color: var(--ink);
   white-space: nowrap;
@@ -491,20 +460,24 @@
 }
 
 .gedge-label.is-unplanned {
-  color: var(--warning);
+  color: var(--ink);
   border-color: var(--warning);
-  background: var(--warning-tint);
-  font-weight: 500;
+  background: var(--warning-wash);
+  font-weight: var(--weight-medium);
 }
 
 .gedge-label.is-added {
-  color: var(--success);
   border-color: var(--success);
+  background: var(--success-wash);
 }
 
 .gedge-label.is-removed {
-  color: var(--error);
   border-color: var(--error);
+  background: var(--error-wash);
+}
+
+.gedge-label.is-selected {
+  border-color: var(--accent);
 }
 
 .gedge-label.is-dimmed {
@@ -512,6 +485,36 @@
 }
 
 /* Canvas chrome */
+
+.graph-bar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  height: 44px;
+  padding: 0 var(--space-2) 0 var(--space-4);
+  background: var(--surface);
+  border-bottom: var(--stroke-hairline) solid var(--border);
+  font-size: var(--text-12);
+}
+
+.graph-bar-label {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph.has-bar .react-flow {
+  position: absolute;
+  inset: 44px 0 0 0;
+  height: auto;
+  width: auto;
+}
 
 .graph-controls {
   position: absolute;
