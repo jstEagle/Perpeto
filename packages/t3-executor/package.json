@@ -15,8 +15,10 @@
     "test": "node --test",
     "live": "node scripts/live-check.mjs"
   },
+  "dependencies": {
+    "@perpeto/accounts": "*"
+  },
   "devDependencies": {
-    "@perpeto/accounts": "*",
     "@perpeto/hub": "*",
     "@perpeto/node": "*",
     "@perpeto/sdk": "*"

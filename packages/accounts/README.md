@@ -64,13 +64,17 @@ Supported sources:
 | Source | Credential file | Additional behavior |
 | --- | --- | --- |
 | `{ kind: "provider-home", homePath }`, Codex | `<homePath>/auth.json` | Creates a minimal `config.toml` with `cli_auth_credentials_store = "file"` |
-| `{ kind: "provider-home", homePath, accountConfigPath? }`, Claude | `<homePath>/.credentials.json` | Optionally copies only `oauthAccount` and `hasCompletedOnboarding` from the explicit account config |
+| `{ kind: "provider-home", homePath, accountConfigPath? }`, Claude | `<homePath>/.credentials.json` | Copies only its `claudeAiOauth` object, dropping MCP server tokens the file can hold. Optionally copies only `oauthAccount` and `hasCompletedOnboarding` from the explicit account config |
 | `{ kind: "ccswap", storePath, slot }`, Codex | `<storePath>/codex/credentials/account-<slot>.json` | Reads slot from `codex/sequence.json`; preserves its disabled flag |
 | `{ kind: "ccswap", storePath, slot }`, Claude | `<storePath>/credentials/.creds-<slot>-<email>.enc` | Reads email/disabled from `sequence.json`; decodes base64; selects identity fields from `configs/.claude-config-<slot>-<email>.json` |
 
 `ccswap` store paths must be explicit. Its installed source resolves macOS to `~/.claude-swap-backup` and Linux to `$XDG_DATA_HOME/claude-swap` (default `~/.local/share/claude-swap`). These are source-study observations, not directories this package reads automatically. Its `.enc` files are base64, **not encryption**. Read `ccswap help`, `claude_swap/paths.py`, `credentials.py` (`_backup_enc_path`, `_read_account_credentials`), `codex.py` (`_credential_path`) and `session.py` (`session_dir_for`) for the implementation studied here. Perpeto never invokes ccswap, including its switch/add/remove commands.
 
 A file-backed ccswap session profile can also be passed as a `provider-home` source. Keychain-only Claude backups and Codex keyring logins are unsupported. Current default Claude identity metadata may live outside `.claude`, so `accountConfigPath` is explicit; no user-wide config is copied wholesale. API-key Codex auth files are accepted, but Claude imports currently require `claudeAiOauth.accessToken`.
+
+On macOS, Claude Code moves a home's `.credentials.json` into a keychain item for that config directory on its first credential write (service `Claude Code-credentials-<first 8 hex of sha256(home)>`, account `$USER`; observed in Claude Code 2.1.304 source). A pooled Claude home without the file therefore stays eligible when that item exists. The check runs `/usr/bin/security find-generic-password` without `-w`, so it learns only whether the item exists; tests replace it through the `claudeKeychain: (home) => boolean` constructor option. [claude-login.js](src/claude-login.js) also exports `claudeKeychainService`, `readClaudeKeychainLogin` (used by the executor's explicit `copy-once` seeding) and `deleteClaudeKeychainLogin` for removing a home.
+
+Even a fresh private home does not hide the account email from Claude's prompt: Claude Code fetches the account profile with a `user:profile` login and stores `oauthAccount.emailAddress` in the home's `.claude.json` itself. See the [executor README](../t3-executor/README.md#claude-config-directory).
 
 Sources require private files/directories. Symlinks at checked directories/files and multiply linked credential files are refused. Existing unsafe permissions are rejected, not silently repaired. Imported metadata may contain private identity information and stays inside the credential home. Labels are operator-supplied heartbeat metadata and must never contain secrets.
 
@@ -128,7 +132,7 @@ Normalized T3 `{ windows: [{ id, usedPercent, resetsAt? }] }` updates are accept
 
 ## Durability and limits
 
-The private `registry.json` records metadata, sparse usage windows, reservation IDs and idempotency receipts. Writes use fsync plus an atomic rename. A private `.lock` directory serializes mutations and imports across handles/processes. There are no network calls, dependencies, shell executions or token logs.
+The private `registry.json` records metadata, sparse usage windows, reservation IDs and idempotency receipts. Writes use fsync plus an atomic rename. A private `.lock` directory serializes mutations and imports across handles/processes. There are no network calls, dependencies or token logs. The only process it starts is the macOS `security` presence check above.
 
 `ACCOUNT_POOL_BUSY` is retryable by the node. A crash can leave the lock directory or an unregistered credential home behind; recovery is deliberately manual and must first establish that no writer is active. Never remove a lock merely because it is old. Reservations survive restart until their ISO `expiresAt`, and expire before selection, renewal, reconciliation and lease-aware binding checks. `reservationLeaseMs` defaults to 300000 (5 minutes); legacy string reservations receive one finite lease during startup migration. Expiry does not stop a running harness. Callers must renew well before expiry and cancel work on renewal failure to prevent concurrent use after a lost lease. No account deletion or distributed lock is supplied here. Use local filesystems with reliable atomic rename/permissions semantics.
 
