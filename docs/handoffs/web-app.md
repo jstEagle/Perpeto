@@ -76,7 +76,9 @@ All gaps listed in the previous handoff are closed against `apps/hub`:
 5. Version status: version records always say `draft`, so the client marks the head's `activeVersion` as active, older versions as previous and newer ones as proposals.
 6. Run input is sent as `{ items: [{ title, body? }] }`, and returns 202 with no work item. Human decisions are sent as `pass` (approve) or `fail` (return).
 7. Events: `latest=true` and `before=` pages come back oldest first with `previousCursor` (exclusive); the client reverses them. `before=` cursors are contiguous with no overlap, checked against the hub.
-8. Messages are still sent as role `owner` to `/api/v1/messaging`, assuming messaging project IDs equal hub project IDs (true for hub-created projects).
+8. Goals are objects `{id, title, status, workItemIds, done, total}`; `src/api/goals.ts` also reads legacy string goals (as active, no progress). The overview shows each goal with a meter ("3 of 5", "Done", or "No work yet") and dropped goals behind a disclosure. Editing keeps ids and statuses of listed goals and sends new ones as strings; a project whose goals came as strings is saved as strings. The demo and the hub seed link inputs to goals with `goalId`, so progress shows. Checked against the hub: an edit kept a goal's id and its 14 linked items.
+9. The sidebar footer shows the owner's initials and name from `/overview` (`owner: {name, initials}`), falling back to "Owner" on older hubs, with the connection state beneath.
+10. Messages are still sent as role `owner` to `/api/v1/messaging`, assuming messaging project IDs equal hub project IDs (true for hub-created projects).
 
 ## Found in the hub and workflow engine (for their owners)
 
