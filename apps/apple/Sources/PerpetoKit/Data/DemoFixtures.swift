@@ -124,15 +124,15 @@ public enum DemoFixtures {
         ["provider": .string(provider), "model": .string(model)]
     }
 
-    /// Column layout shared by the build graph versions.
+    /// Grid layout shared by the graph versions: 208 pt columns, 180 pt rows.
     static func column(_ index: Int, row: Int = 0) -> GraphNode.Position {
-        .init(x: Double(40 + index * 188), y: Double(120 + row * 200))
+        .init(x: Double(48 + index * 208), y: Double(64 + row * 180))
     }
 
     public static func buildGraphV3() -> WorkflowGraph {
         WorkflowGraph(
             nodes: [
-                GraphNode(id: "in", type: .input, label: "Roadmap and ideas", position: column(0),
+                GraphNode(id: "in", type: .input, label: "Roadmap", position: column(0),
                           config: ["source": "goals", "docs": ["doc_vision", "doc_arch"]]),
                 GraphNode(id: "plan", type: .planner, label: "Planner", position: column(1),
                           config: ["harness": harness("claudeAgent", "claude-opus-5-5"), "prompt": "Split goals into reviewable work items with acceptance checks.", "maxItems": 12]),
@@ -141,14 +141,14 @@ public enum DemoFixtures {
                 GraphNode(id: "build", type: .agent, label: "Builder", position: column(3),
                           config: ["harness": harness("codex", "gpt-5-codex"), "prompt": "Implement the work item on its own branch and open a PR.", "concurrency": 6,
                                    "policy": ["maxSubagents": 2, "allowedSubagentProviders": ["codex"], "maxTurns": 40]]),
-                GraphNode(id: "review", type: .review, label: "Reviewer", position: column(4),
+                GraphNode(id: "review", type: .review, label: "Reviewer", position: column(0, row: 1),
                           config: ["harness": harness("claudeAgent", "claude-opus-5-5"), "prompt": "Review the PR against the item's acceptance checks.", "concurrency": 1,
                                    "rubric": "Correctness, tests at the head commit, contract names unchanged."]),
-                GraphNode(id: "ci", type: .ci, label: "CI", position: column(5),
+                GraphNode(id: "ci", type: .ci, label: "CI", position: column(1, row: 1),
                           config: ["steps": .array(ciSteps.map { ["name": .string($0.name), "run": .string($0.run)] }), "requirements": ["os": "linux", "labels": ["ci"]]]),
-                GraphNode(id: "mq", type: .mergeQueue, label: "Merge queue", position: column(6),
+                GraphNode(id: "mq", type: .mergeQueue, label: "Merge queue", position: column(2, row: 1),
                           config: ["strategy": "serial", "method": "squash", "requiredChecks": ["CI"]]),
-                GraphNode(id: "out", type: .output, label: "Merged to main", position: column(7)),
+                GraphNode(id: "out", type: .output, label: "Merged to main", position: column(3, row: 1)),
             ],
             edges: [
                 GraphEdge(id: "e1", from: .init(node: "in"), to: .init(node: "plan"), kind: .flow),
@@ -174,7 +174,7 @@ public enum DemoFixtures {
             graph.nodes[index].config["concurrency"] = 2
         }
         graph.nodes.append(GraphNode(
-            id: "review-ui", type: .review, label: "UI reviewer", position: column(4, row: 1),
+            id: "review-ui", type: .review, label: "UI reviewer", position: column(0, row: 2),
             config: ["harness": harness("claudeAgent", "claude-sonnet-5-5"), "prompt": "Review UI and copy changes against brand.md.", "concurrency": 1,
                      "rubric": "Tokens only, sentence case, explicit status labels."]))
         graph.edges.removeAll { $0.id == "m2" }
@@ -227,9 +227,9 @@ public enum DemoFixtures {
                     GraphNode(id: "audit", type: .planner, label: "Auditor", position: column(1), config: ["harness": harness("claudeAgent", "claude-opus-5-5"), "prompt": "Find the highest-value improvement against current goals.", "maxItems": 3]),
                     GraphNode(id: "fix", type: .agent, label: "Improver", position: column(2), config: ["harness": harness("codex", "gpt-5-codex"), "concurrency": 2]),
                     GraphNode(id: "review", type: .review, label: "Reviewer", position: column(3), config: ["harness": harness("claudeAgent", "claude-opus-5-5"), "concurrency": 1]),
-                    GraphNode(id: "ci", type: .ci, label: "CI", position: column(4), config: ["steps": [["name": "Test", "run": "npm test"]]]),
-                    GraphNode(id: "mq", type: .mergeQueue, label: "Merge queue", position: column(5), config: ["strategy": "serial", "method": "squash"]),
-                    GraphNode(id: "out", type: .output, label: "Merged", position: column(6)),
+                    GraphNode(id: "ci", type: .ci, label: "CI", position: column(0, row: 1), config: ["steps": [["name": "Test", "run": "npm test"]]]),
+                    GraphNode(id: "mq", type: .mergeQueue, label: "Merge queue", position: column(1, row: 1), config: ["strategy": "serial", "method": "squash"]),
+                    GraphNode(id: "out", type: .output, label: "Merged", position: column(2, row: 1)),
                 ],
                 edges: [
                     GraphEdge(id: "e1", from: .init(node: "in"), to: .init(node: "audit"), kind: .flow),

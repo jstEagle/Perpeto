@@ -48,7 +48,7 @@ public enum NodeType: String, LenientEnum {
 
     public var acceptsFlowInput: Bool { self != .input }
 
-    public var outputPorts: [Port] {
+    public var outputPorts: [GraphPort] {
         switch self {
         case .output, .unknown: []
         case _ where isGate: [.pass, .fail]
@@ -61,7 +61,7 @@ public enum NodeType: String, LenientEnum {
 
 /// Typed ports. `out`/`pass`/`fail` emit work items on `flow` edges;
 /// `role` is the attachment point for `delegates` and `messages` edges.
-public enum Port: String, Codable, Hashable, Sendable {
+public enum GraphPort: String, Codable, Hashable, Sendable {
     case `in`, out, pass, fail, role
 }
 
@@ -208,7 +208,7 @@ public enum WorkflowValidator {
             }
             switch edge.kind {
             case .flow:
-                let port = edge.from.port.flatMap(Port.init(rawValue:)) ?? .out
+                let port = edge.from.port.flatMap(GraphPort.init(rawValue:)) ?? .out
                 if !from.type.outputPorts.contains(port) {
                     let expected = from.type.outputPorts.map(\.rawValue).joined(separator: " or ")
                     issues.append(.init(

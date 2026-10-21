@@ -62,8 +62,8 @@ public actor DemoDataSource: FactoryDataSource {
             let ciPass = graph.edges.firstIndex { $0.from.node == "ci" && $0.from.port == "pass" }
             if let ciPass, let mq = graph.node("mq") {
                 graph.edges[ciPass].to = .init(node: "approve")
-                for index in graph.nodes.indices where graph.nodes[index].position.x >= mq.position.x {
-                    graph.nodes[index].position.x += 188
+                for index in graph.nodes.indices where graph.nodes[index].position.y == mq.position.y && graph.nodes[index].position.x >= mq.position.x {
+                    graph.nodes[index].position.x += 208
                 }
                 graph.nodes.append(GraphNode(id: "approve", type: .human, label: "Release approval", position: .init(x: mq.position.x, y: mq.position.y),
                                              config: ["prompt": "Approve merging this change to main."]))

@@ -131,7 +131,7 @@ public struct Bottleneck: Codable, Hashable, Identifiable, Sendable {
         case info, warning, critical, unknown
         public static var unknownCase: Self { .unknown }
 
-        var rank: Int {
+        public var rank: Int {
             switch self {
             case .critical: 3
             case .warning: 2
