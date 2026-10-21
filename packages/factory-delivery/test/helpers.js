@@ -50,16 +50,16 @@ test('no failure marker', () => assert.equal(existsSync('fail.txt'), false));
       store.close(); store = new MergeQueueStore(filename);
       queue = new MergeQueue({ store, queueId: 'mq_test', config, adapter: nextAdapter });
     },
-    async runCI(job = queue.state.jobs.at(-1)) {
+    async runCI(job = queue.state.jobs.at(-1), ciRepository = repository, artifacts = []) {
       const workspace = join(root, `ci-${++sequence}`);
-      await git(repository, 'worktree', 'add', '--detach', workspace, job.revision);
+      await git(ciRepository, 'worktree', 'add', '--detach', workspace, job.revision);
       let status = 'passed';
       // Do not inherit node:test's private child-runner context into this independent CI.
       const { NODE_TEST_CONTEXT: inheritedTestContext, ...env } = process.env;
       try { await exec(process.execPath, ['--test', 'verification.test.js'], { cwd: workspace, env }); }
       catch (error) { if (typeof error.code !== 'number') throw error; status = 'failed'; }
-      finally { await git(repository, 'worktree', 'remove', '--force', workspace); }
-      const result = { id: job.id, revision: job.revision, configHash: job.configHash, status, artifacts: [] };
+      finally { await git(ciRepository, 'worktree', 'remove', '--force', workspace); }
+      const result = { id: job.id, revision: job.revision, configHash: job.configHash, status, artifacts };
       f.result(result); return result;
     },
     async drain(max = 60) {

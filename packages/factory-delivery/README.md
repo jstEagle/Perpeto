@@ -40,7 +40,7 @@ const queue = new MergeQueue({
   config: {
     projectId: 'prj_example', repo: { url: '/path/to/repo.git', defaultBranch: 'main' },
     baseBranch: 'main', strategy: 'batch', batchSize: 8,
-    method: 'merge', requiredChecks: ['test'], ci,
+    method: 'merge', publication: 'fast-forward-push', requiredChecks: ['test'], ci,
   },
   adapter: new LocalGitAdapter({ repository: '/path/to/repo.git' }),
 });
@@ -66,32 +66,34 @@ store.close();
 
 Each completed `step`, enqueue, and result request has a durable SQLite receipt. Repeating a key and body returns the original snapshot, even after further work. Different bodies with the same key fail with `IDEMPOTENCY_CONFLICT` (409). Use a new tick key when requesting new progress. The queue config is immutable on reopen. Use a dedicated delivery DB; this package owns its schema version. Create its parent directory before opening it. `DeliveryError.toJSON()` returns the contract's `{error:{code,message}}`; host transports own HTTP mapping and authorization.
 
-`createQueueState`, `reduceQueue`, and `selectEntries` are pure exports for engine integration. Their transition actions are internal orchestration input, not an authorization boundary. `MergeQueueStore` wraps them with transactions, receipts, and fenced worker leases. One `step` worker holds the queue at a time; independent processes get `BUSY`. If a process dies, the default lease expires after 60 seconds. A stale worker cannot persist a transition. Base/head comparison in the adapter's publication transaction protects against a slow worker publishing after another worker took over.
+`createQueueState`, `reduceQueue`, and `selectEntries` are pure exports for engine integration. Their transition actions are internal orchestration input, not an authorization boundary. `MergeQueueStore` wraps them with transactions, receipts, and fenced worker leases. One `step` worker holds the queue at a time; independent processes get `BUSY`. If a process dies, the default lease expires after 60 seconds. A stale worker cannot persist a transition. Publication fencing depends on the adapter: local Git compares base and heads in one transaction; GitHub uses the strategy-specific safeguards below. A worker lease alone cannot fence a remote Git push.
 
 The hub must validate its node lease before accepting `recordJobResult`, register/dispatch each persisted Job idempotently, and cancel superseded queued jobs. The delivery store preserves cancelled obsolete jobs and historical evidence; the hub must mirror those cancellations. Batch jobs omit work item/run attribution because they can contain several work items; `active.entryIds` identifies the membership. Individual entries carry the shared `jobId`.
 
 ### Queue behavior
 
-- Serial takes one queued entry; batch takes up to `batchSize` in FIFO order. Both test a synthetic commit incorporating the base and every selected PR head before publication.
+- Serial takes one queued entry; batch takes up to `batchSize` in FIFO order. Both test a synthetic commit incorporating the base and every selected PR head before publication. Native GitHub publication requires `strategy: 'serial'`; batches are refused before any work to avoid partial native batch publication.
 - Changing the base requeues the attempt, cancels unfinished obsolete jobs, and creates a new candidate/job. Changing a PR head rejects that entry; enqueue the new revision with a new entry id.
 - Conflicts reject the conflicting entry with a reason; remaining batch entries return to the front. Failed or incomplete required checks bisect batches recursively, then reject a failing singleton. Later halves test against the base produced by earlier successful halves.
 - Preparing, testing, and merging are persisted separately. Restarting during testing retains the same candidate and Job. Restarting after Git publication recognizes the candidate in base ancestry and completes the SQLite acknowledgement without merging again.
-- CI failure, cancellation, and runner error are terminal results for the attempt. A singleton is rejected; a batch is split. Transient adapter/transport failures throw and retain the durable phase for retry.
+- CI failure, cancellation, and runner error are terminal results for the attempt. A singleton is rejected; a batch is split. Branch-protection publication failures reject the attempt with a safe reason. Transient adapter/transport failures throw and retain the durable phase for retry.
 
 ## Adapter contract
 
 Adapters expose async methods:
 
 ```js
-getBase(baseBranch)                     // full SHA
+getBase(baseBranch, publication?)       // full SHA
 getHead(entry)                          // full SHA at entry.prUrl
 prepare({ baseSha, entries, method, idempotencyKey }) // { revision }
 isMerged({ baseBranch, revision })      // whether candidate has already been published
-merge({ baseBranch, baseSha, revision, entries, method, idempotencyKey })
-// -> { status: 'merged', revision } | { status: 'base_changed'|'head_changed' }
+merge({ baseBranch, baseSha, revision, entries, method, idempotencyKey, publication, evidence, publicationState })
+// -> { status: 'merged', revision, publication? }
+//  | { status: 'base_changed'|'head_changed' }
+//  | { status: 'pending', publicationState } | { status: 'rejected', reason }
 ```
 
-`prepare` must be repeatable for an attempt and keep its candidate reachable across restart. `merge` must publish the exact candidate, comparing the tested base and all selected PR heads atomically. Only adapters providing this guarantee may set `atomicMerge = true`. The host should scope an adapter to the queue's repository. `createPullRequest` and `readChecks` are optional forge helper methods outside the queue publish interface.
+`prepare` must be repeatable for an attempt and keep its candidate reachable across restart. `merge` owns publication recovery and PR finalization, including retries after remote publication. `atomicMerge = true` now declares an atomic publication mechanism, with the distinct guarantees below. It no longer implies that every adapter has local Git's multi-ref base/head compare-and-swap. Fast-forward mode must confirm the exact tested candidate; native GitHub mode may return GitHub's actual merge SHA tagged `publication: 'github-merge-queue'`. Entries retain both `testedRevision` and `mergedRevision`. A pending result keeps the durable merging phase and `active.publicationState`; ticks observe forge state again. The host should scope an adapter to the queue's repository. `createPullRequest` and `readChecks` are optional forge helper methods outside the queue publish interface.
 
 ### Local Git
 
@@ -101,7 +103,7 @@ Normal completion removes temporary worktrees. A hard process/OS crash during pr
 
 ### GitHub CLI
 
-`GitHubAdapter({repository:'owner/name',runner?,candidateAdapter?})` provides:
+`GitHubAdapter({repository:'owner/name',runner?,candidateAdapter?,gitRepository?,publication?})` provides:
 
 - `createPullRequest({branch,baseBranch,title,body})`: checks for an existing open PR, then uses `gh pr create` with the literal body on stdin.
 - `getBase`, `getHead`, `readChecks({prUrl})`: repository-scoped reads. Checks identify the actual head, without inventing a config hash.
@@ -109,7 +111,31 @@ Normal completion removes temporary worktrees. A hard process/OS crash during pr
 
 All invocations use argv without a shell. Authentication stays in the user's existing `gh` credential store. Command failures expose generic messages, never raw subprocess output. The injected runner signature is `(command,args,{cwd?,env?,input?,timeoutMs?}) => Promise<{exitCode,stdout,stderr}>`.
 
-**GitHub queue publication is deliberately unsupported:** the [GitHub CLI merge interface](https://cli.github.com/manual/gh_pr_merge) supplies a head guard but no atomic compare-and-swap against the tested base. The queue refuses publication with `ATOMIC_MERGE_UNSUPPORTED`; directly calling `mergePullRequest` supplies only the head guard. A future protected/native GitHub queue adapter must implement and verify the stronger invariant. `candidateAdapter` can prepare commits from a mirror whose objects the host already fetched; this library does not sync the mirror. Standalone forge helpers do not provide durable same-key/body receipts; wrap them at the host request boundary. The queue's own commands do provide those receipts.
+#### Fast-forward publication (default)
+
+Configure `publication: 'fast-forward-push'` on the merge-queue node's config or adapter. An explicit queue config wins over the adapter default. The host must supply a synchronized candidate adapter (normally `LocalGitAdapter`) and a Git mirror containing its candidate objects. `gitRepository` defaults to `candidateAdapter.repository`. Configure the mirror's single `origin` fetch/push URL to the same intended repository as `repository: 'owner/name'`; differing push URLs and multiple URLs are refused. This package does not establish that repository identity or sync the mirror for the host.
+
+After speculative CI, the adapter takes the expected old value explicitly as `baseSha`, reads it using `git ls-remote origin refs/heads/<base>`, checks the candidate's first-parent chain and merge shape, and rereads each PR's exact head/base/open state. It reads the expected remote base again immediately before:
+
+```sh
+git push origin <testedMergedSha>:refs/heads/<base>
+```
+
+There is no force, `+` refspec, or force-with-lease. Merge, squash and rebase candidates are prepared in their final shape before CI; publication never regenerates them. The remote's [fast-forward rules](https://git-scm.com/docs/git-push#_push_rules) reject a divergent concurrent base advance. An observed base change requeues the entry for a new candidate/job. The adapter reads `ls-remote` after the push and verifies the candidate is the remote tip or an ancestor of it, fetching the observed immutable SHA if needed. That ancestry also recovers publication after a crash, including when the base advanced again before restart.
+
+**Guarantee boundary:** ordinary `git push` has no non-force option accepting an exact caller-specified old SHA. The explicit `baseSha` is checked before/after, not transmitted as a compare-and-swap lease. A base rewind/deletion or movement to another ancestor of the candidate between the last read and push may still be accepted. PR heads cannot be atomically compared with the base update; a late head/base retarget causes finalization to stop for manual reconciliation after publication. Use a protected, monotonic base and control concurrent PR-head writers, or select GitHub's native queue. `atomicMerge = true` describes the atomic remote ref update here, not a multi-ref base/head transaction.
+
+For `method: 'merge'`, delivery stays pending until GitHub reports each PR as `MERGED`. For squash/rebase, GitHub cannot infer head containment. The adapter uses `gh pr close --comment` with the published commit URL, passed job id, revision, config hash and attempt reference, plus HTTP(S) log/artifact links when supplied, then confirms closure. Such PRs remain **CLOSED**, not GitHub **MERGED**; the Perpeto delivery entry records their published/tested SHA. A retry skips already closed PRs and never republishes a candidate found in base ancestry. A crash inside GitHub's comment-plus-close operation can leave a duplicate audit comment on retry; there is no forge-side idempotency key. Terminal protection/rules failures are classified internally and reject the queue entry with a generic actionable reason; subprocess text never becomes the public reason. Transport errors retain the phase for retry.
+
+#### GitHub native merge queue
+
+Set `publication: 'github-merge-queue'` and `strategy: 'serial'`. Perpeto still prepares and tests its speculative candidate first. Before submitting, the adapter reads the PR's GraphQL `mergeQueue` to verify the base has a native queue, then invokes `gh pr merge --auto --match-head-commit <headSha>`. It never supplies `--admin`. [GitHub CLI](https://cli.github.com/manual/gh_pr_merge) enables auto-merge while required checks are outstanding, or enqueues the PR when ready. No ordinary auto-merge fallback is intentionally permitted if the base has no native queue.
+
+Ticks track `github-auto-merge-enabled`, `github-queued`, and eventual `MERGED` state. Restart observes an existing auto-merge request/queue entry without resubmitting. Once a recorded queued/auto-merge state disappears, the entry is rejected for inspection rather than enqueued forever. A head change, close, retarget, or branch-protection rejection is terminal. Native publication ignores later base movement while waiting, since GitHub owns that ordering and final atomicity (`atomicMerge = true`). Queue configuration must remain enabled while submission runs; repository administrators can change it outside this transaction.
+
+**Tradeoff:** GitHub chooses the final base, merge-group checks, and repository queue merge method. Its final SHA can differ from Perpeto's speculative job, so `testedRevision` is preliminary evidence and `mergedRevision` is the observed GitHub merge SHA. Configure GitHub-required merge-group CI independently; this package does not install workflows or claim that Perpeto's job tested GitHub's final commit. Batch native publication is not implemented.
+
+Standalone forge helpers do not provide durable same-key/body receipts; wrap them at the host request boundary. The queue's own commands do provide those receipts. Reopening a legacy queue without a `publication` field normalizes it to the default without discarding active attempts or receipts; other configuration changes still conflict.
 
 ## PR policy
 
@@ -117,4 +143,4 @@ All invocations use argv without a shell. Authentication stays in the user's exi
 
 ## Verification scope
 
-Tests run actual Git commands only against temporary local repositories. They exercise real Node CI for candidate commits, serial/batch passes and failures, conflicts, base/head changes (including publication races), all merge methods, bisection, stale evidence, worker fencing, durable request receipts, and restart before/after publication. GitHub commands are stubbed; no test accesses a real forge. Hub/workflow wiring, remote runner transfer, protected GitHub integration, and live credentials are not verified here.
+Tests run actual Git commands only against temporary local repositories. They exercise real Node CI for candidate commits, serial/batch passes and failures, conflicts, base/head changes (including publication races), all merge methods, bisection, stale evidence, worker fencing, durable request receipts, and restart before/after publication. GitHub commands are stubbed; fast-forward publication uses a separate temporary bare mirror and bare `origin`, including real candidate CI, non-fast-forward races, squash/rebase closure, and crash recovery. Native queue tracking uses stubbed GraphQL/CLI responses; no test accesses a real forge. Hub/workflow wiring, remote runner transfer, protected GitHub integration, and live credentials are not verified here.

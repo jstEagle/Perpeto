@@ -30,7 +30,7 @@ test('compiles routing, loops and derived role authority', () => {
   assert.deepEqual(plan.nodes.merge.routes.fail, { node: 'delivery-loop', edgeId: 'merge-fail' });
   assert.deepEqual(plan.loops['review-loop'].body, ['builder', 'reviewer']);
   assert.deepEqual(plan.loops['review-loop'].backSources, ['reviewer']);
-  assert.deepEqual(plan.loops['delivery-loop'].backSources, ['ci', 'merge']);
+  assert.deepEqual(plan.loops['delivery-loop'].backSources, ['ci', 'merge', 'triage']);
   assert.deepEqual(plan.roles.builder.policy, {
     maxSubagents: 2, allowedSubagentProviders: ['claudeAgent'], canMessage: ['helper', 'planner', 'reviewer'], maxTurns: 200,
   });

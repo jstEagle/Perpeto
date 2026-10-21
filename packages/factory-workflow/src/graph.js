@@ -10,9 +10,14 @@ export const GATE_TYPES = Object.freeze(['review', 'ci', 'human']);
 export const ROLE_TYPES = Object.freeze(['planner', 'agent', 'review']);
 export const LIMITS = Object.freeze({
   nodes: 500, edges: 2000, maxIterations: 100, concurrency: 1000, maxItems: 100, maxSubagents: 100, steps: 50,
+  maxAttempts: 10, backoffSec: 86400,
 });
+/** Node types an `onExhausted` escalation may target. `onBlocked` must target a human node. */
+export const ESCALATION_TARGET_TYPES = Object.freeze(['human', 'agent', 'review']);
 
 const PORTED = new Set([...GATE_TYPES, 'merge-queue']);
+/** Node types that accept a `retry` policy for infrastructure and agent errors. */
+const RETRY_TYPES = Object.freeze([...ROLE_TYPES, 'ci']);
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 const PROVIDER = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
 
@@ -84,12 +89,24 @@ function steps(value) {
   return null;
 }
 
+function retry(value) {
+  const bad = message => invalid(message, 'INVALID_RETRY');
+  if (!isPlainObject(value)) return bad('must be an object { maxAttempts, backoffSec? }.');
+  const extra = exactKeys(value, ['maxAttempts', 'backoffSec']);
+  if (extra) return bad(`has unknown key "${extra}".`);
+  if (integer(1, LIMITS.maxAttempts)(value.maxAttempts)) return bad(`maxAttempts must be an integer from 1 to ${LIMITS.maxAttempts}.`);
+  if (value.backoffSec !== undefined && integer(0, LIMITS.backoffSec)(value.backoffSec)) return bad(`backoffSec must be an integer from 0 to ${LIMITS.backoffSec}.`);
+  return null;
+}
+
 const role = value => typeof value === 'string' && ID.test(value) ? null : invalid('must be a role id of letters, digits, ".", "_", ":" or "-".');
+const nodeRef = value => typeof value === 'string' && ID.test(value) ? null : invalid('must be a node id.', 'INVALID_ESCALATION');
 const optional = check => ({ required: false, check });
 const required = check => ({ required: true, check });
 const agentRole = {
   harness: required(harness), prompt: required(text(20000)), concurrency: optional(integer(1, LIMITS.concurrency)),
   policy: optional(policy), requirements: optional(requirements), role: optional(role),
+  retry: optional(retry), onExhausted: optional(nodeRef), onBlocked: optional(nodeRef),
 };
 
 /** Config fields per node type. Unknown keys produce a warning, not an error, so drafts survive editor upgrades. */
@@ -98,7 +115,7 @@ export const NODE_CONFIG = Object.freeze({
   planner: { ...agentRole, maxItems: optional(integer(1, LIMITS.maxItems)) },
   agent: agentRole,
   review: { ...agentRole, rubric: optional(text(20000)) },
-  ci: { steps: required(steps), requirements: optional(requirements) },
+  ci: { steps: required(steps), requirements: optional(requirements), retry: optional(retry), onExhausted: optional(nodeRef) },
   'merge-queue': {
     strategy: required(oneOf(['serial', 'batch'])), method: required(oneOf(['squash', 'merge', 'rebase'])),
     requiredChecks: optional(stringArray()),
@@ -108,6 +125,7 @@ export const NODE_CONFIG = Object.freeze({
     maxIterations: required(integer(1, LIMITS.maxIterations, 'LOOP_BOUNDS')),
     expectedIterations: optional(value => typeof value === 'number' && value >= 1 && value <= LIMITS.maxIterations
       ? null : invalid('must be a number from 1 to maxIterations.', 'LOOP_BOUNDS')),
+    onExhausted: optional(nodeRef),
   },
   human: { prompt: required(text(20000)) },
   output: {},
@@ -181,6 +199,23 @@ function analyse(graph, { providers } = {}) {
     }
     nodes.set(node.id, { ...node, config });
   }
+
+  // Escalation links: where work goes when a node exhausts its retries or iterations, or reports blocked.
+  const escalations = [];
+  for (const node of nodes.values()) {
+    for (const key of ['onExhausted', 'onBlocked']) {
+      const target = node.config[key];
+      if (typeof target !== 'string' || !ID.test(target)) continue;
+      const to = nodes.get(target), at = { nodeId: node.id };
+      if (!to) error('INVALID_ESCALATION', `${node.type} node "${node.id}" config.${key} names missing node "${target}".`, at);
+      else if (to.id === node.id) error('INVALID_ESCALATION', `${node.type} node "${node.id}" config.${key} cannot name the node itself.`, at);
+      else if (key === 'onBlocked' && to.type !== 'human') error('INVALID_ESCALATION', `${node.type} node "${node.id}" config.onBlocked must name a human node (got ${to.type}).`, at);
+      else if (!ESCALATION_TARGET_TYPES.includes(to.type)) {
+        error('INVALID_ESCALATION', `${node.type} node "${node.id}" config.${key} must name a human, agent or review node (got ${to.type}).`, at);
+      } else escalations.push({ from: { node: node.id }, to: { node: target }, key });
+    }
+  }
+  const escalationTargets = new Set(escalations.map(link => link.to.node));
 
   const roles = new Map();
   for (const node of nodes.values()) {
@@ -256,8 +291,13 @@ function analyse(graph, { providers } = {}) {
   const outgoing = new Map([...nodes.keys()].map(id => [id, []]));
   const incoming = new Map([...nodes.keys()].map(id => [id, []]));
   for (const edge of flow) { outgoing.get(edge.from.node).push(edge); incoming.get(edge.to.node).push(edge); }
+  // Reachability, dominators and cycle checks follow flow edges plus escalation links.
+  const linksOut = new Map([...outgoing].map(([id, list]) => [id, [...list]]));
+  const linksIn = new Map([...incoming].map(([id, list]) => [id, [...list]]));
+  for (const link of escalations) { linksOut.get(link.from.node).push(link); linksIn.get(link.to.node).push(link); }
   const delegateOnly = new Set([...nodes.values()]
-    .filter(node => node.type === 'agent' && !incoming.get(node.id).length && delegates.some(edge => edge.to.node === node.id))
+    .filter(node => node.type === 'agent' && !incoming.get(node.id).length && !escalationTargets.has(node.id) &&
+      delegates.some(edge => edge.to.node === node.id))
     .map(node => node.id));
 
   /** @type {Map<string, Record<string, { node: string, edgeId: string } | null>>} */
@@ -270,7 +310,8 @@ function analyse(graph, { providers } = {}) {
       const matching = out.filter(edge => (edge.port ?? 'next') === port);
       if (matching.length > 1) error('AMBIGUOUS_ROUTE', `${node.type} node "${node.id}" has ${matching.length} flow edges on ${port === 'next' ? 'its output' : `port "${port}"`}; v1 routes each work item along one edge.`, at);
       if (matching.length === 0) {
-        if (GATE_TYPES.includes(node.type)) error('GATE_UNWIRED', `${node.type} gate "${node.id}" needs a flow edge on port "${port}".`, at);
+        if (node.type === 'human' && port === 'fail' && escalationTargets.has(node.id)) { /* A fail decision fails the item. */ }
+        else if (GATE_TYPES.includes(node.type)) error('GATE_UNWIRED', `${node.type} gate "${node.id}" needs a flow edge on port "${port}".`, at);
         else if (node.type === 'merge-queue' && port === 'pass') error('GATE_UNWIRED', `merge-queue "${node.id}" needs a flow edge on port "pass".`, at);
         else if (port === 'next' && !delegateOnly.has(node.id)) error('MISSING_FLOW_OUT', `${node.type} node "${node.id}" needs one outgoing flow edge.`, at);
       }
@@ -284,8 +325,8 @@ function analyse(graph, { providers } = {}) {
     while (stack.length) for (const id of next(stack.pop())) if (!found.has(id)) { found.add(id); stack.push(id); }
     return found;
   };
-  const successors = id => outgoing.get(id).map(edge => edge.to.node);
-  const predecessors = id => incoming.get(id).map(edge => edge.from.node);
+  const successors = id => linksOut.get(id).map(edge => edge.to.node);
+  const predecessors = id => linksIn.get(id).map(edge => edge.from.node);
   const reachable = reach(inputs.map(node => node.id), successors);
   for (const id of delegateOnly) {
     if (delegates.some(edge => edge.to.node === id && reachable.has(edge.from.node))) reachable.add(id);
@@ -314,12 +355,12 @@ function analyse(graph, { providers } = {}) {
   }
 
   // Every flow cycle must cross a counted back edge into a loop, otherwise work could circulate forever.
-  const isBackEdge = edge => nodes.get(edge.to.node).type === 'loop' && Boolean(dominators.get(edge.from.node)?.has(edge.to.node));
+  const isBackEdge = edge => edge.kind === 'flow' && nodes.get(edge.to.node).type === 'loop' && Boolean(dominators.get(edge.from.node)?.has(edge.to.node));
   const colour = new Map(), path = [];
   const reported = new Set();
   const visit = id => {
     colour.set(id, 1); path.push(id);
-    for (const edge of outgoing.get(id)) {
+    for (const edge of linksOut.get(id)) {
       if (isBackEdge(edge)) continue;
       const next = edge.to.node;
       if (colour.get(next) === 1) {
@@ -374,7 +415,7 @@ function analyse(graph, { providers } = {}) {
     }
   }
 
-  return { ...done(), nodes, routes, loops, delegates, messages, delegateOnly, roles };
+  return { ...done(), nodes, routes, loops, delegates, messages, delegateOnly, roles, escalations };
 }
 
 const roleOf = node => typeof node.config.role === 'string' ? node.config.role : node.id;
@@ -388,7 +429,7 @@ export function compileGraph(graph, options = {}) {
   if (!analysis.result.ok) {
     throw new WorkflowError('INVALID_GRAPH', `Workflow graph has ${analysis.result.errors.length} validation error(s).`, analysis.result);
   }
-  const { nodes, routes, loops, delegates, messages, delegateOnly } = analysis;
+  const { nodes, routes, loops, delegates, messages, delegateOnly, escalations } = analysis;
   const canMessage = new Map(), delegatesTo = new Map();
   const add = (map, key, value) => { if (!map.has(key)) map.set(key, new Set()); map.get(key).add(value); };
   for (const edge of messages) {
@@ -405,7 +446,14 @@ export function compileGraph(graph, options = {}) {
     if (node.type === 'ci') config.requirements ??= {};
     if (node.type === 'merge-queue') config.requiredChecks ??= [];
     if (node.type === 'loop') config.expectedIterations ??= Math.min(2, config.maxIterations);
+    if (RETRY_TYPES.includes(node.type)) config.retry = { maxAttempts: config.retry?.maxAttempts ?? 1, backoffSec: config.retry?.backoffSec ?? 0 };
     const entry = { id: node.id, type: node.type, label: node.label, config, routes: routes.get(node.id) };
+    if (RETRY_TYPES.includes(node.type) || node.type === 'loop') {
+      const exhausted = config.onExhausted ?? null;
+      const blocked = ROLE_TYPES.includes(node.type)
+        ? config.onBlocked ?? (exhausted && nodes.get(exhausted).type === 'human' ? exhausted : null) : null;
+      entry.escalation = { exhausted, blocked };
+    }
     if (ROLE_TYPES.includes(node.type)) {
       const id = roleOf(node);
       entry.role = id;
@@ -442,6 +490,7 @@ export function compileGraph(graph, options = {}) {
     plan: PLAN_SCHEMA, schema: GRAPH_SCHEMA, graphHash: sha256(canonicalJson(graph)),
     inputs: [...nodes.values()].filter(node => node.type === 'input').map(node => node.id),
     nodes: planNodes, roles, loops: planLoops,
+    escalations: escalations.map(link => ({ from: link.from.node, to: link.to.node, on: link.key === 'onBlocked' ? 'blocked' : 'exhausted' })),
     edges: graph.edges.map(edge => ({ id: edge.id, kind: edge.kind, from: edge.from.node, to: edge.to.node, ...(edge.from.port ? { port: edge.from.port } : {}) })),
     warnings: analysis.result.warnings,
   };

@@ -28,7 +28,11 @@
           "model": "claude-opus-5-5"
         },
         "maxItems": 5,
-        "prompt": "Audit the repository against the project goals and docs. Propose the highest-value, low-risk improvements as independent work items, each small enough for one pull request, with evidence for why it matters."
+        "prompt": "Audit the repository against the project goals and docs. Propose the highest-value, low-risk improvements as independent work items, each small enough for one pull request, with evidence for why it matters.",
+        "retry": {
+          "maxAttempts": 2,
+          "backoffSec": 60
+        }
       }
     },
     {
@@ -41,7 +45,8 @@
       },
       "config": {
         "until": "review-pass",
-        "maxIterations": 4
+        "maxIterations": 4,
+        "onExhausted": "triage"
       }
     },
     {
@@ -61,7 +66,12 @@
         "policy": {
           "maxSubagents": 0
         },
-        "prompt": "Make the improvement on its own branch without changing behaviour outside its scope. Add tests that prove it. Open a pull request and report the branch, URL and full head commit SHA. Address any attached feedback first."
+        "prompt": "Make the improvement on its own branch without changing behaviour outside its scope. Add tests that prove it. Open a pull request and report the branch, URL and full head commit SHA. Address any attached feedback first.",
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 60
+        },
+        "onExhausted": "triage"
       }
     },
     {
@@ -78,7 +88,12 @@
           "model": "claude-opus-5-5"
         },
         "rubric": "The change serves a stated goal, keeps behaviour stable, is tested, and is small enough to review.",
-        "prompt": "Review the improvement at the given head commit against the rubric. Succeed only if it should merge; otherwise fail with specific feedback."
+        "prompt": "Review the improvement at the given head commit against the rubric. Give verdict pass only if it should merge; otherwise give verdict fail with specific feedback.",
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 30
+        },
+        "onExhausted": "triage"
       }
     },
     {
@@ -102,7 +117,12 @@
             "timeoutSec": 1800
           }
         ],
-        "requirements": {}
+        "requirements": {},
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 120
+        },
+        "onExhausted": "triage"
       }
     },
     {
@@ -119,6 +139,18 @@
         "requiredChecks": [
           "ci"
         ]
+      }
+    },
+    {
+      "id": "triage",
+      "type": "human",
+      "label": "Triage",
+      "position": {
+        "x": 760,
+        "y": 320
+      },
+      "config": {
+        "prompt": "This work item ran out of automatic attempts or is blocked. Read the escalation context, then pass it to send it back through the improvement loop with your note as guidance, or fail it to stop work on it."
       }
     },
     {
@@ -233,6 +265,17 @@
       "from": {
         "node": "merge",
         "port": "fail"
+      },
+      "to": {
+        "node": "improve-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "triage-pass",
+      "from": {
+        "node": "triage",
+        "port": "pass"
       },
       "to": {
         "node": "improve-loop"

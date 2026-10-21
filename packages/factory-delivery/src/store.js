@@ -32,6 +32,16 @@ export class MergeQueueStore {
       this.#db.prepare('INSERT INTO delivery_queues VALUES(?,?,?) ON CONFLICT(id) DO NOTHING')
         .run(queueId, stableHash(state.config), stableJSON(state));
       const row = this.#db.prepare('SELECT * FROM delivery_queues WHERE id=?').get(queueId);
+      // Older delivery snapshots omitted the default publication strategy.
+      if (row.config_hash !== stableHash(state.config)) {
+        const saved = JSON.parse(row.state);
+        if (saved.config.publication === undefined && stableHash(createQueueState(saved.config).config) === stableHash(state.config)) {
+          saved.config = state.config;
+          this.#db.prepare('UPDATE delivery_queues SET config_hash=?,state=? WHERE id=?')
+            .run(stableHash(state.config), stableJSON(saved), queueId);
+          row.config_hash = stableHash(state.config); row.state = stableJSON(saved);
+        }
+      }
       requireValue(row.config_hash === stableHash(state.config), 'Queue configuration differs from its persisted configuration.', 'CONFLICT');
       return JSON.parse(row.state);
     });

@@ -6,8 +6,8 @@ import { selectEntries } from './machine.js';
 /**
  * Git/forge adapter: getBase(branch), getHead(entry), prepare({baseSha, entries, method,
  * idempotencyKey}), isMerged({baseBranch, revision}), merge({baseBranch, baseSha,
- * revision, entries, method, idempotencyKey}). Atomic adapters must compare both base
- * and heads in the same operation that publishes the tested candidate.
+ * revision, entries, method, idempotencyKey}). Publication adapters declare their guarantees: local ref transaction, remote
+ * fast-forward-only push, or GitHub-owned native queue. See the README for limits.
  *
  * The hub submits persisted queued jobs and calls recordJobResult with lease-validated
  * results. This library never executes CI or trusts an arbitrary result submitter.
@@ -15,7 +15,7 @@ import { selectEntries } from './machine.js';
 export class MergeQueue {
   constructor({ store, queueId, config, adapter, leaseMs = 60_000 }) {
     this.store = store; this.queueId = queueId; this.adapter = adapter; this.leaseMs = leaseMs;
-    store.initialize(queueId, config);
+    store.initialize(queueId, { ...config, publication: config.publication ?? adapter.publication ?? 'fast-forward-push' });
   }
   get state() { return this.store.read(this.queueId); }
   enqueue(entry, { idempotencyKey }) {
@@ -51,7 +51,7 @@ export class MergeQueue {
     if (!state.active) {
       const entries = selectEntries(state);
       if (!entries.length) return;
-      const baseSha = await this.adapter.getBase(config.baseBranch);
+      const baseSha = await this.adapter.getBase(config.baseBranch, config.publication);
       this.store.dispatch(this.queueId, { type: 'start', attemptId: `mq_${randomUUID()}`,
         entryIds: entries.map(entry => entry.id), baseSha }, { token, stepKey, idempotencyKey: `internal:start:${randomUUID()}` });
       return;
@@ -59,12 +59,28 @@ export class MergeQueue {
     const active = state.active;
     const entries = active.entryIds.map(id => state.entries.find(entry => entry.id === id));
     const transition = (type, fields = {}) => this.store.dispatch(this.queueId,
-      { type, attemptId: active.id, ...fields }, { token, stepKey, idempotencyKey: `internal:${active.id}:${type}` });
-    // A process may have died after publishing the candidate but before saving its receipt.
-    if (active.phase === 'merging' && await this.adapter.isMerged({ baseBranch: config.baseBranch, revision: active.revision })) {
-      transition('merged'); return;
+      { type, attemptId: active.id, ...fields }, { token, stepKey, idempotencyKey: `internal:${active.id}:${type}:${stableHash(fields)}` });
+    // Publication owns recovery and forge finalization too. In native queue mode,
+    // GitHub may advance the base while this attempt waits, so do not requeue it.
+    if (active.phase === 'merging') {
+      if (this.adapter.atomicMerge !== true) throw new DeliveryError('ATOMIC_MERGE_UNSUPPORTED', 'This adapter cannot safely publish a merge candidate.');
+      this.store.renew(this.queueId, token, this.leaseMs);
+      const result = await this.adapter.merge({ baseBranch: config.baseBranch, baseSha: active.baseSha,
+        revision: active.revision, entries, method: config.method, idempotencyKey: active.id,
+        publication: config.publication, publicationState: active.publicationState, evidence: state.jobs.find(job => job.id === active.jobId) });
+      if (result.status === 'base_changed') transition('requeue', { reason: 'Base changed during merge; speculative CI must run again.' });
+      else if (result.status === 'head_changed') transition('reject', { reason: 'PR head changed during merge; enqueue the new revision.' });
+      else if (result.status === 'rejected') transition('reject', { reason: result.reason });
+      else if (result.status === 'pending') transition('publication-pending', { publicationState: result.publicationState ?? 'pending' });
+      else {
+        requireValue(result.status === 'merged' && (result.revision === active.revision ||
+          (config.publication === 'github-merge-queue' && result.publication === 'github-merge-queue')),
+        'Adapter did not confirm publication of the tested revision or native GitHub merge.', 'ADAPTER_ERROR');
+        transition('merged', { revision: result.revision });
+      }
+      return;
     }
-    if (await this.adapter.getBase(config.baseBranch) !== active.baseSha) {
+    if (await this.adapter.getBase(config.baseBranch, config.publication) !== active.baseSha) {
       transition('requeue', { reason: 'Base changed; speculative CI must run again.' }); return;
     }
     for (const entry of entries) {
@@ -75,7 +91,7 @@ export class MergeQueue {
     if (active.phase === 'preparing') {
       let candidate;
       try {
-        candidate = await this.adapter.prepare({ baseSha: active.baseSha, entries, method: config.method, idempotencyKey: active.id });
+        candidate = await this.adapter.prepare({ baseSha: active.baseSha, entries, method: config.method, idempotencyKey: active.id, publication: config.publication });
       } catch (error) {
         if (error.code !== 'MERGE_CONFLICT') throw error;
         transition('reject', { ...(error.entryId ? { entryId: error.entryId } : {}), reason: 'Merge conflict with the speculative base.' }); return;
@@ -95,19 +111,6 @@ export class MergeQueue {
         return;
       }
       transition('approve'); return;
-    }
-    if (active.phase === 'merging') {
-      if (this.adapter.atomicMerge !== true) throw new DeliveryError('ATOMIC_MERGE_UNSUPPORTED', 'This adapter cannot atomically guard the tested base and PR heads.');
-      // Renewal fences slow preparation/read calls before the consequential publish.
-      this.store.renew(this.queueId, token, this.leaseMs);
-      const result = await this.adapter.merge({ baseBranch: config.baseBranch, baseSha: active.baseSha,
-        revision: active.revision, entries, method: config.method, idempotencyKey: active.id });
-      if (result.status === 'base_changed') transition('requeue', { reason: 'Base changed during merge; speculative CI must run again.' });
-      else if (result.status === 'head_changed') transition('reject', { reason: 'PR head changed during merge; enqueue the new revision.' });
-      else {
-        requireValue(result.status === 'merged' && result.revision === active.revision, 'Adapter did not confirm publication of the tested revision.', 'ADAPTER_ERROR');
-        transition('merged');
-      }
     }
   }
 }

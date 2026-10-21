@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeRunMetrics } from '../src/index.js';
-import { Driver, template, sha, code } from './fixtures.js';
+import { Driver, template, bare, sha, code } from './fixtures.js';
 
 const built = n => ({ outcome: 'success', summary: 'built', branch: `b${n}`, prUrl: `https://git.example/pull/${n}`, headSha: sha(n) });
 const minutesAfter = (iso, minutes) => new Date(Date.parse(iso) + minutes * 60000).toISOString();
@@ -18,7 +18,7 @@ function fullRun() {
   run.hub('assignment.state', { assignmentId: builder.id, state: 'leased', machineId: 'mch_a' });
   run.hub('assignment.state', { assignmentId: builder.id, state: 'running', machineId: 'mch_a' });
   run.complete('builder', built(1));
-  run.complete('reviewer', { outcome: 'failure', summary: 'Needs tests.' });
+  run.complete('reviewer', { outcome: 'success', verdict: 'fail', summary: 'Needs tests.' });
   run.complete('builder', built(2));
   run.complete('reviewer', { outcome: 'success' });
   run.apply('job.completed', { jobId: run.openJob().id, status: 'failed' });
@@ -135,13 +135,13 @@ test('queue growth while paused is flagged', () => {
 
 test('repeated review failures show as high-failure and rework-loop', () => {
   const run = new Driver();
-  run.start();
+  run.start({ graph: bare('build') });
   run.complete('planner', { outcome: 'success', items: [{ title: 'A' }, { title: 'B' }] });
   for (let round = 1; round <= 3; round += 1) {
     run.complete('builder', built(round));
     run.complete('builder', built(round + 10));
-    run.complete('reviewer', { outcome: 'failure', summary: 'no' });
-    run.complete('reviewer', { outcome: 'failure', summary: 'no' });
+    run.complete('reviewer', { outcome: 'success', verdict: 'fail', summary: 'no' });
+    run.complete('reviewer', { outcome: 'success', verdict: 'fail', summary: 'no' });
   }
   const metrics = metricsOf(run);
   assert.deepEqual(reasons(metrics), ['review-loop:rework-loop:critical', 'reviewer:high-failure:critical']);
@@ -155,15 +155,15 @@ test('rework above the expected average is a warning before the limit', () => {
   run.start();
   run.complete('planner', { outcome: 'success', items: [{ title: 'A' }] });
   run.complete('builder', built(1));
-  run.complete('reviewer', { outcome: 'failure', summary: 'no' });
+  run.complete('reviewer', { outcome: 'success', verdict: 'fail', summary: 'no' });
   run.complete('builder', built(2));
-  run.complete('reviewer', { outcome: 'failure', summary: 'no' });
+  run.complete('reviewer', { outcome: 'success', verdict: 'fail', summary: 'no' });
   assert.deepEqual(reasons(metricsOf(run)), ['review-loop:rework-loop:warning']);
 });
 
 test('blocked work is waiting on a person', () => {
   const run = new Driver();
-  run.start();
+  run.start({ graph: bare('build') });
   run.complete('planner', { outcome: 'success', items: [{ title: 'A' }] });
   run.complete('builder', { outcome: 'blocked', summary: 'Need credentials.' });
   const soon = computeRunMetrics(run.state, run.log, { now: minutesAfter(run.state.updatedAt, 10) });

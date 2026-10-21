@@ -9,12 +9,15 @@ export function createQueueState(config) {
   requireValue(['merge', 'squash', 'rebase'].includes(config.method), 'Unknown merge method.');
   requireValue(Array.isArray(config.requiredChecks) && config.requiredChecks.every(name => typeof name === 'string' && name.trim()), 'requiredChecks must be an array of names.');
   requireValue(config.repo && typeof config.repo.url === 'string', 'repo.url is required.');
+  const publication = config.publication ?? 'fast-forward-push';
+  requireValue(['fast-forward-push', 'github-merge-queue'].includes(publication), 'Unknown publication strategy.');
+  requireValue(publication !== 'github-merge-queue' || config.strategy === 'serial', 'Native GitHub publication requires a serial queue.');
   const batchSize = config.batchSize ?? 8;
   requireValue(Number.isSafeInteger(batchSize) && batchSize > 0 && batchSize <= 100, 'batchSize must be between 1 and 100.');
   return {
     schema: 1,
     config: { projectId: config.projectId, repo: structuredClone(config.repo), baseBranch: config.baseBranch,
-      strategy: config.strategy, method: config.method, requiredChecks: [...new Set(config.requiredChecks)],
+      strategy: config.strategy, method: config.method, publication, requiredChecks: [...new Set(config.requiredChecks)],
       ci: normalizeCI(config.ci), batchSize },
     entries: [], jobs: [], groups: [], active: null,
   };
@@ -133,9 +136,15 @@ export function reduceQueue(previous, action) {
       requireValue(checksPass(state.jobs.find(job => job.id === active.jobId), state.config.requiredChecks), 'CI has not passed all required checks.', 'STALE_EVIDENCE');
       active.phase = 'merging'; entries.forEach(entry => { entry.status = 'merging'; });
       break;
+    case 'publication-pending':
+      requireValue(active.phase === 'merging', 'Attempt is not merging.', 'CONFLICT');
+      active.publicationState = action.publicationState;
+      break;
     case 'merged':
       requireValue(active.phase === 'merging', 'Attempt is not merging.', 'CONFLICT');
-      entries.forEach(entry => { entry.status = 'merged'; entry.mergedRevision = active.revision; delete entry.reason; });
+      if (action.revision !== undefined) sha(action.revision);
+      entries.forEach(entry => { entry.status = 'merged'; entry.mergedRevision = action.revision ?? active.revision;
+        entry.testedRevision = active.revision; delete entry.reason; });
       release();
       break;
     default: requireValue(false, 'Unknown queue action.');

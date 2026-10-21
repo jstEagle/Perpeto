@@ -83,6 +83,16 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
     if (nodeId) tokensByNode[nodeId] = (tokensByNode[nodeId] ?? 0) + count;
   }
 
+  // Retries are assignments and jobs beyond attempt 1; escalations come from each item's escalation records.
+  const retriesByNode = {};
+  for (const entity of [...assignments, ...Object.values(state.jobs ?? {})]) {
+    if ((entity.attempt ?? 1) > 1 && inWindow(entity.createdAt)) retriesByNode[entity.nodeId] = (retriesByNode[entity.nodeId] ?? 0) + 1;
+  }
+  const escalations = items.flatMap(item => (item.escalations ?? []).map(record => ({ ...record, item })));
+  const escalationsInWindow = escalations.filter(record => inWindow(record.at));
+  const escalationsByNode = {};
+  for (const record of escalationsInWindow) escalationsByNode[record.from] = (escalationsByNode[record.from] ?? 0) + 1;
+
   const visitsByNode = {};
   for (const item of items) {
     for (const visit of item.visits ?? []) (visitsByNode[visit.nodeId] ??= []).push({ ...visit, item });
@@ -101,19 +111,22 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
     const ended = visits.filter(visit => inWindow(visit.endedAt));
     const done = ended.filter(visit => visit.result === 'pass').length;
     const failed = ended.filter(visit => visit.result === 'fail').length;
+    const errors = ended.filter(visit => visit.result === 'error').length;
     const active = here.filter(item => (item.status === 'active' && item.waiting?.kind !== 'children') ||
       (node.type === 'human' && item.status === 'blocked')).length;
     const concurrency = node.role ? plan.roles[node.role].concurrency : null;
     return {
       nodeId: node.id,
       queued: here.filter(item => item.status === 'queued').length,
-      active, done, failed, concurrency,
+      active, done, failed, errors, concurrency,
       utilization: concurrency ? round(active / concurrency) : null,
       waitSec: stats(visits.filter(visit => inWindow(startOf(visit))).map(visit => Math.max(0, (ms(startOf(visit)) - ms(visit.enteredAt)) / 1000))),
       serviceSec: stats(ended.map(visit => Math.max(0, (ms(visit.endedAt) - ms(startOf(visit))) / 1000))),
-      throughputPerHour: round((done + failed) / (spanSec / 3600)),
-      failureRate: done + failed ? round(failed / (done + failed)) : null,
+      throughputPerHour: round((done + failed + errors) / (spanSec / 3600)),
+      failureRate: done + failed + errors ? round((failed + errors) / (done + failed + errors)) : null,
       tokens: tokensByNode[node.id] ?? 0,
+      retries: retriesByNode[node.id] ?? 0,
+      escalations: escalationsByNode[node.id] ?? 0,
     };
   });
 
@@ -157,6 +170,9 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
     wip: leaves.filter(item => item.status !== 'done' && item.status !== 'failed').length,
     tokensPerItem: finished.length ? Math.round(tokens / finished.length) : null,
     activeAgents: running.length,
+    retries: Object.values(retriesByNode).reduce((sum, count) => sum + count, 0),
+    escalations: escalationsInWindow.length,
+    waitingOnHuman: items.filter(item => item.status === 'blocked').length,
     machines: [...machinesInUse.values()].sort((a, b) => a.machineId.localeCompare(b.machineId))
       .map(entry => ({ machineId: entry.machineId, activeAgents: entry.activeAgents, nodes: [...entry.nodes].sort() })),
   };
@@ -178,10 +194,11 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
       add(node.id, 'queue-growing', 'warning',
         `queue ${metric.queued}, up from ${before} at window start${metric.waitSec.p90 !== null ? `; p90 wait ${duration(metric.waitSec.p90)}` : ''}`);
     }
-    const finishedHere = metric.done + metric.failed;
+    const finishedHere = metric.done + metric.failed + metric.errors;
     if (finishedHere >= R.highFailureMinFinished && metric.failureRate >= R.highFailureRate) {
+      const detail = metric.errors ? `; ${metric.errors} were errors, ${metric.retries} retried` : '';
       add(node.id, 'high-failure', metric.failureRate >= R.criticalFailureRate ? 'critical' : 'warning',
-        `${metric.failed} of ${finishedHere} finished visits failed (${Math.round(metric.failureRate * 100)}%) in the last ${label}`);
+        `${metric.failed + metric.errors} of ${finishedHere} finished visits failed (${Math.round(metric.failureRate * 100)}%) in the last ${label}${detail}`);
     }
     const blocked = items.filter(item => item.nodeId === node.id && item.status === 'blocked');
     if (blocked.length) {
@@ -205,13 +222,20 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
     }
     if (node.type === 'loop') {
       const loop = plan.loops[node.id];
-      const looped = items.filter(item => item.loopCounts?.[node.id] !== undefined && inWindow(item.updatedAt));
+      // An escalation clears the item's count, so its record keeps the iterations it used.
+      const escalated = escalationsInWindow.filter(record => record.from === node.id && record.reason === 'loop_limit');
+      const peak = item => Math.max(item.loopCounts?.[node.id] ?? 0,
+        ...(item.escalations ?? []).filter(record => record.from === node.id && record.reason === 'loop_limit').map(record => record.iterations ?? 0));
+      const looped = items.filter(item => peak(item) > 0 && inWindow(item.updatedAt));
       if (looped.length) {
-        const avg = looped.reduce((sum, item) => sum + Math.min(item.loopCounts[node.id], loop.maxIterations), 0) / looped.length;
-        const limited = looped.filter(item => item.failure?.reason === 'loop_limit' && item.nodeId === node.id).length;
+        const avg = looped.reduce((sum, item) => sum + Math.min(peak(item), loop.maxIterations), 0) / looped.length;
+        const escalatedItems = new Set(escalated.map(record => record.item.id));
+        const limited = looped.filter(item => (item.failure?.reason === 'loop_limit' && item.nodeId === node.id) || escalatedItems.has(item.id)).length;
         if (limited || avg > loop.expectedIterations) {
+          const targets = [...new Set(escalated.map(record => record.to))].sort();
+          const detail = escalated.length ? `; ${escalatedItems.size} escalated to ${targets.join(', ')}` : '';
           add(node.id, 'rework-loop', limited ? 'critical' : 'warning',
-            `average ${round(avg, 1)} iterations over ${looped.length} item${looped.length === 1 ? '' : 's'} (expected ${loop.expectedIterations}, limit ${loop.maxIterations}); ${limited} hit the limit`);
+            `average ${round(avg, 1)} iterations over ${looped.length} item${looped.length === 1 ? '' : 's'} (expected ${loop.expectedIterations}, limit ${loop.maxIterations}); ${limited} hit the limit${detail}`);
         }
       }
     }
