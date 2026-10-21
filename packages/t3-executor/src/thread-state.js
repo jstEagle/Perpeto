@@ -118,6 +118,10 @@ export class ThreadTracker {
       .join('\n\n');
   }
 
+  lastAssistantText(runId) {
+    return [...this.turnItems.values()].findLast(item => item.type === 'assistant_message' && item.runId === runId && typeof item.text === 'string' && item.text.trim())?.text.trim() ?? '';
+  }
+
   allAssistantText() {
     return [...this.turnItems.values()].filter(item => item.type === 'assistant_message' && typeof item.text === 'string').map(item => item.text).join('\n');
   }
