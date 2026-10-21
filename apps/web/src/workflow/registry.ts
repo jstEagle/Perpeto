@@ -84,7 +84,8 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     title: 'Merge queue',
     description: 'Serialises merges into the base branch.',
     input: true,
-    outputs: ['out'],
+    // `fail` is optional: unwired, a rejected merge fails the item.
+    outputs: ['out', 'fail'],
     role: false,
     defaults: () => ({ strategy: 'serial', requiredChecks: ['ci'], method: 'squash' }),
   },
@@ -116,6 +117,14 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     defaults: () => ({}),
   },
 };
+
+/**
+ * The port an edge leaves from, as the canvas and validator name it. A
+ * merge queue's `pass` is its default port, as in @perpeto/workflow.
+ */
+export function sourcePort(type: NodeType | undefined, port?: string): string {
+  return !port || (port === 'pass' && type === 'merge-queue') ? 'out' : port;
+}
 
 export const PALETTE_ORDER: NodeType[] = ['input', 'planner', 'agent', 'review', 'loop', 'ci', 'human', 'merge-queue', 'output'];
 
