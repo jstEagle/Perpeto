@@ -1,0 +1,100 @@
+/** Sanitized observations only. Input messages are never returned or retained. */
+const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+const finite = value => typeof value === 'number' && Number.isFinite(value);
+const iso = value => {
+  const ms = typeof value === 'number' ? value * 1000 : typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(ms) && ms > 0 && ms < 8.64e15 ? new Date(ms).toISOString() : undefined;
+};
+
+function payload(message) {
+  const root = object(message);
+  return object(root.params ?? root.data ?? root);
+}
+
+/** Native notifications and T3 ProviderUsageLimitsUpdate windows (sparse). */
+export function usageWindows(provider, message) {
+  const data = payload(message);
+  if (Array.isArray(data.windows)) {
+    return data.windows.flatMap(window => {
+      if (!window || typeof window.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(window.id)
+          || !finite(window.usedPercent)) return [];
+      const resetsAt = iso(window.resetsAt);
+      return [{ id: window.id, usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
+        ...(resetsAt ? { resetsAt } : {}) }];
+    });
+  }
+  if (provider === 'codex') {
+    const limits = object(data.rateLimits ?? data);
+    if (limits.limitId && limits.limitId !== 'codex') return [];
+    return ['primary', 'secondary'].flatMap(id => {
+      const window = object(limits[id]);
+      if (!finite(window.usedPercent)) return [];
+      const resetsAt = iso(window.resetsAt);
+      return [{ id, usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
+        ...(resetsAt ? { resetsAt } : {}) }];
+    });
+  }
+  if (provider === 'claudeAgent') {
+    const info = object(data.rate_limit_info);
+    if (typeof info.rateLimitType !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(info.rateLimitType)
+        || !finite(info.utilization)) return [];
+    const resetsAt = iso(info.resetsAt);
+    return [{ id: info.rateLimitType, usedPercent: Math.min(100, Math.max(0, info.utilization * 100)),
+      ...(resetsAt ? { resetsAt } : {}) }];
+  }
+  return [];
+}
+
+/** @returns {{kind:'auth-failure'}|{kind:'rate-limit', cooldownUntil?:string}|null} */
+export function detectProviderSignal(provider, message, { now = Date.now(), windows, defaultCooldownMs = 300_000 } = {}) {
+  if (!['claudeAgent', 'codex'].includes(provider)) return null;
+  const data = payload(message);
+  const failure = object(data.failure ?? data.turn?.error ?? data.error ?? data);
+  const codexInfo = failure.codexErrorInfo;
+  const nativeCode = typeof codexInfo === 'string' ? codexInfo : Object.keys(object(codexInfo))[0];
+  const code = nativeCode ?? failure.code ?? data.code ?? data.error;
+  const status = failure.status ?? data.api_error_status ?? data.error_status ?? data.status;
+  const text = typeof message === 'string' ? message
+    : typeof failure.message === 'string' ? failure.message : typeof data.message === 'string' ? data.message : '';
+  if (status === 403 || code === 'api_error_403' || failure.class === 'permission_error') return null;
+  if (status === 401 || ['authentication_failed', 'api_error_401', 'invalid_grant', 'unauthorized', 'auth_required'].includes(code)
+      || /^(?:Claude could not authenticate|Not logged in|Your authentication token has been invalidated)\b/i.test(text)) {
+    return { kind: 'auth-failure' };
+  }
+  const info = object(data.rate_limit_info);
+  const overage = info.overageStatus === 'allowed' || info.overageStatus === 'allowed_warning'
+    || info.isUsingOverage === true || info.overageInUse === true;
+  // A Claude warning or permitted overage must never trigger rotation.
+  if (data.type === 'rate_limit_event' && (overage || info.status !== 'rejected')) return null;
+  const limits = object(data.rateLimits ?? data);
+  if (provider === 'codex' && limits.limitId && limits.limitId !== 'codex') return null;
+  const exhausted = (windows ?? usageWindows(provider, message)).filter(window =>
+    window.usedPercent >= 100 && (!window.resetsAt || Date.parse(window.resetsAt) > now));
+  const limited = failure.class === 'usage_limit' || status === 429
+    || ['rate_limit', 'rate_limit_error', 'api_error_429', 'usageLimitExceeded', 'rateLimitExceeded'].includes(code)
+    || (provider === 'claudeAgent' && (info.status === 'rejected' && !overage || data.terminal_reason === 'blocking_limit'))
+    || exhausted.length > 0
+    || /^(?:Claude API rate limit reached|Codex usage limit reached|You(?:'ve| have) (?:hit|reached) your usage limit)\b/i.test(text)
+    || /\brate_limit_error\b/.test(text);
+  if (!limited) return null;
+  const candidates = [iso(failure.resetAt ?? data.resetAt), iso(info.resetsAt),
+    ...exhausted.map(window => window.resetsAt)].filter(value => value && Date.parse(value) > now);
+  const retryAfter = failure.retryAfterSeconds ?? data.retry_after;
+  if (finite(retryAfter) && retryAfter > 0 && now + retryAfter * 1000 < 8.64e15) candidates.push(new Date(now + retryAfter * 1000).toISOString());
+  // Claude's observed nested proxy format: (reset after 1h 2m 3s).
+  const duration = /\(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/.exec(text);
+  if (duration) {
+    const ms = ((Number(duration[1] ?? 0) * 60 + Number(duration[2] ?? 0)) * 60 + Number(duration[3] ?? 0)) * 1000;
+    if (ms > 0 && now + ms < 8.64e15) candidates.push(new Date(now + ms).toISOString());
+  }
+  // A known short window must not hide another exhausted window without a reset.
+  if (candidates.length && exhausted.some(window => !window.resetsAt)
+      && finite(defaultCooldownMs) && defaultCooldownMs > 0 && now + defaultCooldownMs < 8.64e15) {
+    candidates.push(new Date(now + defaultCooldownMs).toISOString());
+  }
+  const cooldownUntil = candidates.length ? candidates.sort().at(-1) : undefined;
+  return { kind: 'rate-limit', ...(cooldownUntil ? { cooldownUntil } : {}) };
+}
+
+export const detectClaudeSignal = (message, options) => detectProviderSignal('claudeAgent', message, options);
+export const detectCodexSignal = (message, options) => detectProviderSignal('codex', message, options);
