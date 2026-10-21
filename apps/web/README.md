@@ -9,6 +9,7 @@ npm run typecheck -w @perpeto/web
 npm run build:web
 node apps/web/scripts/screenshots.mjs   # with the dev server running; writes apps/web/screenshots/
 node apps/web/scripts/smoke.mjs         # browser smoke test of the main flows
+node apps/web/scripts/perf.mjs http://localhost:5180 200   # live map frame rates and latencies, synthetic graph
 
 # Against a real hub (see apps/hub/README.md; allow http://localhost:5180 in corsOrigins)
 node apps/web/scripts/seed-web-demo-hub.mjs http://127.0.0.1:4320 path/to/owner.secret --hold
