@@ -142,15 +142,18 @@ function Navigation({ pathname, projectId, onNavigate }: { pathname: string; pro
 
 function AccountRow({ onNavigate }: { onNavigate?: () => void }) {
   const { api, stream, settings } = useHub();
+  // The hub reports who the owner token acts for; older hubs do not, so fall back to "Owner".
+  const overview = useResource((a) => a.overview(), [], (e) => e.subject.kind === 'owner');
+  const owner = overview.data?.owner;
   const host = settings ? new URL(settings.baseUrl).host : '';
   const state = stream === 'live' ? 'Live' : stream === 'polling' ? 'Polling' : stream === 'reconnecting' ? 'Reconnecting' : stream === 'closed' ? 'Disconnected' : 'Connecting';
   return (
     <Link to="/settings" className="sidebar-foot" onClick={onNavigate} aria-label="Settings">
       <span className="avatar" aria-hidden="true">
-        <IconPerson size={16} />
+        {owner?.initials ?? <IconPerson size={16} />}
       </span>
       <span className="row-main">
-        <span className="row-title">Owner</span>
+        <span className="row-title">{owner?.name ?? 'Owner'}</span>
         <span className="row-meta">
           {api.mode === 'demo' ? (
             'Demo data'

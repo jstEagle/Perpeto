@@ -5,6 +5,8 @@ import type { DemoState } from './fixtures';
 import type {
   Assignment,
   DraftRequest,
+  Goal,
+  GoalInput,
   HubEvent,
   HumanDecision,
   MetricsSnapshot,
@@ -41,6 +43,18 @@ const LIVE_SCRIPT: Record<string, unknown>[] = [
 ];
 
 /** In-memory hub backed by fixtures. Mutations persist until reload. */
+/** The demo factory's owner, as a hub reports it from its config. */
+const DEMO_OWNER = { name: 'Justus', initials: 'JH' };
+
+/** Goals as the hub stores them: existing ones keep their id and progress, new ones start empty. */
+function toGoals(input: GoalInput[], existing: Goal[]): Goal[] {
+  return input.map((g) => {
+    const value = typeof g === 'string' ? { title: g } : g;
+    const before = existing.find((x) => (value.id ? x.id === value.id : x.title === value.title));
+    return before ? { ...before, title: value.title, status: value.status ?? before.status } : { id: shortId('goal'), title: value.title, status: value.status ?? 'active', workItemIds: [], done: 0, total: 0 };
+  });
+}
+
 export class DemoHub implements HubApi {
   readonly mode = 'demo' as const;
   #state: DemoState;
@@ -90,6 +104,7 @@ export class DemoHub implements HubApi {
       tokensToday,
       machinesOnline: this.#state.machines.filter((m) => m.status === 'online').length,
       machinesTotal: this.#state.machines.length,
+      owner: DEMO_OWNER,
     };
   }
 
@@ -100,7 +115,7 @@ export class DemoHub implements HubApi {
   async createProject(input: NewProject) {
     await latency();
     const now = new Date().toISOString();
-    const project: Project = { id: shortId('prj'), name: input.name, repo: input.repo, docs: input.docs ?? [], goals: input.goals ?? [], createdAt: now, updatedAt: now };
+    const project: Project = { id: shortId('prj'), name: input.name, repo: input.repo, docs: input.docs ?? [], goals: toGoals(input.goals ?? [], []), createdAt: now, updatedAt: now };
     this.#state.projects.push(project);
     this.#state.channels[project.id] = [{ id: 'general', name: 'General' }];
     this.#emit('project.created', { kind: 'project', id: project.id }, {}, { projectId: project.id });
@@ -113,7 +128,8 @@ export class DemoHub implements HubApi {
   async updateProject(id: string, patch: Partial<NewProject>) {
     await latency();
     const project = this.#project(id);
-    Object.assign(project, patch, { updatedAt: new Date().toISOString() });
+    const { goals, ...rest } = patch;
+    Object.assign(project, rest, goals ? { goals: toGoals(goals, project.goals) } : {}, { updatedAt: new Date().toISOString() });
     this.#emit('project.updated', { kind: 'project', id }, {}, { projectId: id });
     return clone(project);
   }

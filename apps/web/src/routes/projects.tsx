@@ -84,8 +84,11 @@ function ProjectRow({ project }: { project: Project }) {
       <td className="hide-sm">
         {project.goals.length ? (
           <>
-            <span>{project.goals[0]}</span>
-            {project.goals.length > 1 && <span className="cell-sub">and {project.goals.length - 1} more</span>}
+            <span>{project.goals[0].title}</span>
+            <span className="cell-sub">
+              {project.goals[0].total ? `${project.goals[0].done} of ${project.goals[0].total} done` : 'No work yet'}
+              {project.goals.length > 1 ? ` · ${project.goals.length - 1} more` : ''}
+            </span>
           </>
         ) : (
           <span className="muted">No goals yet</span>

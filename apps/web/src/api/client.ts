@@ -1,4 +1,5 @@
 import { HubError, newIdempotencyKey, OWNER_ROLE_ID } from './hub';
+import { decodeProject } from './goals';
 import type { EventPageResult, EventQuery, HubApi, MessageQuery, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import type {
   Account,
@@ -197,16 +198,16 @@ export class HttpHub implements HubApi {
   }
 
   async listProjects() {
-    return list<Project>(await this.#request('GET', '/projects'), 'projects');
+    return list<Project>(await this.#request('GET', '/projects'), 'projects').map(decodeProject);
   }
   async createProject(input: NewProject) {
-    return await this.#request<Project>('POST', '/projects', { body: input });
+    return decodeProject(await this.#request<Project>('POST', '/projects', { body: input }));
   }
   async getProject(id: string) {
-    return await this.#request<Project>('GET', `/projects/${enc(id)}`);
+    return decodeProject(await this.#request<Project>('GET', `/projects/${enc(id)}`));
   }
   async updateProject(id: string, patch: Partial<NewProject>) {
-    return await this.#request<Project>('PATCH', `/projects/${enc(id)}`, { body: patch });
+    return decodeProject(await this.#request<Project>('PATCH', `/projects/${enc(id)}`, { body: patch }));
   }
 
   async listWorkflows(projectId: string) {

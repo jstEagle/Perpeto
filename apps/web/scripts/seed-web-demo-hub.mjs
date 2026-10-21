@@ -127,9 +127,17 @@ const v2 = await architect(
 );
 console.log(`proposal v${v2.draftVersion} saved`);
 
-// Run.
+// Run. Inputs name the goal they serve, so goal progress counts their work items (hubs that read goals as objects).
+const goalIds = ((await hub('GET', `/projects/${project.id}`)).goals ?? []).map((g) => (typeof g === 'string' ? undefined : g.id));
+const forGoal = (i) => (goalIds[i] ? { goalId: goalIds[i] } : {});
 const run = await hub('POST', `/workflows/${v1.draftWorkflowId}/runs`, {
-  input: { items: [{ title: 'Web: connect to a real hub', body: 'Use the hub response shapes and follow assignments.' }, { title: 'Hub: session cookie for the web app' }, { title: 'Node: drain mode' }] },
+  input: {
+    items: [
+      { title: 'Web: connect to a real hub', body: 'Use the hub response shapes and follow assignments.', ...forGoal(0) },
+      { title: 'Hub: session cookie for the web app', ...forGoal(0) },
+      { title: 'Node: drain mode', ...forGoal(1) },
+    ],
+  },
 });
 console.log(`run ${run.id}`);
 

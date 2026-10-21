@@ -10,6 +10,7 @@ import type {
   Message,
   MetricsSnapshot,
   NodeMetrics,
+  Goal,
   Project,
   Run,
   UsageRecord,
@@ -26,6 +27,9 @@ import { COL, ROW, buildTemplate, improveTemplate } from '../workflow/templates'
  * rising, and two machines share the agents. Numbers are internally
  * consistent so the run map, panels and tables agree.
  */
+
+/** A goal with no linked work yet; progress is filled in once the demo's work items exist. */
+const goal = (id: string, title: string): Goal => ({ id, title, status: 'active', workItemIds: [], done: 0, total: 0 });
 
 export interface DemoState {
   projects: Project[];
@@ -131,7 +135,7 @@ export function createDemoState(now = Date.now()): DemoState {
         { id: 'doc_brand', title: 'Brand direction', path: 'brand/README.md', kind: 'requirements' },
         { id: 'doc_dod', title: 'Definition of done', path: 'docs/product/definition-of-done.md', kind: 'requirements' },
       ],
-      goals: ['Ship Hub API v1 with leases and an event log', 'Run 100 concurrent agents across 5 machines', 'Web and native clients follow the Workshop system'],
+      goals: [goal('goal_hub', 'Ship Hub API v1 with leases and an event log'), goal('goal_scale', 'Run 100 concurrent agents across 5 machines'), goal('goal_mono', 'Web and native clients follow Perpeto Mono')],
       createdAt: ago(12 * DAY),
       updatedAt: ago(2 * HOUR),
     },
@@ -140,7 +144,7 @@ export function createDemoState(now = Date.now()): DemoState {
       name: 'cooler',
       repo: { url: 'https://github.com/lumin-products/cooler', defaultBranch: 'main' },
       docs: [{ id: 'doc_cooler_req', title: 'Messaging requirements', path: 'docs/requirements.md', kind: 'requirements' }],
-      goals: ['Durable channels with cursor reads', 'Review requests route to the right role'],
+      goals: [goal('goal_channels', 'Durable channels with cursor reads'), goal('goal_routing', 'Review requests route to the right role')],
       createdAt: ago(30 * DAY),
       updatedAt: ago(26 * HOUR),
     },
@@ -306,6 +310,16 @@ export function createDemoState(now = Date.now()): DemoState {
   });
 
   const wiAt = (title: string) => workItems.find((w) => w.title === title)!;
+
+  // Goal progress counts the leaf work items linked to each goal.
+  const link = (projectIndex: number, goalId: string, titles: string[]) => {
+    const g = projects[projectIndex].goals.find((x) => x.id === goalId)!;
+    const items = titles.map(wiAt);
+    Object.assign(g, { workItemIds: items.map((w) => w.id), done: items.filter((w) => w.status === 'done').length, total: items.length });
+  };
+  link(0, 'goal_hub', ['Hub: idempotent project writes', 'Hub: lease expiry returns work to the queue', 'Hub: event log pagination', 'Hub: SSE event stream', 'Hub: metrics endpoint']);
+  link(0, 'goal_scale', ['Node: heartbeat every 10 s', 'Node: drain mode', 'T3 executor: subagent limits', 'Hub: bottleneck detection']);
+  link(0, 'goal_mono', ['Web: workflow inspector', 'Web: live run map', 'Web: settings screen']);
 
   // Assignments for the live run.
   const assignments: Assignment[] = [];

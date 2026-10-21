@@ -289,6 +289,8 @@ svg {
 .avatar {
   width: 28px;
   height: 28px;
+  font-size: var(--text-12);
+  font-weight: var(--weight-medium);
   flex: none;
   display: grid;
   place-items: center;
@@ -1622,4 +1624,9 @@ a.row-title:hover,
 }
 .menu-list button:hover {
   background: var(--surface-hover);
+}
+.rows > li.meter-row {
+  display: grid;
+  align-items: stretch;
+  gap: var(--space-3);
 }

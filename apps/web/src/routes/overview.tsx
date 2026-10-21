@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Link, useParams } from '@tanstack/react-router';
 import { useHub, useResource } from '../app/hub-context';
-import type { MergeEntry, MetricsSnapshot, Overview as OverviewData, Project, Run, Workflow } from '../api/types';
-import { Async, Button, btn, Dialog, Disclosure, Empty, Field, Mono, PageHeader, Panel, Stat } from '../components/ui';
-import { LiveDot, MergeStatusLabel, RunStatusLabel } from '../components/status';
+import type { Goal, MergeEntry, MetricsSnapshot, Overview as OverviewData, Project, Run, Workflow } from '../api/types';
+import { encodeGoals } from '../api/goals';
+import { Async, Button, btn, Dialog, Disclosure, Empty, Field, Meter, Mono, PageHeader, Panel, Stat } from '../components/ui';
+import { LiveDot, MergeStatusLabel, RunStatusLabel, StatusLabel } from '../components/status';
 import { IconAlert, IconArrowRight, IconChevronRight, IconDoc, IconWorkflow } from '../components/icons';
 import { bottleneckTitle, byUrgency } from '../run/issues';
 import { duration, plural, rate, relative, repoName, tokens } from '../lib/format';
@@ -217,6 +218,27 @@ const sentence = (text: string) => {
   return /[.!?]$/.test(t) ? t : `${t.charAt(0).toUpperCase()}${t.slice(1)}.`;
 };
 
+/** A goal with its progress: leaf work items done of those linked to it. */
+function GoalRow({ goal }: { goal: Goal }) {
+  return (
+    <li className="meter-row">
+      <span className="meter-row-head">
+        <span>{goal.title}</span>
+        {goal.status === 'done' ? (
+          <StatusLabel tone="done">Done</StatusLabel>
+        ) : goal.total ? (
+          <span>
+            {goal.done} of {goal.total}
+          </span>
+        ) : (
+          <span>No work yet</span>
+        )}
+      </span>
+      <Meter value={goal.status === 'done' ? 1 : goal.done} max={goal.status === 'done' ? 1 : Math.max(1, goal.total)} label={`${goal.title}: ${goal.done} of ${goal.total} work items done`} />
+    </li>
+  );
+}
+
 function GoalsCard({ project, onEdit }: { project: Project; onEdit(): void }) {
   return (
     <Panel
@@ -230,11 +252,30 @@ function GoalsCard({ project, onEdit }: { project: Project; onEdit(): void }) {
       {project.goals.length === 0 ? (
         <p className="muted">Add a goal to start planning work. Planners and the workflow architect read them.</p>
       ) : (
-        <ol className="rows">
-          {project.goals.map((g) => (
-            <li key={g}>{g}</li>
-          ))}
-        </ol>
+        <>
+          <ol className="rows goals">
+            {project.goals
+              .filter((g) => g.status !== 'dropped')
+              .map((g) => (
+                <GoalRow key={g.id} goal={g} />
+              ))}
+          </ol>
+          {project.goals.some((g) => g.status === 'dropped') && (
+            <div className="card-foot">
+              <Disclosure summary={`Dropped · ${project.goals.filter((g) => g.status === 'dropped').length}`}>
+                <ol className="rows">
+                  {project.goals
+                    .filter((g) => g.status === 'dropped')
+                    .map((g) => (
+                      <li key={g.id} className="muted">
+                        {g.title}
+                      </li>
+                    ))}
+                </ol>
+              </Disclosure>
+            </div>
+          )}
+        </>
       )}
       <div className="card-foot">
         <Disclosure summary={`Docs and requirements · ${project.docs.length}`}>
@@ -301,7 +342,7 @@ function QueueHealth({ entries }: { entries: MergeEntry[] }) {
 
 function GoalsDialog({ open, onClose, project, onSaved }: { open: boolean; onClose(): void; project: Project; onSaved(): void }) {
   const { api } = useHub();
-  const [text, setText] = useState(project.goals.join('\n'));
+  const [text, setText] = useState(project.goals.map((g) => g.title).join('\n'));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function save(e: React.FormEvent) {
@@ -309,7 +350,8 @@ function GoalsDialog({ open, onClose, project, onSaved }: { open: boolean; onClo
     setBusy(true);
     setError(null);
     try {
-      await api.updateProject(project.id, { goals: text.split('\n').map((g) => g.trim()).filter(Boolean) });
+      const lines = text.split('\n').map((g) => g.trim()).filter(Boolean);
+      await api.updateProject(project.id, { goals: encodeGoals(lines, project.goals) });
       onSaved();
       onClose();
     } catch (err) {
