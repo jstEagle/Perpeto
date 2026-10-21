@@ -133,13 +133,23 @@ export class HubDelivery {
         state.jobs.some(job => job.status === 'queued' && !store.get('job', job.id)) || this.errors.has(record.id) || record.lastError;
     }).map(record => record.id);
   }
-  /** A terminal delivery outcome the hub entry does not show yet. Without a hub entry there is nothing to mirror into. */
+  /** A terminal delivery outcome the hub entry does not show yet. A published merge always wins over a hub rejection. */
   unmirrored(entry, hubEntry) {
-    return Boolean(hubEntry) && !TERMINAL.has(hubEntry.status);
+    return Boolean(hubEntry) && hubEntry.status !== entry.status && (!TERMINAL.has(hubEntry.status) || entry.status === 'merged');
+  }
+  /** Withdraw entries their run already closed, including ones under test, before the queue can publish them. */
+  withdrawClosed(queue) {
+    for (const entry of queue.state.entries) {
+      const hubEntry = TERMINAL.has(entry.status) ? null : this.hub.store.get('merge-entry', entry.id);
+      if (hubEntry?.status !== 'rejected') continue;
+      try { queue.withdraw({ entryId: entry.id, reason: hubEntry.reason ?? 'Closed by its run.' }, { idempotencyKey: `withdraw:${entry.id}` }); this.dirty = true; }
+      catch (error) { if (!(error instanceof DeliveryError)) throw error; }
+    }
   }
   async advance(id) {
     const queue = this.queues.get(id);
     for (let index = 0; index < MAX_STEPS && !this.closed; index++) {
+      await this.hub.serialize(() => this.withdrawClosed(queue));
       if ((this.failures.get(id)?.retryAt ?? 0) > Date.now()) return;
       const before = JSON.stringify(queue.state);
       try { await queue.step({ idempotencyKey: `tick:${randomUUID()}` }); }
@@ -208,12 +218,6 @@ export class HubDelivery {
         record.lastError = error; store.put('delivery-queue', record);
         if (error) this.hub.emit('merge-queue.error', 'merge-queue', record, { message: error });
       }
-      for (const entry of queue.state.entries) {
-        const hubEntry = store.get('merge-entry', entry.id);
-        if (entry.status === 'queued' && !queue.state.active?.entryIds.includes(entry.id) && hubEntry && TERMINAL.has(hubEntry.status)) {
-          queue.withdraw({ entryId: entry.id, reason: hubEntry.reason ?? 'Closed by its run.' }, { idempotencyKey: `withdraw:${entry.id}` });
-        }
-      }
       const state = queue.state;
       const failing = state.active ? this.errors.get(id) : null;
       for (const job of state.jobs) {
@@ -237,7 +241,7 @@ export class HubDelivery {
       }
       for (const entry of state.entries) {
         const hubEntry = store.get('merge-entry', entry.id);
-        if (!hubEntry || TERMINAL.has(hubEntry.status)) continue;
+        if (!hubEntry || (TERMINAL.has(hubEntry.status) && !this.unmirrored(entry, hubEntry))) continue;
         // deliveryError shows why an entry is stuck while its attempt keeps failing, and why the hub rejected it.
         const deliveryError = this.rejected.get(entry.id) ?? (failing && state.active.entryIds.includes(entry.id) ? failing : undefined);
         const next = { status: entry.status, jobId: entry.jobId, reason: entry.reason, testedRevision: entry.testedRevision, mergedRevision: entry.mergedRevision, deliveryError };
@@ -246,7 +250,7 @@ export class HubDelivery {
         const value = { ...hubEntry, ...next };
         for (const key of Object.keys(next)) if (value[key] === undefined) delete value[key];
         store.put('merge-entry', value); this.hub.emit('merge-entry.updated', 'merge-entry', value, { status: value.status, ...(value.reason ? { reason: value.reason } : {}) }); changed = true;
-        const run = TERMINAL.has(entry.status) && value.runId ? store.get('run', value.runId) : null;
+        const run = TERMINAL.has(entry.status) && !TERMINAL.has(hubEntry.status) && value.runId ? store.get('run', value.runId) : null;
         if (run && ['running', 'paused'].includes(run.status)) await this.hub.engineEvent(run, { type: 'merge.finished', mergeEntryId: entry.id, data: next });
       }
     }

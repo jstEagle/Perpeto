@@ -134,6 +134,29 @@ test('pausing one run does not stall merges of another run sharing its queue (M2
   assert.ok((await repo.files()).includes('second.txt'));
 });
 
+test('a stopped run\'s batch entry is withdrawn before it can merge; the rest of the batch still merges (M3)', async t => {
+  const h = await deliveryHub(t); const repo = await repository(h.root);
+  // A relative repo URL blocks admission, so both entries are admitted together into one batch once it is fixed.
+  const project = await h.project('relative.git');
+  const stopped = await repo.branch('stopped'); const kept = await repo.branch('kept');
+  const { workflow, run: stoppedRun } = await h.start(project, 'batch'); await h.build(stopped);
+  const keptRun = await h.again(workflow); await h.build(kept);
+  await eventually(async () => (await h.entries(project)).every(entry => entry.deliveryError), 'entries blocked');
+  await h.request('PATCH', `/projects/${project.id}`, { repo: { url: repo.bare, defaultBranch: 'main' } });
+  const batch = await eventually(async () => {
+    const entries = await h.entries(project);
+    return entries.length === 2 && entries.every(entry => entry.jobId && entry.jobId === entries[0].jobId) && entries[0].jobId;
+  }, 'one batch job for both entries');
+  await h.request('POST', `/runs/${stoppedRun.id}/stop`, {});
+  // The stopped entry leaves the attempt, its batch job is cancelled, and the kept entry is retested alone.
+  await eventually(async () => (await h.request('GET', `/jobs/${batch}`)).status === 'cancelled', 'batch job cancelled');
+  const retest = await h.pass(); assert.notEqual(retest.id, batch); assert.deepEqual(retest.delivery.mergeEntryIds, [(await h.entry(project, keptRun.id)).id]);
+  await eventually(async () => (await h.entry(project, keptRun.id))?.status === 'merged', 'kept entry merged');
+  const files = await repo.files();
+  assert.ok(files.includes('kept.txt')); assert.ok(!files.includes('stopped.txt'), 'stopped run change was published');
+  assert.equal((await h.entry(project, stoppedRun.id)).status, 'rejected');
+});
+
 test('one project with an unusable repo URL does not halt merge admission for other projects (M17)', async t => {
   const h = await deliveryHub(t); const repo = await repository(h.root);
   const broken = await h.project('file://host/repo.git'); const healthy = await h.project(repo.bare);
