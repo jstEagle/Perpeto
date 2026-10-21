@@ -20,6 +20,7 @@ const MAX_ESCALATION_RECORDS = 20;
 const MAX_VISITS = 100;
 const MAX_INPUTS = 100;
 const MAX_PLANNED_ITEMS = 1000;
+const MAX_PLAN_CHARS = 8000;
 const RUN_ID = /^run_[A-Za-z0-9_-]{1,100}$/;
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const TERMINAL_ITEM = new Set(['done', 'failed']);
@@ -203,7 +204,7 @@ const HANDLERS = {
       for (const key of ['branch', 'prUrl', 'headSha']) if (result[key] !== undefined) item[key] = result[key];
     }
     closeVisit(ctx, item, 'pass');
-    if (node.type === 'planner') return planned(ctx, item, node, result.items ?? []);
+    if (node.type === 'planner') return planned(ctx, item, node, result.items ?? [], result.summary);
     delete item.feedback;
     move(ctx, item, node.id, 'next');
   },
@@ -649,13 +650,18 @@ function escalate(ctx, item, node, target, reason, evidence) {
   enter(ctx, item, target, node.id);
 }
 
-function planned(ctx, item, node, items) {
+function planned(ctx, item, node, items, summary) {
   const limit = node.config.maxItems;
   if (items.length > limit) {
     emit(ctx, 'planner.items_truncated', item, { workItemId: item.id, nodeId: node.id, proposed: items.length, kept: limit });
   }
   const kept = items.slice(0, limit);
-  if (!kept.length) return move(ctx, item, node.id, 'next');
+  if (!kept.length) {
+    // The item stays whole; its refined contract and acceptance criteria travel with it to every later role.
+    const brief = summary?.trim();
+    if (brief) item.plan = { from: node.role, summary: brief.length > MAX_PLAN_CHARS ? `${brief.slice(0, MAX_PLAN_CHARS)}\n[truncated]` : brief };
+    return move(ctx, item, node.id, 'next');
+  }
   item.status = 'active';
   item.waiting = { kind: 'children' };
   const children = kept.map(child => createItem(ctx, { title: child.title, body: child.body ?? '', nodeId: node.id, parentId: item.id }));
@@ -735,8 +741,12 @@ function retryFields(ctx, item) {
 }
 
 function buildPrompt(s, item, node, role) {
+  // Work-item context, in this order for every role: what to do, the agreed plan, where the work is, what to fix.
   const parts = [role.prompt, `Work item: ${item.title}`];
   if (item.body) parts.push(item.body);
+  const parent = item.parentId ? s.workItems[item.parentId] : null;
+  if (parent) parts.push(`Part of: ${parent.title}`);
+  if (item.plan) parts.push(`Plan from ${item.plan.from}:\n${item.plan.summary}`);
   if (node.type === 'review' && node.config.rubric) parts.push(`Rubric:\n${node.config.rubric}`);
   const refs = [['Branch', item.branch], ['Pull request', item.prUrl], ['Head commit', item.headSha]].filter(([, value]) => value);
   if (refs.length) parts.push(refs.map(([label, value]) => `${label}: ${value}`).join('\n'));
@@ -750,12 +760,11 @@ function buildPrompt(s, item, node, role) {
     parts.push(`This is retry ${item.attempt} of ${node.config.retry?.maxAttempts ?? item.attempt} at this step. The previous attempt failed: ${item.lastError.summary}`);
   }
   if (node.type === 'planner') {
-    parts.push(`Report success with result.items listing at most ${node.config.maxItems} work items as [{ "title": "…", "body": "…" }]. ` +
-      'Return an empty items list when the work item is already small enough to build as one pull request.');
+    parts.push(`Split the work item into at most ${node.config.maxItems} items, each small enough for one pull request, with a title and a body that states its contract and acceptance criteria. ` +
+      'If it is already that small, keep it whole: return no items and put its contract and acceptance criteria in your summary. The builder and reviewer receive that summary.');
   }
   if (node.type === 'review') {
-    parts.push('Report outcome "success" with verdict "pass" if the work passes review, or verdict "fail" with actionable feedback in the summary if it does not. ' +
-      'Report outcome "failure" only if you could not complete the review.');
+    parts.push('Give verdict "pass" if the work passes review, or verdict "fail" with actionable feedback in the summary. If you could not complete the review, give no verdict.');
   }
   return parts.join('\n\n');
 }

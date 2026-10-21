@@ -20,7 +20,7 @@ test('build template runs from input to merged output through review and CI retr
   const [idea] = run.items();
   assert.equal(idea.nodeId, 'planner');
   assert.equal(run.open('planner').length, 1);
-  assert.match(run.open('planner')[0].prompt, /at most 8 work items/);
+  assert.match(run.open('planner')[0].prompt, /at most 8 items/);
 
   run.complete('planner', { outcome: 'success', items: [{ title: 'Login form', body: 'Fields and validation.' }] });
   const child = run.items(item => item.parentId === idea.id)[0];
