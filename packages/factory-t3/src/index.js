@@ -4,3 +4,4 @@ export { RpcConnection, T3RpcError } from './rpc.js';
 export { ThreadTracker } from './thread-state.js';
 export { buildPrompt } from './prompt.js';
 export { readCredentialFile, issueSessionToken, EXECUTOR_SCOPES } from './credentials.js';
+export { outputKind, outputInstructions, parseRoleResult } from './results.js';

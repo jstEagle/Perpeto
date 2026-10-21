@@ -29,6 +29,7 @@ function repositoryUrl(url) {
     return url;
   }
   if (/^[\w.-]+@[\w.-]+:[\w./-]+$/.test(url)) return url; // scp-like SSH
+  if (url.startsWith('/') && !url.includes('\0')) return url; // local repository path
   throw new Error('Unsupported repository URL.');
 }
 
@@ -47,42 +48,67 @@ async function worktreeFor(root, branch, signal) {
   return null;
 }
 
+async function isWorkingTree(path, signal) {
+  try { return (await git(path, ['rev-parse', '--is-bare-repository'], { signal })) === 'false'; }
+  catch { return false; }
+}
+
 /**
  * Choose where the T3 thread works:
- * - a local checkout (`repo.localPath`): a T3-managed worktree on the work branch (reused when it exists);
- * - a repository URL: a clone inside the node's assignment workspace on a work branch;
- * - otherwise the node's assignment workspace itself.
+ * - a local working checkout (`repo.localPath`): a T3-managed worktree on the work
+ *   branch, reused when it already exists;
+ * - otherwise a clone of `repo.url` (or of a bare `localPath`) inside the node's
+ *   assignment workspace, on the work branch, starting from the remote branch when
+ *   an earlier attempt published it;
+ * - with no repository, the node's assignment workspace itself.
+ * `startHead` is the commit the agent starts from, used to detect new work.
  */
 export async function prepareWorkspace({ repo, workspace, branch, signal }) {
-  if (repo?.localPath && await isDirectory(repo.localPath)) {
-    const root = await realpath(repo.localPath);
-    await git(root, ['rev-parse', '--git-dir'], { signal });
-    // A retried or reworked item continues on its branch. T3 refuses to create
-    // an existing branch, so reuse its worktree or check it out in the node's workspace.
-    const existing = await worktreeFor(root, branch, signal);
-    if (existing) return { workspaceRoot: root, workspaceStrategy: { type: 'existing_worktree', worktreePath: existing, branch }, mode: 'existing_worktree' };
-    if (await hasBranch(root, branch, signal)) {
+  const localPath = repo?.localPath && await isDirectory(repo.localPath) ? await realpath(repo.localPath) : null;
+  if (localPath && await isWorkingTree(localPath, signal)) {
+    // T3 refuses to create an existing branch, so reuse its worktree or check it out in the node's workspace.
+    const existing = await worktreeFor(localPath, branch, signal);
+    if (existing) return { workspaceRoot: localPath, workspaceStrategy: { type: 'existing_worktree', worktreePath: existing, branch }, mode: 'existing_worktree', startHead: await git(existing, ['rev-parse', 'HEAD'], { signal }) };
+    if (await hasBranch(localPath, branch, signal)) {
       if (typeof workspace !== 'string' || !workspace) throw new Error('The node did not provide an assignment workspace.');
       const path = join(await realpath(workspace), 'worktree');
-      await git(root, ['worktree', 'add', path, branch], { signal });
-      return { workspaceRoot: root, workspaceStrategy: { type: 'existing_worktree', worktreePath: await realpath(path), branch }, mode: 'existing_worktree' };
+      await git(localPath, ['worktree', 'add', path, branch], { signal });
+      const worktreePath = await realpath(path);
+      return { workspaceRoot: localPath, workspaceStrategy: { type: 'existing_worktree', worktreePath, branch }, mode: 'existing_worktree', startHead: await git(worktreePath, ['rev-parse', 'HEAD'], { signal }) };
     }
-    const baseRef = repo.defaultBranch ?? (await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'], { signal }));
-    return { workspaceRoot: root, workspaceStrategy: { type: 'worktree', baseRef, branch, startFromOrigin: false }, mode: 'worktree' };
+    const baseRef = repo.defaultBranch ?? (await git(localPath, ['rev-parse', '--abbrev-ref', 'HEAD'], { signal }));
+    return { workspaceRoot: localPath, workspaceStrategy: { type: 'worktree', baseRef, branch, startFromOrigin: false }, mode: 'worktree', startHead: await git(localPath, ['rev-parse', `${baseRef}^{commit}`], { signal }) };
   }
   if (typeof workspace !== 'string' || !workspace) throw new Error('The node did not provide an assignment workspace.');
   const root = await realpath(workspace);
-  if (repo?.url) {
+  const source = repo?.url ? repositoryUrl(repo.url) : localPath;
+  if (source) {
     const checkout = join(root, 'repo');
-    if (!await isDirectory(join(checkout, '.git'))) {
+    if (await isDirectory(join(checkout, '.git'))) await git(checkout, ['fetch', '--quiet', 'origin'], { signal, timeoutMs: 600000 });
+    else {
       if ((await readdir(root)).includes('repo')) throw new Error('Assignment workspace already has a non-repository "repo" entry.');
-      const args = ['clone', '--no-recurse-submodules', ...(repo.defaultBranch ? ['--branch', repo.defaultBranch] : []), '--', repositoryUrl(repo.url), checkout];
-      await git(root, args, { signal, timeoutMs: 600000 });
+      await git(root, ['clone', '--quiet', '--no-recurse-submodules', '--', source, checkout], { signal, timeoutMs: 600000 });
     }
-    await git(checkout, ['checkout', '-B', branch], { signal });
-    return { workspaceRoot: await realpath(checkout), workspaceStrategy: { type: 'root' }, mode: 'clone' };
+    const published = await git(checkout, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { signal }).then(() => true, () => false);
+    const base = published ? `origin/${branch}` : repo.defaultBranch ? `origin/${repo.defaultBranch}` : 'origin/HEAD';
+    await git(checkout, ['checkout', '--quiet', '-B', branch, base], { signal });
+    return { workspaceRoot: await realpath(checkout), workspaceStrategy: { type: 'root' }, mode: 'clone', startHead: await git(checkout, ['rev-parse', 'HEAD'], { signal }) };
   }
-  return { workspaceRoot: root, workspaceStrategy: { type: 'root' }, mode: 'workspace' };
+  return { workspaceRoot: root, workspaceStrategy: { type: 'root' }, mode: 'workspace', startHead: null };
+}
+
+/** Push the work branch to `origin` without force, so CI and delivery can fetch the exact head. */
+export async function publishBranch(checkout, branch, { signal } = {}) {
+  try { await git(checkout, ['remote', 'get-url', 'origin'], { signal }); }
+  catch { return { published: false, reason: 'The checkout has no origin remote.' }; }
+  try { await git(checkout, ['push', '--quiet', 'origin', `HEAD:refs/heads/${branch}`], { signal, timeoutMs: 600000 }); }
+  catch { return { published: false, failed: true, reason: `Pushing ${branch} to origin failed.` }; }
+  return { published: true };
+}
+
+/** True when the checkout has uncommitted changes. */
+export async function isDirty(checkout, { signal } = {}) {
+  try { return (await git(checkout, ['status', '--porcelain'], { signal })).length > 0; } catch { return false; }
 }
 
 /** Branch and head commit of a checkout, when it is a Git repository. */

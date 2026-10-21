@@ -5,8 +5,9 @@ import { createHash } from 'node:crypto';
 import { T3Client, T3HttpError } from './client.js';
 import { issueSessionToken, readCredentialFile } from './credentials.js';
 import { assignmentContext, buildPrompt } from './prompt.js';
+import { outputInstructions, outputKind, parseRoleResult } from './results.js';
 import { ThreadTracker, TERMINAL_RUN_STATUSES } from './thread-state.js';
-import { branchName, prepareWorkspace, pullRequestUrl, revisionOf } from './workspace.js';
+import { branchName, isDirty, prepareWorkspace, publishBranch, pullRequestUrl, revisionOf } from './workspace.js';
 
 /** Harness option keys the executor consumes instead of forwarding as model options. */
 const RESERVED_OPTIONS = new Set(['runtimeMode', 'interactionMode']);
@@ -25,6 +26,8 @@ const DEFAULTS = Object.freeze({
   branchPrefix: 'perpeto/',
   tokenTtl: '12h',
   requestTimeoutMs: 30000,
+  accountReadyTimeoutMs: 60000,
+  publishBranch: true,
 });
 
 const sleep = (ms, signal) => new Promise(resolve => {
@@ -113,6 +116,31 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     return clientPromise;
   }
 
+  /** Register the account's provider instance with T3 and wait until it is ready. */
+  async function registerAccountInstance(t3, accounts, selection, { signal }) {
+    const accountId = selection.account?.id ?? selection.binding.accountId;
+    let binding = selection.binding;
+    if (typeof accounts.bindingFor === 'function') {
+      try { binding = await accounts.bindingFor(accountId); }
+      catch (error) { return { ok: false, summary: `Account ${accountId} is not eligible (${error?.code ?? 'unavailable'}).` }; }
+    }
+    await t3.upsertProviderInstance(binding.mutation, { signal });
+    const deadline = Date.now() + settings.accountReadyTimeoutMs;
+    let refreshed = false;
+    while (Date.now() < deadline) {
+      const providers = (await t3.getConfig({ signal }))?.providers ?? [];
+      const found = providers.find(item => item.instanceId === binding.providerInstanceId);
+      if (found && found.enabled !== false && found.status === 'ready') return { ok: true, instance: found };
+      if (found?.auth?.status === 'unauthenticated') {
+        return { ok: false, authFailure: true, summary: `Account ${accountId} is not signed in to ${found.driver ?? 'its provider'} on this machine.` };
+      }
+      if (!refreshed) { refreshed = true; await t3.refreshProvider(binding.providerInstanceId, { signal }).catch(() => {}); }
+      await sleep(settings.pollMs, signal);
+      signal.throwIfAborted();
+    }
+    return { ok: false, summary: `Account ${accountId}'s T3 provider instance did not become ready.` };
+  }
+
   return {
     kind: 't3',
     canRun(assignment, machine) {
@@ -141,24 +169,43 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     const policy = assignment.policy ?? { maxSubagents: 0, allowedSubagentProviders: [] };
     const attempt = Number.isSafeInteger(assignment.attempt) ? assignment.attempt : 0;
 
-    // Account selection belongs to factory-accounts; it may pin a provider instance.
-    let account = null;
-    if (typeof (ctx.accountProvider ?? accountProvider)?.acquire === 'function') {
-      account = await (ctx.accountProvider ?? accountProvider).acquire({ provider: target.provider, model: target.model, assignmentId: assignment.id }) ?? null;
-    }
+    const kind = outputKind(assignment);
+    // Account selection is executor-owned: reserve, register the account's T3
+    // instance, run on it, report limits and auth failures, release in finally.
     const accounts = ctx.accountProvider ?? accountProvider;
+    const attemptKey = { assignmentId: assignment.id, attempt: Number.isSafeInteger(assignment.attempt) ? assignment.attempt : 1 };
+    let selection = null;
+    if (typeof accounts?.acquire === 'function') {
+      selection = await accounts.acquire({ provider: target.provider, model: target.model, ...attemptKey }) ?? null;
+    }
+    const accountId = selection?.account?.id ?? selection?.binding?.accountId ?? null;
+    const observe = async (message, key) => {
+      if (!accountId || typeof accounts?.observe !== 'function') return;
+      await Promise.resolve(accounts.observe({ accountId, message, idempotencyKey: stableId('observe', assignment.id, String(attemptKey.attempt), key) })).catch(() => {});
+    };
     let result;
     try {
       result = await execute();
       return result;
     } finally {
-      if (account && typeof accounts?.release === 'function') await Promise.resolve(accounts.release(account, result)).catch(() => {});
+      if (selection && typeof accounts?.release === 'function') await Promise.resolve(accounts.release(selection, { ...attemptKey, result })).catch(() => {});
     }
 
     async function execute() {
-      const serverConfig = await t3.getConfig({ signal });
-      const instance = chooseInstance(serverConfig?.providers, target.provider, account?.providerInstanceId ?? account?.instanceId);
-      if (!instance) return { outcome: 'blocked', summary: `No ready T3 provider instance for ${target.provider} on this machine.` };
+      let instance;
+      if (selection?.binding) {
+        const registered = await registerAccountInstance(t3, accounts, selection, { signal });
+        if (!registered.ok) {
+          if (registered.authFailure) await observe({ failure: { code: 'auth_required', message: 'Not logged in' } }, 'auth');
+          return { outcome: 'blocked', summary: registered.summary };
+        }
+        instance = registered.instance;
+        await report({ type: 'progress', data: { interaction: 'account.bound', accountId, provider: target.provider, providerInstanceId: instance.instanceId } });
+      } else {
+        const serverConfig = await t3.getConfig({ signal });
+        instance = chooseInstance(serverConfig?.providers, target.provider);
+        if (!instance) return { outcome: 'blocked', summary: `No ready T3 provider instance for ${target.provider} on this machine.` };
+      }
 
       const { repo, workItem } = assignmentContext(assignment);
       const branch = branchName(assignment.branch ?? workItem?.branch ?? `${settings.branchPrefix}${assignment.workItemId ?? assignment.id}`);
@@ -182,6 +229,15 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         } else throw error;
       }
 
+      if (selection && typeof accounts?.bindingFor === 'function') {
+        // Recheck eligibility immediately before launch; a concurrent disable or cooldown wins.
+        try { await accounts.bindingFor(accountId); }
+        catch (error) { return { outcome: 'blocked', summary: `Account ${accountId} is no longer eligible (${error?.code ?? 'unavailable'}).` }; }
+      }
+      const extra = [outputInstructions(kind)];
+      if (kind === 'work' && workspace.mode !== 'workspace') {
+        extra.push(`Work on branch ${branch} and commit your changes there. ${settings.publishBranch ? 'The factory pushes the branch to origin when you finish; do not push other branches.' : ''}`.trim());
+      }
       const runtimeMode = RUNTIME_MODES.has(target.overrides.runtimeMode) ? target.overrides.runtimeMode : settings.runtimeMode;
       const interactionMode = target.overrides.interactionMode === 'plan' ? 'plan' : settings.interactionMode;
       const launch = await t3.launchThread({
@@ -190,7 +246,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         title: (workItem?.title ?? assignment.role ?? 'Perpeto assignment').slice(0, 120),
         modelSelection: { instanceId: instance.instanceId, model: target.model, ...(target.options.length ? { options: target.options } : {}) },
         runtimeMode, interactionMode, workspaceStrategy: workspace.workspaceStrategy,
-        initialMessage: { messageId: stableId('perpeto-msg', assignment.id, String(attempt)), text: buildPrompt(assignment), attachments: [] },
+        initialMessage: { messageId: stableId('perpeto-msg', assignment.id, String(attempt)), text: buildPrompt(assignment, { extra }), attachments: [] },
       }, { signal, timeoutMs: 300000 });
       await report({ type: 'progress', data: {
         interaction: 'thread.started', threadRef: threadRef(threadId), threadId, projectId: project.id,
@@ -198,11 +254,11 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         resumed: launch?.resumed === true, workspaceMode: workspace.mode, at: new Date().toISOString(),
       } });
 
-      return follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, account, workspace, launch });
+      return follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch });
     }
   }
 
-  async function follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, account, workspace, launch }) {
+  async function follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch }) {
     const trackers = new Map();
     const reportedTurns = new Set();
     const reportedUsage = new Set();
@@ -216,7 +272,6 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     let fatal = null;
     let wake = () => {};
     const deadline = Date.now() + settings.turnTimeoutMs;
-    const accountId = account?.accountId ?? account?.id;
     const providerName = instance.driver ?? target.provider;
 
     const requestStop = (outcome, summary) => { if (!stop) { stop = { outcome, summary }; wake(); } };
@@ -334,6 +389,8 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       if (reportedFailures.has(item.id)) return;
       reportedFailures.add(item.id);
       const failure = item.failure ?? {};
+      // The account pool decides whether this is a rate limit or an auth failure.
+      if (tracker.threadId === threadId) await observe({ failure }, item.id);
       await report({ type: 'progress', data: { interaction: 'provider.failure', threadRef: threadRef(tracker.threadId), runId: item.runId ?? null, class: failure.class ?? 'unknown', code: failure.code ?? null, retryable: failure.retryable === true, ...(failure.resetAt ? { resetAt: failure.resetAt } : {}), message: typeof failure.message === 'string' ? failure.message.slice(0, 500) : null } });
     }
 
@@ -438,10 +495,23 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       };
       const clip = value => value.length > settings.maxSummaryChars ? `${value.slice(0, settings.maxSummaryChars - 1)}…` : value;
       if (stop) return { outcome: stop.outcome, summary: clip(stop.summary), ...evidence };
-      if (latest?.status === 'completed') return { outcome: 'success', summary: clip(text || 'The agent finished without a written summary.'), ...evidence };
-      const failure = latest ? root.failures(latest.id).at(-1) : null;
-      const reason = failure?.message ? `${failure.class ?? 'error'}: ${failure.message}` : `Turn ended with status ${latest?.status ?? 'unknown'}.`;
-      return { outcome: 'failure', summary: clip(text ? `${reason}\n\n${text}` : reason), ...evidence };
+      if (latest?.status !== 'completed') {
+        const failure = latest ? root.failures(latest.id).at(-1) : null;
+        const reason = failure?.message ? `${failure.class ?? 'error'}: ${failure.message}` : `Turn ended with status ${latest?.status ?? 'unknown'}.`;
+        return { outcome: 'failure', summary: clip(text ? `${reason}\n\n${text}` : reason), ...evidence };
+      }
+      const parsed = parseRoleResult(kind, text);
+      if (parsed.error) return { outcome: 'failure', summary: clip(`${parsed.error}\n\n${text}`), ...evidence };
+      const summary = parsed.summary ?? (text || 'The agent finished without a written summary.');
+      if (kind === 'work' && checkout && revision.headSha) {
+        if (await isDirty(checkout)) await report({ type: 'progress', data: { interaction: 'workspace.dirty', threadRef: threadRef(threadId), branch: evidence.branch ?? branch } });
+        if (settings.publishBranch && workspace.startHead && revision.headSha !== workspace.startHead && evidence.branch) {
+          const published = await publishBranch(checkout, evidence.branch);
+          await report({ type: 'progress', data: { interaction: 'branch.published', branch: evidence.branch, headSha: revision.headSha, published: published.published, ...(published.reason ? { reason: published.reason } : {}) } });
+          if (published.failed) return { outcome: 'failure', summary: clip(`${published.reason}\n\n${summary}`), ...evidence };
+        }
+      }
+      return { outcome: 'success', summary: parsed.unclipped ? summary : clip(summary), ...parsed.fields, ...evidence };
     }
   }
 }

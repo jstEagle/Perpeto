@@ -151,6 +151,17 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
       const payload = message.payload;
       switch (message.tag) {
         case 'server.getConfig': return reply({ providers: state.providers });
+        case 'server.updateSettings': {
+          state.commands.push({ tag: message.tag, payload });
+          const mutation = payload.providerInstanceMutation;
+          if (mutation?.operation === 'upsert') {
+            state.providers = state.providers.filter(item => item.instanceId !== mutation.instanceId);
+            state.providers.push({ instanceId: mutation.instanceId, driver: mutation.instance.driver, enabled: mutation.instance.enabled !== false,
+              status: state.newInstanceStatus ?? 'ready', auth: { status: state.newInstanceAuth ?? 'authenticated' }, models: [] });
+          }
+          return reply({});
+        }
+        case 'server.refreshProviders': state.refreshed = [...(state.refreshed ?? []), payload.instanceId]; return reply({ providers: state.providers });
         case 'projects.mutate': {
           const project = { id: payload.projectId, title: payload.title, workspaceRoot: payload.workspaceRoot, deletedAt: null };
           state.projects.push(project);

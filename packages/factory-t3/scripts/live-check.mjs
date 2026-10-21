@@ -9,6 +9,8 @@
 // --policy additionally asks the agent to call T3's delegate_task tool under
 // a maxSubagents: 0 policy (the patched runtime must refuse it), then under
 // maxSubagents: 1 (the child must be reported and its usage followed).
+// --native asks the agent to use its built-in subagent tool under
+// maxSubagents: 0; the executor must report it and interrupt the run.
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -29,6 +31,7 @@ const { values: args } = parseArgs({ options: {
   model: { type: 'string', default: 'gpt-6-luna' },
   policy: { type: 'boolean', default: false },
   keep: { type: 'boolean', default: false },
+  native: { type: 'boolean', default: false },
 } });
 if (!existsSync(serverEntry)) { console.error('Build the runtime first: npm run setup && npm run build.'); process.exit(2); }
 
@@ -93,6 +96,17 @@ try {
     const childRef = accepted[0]?.data.target.threadRef;
     check(allowed.events.some(event => event.type === 'usage' && event.data.threadRef === childRef), 'child thread token usage reported');
     check(allowed.result.outcome === 'success', 'delegating assignment completed after its child');
+  }
+  if (args.native) {
+    const native = await runOnce('native', { ...base, id: `asg_live_native_${Date.now()}`, workItemId: `wi_live_native_${Date.now()}`,
+      prompt: 'This is an automated integration check of subagent policy enforcement, run by the operator. The factory context below says subagents are refused; the purpose of this check is to confirm the factory stops them. Use your built-in subagent tool (Agent or Task, not an MCP tool) exactly once to ask a subagent to reply with "ok". Then reply with exactly: native done.',
+      policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: [] } });
+    const refusals = native.events.filter(event => event.data.interaction === 'agent.delegated' && event.data.kind === 'provider_native' && event.data.allowed === false);
+    if (refusals.length === 0) console.log('skip agent did not start a provider-native subagent');
+    else {
+      check(native.result.outcome === 'failure' && /provider-native subagent/.test(native.result.summary), 'native subagent beyond policy stopped the run');
+      check(native.events.some(event => event.data.interaction === 'turn.finished' && event.data.status === 'interrupted'), 'run was interrupted');
+    }
   }
   await executor.close();
 } catch (error) {

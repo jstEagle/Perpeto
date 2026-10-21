@@ -1,7 +1,8 @@
 import { lstat, readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 
-export const EXECUTOR_SCOPES = Object.freeze(['orchestration:read', 'orchestration:operate']);
+// providers:manage lets the executor register per-account provider instances (server.updateSettings).
+export const EXECUTOR_SCOPES = Object.freeze(['orchestration:read', 'orchestration:operate', 'providers:manage']);
 
 export class CredentialError extends Error {
   constructor(message) { super(message); this.name = 'CredentialError'; }

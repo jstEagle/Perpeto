@@ -91,6 +91,16 @@ export class T3Client {
 
   async getConfig(options) { return this.request('server.getConfig', {}, options); }
 
+  /** Register or update one provider instance (needs the `providers:manage` scope). */
+  async upsertProviderInstance(mutation, options) {
+    return this.request('server.updateSettings', { patch: {}, providerInstanceMutation: mutation }, options);
+  }
+
+  /** Re-probe one provider instance; returns the refreshed provider list when T3 reports one. */
+  async refreshProvider(instanceId, options) {
+    return this.request('server.refreshProviders', { instanceId }, options);
+  }
+
   async listProjects(options) {
     const { body } = await this.http('GET', '/api/projects', options);
     return Array.isArray(body?.projects) ? body.projects.filter(project => project.deletedAt == null) : [];

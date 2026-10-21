@@ -25,7 +25,7 @@ function docLine(doc) {
  * The prompt sent as the thread's first message: the assignment prompt first,
  * then the factory context the agent needs to act without the hub.
  */
-export function buildPrompt(assignment) {
+export function buildPrompt(assignment, { extra = [] } = {}) {
   const prompt = text(assignment?.prompt);
   if (!prompt) throw new TypeError('Assignment prompt is required.');
   const { project, workItem, notes } = assignmentContext(assignment);
@@ -50,7 +50,8 @@ export function buildPrompt(assignment) {
       ? `Subagents: you may create at most ${policy.maxSubagents}, using only these providers: ${providers.join(', ')}.`
       : 'Subagents: do not create subagents or delegate tasks; requests to do so are refused.');
   }
-  lines.push('When you finish, reply with a short summary of what you changed, the branch you used and any pull request URL.');
+  for (const line of extra) if (text(line)) lines.push(line.trim());
+  lines.push('When you finish, reply with a short summary of what you did, the branch you used and any pull request URL.');
   const full = `${prompt}\n\n---\nFactory context\n${lines.join('\n')}`;
   return full.length > MAX_PROMPT_CHARS ? full.slice(0, MAX_PROMPT_CHARS) : full;
 }
