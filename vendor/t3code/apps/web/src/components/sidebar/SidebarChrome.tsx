@@ -194,6 +194,17 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   };
 
   return (
+    <>
+    <SidebarMenu className="flex-row items-center">
+      <SidebarMenuItem className="min-w-0 flex-1">
+        <SidebarMenuButton aria-label="Factory messages" onClick={() => { closeMobileSidebar(); void navigate({ to: "/factory" }); }}>
+          <span>Messages</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+      <SidebarMenuItem className="min-w-0 flex-1">
+        <SidebarMenuButton aria-label="Factories" onClick={() => { closeMobileSidebar(); void navigate({ to: "/factories" }); }}><span>Factories</span></SidebarMenuButton>
+      </SidebarMenuItem>
+    </SidebarMenu>
     <SidebarMenu className="flex-row items-center">
       {isOnUtilityPage ? (
         <SidebarMenuItem className="min-w-0 flex-1">
@@ -223,13 +234,9 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
           />
         </>
       )}
-      <SidebarMenuItem className="min-w-0 flex-1">
-        <SidebarMenuButton aria-label="Factory messages" onClick={() => { closeMobileSidebar(); void navigate({ to: "/factory" }); }}>
-          <span>Messages</span>
-        </SidebarMenuButton>
-      </SidebarMenuItem>
       <SidebarUpdatePill />
     </SidebarMenu>
+    </>
   );
 });
 

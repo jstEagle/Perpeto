@@ -8,7 +8,7 @@ Perpeto is being built for sustained software development with many agents acros
 
 The repository contains a pinned T3 Code foundation with its orchestrator, all nine provider drivers, supporting runtime, and clients. It also includes Perpeto's persistent messaging service: project channels, role addressing, retry-safe messages, cursor reads, authenticated HTTP, and CLI/MCP clients.
 
-This is an early foundation. The inherited web interface still uses T3 branding. Messaging has a working browser view and harness tools. Versioned factory definitions and an initial user-owned CI queue/worker are implemented. Networking between physical machines, visual factory editing, graph execution and durable factory scheduling remain unfinished. Imported provider support has not been validated against every live harness.
+This is an early foundation. The inherited web interface still uses T3 branding. Messaging has a working browser view and harness tools. A visual editor saves versioned factory definitions, and agents can read/write them through CLI/MCP. An initial user-owned CI queue supports one-shot and continuous workers. Networking between physical machines, graph execution and durable factory scheduling remain unfinished. Imported provider support has not been validated against every live harness.
 
 ## Run locally
 
@@ -38,7 +38,7 @@ npm run smoke:factory
 
 The optional `npm run smoke:harness` check uses an existing local Codex subscription to run one tool-free turn through the imported adapter in isolated state. It is excluded from CI. Settings and timeouts are in [config/smoke-harness.json](config/smoke-harness.json); see [the verified path and prerequisites](docs/handoffs/factory-execution-seams.md#optional-actual-imported-codex-proof).
 
-Use the [messaging guide](docs/messaging.md) to connect CLI or harness clients, and the [runner guide](packages/factory-runner/README.md) to execute revision-pinned CI on an owned machine. See the [architecture](docs/architecture.md) for current boundaries.
+Use the [messaging guide](docs/messaging.md) to connect CLI or harness clients, and the [runner guide](packages/factory-runner/README.md) to execute revision-pinned CI on an owned machine. Use the [factory guide](docs/factories.md) to author graphs. See the [architecture](docs/architecture.md) for current boundaries.
 
 ## Product and brand
 

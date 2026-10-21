@@ -1,0 +1,72 @@
+.perpeto-editor { width: 100%; min-width: 0; height: 100%; min-height: 0; flex: 1; display: flex; flex-direction: column; color: var(--ink); background: var(--canvas); font: 14px/1.5 var(--font-sans); }
+.perpeto-editor h1 { font-size: 24px; line-height: 1.2; letter-spacing: -.04em; font-weight: 650; margin: 0; }
+.perpeto-editor p { margin: 0; }
+.perpeto-editor :is(input, select, textarea, button) { font: inherit; border-radius: var(--radius-control); }
+.perpeto-editor :is(input, select, textarea) { min-width: 0; color: var(--ink); background: var(--surface); border: 1px solid var(--control-border); padding: 8px; }
+.perpeto-editor :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.perpeto-editor button { color: var(--ink); border: 0; padding: 8px 12px; background: var(--surface); cursor: pointer; font-weight: 550; }
+.perpeto-editor :is(button, input, select, textarea):disabled { opacity: .5; cursor: default; }
+.editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px; border-bottom: 1px solid var(--border); }
+.editor-heading p { color: var(--muted); margin-top: 4px; }
+.editor-heading > label { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+.editor-heading select { max-width: 320px; }
+.editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
+.editor-factory-picker { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+.editor-factory-picker select { max-width: 240px; }
+.editor-definition-status { color: var(--warning); background: var(--surface); border-radius: var(--radius-control); padding: 4px 8px; font-size: 12px; }
+.editor-save-status { color: var(--muted); font-size: 12px; flex: 1; text-align: right; min-width: 96px; }
+.perpeto-editor .editor-primary { background: var(--action); color: var(--on-action); }
+.editor-body { flex: 1; min-height: 0; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 280px; }
+.editor-workbench { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.editor-palette { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.editor-palette button { padding: 6px 10px; font-size: 12px; }
+.editor-canvas-scroll { overflow: auto; flex: 1; min-height: 0; min-width: 0; overscroll-behavior: contain; }
+.editor-canvas { position: relative; background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 24px 24px; }
+.editor-wires { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.editor-wire { color: var(--muted); }
+.editor-wire > path { fill: none; stroke: currentColor; stroke-width: 2; }
+.editor-wire-delegates-to { color: var(--action); }
+.editor-wire-context > path { stroke-dasharray: 5 5; }
+.editor-wire > text { font: 12px var(--font-sans); fill: currentColor; text-anchor: middle; stroke: var(--canvas); stroke-width: 5px; paint-order: stroke fill; }
+.perpeto-editor .editor-node { position: absolute; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 4px; padding: 16px; text-align: left; background: var(--surface); border: 1px solid transparent; border-radius: var(--radius-panel); touch-action: none; user-select: none; }
+.perpeto-editor .editor-node[aria-pressed=true] { border-color: var(--action); outline: 2px solid var(--action); outline-offset: 2px; }
+.editor-node strong { font-size: 16px; font-weight: 650; order: -1; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor-node-kind { font-size: 12px; font-weight: 450; color: var(--muted); }
+.editor-node-detail { font-size: 12px; color: var(--muted); max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.editor-canvas-empty { position: absolute; top: 80px; left: 48px; color: var(--muted); }
+.editor-canvas-empty h2 { color: var(--ink); font-size: 20px; letter-spacing: -.025em; margin: 0 0 8px; font-weight: 600; }
+.editor-inspector { background: var(--surface); border-left: 1px solid var(--border); overflow-y: auto; padding: 20px; min-height: 0; }
+.editor-inspector label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+.editor-inspector :is(input, select, textarea) { width: 100%; font-size: 14px; }
+.editor-inspector textarea { resize: vertical; }
+.editor-inspector fieldset { border: 0; margin: 24px 0 0; padding: 0; min-width: 0; }
+.editor-inspector legend { font-size: 14px; font-weight: 650; padding: 0 0 12px; }
+.editor-inspector .editor-checkbox { flex-direction: row; align-items: center; gap: 8px; }
+.editor-inspector .editor-checkbox input { width: 16px; height: 16px; accent-color: var(--action); }
+.editor-inspector .editor-remove { color: var(--error); background: var(--canvas); }
+.editor-inspector .editor-connections > button { background: var(--canvas); }
+.editor-connections ul { padding: 0; margin: 16px 0 0; list-style: none; }
+.editor-connections li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; overflow-wrap: anywhere; }
+.editor-connections small { display: block; color: var(--muted); font-size: 12px; }
+.editor-connections li button { flex-shrink: 0; }
+.editor-hint { color: var(--muted); font-size: 12px; margin-top: 24px !important; }
+.editor-error { color: var(--error); padding: 12px 24px; overflow-wrap: anywhere; }
+.editor-connections .editor-error { padding: 8px 0; }
+.editor-empty { padding: 32px 24px; color: var(--muted); }
+@media(max-width: 900px) {
+  .editor-toolbar { padding: 12px 16px; }
+  .editor-body { grid-template-columns: minmax(0, 1fr) 240px; }
+}
+@media(max-width: 700px) {
+  .editor-heading { padding: 16px; align-items: flex-start; flex-direction: column; gap: 12px; }
+  .editor-heading > div { padding-left: 28px; }
+  .editor-heading h1 { font-size: 20px; }
+  .editor-heading > label, .editor-heading select { width: 100%; max-width: none; }
+  .editor-toolbar { gap: 8px; }
+  .editor-factory-picker { flex: 1 0 100%; width: 100%; min-width: 0; }
+  .editor-factory-picker select { flex: 1; width: 100%; max-width: none; }
+  .editor-body { display: block; overflow-y: auto; }
+  .editor-workbench { height: 420px; }
+  .editor-inspector { border-left: 0; border-top: 1px solid var(--border); overflow-y: visible; }
+  .editor-save-status { text-align: left; }
+}

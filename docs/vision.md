@@ -115,6 +115,8 @@ Models remain accessed through harnesses, consistent with the inference boundary
 
 Open design questions: whether the graph describes fixed execution steps, persistent roles and authority, or both; how agents can adapt the graph; and whether live runs appear as nodes or as detail within configured roles.
 
+Implementation finding, 21 October 2026: saved graph policies are not yet enforced. T3 exposes app-owned delegation controls, but native harness subagents may bypass that tool path. Uniform native quota enforcement has not been established across all providers. A decision is pending on whether initial execution should flag unsupported native limits or require enforceable limits before admitting a harness. See [the source-backed execution seams](handoffs/factory-execution-seams.md#delegation-controls-and-enforcement-limits).
+
 Assistant proposals to discuss:
 
 - Separate communication relationships, authority to delegate, context access, and work dependencies so an edge has an unambiguous meaning.

@@ -25,6 +25,20 @@ describe("factory messaging environment transport", () => {
     expect(new Headers(calls[0]?.init.headers).has("authorization")).toBe(false);
   }));
 
+  it.effect("authorizes factory definition endpoints without broadening requests to unrelated routes", () => Effect.gen(function* () {
+    let calls = 0;
+    const layer = layerRemoteHttpClient(async (url) => {
+      calls++;
+      expect(String(url)).toBe("https://devbox.test/prefix/api/perpeto/factories/projects/project");
+      return Response.json({ factories: [] });
+    });
+    const result = yield* fetchFactoryMessaging({ prepared, path: "/api/perpeto/factories/projects/project" }).pipe(Effect.provide(layer));
+    expect(result).toEqual({ factories: [] });
+    const invalid = yield* fetchFactoryMessaging({ prepared, path: "/api/auth/session" }).pipe(Effect.provide(layer), Effect.result);
+    expect(invalid._tag).toBe("Failure");
+    expect(calls).toBe(1);
+  }));
+
   it.effect("puts bearer grants in a header and never in the URL", () => Effect.gen(function* () {
     yield* fetchFactoryMessaging({ prepared: { ...prepared, httpAuthorization: { _tag: "Bearer", token: "private-test-grant" } }, path, method: "POST", body: { id: "general", name: "General" } }).pipe(Effect.provide(layerRemoteHttpClient(async (url, init) => {
       expect(String(url)).not.toContain("private-test-grant");

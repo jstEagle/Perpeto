@@ -49,6 +49,7 @@ function main() {
         'apps/server/src/perpeto/runnerHttp.test.ts',
         'apps/server/src/http.test.ts',
         'apps/web/src/components/factory/messaging.test.ts',
+        'apps/web/src/components/factory/editor.test.ts',
         'packages/client-runtime/src/state/factoryMessagingHttp.test.ts',
         'packages/client-runtime/src/state/projectGrouping.test.ts']; break;
     case 'start':

@@ -1,0 +1,11 @@
+{
+  "canvasWidth": 1200,
+  "canvasHeight": 800,
+  "nodeWidth": 204,
+  "nodeHeight": 104,
+  "gridSize": 24,
+  "keyboardStep": 8,
+  "defaultAgent": { "harness": "codex", "allowSubagents": true, "maxSubagents": 8, "maxConcurrent": 4 },
+  "defaultContext": ["docs/vision.md"],
+  "defaultCheck": ["npm", "test"]
+}

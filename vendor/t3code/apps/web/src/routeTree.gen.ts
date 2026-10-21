@@ -14,6 +14,7 @@ import { Route as UsageRouteImport } from './routes/usage'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as FactoryRouteImport } from './routes/factory'
+import { Route as FactoriesRouteImport } from './routes/factories'
 import { Route as ConnectAgentRouteImport } from './routes/connect-agent'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as ChatRouteImport } from './routes/_chat'
@@ -61,6 +62,11 @@ const PairRoute = PairRouteImport.update({
 const FactoryRoute = FactoryRouteImport.update({
   id: '/factory',
   path: '/factory',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FactoriesRoute = FactoriesRouteImport.update({
+  id: '/factories',
+  path: '/factories',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConnectAgentRoute = ConnectAgentRouteImport.update({
@@ -184,6 +190,7 @@ export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
+  '/factories': typeof FactoriesRoute
   '/factory': typeof FactoryRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
@@ -212,6 +219,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
+  '/factories': typeof FactoriesRoute
   '/factory': typeof FactoryRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
@@ -243,6 +251,7 @@ export interface FileRoutesById {
   '/_chat': typeof ChatRouteWithChildren
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
+  '/factories': typeof FactoriesRoute
   '/factory': typeof FactoryRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
@@ -275,6 +284,7 @@ export interface FileRouteTypes {
     | '/'
     | '/connect'
     | '/connect-agent'
+    | '/factories'
     | '/factory'
     | '/pair'
     | '/settings'
@@ -303,6 +313,7 @@ export interface FileRouteTypes {
   to:
     | '/connect'
     | '/connect-agent'
+    | '/factories'
     | '/factory'
     | '/pair'
     | '/settings'
@@ -333,6 +344,7 @@ export interface FileRouteTypes {
     | '/_chat'
     | '/connect'
     | '/connect-agent'
+    | '/factories'
     | '/factory'
     | '/pair'
     | '/settings'
@@ -364,6 +376,7 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRouteWithChildren
   ConnectRoute: typeof ConnectRoute
   ConnectAgentRoute: typeof ConnectAgentRoute
+  FactoriesRoute: typeof FactoriesRoute
   FactoryRoute: typeof FactoryRoute
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
@@ -407,6 +420,13 @@ declare module '@tanstack/react-router' {
       path: '/factory'
       fullPath: '/factory'
       preLoaderRoute: typeof FactoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/factories': {
+      id: '/factories'
+      path: '/factories'
+      fullPath: '/factories'
+      preLoaderRoute: typeof FactoriesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/connect-agent': {
@@ -633,6 +653,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRouteWithChildren,
   ConnectRoute: ConnectRoute,
   ConnectAgentRoute: ConnectAgentRoute,
+  FactoriesRoute: FactoriesRoute,
   FactoryRoute: FactoryRoute,
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,

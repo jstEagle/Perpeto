@@ -49,9 +49,34 @@
     "sha256": "51ea38b542b20486ac435281f6f752a532b2f106df34320a47626aa3b853c88e",
     "upstreamHash": "0c5cf30580f5abaea607111023cd9b0e7f8df5a321f1c2feaee9d641fd3745b1"
   },
+  "apps/web/src/components/factory/FactoryEditorPage.tsx": {
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "6cdcbb3d7843bdb540f82b5c0acadc5743732dcc3128eacbcf3db2074aea6f7f",
+    "upstreamHash": null
+  },
   "apps/web/src/components/factory/FactoryMessagingPage.tsx": {
     "reason": "Provide bounded newest/older message history, resumable polling and capped UI rendering; validate the authenticated history API.",
     "sha256": "9170e7e0d99587c00791ffdcc84ad857f5ed32f4e5c00bdaf40c0634cd9f4314",
+    "upstreamHash": null
+  },
+  "apps/web/src/components/factory/editor.config.json": {
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "91eb2aebb48a046048ed5f80856400cfb71c27e3e6b0a9b4b5c1d4b1274c7194",
+    "upstreamHash": null
+  },
+  "apps/web/src/components/factory/editor.test.ts": {
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "0cd8d6140f0a3b2af4d6a9a5db6b8c4aa67e83c6b0514949c311493b0314593a",
+    "upstreamHash": null
+  },
+  "apps/web/src/components/factory/editor.ts": {
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "8220574e7b07b1523cd294ee8edc9adfdc313ce3fdee516616adc517af996095",
+    "upstreamHash": null
+  },
+  "apps/web/src/components/factory/factory-editor.css": {
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "21cbcd3868a5969b6ded1937a24ed77b454af429dae6192e4d72c91d5a7fee10",
     "upstreamHash": null
   },
   "apps/web/src/components/factory/factory-messaging.css": {
@@ -75,19 +100,24 @@
     "upstreamHash": null
   },
   "apps/web/src/components/sidebar/SidebarChrome.tsx": {
-    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
-    "sha256": "bcc5ea7e9812dba08ea8a80dc17f35dc52440fc3e3866c5be14447093c81e294",
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "2383dd90173f993174bf84a0858aa54c65910ecfd7fc64f28f9f7445ac0b58a2",
     "upstreamHash": "d8dc3d7320d4505054006b309b068468e8644b163b92e673d8b1208b4abc2764"
   },
   "apps/web/src/components/sidebar/mainAppLocation.ts": {
-    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
-    "sha256": "1d337ce06efb741e3f9ab93ec31e8301f7fa148d34076a216c483cf63f417ac5",
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "cca96f80da3df6809660d3cb2969cb83d6b092895fddecbef9c27244981af929",
     "upstreamHash": "93e05aaa48632bae2451a504beb207b3ed31c72f295ad5b3841b8479138707ad"
   },
   "apps/web/src/routeTree.gen.ts": {
-    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
-    "sha256": "1e8bc02cb373a2339dd5efbe9da1ee7df063451f4f3dd61564dd032062872094",
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "db23089961c68d70ea0163270dac2da63df21e434d45205ddc3f7fef7bdb035a",
     "upstreamHash": "637927f06c042b65684a65855355d73683bbdabf0e5fb6ea7458e2648b2d6656"
+  },
+  "apps/web/src/routes/factories.tsx": {
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "a2c00aa91308b4495900c2f4f743cd7d7b56709d7d82220d820b323250ecadd5",
+    "upstreamHash": null
   },
   "apps/web/src/routes/factory.tsx": {
     "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
@@ -105,13 +135,13 @@
     "upstreamHash": "f442599d1de1c0a10232decbbd0d8d1bcefd509aa47192f48a188a10304b8e20"
   },
   "packages/client-runtime/src/state/factoryMessagingHttp.test.ts": {
-    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
-    "sha256": "76f00b571370cc354d5bc4a241def6eeabb5c51aa7168d9aa9be456f19ef5287",
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "12284ca66918a26ab0db585c72edf971bcf6acb658cc854cc3da20c5c07ede0d",
     "upstreamHash": null
   },
   "packages/client-runtime/src/state/factoryMessagingHttp.ts": {
-    "reason": "Add factory messaging view and selected-environment HTTP authorization with renewable credentials and tests.",
-    "sha256": "d60286ceac97af463befcbb6084e77dd8b53453c771bbf76954a215b369543aa",
+    "reason": "Add versioned visual factory authoring with project/environment authentication, typed graph controls and draft/conflict preservation; verify graph and HTTP boundaries.",
+    "sha256": "fbe45f8c02b97de4c8e7227af38bc5d9b6573d399547a32c2c51b5f26d25d66e",
     "upstreamHash": null
   }
 }

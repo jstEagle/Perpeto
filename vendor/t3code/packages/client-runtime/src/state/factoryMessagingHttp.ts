@@ -23,7 +23,7 @@ export interface FactoryMessagingRequest {
 
 /** Uses the selected environment's existing cookie, bearer or renewable DPoP grant. */
 const requestFactoryMessaging = (input: FactoryMessagingRequest) => Effect.gen(function* () {
-  if (!input.path.startsWith("/api/perpeto/projects/") || input.path.includes("#")) {
+  if (!(input.path.startsWith("/api/perpeto/projects/") || input.path.startsWith("/api/perpeto/factories/projects/")) || input.path.includes("#")) {
     return yield* failure("Invalid factory endpoint.");
   }
   const client = yield* HttpClient.HttpClient;
