@@ -20,7 +20,9 @@ class Unsupported extends Error {}
 export function localRepository(repo = {}) {
   const candidate = repo.localPath ?? repo.url;
   if (typeof candidate !== 'string') return null;
-  if (candidate.startsWith('file://')) return fileURLToPath(candidate);
+  if (candidate.startsWith('file://')) {
+    try { return fileURLToPath(candidate); } catch { throw new Unsupported('The project repository file URL is not a usable local path.'); }
+  }
   return isAbsolute(candidate) ? candidate : null;
 }
 
@@ -98,13 +100,15 @@ export class HubDelivery {
   admit() {
     const { store } = this.hub;
     for (const entry of store.list('merge-entry', value => value.status === 'queued' && !value.queueId && !value.deliveryRejected)) {
+      // Entries are admitted one by one, so one project's unusable repository never halts admission for the others.
+      // A blocked entry stays queued and is retried, for example after the project's repo is corrected.
       let record;
       try { record = this.queueRecord(entry); }
       catch (error) {
-        if (!(error instanceof Unsupported)) throw error;
-        if (entry.deliveryError === error.message) continue;
-        entry.deliveryError = error.message; store.put('merge-entry', entry);
-        this.hub.emit('merge-entry.blocked', 'merge-entry', entry, { reason: error.message }); continue;
+        const reason = error instanceof Unsupported ? error.message : 'Merge queue admission failed; it will retry.';
+        if (entry.deliveryError === reason) continue;
+        entry.deliveryError = reason; store.put('merge-entry', entry);
+        this.hub.emit('merge-entry.blocked', 'merge-entry', entry, { reason }); continue;
       }
       try {
         this.queue(record).enqueue({ id: entry.id, projectId: entry.projectId, prUrl: entry.prUrl, headSha: entry.headSha, baseBranch: entry.baseBranch,
@@ -120,11 +124,18 @@ export class HubDelivery {
       this.hub.emit('merge-entry.enqueued', 'merge-entry', entry, { queueId: record.id });
     }
     return store.list('delivery-queue').filter(record => {
-      const state = this.queue(record).state;
+      let state;
+      try { state = this.queue(record).state; } catch { return false; }
+      // Open means work to do: an attempt, waiting entries, outcomes the hub has not mirrored, or queued jobs it has not
+      // registered. Cancelled job history that was never mirrored is not pending work.
       return state.active || state.entries.some(value => !TERMINAL.has(value.status)) ||
-        state.entries.some(entry => TERMINAL.has(entry.status) && !TERMINAL.has(store.get('merge-entry', entry.id)?.status)) ||
-        state.jobs.some(job => !store.get('job', job.id)) || this.errors.has(record.id) || record.lastError;
+        state.entries.some(entry => TERMINAL.has(entry.status) && this.unmirrored(entry, store.get('merge-entry', entry.id))) ||
+        state.jobs.some(job => job.status === 'queued' && !store.get('job', job.id)) || this.errors.has(record.id) || record.lastError;
     }).map(record => record.id);
+  }
+  /** A terminal delivery outcome the hub entry does not show yet. Without a hub entry there is nothing to mirror into. */
+  unmirrored(entry, hubEntry) {
+    return Boolean(hubEntry) && !TERMINAL.has(hubEntry.status);
   }
   async advance(id) {
     const queue = this.queues.get(id);

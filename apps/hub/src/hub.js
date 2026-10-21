@@ -299,7 +299,8 @@ export class Hub {
         if (!(requirements.labels ?? []).every(label => machine.labels.includes(label))) continue;
         if (!(requirements.providers ?? []).every(provider => machine.providers.includes(provider))) continue;
         if (kind === 'assignment' && value.harness?.provider && !machine.providers.includes(value.harness.provider)) continue;
-        if (value.runId && this.store.need('run', value.runId).status !== 'running') continue;
+        // Merge-queue jobs serve a queue shared by every run, so pausing one run must not hold the others' merges.
+        if (value.runId && !value.delivery && this.store.need('run', value.runId).status !== 'running') continue;
         // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
         if (value.notBefore && Date.parse(value.notBefore) > Date.now()) continue;
         value.status = 'leased'; value.machineId = machine.id;

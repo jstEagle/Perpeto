@@ -120,3 +120,51 @@ test('a wedged merge entry is rejected after bounded retries and reported to its
   assert.equal(await git(repo.bare, 'rev-parse', 'main'), main);
 });
 
+test('pausing one run does not stall merges of another run sharing its queue (M2)', async t => {
+  const h = await deliveryHub(t); const repo = await repository(h.root); const project = await h.project(repo.bare);
+  const first = await repo.branch('first'); const second = await repo.branch('second');
+  const { workflow, run: paused } = await h.start(project); await h.build(first);
+  await eventually(async () => (await h.entry(project, paused.id))?.jobId, 'paused run entry under test');
+  const other = await h.again(workflow); await h.build(second);
+  await h.request('POST', `/runs/${paused.id}/pause`, {});
+  await h.pass();
+  await h.pass();
+  await eventually(async () => (await h.entry(project, other.id))?.status === 'merged', 'other run merged');
+  assert.equal((await h.entry(project, paused.id)).status, 'merged');
+  assert.ok((await repo.files()).includes('second.txt'));
+});
+
+test('one project with an unusable repo URL does not halt merge admission for other projects (M17)', async t => {
+  const h = await deliveryHub(t); const repo = await repository(h.root);
+  const broken = await h.project('file://host/repo.git'); const healthy = await h.project(repo.bare);
+  const change = await repo.branch('change');
+  const { run: brokenRun } = await h.start(broken); await h.build(change);
+  const { run: healthyRun } = await h.start(healthy); await h.build(change);
+  const blocked = await eventually(async () => { const value = await h.entry(broken, brokenRun.id); return value?.deliveryError && value; }, 'broken entry blocked');
+  assert.equal(blocked.status, 'queued'); assert.equal(blocked.queueId, undefined);
+  await h.pass();
+  await eventually(async () => (await h.entry(healthy, healthyRun.id))?.status === 'merged', 'healthy project merged');
+  const events = (await h.request('GET', '/events?limit=1000')).events;
+  assert.ok(events.some(event => event.type === 'merge-entry.blocked' && event.subject.id === blocked.id));
+});
+
+test('cancelled delivery job history the hub never mirrored does not keep a finished queue open (M16)', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'perpeto-hub-delivery-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const repo = await repository(root); const configPath = join(root, 'hub.json'); await writeFile(configPath, JSON.stringify({}));
+  const hub = new Hub(loadConfig(configPath), createStubEngine()); t.after(() => hub.close());
+  const pr = await repo.branch('feature');
+  const record = hub.store.put('delivery-queue', { id: 'dq_test', projectId: 'prj_test', repository: repo.bare, checks: [], config: { projectId: 'prj_test',
+    repo: { url: repo.bare, defaultBranch: 'main' }, baseBranch: 'main', strategy: 'serial', method: 'squash', requiredChecks: [], ci: { steps: [{ name: 'candidate', run: 'true' }], requirements: {} } } });
+  const queue = hub.delivery.queue(record);
+  queue.enqueue({ id: 'mq_test', projectId: 'prj_test', baseBranch: 'main', prUrl: pr.prUrl, headSha: pr.headSha }, { idempotencyKey: 'enqueue' });
+  await queue.step({ idempotencyKey: 'start' }); await queue.step({ idempotencyKey: 'prepare' });
+  assert.equal(queue.state.jobs[0].status, 'queued');
+  // The entry's run closes it and the queue cancels the speculative job before the hub ever registered that job.
+  hub.store.put('merge-entry', { id: 'mq_test', projectId: 'prj_test', status: 'rejected', reason: 'Closed by its run.' });
+  queue.withdraw({ entryId: 'mq_test', reason: 'Closed by its run.' }, { idempotencyKey: 'withdraw' });
+  assert.equal(queue.state.jobs[0].status, 'cancelled'); assert.equal(hub.store.get('job', queue.state.jobs[0].id), null);
+  assert.deepEqual(await hub.store.transaction(() => hub.delivery.admit()), []);
+  // A delivery outcome with no hub entry to mirror into is not pending work either.
+  hub.store.remove('merge-entry', 'mq_test');
+  assert.deepEqual(await hub.store.transaction(() => hub.delivery.admit()), []);
+});
