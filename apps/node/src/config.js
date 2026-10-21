@@ -31,13 +31,15 @@ export async function loadConfig(configPath) {
   const root = dirname(resolve(configPath));
   const raw = JSON.parse(await readFile(configPath, 'utf8'));
   const allowed = ['hubUrl', 'name', 'dataDir', 'credentialFile', 'enrollmentCodeFile', 'labels', 'capacity', 'providers',
-    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs'];
+    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs', 'hubFingerprint'];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !allowed.includes(key))) {
     throw new Error('Invalid node configuration; credentials belong in owner-only files.');
   }
   const url = new URL(raw.hubUrl);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Invalid hubUrl.');
   if (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && raw.allowInsecureHttp !== true) throw new Error('Remote hubs require HTTPS.');
+  // The SHA-256 fingerprint of a self-signed hub certificate, pinned instead of trusting a CA.
+  if (raw.hubFingerprint !== undefined && (typeof raw.hubFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(raw.hubFingerprint) || url.protocol !== 'https:')) throw new Error('hubFingerprint must be a lowercase SHA-256 hex fingerprint for an https hubUrl.');
   if (raw.name !== undefined && (typeof raw.name !== 'string' || !raw.name.trim())) throw new Error('Invalid node name.');
   const jobs = raw.jobs ?? {};
   const jobKeys = ['defaultTimeoutSec', 'checkoutTimeoutSec', 'maxLogChunkBytes', 'redactionFile', 'redactPatterns', 'path', 'protectedPaths'];

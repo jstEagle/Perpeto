@@ -24,23 +24,23 @@ perpeto doctor
 perpeto status
 ```
 
-CLI configuration/data default to `~/.perpeto` (mode `700`); CLI `--dir /absolute/data` selects another installation. Non-secret settings live in `hub.json`/`node.json`, with relative paths resolved from those files. Secrets use mode `600`; logs are `hub.log`/`node.log`. Init preserves existing settings. `hub init --port 0` selects a temporary port printed by start/status. Edit JSON while stopped to change settings. Stop the hub before a filesystem backup, then back up all of `hub/` together with `hub.json`. This includes `hub.sqlite`, `messaging.sqlite`, `delivery.sqlite`, `workflow.sqlite`, their SQLite sidecars, `repositories/`, `owner.secret` and `credentials.key`. Without `credentials.key` the hub refuses to start. Restore them together to preserve identity and workflow/delivery state.
+CLI configuration/data default to `~/.perpeto` (mode `700`); CLI `--dir /absolute/data` selects another installation. Non-secret settings live in `hub.json`/`node.json`, with relative paths resolved from those files. Secrets use mode `600`; logs are `hub.log`/`node.log`. Init preserves existing settings. `hub init --port 0` selects a temporary port printed by start/status. Edit JSON while stopped to change settings. Stop the hub before a filesystem backup, then back up all of `hub/` together with `hub.json`. This includes `hub.sqlite`, `messaging.sqlite`, `delivery.sqlite`, `workflow.sqlite`, their SQLite sidecars, `repositories/`, `owner.secret`, `credentials.key` and, with built-in HTTPS, `tls/`. Without `credentials.key` the hub refuses to start. Restore them together to preserve identity and workflow/delivery state.
 
 `hub status`/`node status` show local state. `node drain` finishes current work without accepting more. `node stop`/`hub stop` stop daemons, reporting ongoing drain after ten seconds. Factory-wide `status`, `machines`, `machines revoke <id>` and `hub decide <workItemId> pass|fail --note "Reviewed"` require the hub owner's directory. Decisions fetch the current `decisionId` through project/run work-item lists and send it back; a concurrent answer returns HTTP 409 rather than applying to the next gate. Only `hub init --show-owner-token` explicitly displays the owner token.
 
 ## Add a second machine
 
-Install the same revision there. Configure an HTTPS endpoint through your existing private-network proxy. The hub supplies HTTP only and binds loopback by default; this CLI does not provision TLS, forwarding or public access.
+Install the same revision there. The hub binds loopback by default; reach it through your tailnet (recommended) or the hub's built-in HTTPS, as described in [Join machines over a LAN or tailnet](remote-machines.md). Either way, `perpeto hub enroll-code` prints one command to paste on the new machine:
 
 ```sh
-# Hub machine:
-perpeto hub enroll-code --show-code
+# Hub machine (after perpeto hub expose --tailscale, or hub init --tls):
+perpeto hub enroll-code
 # Second machine:
-perpeto node join https://your-private-hub.example --code '<displayed-code>' --labels linux,ci
+perpeto node join pj1_… --labels linux,ci
 perpeto node start
 ```
 
-Codes are single-use and expire after ten minutes by default. Prefer securely transferring the private file and using `--code-file` to avoid shell history/process arguments. Enrollment `--labels` adds file-based join defaults, not enforced restrictions. Machine tokens never print. Failed joins retain a private retry request; retry the same command. Existing node identities cannot be replaced by rejoining. Retries reuse the saved name, labels, platform and idempotency key even if the machine hostname changes; explicit conflicting options are refused.
+The join command carries the hub URL, the certificate fingerprint to pin (for built-in HTTPS) and a one-time code. Codes are single-use and expire after ten minutes by default, so treat the command as a secret. The older form `perpeto node join <https-url> --code-file <path>` still works with the private enrollment file. Enrollment `--labels` adds file-based join defaults, not enforced restrictions. Machine tokens never print. Failed joins retain a private retry request; retry the same command. Existing node identities cannot be replaced by rejoining. Retries reuse the saved name, labels, platform and idempotency key even if the machine hostname changes; explicit conflicting options are refused.
 
 ## Machine credentials
 

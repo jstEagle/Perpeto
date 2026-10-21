@@ -1,4 +1,6 @@
 import { createServer } from 'node:http';
+import { createServer as createSecureServer } from 'node:https';
+import { hostname } from 'node:os';
 import { loadConfig } from './config.js';
 import { Hub } from './hub.js';
 import { HubError, fail, integer, object } from './errors.js';
@@ -109,7 +111,7 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
     response.once('close', () => { clearInterval(timer); hub.listeners.delete(pump); streams.delete(response); });
     await pump();
   }
-  const server = createServer(async (request, response) => {
+  const handle = async (request, response) => {
     try {
       const origin = request.headers.origin;
       if (origin) {
@@ -126,7 +128,8 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
       if (request.url.split('?')[0] !== url.pathname || url.pathname.includes('//')) fail(400, 'INVALID_PATH', 'Request path must be canonical.');
       if ((url.pathname === '/health' || url.pathname === '/api/v1/health') && request.method === 'GET') return json(response, 200, { status: 'ok', version: '0.1.0' });
       if (!url.pathname.startsWith('/api/v1/')) fail(404, 'NOT_FOUND', 'Route not found.');
-      if (closing) fail(503, 'SHUTTING_DOWN', 'Hub is shutting down.');
+      // While closing, also end keep-alive connections, or a client polling on one would hold the server open.
+      if (closing) { response.setHeader('Connection', 'close'); fail(503, 'SHUTTING_DOWN', 'Hub is shutting down.'); }
       const body = ['POST', 'PUT', 'PATCH'].includes(request.method) ? await readBody(request, config.requestMaxBytes) : {};
       const args = { method: request.method, path: `${url.pathname.slice('/api/v1'.length)}${url.search}`, body, authorization: request.headers.authorization,
         cookie: request.headers.cookie, origin: request.headers.origin, contentType: request.headers['content-type'], key: request.headers['idempotency-key'] };
@@ -141,7 +144,10 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
       const expected = error instanceof HubError;
       json(response, expected ? error.status : 500, { error: { code: expected ? error.code : 'INTERNAL_ERROR', message: expected ? error.message : 'The hub could not complete this request.' } });
     }
-  });
+  };
+  // HTTPS with the hub's own certificate when tlsEnabled; activating a rotated certificate swaps it without a restart.
+  const server = hub.tls ? createSecureServer({ key: hub.tls.current.key, cert: hub.tls.current.cert }, handle) : createServer(handle);
+  hub.onTlsChange = () => server.setSecureContext({ key: hub.tls.current.key, cert: hub.tls.current.cert });
   server.requestTimeout = 30000; server.headersTimeout = 10000;
   const timer = setInterval(() => {
     if (maintenanceBusy || closing) return;
@@ -153,13 +159,22 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
     server, config, hub,
     async listen() {
       await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, config.host, () => { server.off('error', reject); resolve(); }); });
-      const address = server.address(); return `http://${config.host.includes(':') ? `[${config.host}]` : config.host}:${address.port}`;
+      const address = server.address();
+      const host = ['0.0.0.0', '::'].includes(config.host) ? hostname() : config.host;
+      hub.listenUrl = `${hub.tls ? 'https' : 'http'}://${host.includes(':') ? `[${host}]` : host}:${address.port}`;
+      return hub.listenUrl;
     },
     async close() {
       if (closing) return;
       closing = true; clearInterval(timer);
       for (const wake of polls) wake(); for (const response of streams) response.end();
-      if (server.listening) await new Promise((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections(); });
+      if (server.listening) {
+        await new Promise((resolve, reject) => {
+          server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections();
+          // Connections still busy after a grace period (a client mid-request on keep-alive) are closed outright.
+          setTimeout(() => server.closeAllConnections(), 1000).unref();
+        });
+      }
       await hub.close();
     },
   };

@@ -7,6 +7,7 @@ import { HubClient, HubError, sleep, jitter } from './hub.js';
 import { detectProviders, loadIntegrations } from './executors.js';
 import { loadRedaction, runJob } from './job.js';
 import { createRuntimeSupervisor } from './runtime.js';
+import { FINGERPRINT } from './transport.js';
 
 import { processIdentity } from './lock.js';
 
@@ -19,7 +20,11 @@ const accountFields = ['id', 'machineId', 'provider', 'label', 'status', 'cooldo
  */
 export async function createNode({ configPath, registry, accountProvider, runtimeSupervisor, onStatus = () => {} }) {
   const config = await loadConfig(configPath);
-  const hub = new HubClient(config, undefined, { onUnauthorized: error => fatal(error) });
+  // Pinned hub certificates: the fingerprint from joining, then the set the hub announces over the pinned channel.
+  const pinsFile = resolve(config.dataDir, 'hub-pins.json');
+  let pins = await readPins(pinsFile, config.hubFingerprint);
+  let pinWrites = Promise.resolve();
+  const hub = new HubClient(config, undefined, { onUnauthorized: error => fatal(error), ...(pins ? { pins: () => pins } : {}) });
   const service = new AbortController();
   const polling = new AbortController();
   const active = new Map();
@@ -232,6 +237,17 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       }
     }
     if (result.status === 'draining' || result.machine?.status === 'draining') drain();
+    adoptPins(result.tls?.fingerprints);
+  }
+  /**
+   * During certificate rotation the hub announces the served and next fingerprints over the pinned channel. Adopt the
+   * list only if it still contains one this machine trusts, so a bad response cannot lock the machine out.
+   */
+  function adoptPins(list) {
+    if (!pins || !Array.isArray(list) || !list.length || list.length > 4 || !list.every(value => typeof value === 'string' && FINGERPRINT.test(value))) return;
+    if (!list.some(value => pins.includes(value)) || JSON.stringify(list) === JSON.stringify(pins)) return;
+    pins = [...list];
+    pinWrites = pinWrites.then(() => writePrivate(pinsFile, pins)).catch(() => { /* The in-memory pins still apply; the next heartbeat writes again. */ });
   }
   async function heartbeatLoop() {
     let wait = config.timing.heartbeatMs;
@@ -492,4 +508,16 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       return stopping;
     },
   };
+}
+
+/** Pins persisted after a rotation win over the fingerprint the machine joined with. Null means no pinning. */
+async function readPins(path, joined) {
+  try {
+    const pins = JSON.parse(await readSecret(path));
+    if (Array.isArray(pins) && pins.length && pins.every(value => typeof value === 'string' && FINGERPRINT.test(value))) return pins;
+    throw new Error('Invalid hub pins file.');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return joined ? [joined] : null;
+  }
 }

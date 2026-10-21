@@ -114,9 +114,11 @@ export async function daemon(dir, role) {
     }
     initialized();
     await finished;
-  } catch {
+  } catch (error) {
     initialized();
     await stop();
+    // A certificate mismatch names only public fingerprints, so it is safe to report; other failures stay generic.
+    if (error?.code === 'hub_certificate_mismatch') throw new Error(`${error.message} Once confirmed, run perpeto node repin <fingerprint>.`);
     throw new Error(`${role} daemon failed. Check configuration, credentials, package integration and port availability.`);
   } finally { process.off('SIGINT', signal); process.off('SIGTERM', signal); }
 }

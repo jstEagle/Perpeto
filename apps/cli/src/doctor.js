@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { loadConfig as loadNodeConfig } from '@perpeto/node';
 import { repoRoot, configPath, readJson, readSecret, hubUrl, hubConfig, nodeConfig } from './config.js';
+import { nodePins, ownCertificatePins, request } from './api.js';
 import { control } from './process.js';
 
 export function supportedNode(version) {
@@ -23,7 +24,7 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
     await access(runtime);
     checks.push({ name: 'T3 build', status: 'ok', detail: runtime });
   } catch { checks.push({ name: 'T3 build', status: 'fail', detail: 'Run npm run setup and npm run build in the installation directory.' }); }
-  const secrets = new Set(); let url;
+  const secrets = new Set(); let url; let pins;
   for (const role of ['hub', 'node']) {
     try {
       const config = await readJson(configPath(dir, role));
@@ -31,7 +32,7 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
       checks.push(...await configurationChecks(dir, role, config));
       warnLegacy(checks, JSON.stringify(config), `${role}.json`);
       if (role === 'node') {
-        url ??= config.hubUrl;
+        if (!url) { url = config.hubUrl; pins = await nodePins(dir, config); }
         secrets.add(resolve(dir, config.credentialFile ?? `${config.dataDir ?? './node'}/machine.json`));
         if (config.enrollmentCodeFile) secrets.add(resolve(dir, config.enrollmentCodeFile));
         if (config.jobs?.redactionFile) secrets.add(resolve(dir, config.jobs.redactionFile));
@@ -39,7 +40,8 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
         secrets.add(resolve(dir, config.ownerTokenPath ?? './owner.secret'));
         const state = await control(dir, 'hub').catch(() => null);
         const host = ['0.0.0.0', '::'].includes(config.host) ? '127.0.0.1' : config.host ?? '127.0.0.1';
-        url = state?.url ?? `http://${host.includes(':') ? `[${host}]` : host}:${config.port ?? 4320}`;
+        url = state?.url ?? `${config.tlsEnabled ? 'https' : 'http'}://${host.includes(':') ? `[${host}]` : host}:${config.port ?? 4320}`;
+        pins = await ownCertificatePins(dir, config);
       }
     } catch (error) {
       if (error.code !== 'ENOENT') checks.push({ name: `${role} config`, status: 'fail', detail: 'Invalid configuration.' });
@@ -54,9 +56,9 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
   if (url) {
     try {
       const target = hubUrl(url);
-      const response = await fetchImpl(`${target}/health`, { redirect: 'error', signal: AbortSignal.timeout(3000) });
-      const body = await response.json();
-      if (!response.ok || body.status !== 'ok') throw new Error();
+      // A pinned hub is checked against its pinned certificate, as the node would.
+      const body = await request(target, '/health', { pins, fetchImpl });
+      if (body.status !== 'ok') throw new Error();
       checks.push({ name: 'Hub', status: 'ok', detail: target });
     } catch { checks.push({ name: 'Hub', status: 'fail', detail: 'Hub is unreachable or returned an invalid health response.' }); }
   } else checks.push({ name: 'Hub', status: 'warn', detail: 'No configured hub. Run perpeto hub init or node join.' });

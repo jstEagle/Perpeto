@@ -116,7 +116,7 @@ test('doctor checks versions, stubbed CLIs, build, reachability and secret permi
   await writeFile(resolve(dir, 'machine.json'), 'fixture', { mode: 0o600 });
   const calls = [];
   const options = { root, version: 'v24.13.1', run: command => { calls.push(command); return { status: command === 'claude' ? 1 : 0 }; },
-    fetchImpl: async url => { assert.equal(url, 'https://hub.example/health'); return { ok: true, json: async () => ({ status: 'ok' }) }; } };
+    fetchImpl: async url => { assert.equal(url, 'https://hub.example/api/v1/health'); return { ok: true, json: async () => ({ status: 'ok' }) }; } };
   let checks = await doctor(dir, options);
   assert.deepEqual(calls, ['git', 'claude', 'codex']);
   assert.equal(checks.find(c => c.name === 'claude').status, 'fail');
@@ -154,7 +154,7 @@ test('real hub/node lifecycle, enrollment, overview, drain, restart and secret-f
   assert.equal(JSON.parse(await cli(dir, 'hub', 'status')).url, started.url);
   assert.match(await cli(dir, 'status'), /Machines online: 0/);
   const enrollment = await cli(dir, 'hub', 'enroll-code', '--labels', 'ci,local');
-  const path = enrollment.split('\n')[0].slice('Enrollment file: '.length);
+  const path = enrollment.split('\n').find(line => line.startsWith('Enrollment file: ')).slice('Enrollment file: '.length);
   const secret = JSON.parse(await readSecret(path)); assert.ok(!enrollment.includes(secret.code));
   assert.equal(Object.hasOwn(secret, 'hubUrl'), false); // The destination can be the hub's HTTPS proxy alias.
   const joined = await cli(nodeDir, 'node', 'join', started.url, '--code-file', path);
