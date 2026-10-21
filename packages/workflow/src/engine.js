@@ -27,6 +27,9 @@ const OPEN_ASSIGNMENT = new Set(['queued', 'leased', 'running']);
 const OPEN_JOB = new Set(['queued', 'leased', 'running']);
 const OPEN_MERGE = new Set(['queued', 'testing', 'merging']);
 const ACTIVE_RUN = new Set(['running', 'paused']);
+const ENTITY_KEYS = Object.freeze(['workItems', 'assignments', 'jobs', 'merges']);
+/** Active-work index per state: what dispatch and completion need, so neither scans the whole run. Never persisted. */
+const INDEX = new WeakMap();
 
 /**
  * Apply one event to a run's state. Pure and deterministic: the same state and event always give the same
@@ -40,6 +43,19 @@ const ACTIVE_RUN = new Set(['running', 'paused']);
  * @returns {{ state: object, effects: object[], ignored?: string }}
  */
 export function step(state, event) {
+  const { changes: _changes, ...result } = run(state, event, false);
+  return result;
+}
+
+/**
+ * `step` for a host that owns `state` exclusively, such as the run store's cache: applies the event to `state` in
+ * place and returns it, plus the ids of the entities it created or changed. If it throws, `state` may be partly
+ * changed and must be discarded. Not part of the package's public exports.
+ * @returns {{ state: object, effects: object[], ignored?: string, changes: Record<string, string[]> }}
+ */
+export function advance(state, event) { return run(state, event, true); }
+
+function run(state, event, inPlace) {
   if (!isPlainObject(event) || !isText(event.id, 200)) fail('INVALID_EVENT', 'Event needs a nonblank string id.');
   if (!EVENT_TYPES.includes(event.type)) fail('INVALID_EVENT', `Unknown event type ${JSON.stringify(event.type)}.`);
   if (!isIsoTimestamp(event.at)) fail('INVALID_EVENT', 'Event at must be an ISO 8601 UTC timestamp.');
@@ -48,18 +64,90 @@ export function step(state, event) {
 
   if (event.type === 'run.started') {
     if (state) fail('RUN_EXISTS', 'Run has already started.');
-    const ctx = { s: null, effects: [], at: event.at, ignored: null };
+    const ctx = context(null, event.at, inPlace);
     start(ctx, data);
-    settle(ctx);
-    return { state: ctx.s, effects: ctx.effects };
+    return settled(ctx);
   }
   if (!state) fail('RUN_NOT_FOUND', 'Run has not started.');
   if (state.version !== STATE_VERSION) fail('STATE_VERSION', `Unsupported run state version ${state.version}.`);
-  const ctx = { s: structuredClone(state), effects: [], at: event.at, ignored: null };
+  const ctx = context(state, event.at, inPlace);
   HANDLERS[event.type](ctx, data);
-  if (ctx.ignored) return { state, effects: [], ignored: ctx.ignored };
+  if (ctx.ignored) {
+    if (ENTITY_KEYS.some(key => ctx.touched[key].size)) throw new Error(`Engine changed state while ignoring ${event.type}.`);
+    return { state, effects: [], ignored: ctx.ignored, changes: changes(ctx) };
+  }
+  return settled(ctx);
+}
+
+function settled(ctx) {
   settle(ctx);
-  return { state: ctx.s, effects: ctx.effects };
+  refreshIndex(ctx);
+  INDEX.set(ctx.s, ctx.index);
+  return { state: ctx.s, effects: ctx.effects, changes: changes(ctx) };
+}
+
+/**
+ * Every write goes through `edit` or `insert`, which record the entity as touched. A pure step works copy-on-write:
+ * the new state shares every untouched entity with the previous one, entities are cloned on first write, and entity
+ * tables are copied (by reference) on first write. In place, writes go straight to `state`.
+ */
+function context(state, at, inPlace) {
+  return {
+    base: state, inPlace, s: state && (inPlace ? state : { ...state, counters: { ...state.counters } }),
+    effects: [], at, ignored: null, index: state ? indexFor(state, inPlace) : emptyIndex(),
+    touched: Object.fromEntries(ENTITY_KEYS.map(key => [key, new Set()])),
+  };
+}
+
+const changes = ctx => Object.fromEntries(ENTITY_KEYS.map(key => [key, [...ctx.touched[key]]]));
+
+function table(ctx, key) {
+  if (!ctx.inPlace && ctx.base && ctx.s[key] === ctx.base[key]) ctx.s[key] = { ...ctx.base[key] };
+  return ctx.s[key];
+}
+
+/** The writable entity for this step. Never mutate an entity read straight from `ctx.s`. */
+function edit(ctx, key, id) {
+  const entities = table(ctx, key);
+  if (!ctx.touched[key].has(id)) {
+    if (!ctx.inPlace) entities[id] = structuredClone(entities[id]);
+    ctx.touched[key].add(id);
+  }
+  return entities[id];
+}
+
+const emptyIndex = () => ({ queued: new Map(), unfinished: new Set(), open: new Map() });
+
+/** The index for a state, built once by scanning it when the state came from elsewhere (JSON, an older engine). */
+function indexFor(state, inPlace) {
+  let index = INDEX.get(state);
+  if (!index) {
+    index = emptyIndex();
+    for (const item of Object.values(state.workItems)) indexItem(index, item);
+    for (const assignment of Object.values(state.assignments)) indexAssignment(index, assignment);
+    INDEX.set(state, index);
+  }
+  return inPlace ? index : { queued: new Map(index.queued), unfinished: new Set(index.unfinished), open: new Map(index.open) };
+}
+
+function indexItem(index, item) {
+  if (item.status === 'queued') index.queued.set(item.id, item.queuedSeq); else index.queued.delete(item.id);
+  if (TERMINAL_ITEM.has(item.status)) index.unfinished.delete(item.id); else index.unfinished.add(item.id);
+}
+
+function indexAssignment(index, assignment) {
+  if (OPEN_ASSIGNMENT.has(assignment.status)) index.open.set(assignment.id, assignment.nodeId); else index.open.delete(assignment.id);
+}
+
+/** Bring the index up to date with everything touched so far. Idempotent. */
+function refreshIndex(ctx) {
+  for (const id of ctx.touched.workItems) indexItem(ctx.index, ctx.s.workItems[id]);
+  for (const id of ctx.touched.assignments) indexAssignment(ctx.index, ctx.s.assignments[id]);
+}
+
+function insert(ctx, key, entity) {
+  table(ctx, key)[entity.id] = entity;
+  ctx.touched[key].add(entity.id);
 }
 
 /** Replay a run's events from nothing. Duplicate-free, in application order. */
@@ -79,18 +167,18 @@ const HANDLERS = {
   'assignment.completed'(ctx, { assignmentId, result }) {
     const { s } = ctx;
     if (!isText(assignmentId, 200)) fail('INVALID_EVENT', 'assignment.completed needs assignmentId.');
-    const assignment = s.assignments[assignmentId];
-    if (!assignment) fail('NOT_FOUND', `Assignment ${assignmentId} is not part of this run.`);
+    if (!Object.hasOwn(s.assignments, assignmentId)) fail('NOT_FOUND', `Assignment ${assignmentId} is not part of this run.`);
     checkResult(result);
     if (!ACTIVE_RUN.has(s.status)) return ignore(ctx, 'run_not_active');
-    if (!OPEN_ASSIGNMENT.has(assignment.status)) return ignore(ctx, 'assignment_closed');
+    if (!OPEN_ASSIGNMENT.has(s.assignments[assignmentId].status)) return ignore(ctx, 'assignment_closed');
 
+    const assignment = edit(ctx, 'assignments', assignmentId);
     assignment.status = result.outcome === 'success' ? 'succeeded' : 'failed';
     assignment.result = structuredClone(result);
     assignment.completedAt = assignment.updatedAt = ctx.at;
     assignmentState(ctx, assignment, { outcome: result.outcome, ...(result.verdict ? { verdict: result.verdict } : {}) });
 
-    const item = s.workItems[assignment.workItemId];
+    const item = edit(ctx, 'workItems', assignment.workItemId);
     const node = s.plan.nodes[assignment.nodeId];
     delete item.assignmentId;
     if (result.outcome === 'blocked') return blocked(ctx, item, node, result.summary);
@@ -123,18 +211,18 @@ const HANDLERS = {
   'job.completed'(ctx, { jobId, status, summary, logRef }) {
     const { s } = ctx;
     if (!isText(jobId, 200)) fail('INVALID_EVENT', 'job.completed needs jobId.');
-    const job = s.jobs[jobId];
-    if (!job) fail('NOT_FOUND', `Job ${jobId} is not part of this run.`);
+    if (!Object.hasOwn(s.jobs, jobId)) fail('NOT_FOUND', `Job ${jobId} is not part of this run.`);
     if (!JOB_STATUSES.includes(status)) fail('INVALID_EVENT', 'job.completed status must be passed, failed, error or cancelled.');
     if (summary !== undefined && typeof summary !== 'string') fail('INVALID_EVENT', 'summary must be a string.');
     if (logRef !== undefined && !isText(logRef, 2000)) fail('INVALID_EVENT', 'logRef must be a nonblank string.');
     if (!ACTIVE_RUN.has(s.status)) return ignore(ctx, 'run_not_active');
-    if (!OPEN_JOB.has(job.status)) return ignore(ctx, 'job_closed');
+    if (!OPEN_JOB.has(s.jobs[jobId].status)) return ignore(ctx, 'job_closed');
 
+    const job = edit(ctx, 'jobs', jobId);
     job.status = status;
     job.completedAt = job.updatedAt = ctx.at;
     if (logRef) job.logRef = logRef;
-    const item = s.workItems[job.workItemId];
+    const item = edit(ctx, 'workItems', job.workItemId);
     const node = s.plan.nodes[job.nodeId];
     if (status === 'error' || status === 'cancelled') {
       // The job never judged the commit, so this is an infrastructure error to retry, not a CI failure.
@@ -152,13 +240,14 @@ const HANDLERS = {
   },
 
   'merge.completed'(ctx, { mergeId, mergedSha }) {
-    const entry = openMerge(ctx, mergeId);
+    const open = openMerge(ctx, mergeId);
     if (mergedSha !== undefined && !SHA.test(mergedSha)) fail('INVALID_EVENT', 'mergedSha must be a full commit SHA.');
-    if (!entry) return;
+    if (!open) return;
+    const entry = edit(ctx, 'merges', mergeId);
     entry.status = 'merged';
     if (mergedSha) entry.mergedSha = mergedSha;
     entry.completedAt = entry.updatedAt = ctx.at;
-    const item = ctx.s.workItems[entry.workItemId];
+    const item = edit(ctx, 'workItems', entry.workItemId);
     const node = ctx.s.plan.nodes[entry.nodeId];
     closeVisit(ctx, item, 'pass');
     gateResult(ctx, item, node, true, { mergeId });
@@ -168,12 +257,12 @@ const HANDLERS = {
 
   'merge.rejected'(ctx, { mergeId, reason }) {
     if (!isText(reason, 2000)) fail('INVALID_EVENT', 'merge.rejected needs a reason.');
-    const entry = openMerge(ctx, mergeId);
-    if (!entry) return;
+    if (!openMerge(ctx, mergeId)) return;
+    const entry = edit(ctx, 'merges', mergeId);
     entry.status = 'rejected';
     entry.reason = reason;
     entry.completedAt = entry.updatedAt = ctx.at;
-    const item = ctx.s.workItems[entry.workItemId];
+    const item = edit(ctx, 'workItems', entry.workItemId);
     const node = ctx.s.plan.nodes[entry.nodeId];
     closeVisit(ctx, item, 'fail');
     gateResult(ctx, item, node, false, { mergeId, summary: reason });
@@ -188,14 +277,15 @@ const HANDLERS = {
     if (decision !== 'pass' && decision !== 'fail') fail('INVALID_EVENT', 'decision must be pass or fail.');
     if (note !== undefined && !isText(note, 20000)) fail('INVALID_EVENT', 'note must be a nonblank string.');
     if (decisionId !== undefined && !isText(decisionId, 200)) fail('INVALID_EVENT', 'decisionId must be a nonblank string.');
-    const item = s.workItems[workItemId];
-    if (!item) fail('NOT_FOUND', `Work item ${workItemId} is not part of this run.`);
+    if (!Object.hasOwn(s.workItems, workItemId)) fail('NOT_FOUND', `Work item ${workItemId} is not part of this run.`);
+    const current = s.workItems[workItemId];
     requireActive(ctx);
-    if (item.status !== 'blocked') fail('NOT_WAITING', `Work item ${workItemId} is not waiting for a decision.`);
+    if (current.status !== 'blocked') fail('NOT_WAITING', `Work item ${workItemId} is not waiting for a decision.`);
     // A decision names the wait it answers, so a retried or second answer cannot pass the item's next gate.
-    if (decisionId !== undefined && decisionId !== item.waiting.decisionId) {
-      fail('STALE_DECISION', `Decision ${decisionId} is for an earlier wait; work item ${workItemId} now waits at ${item.nodeId}.`);
+    if (decisionId !== undefined && decisionId !== current.waiting.decisionId) {
+      fail('STALE_DECISION', `Decision ${decisionId} is for an earlier wait; work item ${workItemId} now waits at ${current.nodeId}.`);
     }
+    const item = edit(ctx, 'workItems', workItemId);
     const node = s.plan.nodes[item.nodeId];
     const waiting = item.waiting;
     delete item.waiting;
@@ -240,28 +330,32 @@ const HANDLERS = {
     if (reason !== undefined && !isText(reason, 2000)) fail('INVALID_EVENT', 'reason must be a nonblank string.');
     s.status = 'stopped';
     s.stoppedAt = at;
-    for (const assignment of Object.values(s.assignments)) {
-      if (!OPEN_ASSIGNMENT.has(assignment.status)) continue;
+    for (const { id, status } of Object.values(s.assignments)) {
+      if (!OPEN_ASSIGNMENT.has(status)) continue;
+      const assignment = edit(ctx, 'assignments', id);
       assignment.status = 'cancelled';
       assignment.updatedAt = at;
       ctx.effects.push({ type: 'cancel-assignment', assignmentId: assignment.id, reason: 'run_stopped' });
       assignmentState(ctx, assignment, {});
     }
-    for (const job of Object.values(s.jobs)) {
-      if (!OPEN_JOB.has(job.status)) continue;
+    for (const { id, status } of Object.values(s.jobs)) {
+      if (!OPEN_JOB.has(status)) continue;
+      const job = edit(ctx, 'jobs', id);
       job.status = 'cancelled';
       job.updatedAt = at;
       ctx.effects.push({ type: 'cancel-job', jobId: job.id, reason: 'run_stopped' });
     }
-    for (const entry of Object.values(s.merges)) {
-      if (!OPEN_MERGE.has(entry.status)) continue;
+    for (const { id, status } of Object.values(s.merges)) {
+      if (!OPEN_MERGE.has(status)) continue;
+      const entry = edit(ctx, 'merges', id);
       entry.status = 'rejected';
       entry.reason = 'run_stopped';
       entry.updatedAt = at;
       ctx.effects.push({ type: 'cancel-merge', mergeId: entry.id, reason: 'run_stopped' });
     }
-    for (const item of Object.values(s.workItems)) {
-      if (TERMINAL_ITEM.has(item.status)) continue;
+    for (const { id, status } of Object.values(s.workItems)) {
+      if (TERMINAL_ITEM.has(status)) continue;
+      const item = edit(ctx, 'workItems', id);
       closeVisit(ctx, item, 'cancelled');
       finish(ctx, item, 'failed', { reason: 'run_stopped', message: reason ?? 'The run was stopped.' });
     }
@@ -302,9 +396,9 @@ function settle(ctx) {
   s.updatedAt = ctx.at;
   if (s.status !== 'running') return;
   dispatch(ctx);
-  const items = Object.values(s.workItems);
-  if (!s.keepOpen && items.length && items.every(item => TERMINAL_ITEM.has(item.status))) {
-    const roots = items.filter(item => !item.parentId);
+  refreshIndex(ctx);
+  if (!s.keepOpen && s.counters.workItem > 0 && ctx.index.unfinished.size === 0) {
+    const roots = Object.values(s.workItems).filter(item => !item.parentId);
     const failed = roots.filter(item => item.status === 'failed').length;
     s.status = failed ? 'failed' : 'completed';
     s.stoppedAt = ctx.at;
@@ -373,7 +467,7 @@ function createItem(ctx, { title, body, nodeId, parentId }) {
     id: nextId(ctx, 'workItem', 'wi'), runId: s.runId, title, body, nodeId, status: 'queued', iteration: 0, attempt: 1,
     ...(parentId ? { parentId } : {}), createdAt: at, updatedAt: at, enteredAt: at, hops: 0, loopCounts: {}, visits: [],
   };
-  s.workItems[item.id] = item;
+  insert(ctx, 'workItems', item);
   ctx.effects.push({ type: 'create-work-item', workItem: structuredClone(item) });
   return item;
 }
@@ -455,11 +549,12 @@ function finish(ctx, item, status, failure) {
     ctx.effects.push({ type: 'mark-item-done', workItemId: item.id });
   }
   if (ctx.s.status === 'stopped') return;
-  const parent = item.parentId && ctx.s.workItems[item.parentId];
-  if (!parent || TERMINAL_ITEM.has(parent.status)) return;
-  const children = parent.childIds.map(id => ctx.s.workItems[id]);
+  const current = item.parentId && ctx.s.workItems[item.parentId];
+  if (!current || TERMINAL_ITEM.has(current.status)) return;
+  const children = current.childIds.map(id => ctx.s.workItems[id]);
   if (!children.every(child => TERMINAL_ITEM.has(child.status))) return;
   const failed = children.filter(child => child.status === 'failed').length;
+  const parent = edit(ctx, 'workItems', current.id);
   if (failed) failItem(ctx, parent, 'children_failed', `${failed} of ${children.length} planned items failed.`);
   else finish(ctx, parent, 'done');
 }
@@ -570,20 +665,22 @@ function planned(ctx, item, node, items) {
 
 function dispatch(ctx) {
   const { s } = ctx;
+  refreshIndex(ctx);
   const open = new Map();
-  for (const assignment of Object.values(s.assignments)) {
-    if (OPEN_ASSIGNMENT.has(assignment.status)) open.set(assignment.nodeId, (open.get(assignment.nodeId) ?? 0) + 1);
-  }
-  const queued = Object.values(s.workItems).filter(item => item.status === 'queued').sort((a, b) => a.queuedSeq - b.queuedSeq);
-  for (const item of queued) {
-    if (item.status !== 'queued') continue;
-    const node = s.plan.nodes[item.nodeId];
+  for (const nodeId of ctx.index.open.values()) open.set(nodeId, (open.get(nodeId) ?? 0) + 1);
+  const queued = [...ctx.index.queued].sort((a, b) => a[1] - b[1]).map(([id]) => id);
+  for (const id of queued) {
+    if (s.workItems[id].status !== 'queued') continue;
+    const node = s.plan.nodes[s.workItems[id].nodeId];
     if (node.role) {
       const role = s.plan.roles[node.role];
       if ((open.get(node.id) ?? 0) >= role.concurrency) continue;
       open.set(node.id, (open.get(node.id) ?? 0) + 1);
-      createAssignment(ctx, item, node, role);
-    } else if (node.type === 'ci') {
+      createAssignment(ctx, edit(ctx, 'workItems', id), node, role);
+      continue;
+    }
+    const item = edit(ctx, 'workItems', id);
+    if (node.type === 'ci') {
       if (!item.headSha) { failItem(ctx, item, 'missing_head_sha', `${node.label} needs a head commit; no agent reported one.`); continue; }
       createJob(ctx, item, node);
     } else if (node.type === 'merge-queue') {
@@ -617,7 +714,7 @@ function createAssignment(ctx, item, node, role) {
     policy: structuredClone(role.policy), requirements: structuredClone(role.requirements),
     status: 'queued', ...retryFields(ctx, item), createdAt: at, updatedAt: at,
   };
-  s.assignments[assignment.id] = assignment;
+  insert(ctx, 'assignments', assignment);
   item.assignmentId = assignment.id;
   activate(ctx, item, { assignmentId: assignment.id });
   ctx.effects.push({ type: 'create-assignment', assignment: structuredClone(assignment) });
@@ -672,7 +769,7 @@ function createJob(ctx, item, node) {
     repo: s.repo.url ?? s.repo.localPath, revision: item.headSha, steps, requirements,
     status: 'queued', ...retryFields(ctx, item), artifacts: [], configHash: sha256(canonicalJson({ steps, requirements })), createdAt: at, updatedAt: at,
   };
-  s.jobs[job.id] = job;
+  insert(ctx, 'jobs', job);
   activate(ctx, item, { jobId: job.id });
   ctx.effects.push({ type: 'create-job', job: structuredClone(job) });
 }
@@ -684,15 +781,15 @@ function enqueueMerge(ctx, item, node) {
     prUrl: item.prUrl, headSha: item.headSha, baseBranch: s.repo.defaultBranch, status: 'queued',
     strategy: node.config.strategy, method: node.config.method, requiredChecks: [...node.config.requiredChecks], createdAt: at, updatedAt: at,
   };
-  s.merges[entry.id] = entry;
+  insert(ctx, 'merges', entry);
   activate(ctx, item, { mergeId: entry.id });
   ctx.effects.push({ type: 'enqueue-merge', mergeEntry: structuredClone(entry) });
 }
 
 function openMerge(ctx, mergeId) {
   if (!isText(mergeId, 200)) fail('INVALID_EVENT', 'Merge events need mergeId.');
+  if (!Object.hasOwn(ctx.s.merges, mergeId)) fail('NOT_FOUND', `Merge entry ${mergeId} is not part of this run.`);
   const entry = ctx.s.merges[mergeId];
-  if (!entry) fail('NOT_FOUND', `Merge entry ${mergeId} is not part of this run.`);
   if (!ACTIVE_RUN.has(ctx.s.status)) return ignore(ctx, 'run_not_active');
   if (!OPEN_MERGE.has(entry.status)) return ignore(ctx, 'merge_closed');
   return entry;

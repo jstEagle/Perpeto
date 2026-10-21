@@ -59,7 +59,7 @@ These semantics go beyond the contract table:
 
 ## Run engine
 
-`step(state, event)` returns `{ state, effects, ignored? }`. It is pure, never mutates `state`, and is deterministic:
+`step(state, event)` returns `{ state, effects, ignored? }`. It is pure, never mutates `state`, and is deterministic. It works copy-on-write: the new state shares every entity the event did not touch with `state`, so treat both as immutable. Its cost follows what the event changes, plus pointer-level copying and scanning of the entity tables.
 
 - IDs are `wi_`, `asg_`, `job_` and `mq_` plus the run suffix and a counter, for example `asg_ab12_3`.
 - Time comes only from `event.at`.
@@ -145,7 +145,11 @@ const { effects, state, duplicate, ignored, seq } = store.apply(runId, event);
 for (const { id, effect } of store.pendingEffects({ limit: 100 })) { /* execute */ store.ackEffects([id]); }
 ```
 
-`apply` runs `step` in one `BEGIN IMMEDIATE` transaction. It stores the event, the new state, rows for work items, assignments, jobs and merge entries, and the effects in an outbox:
+`apply` runs the engine in one `BEGIN IMMEDIATE` transaction. It stores the event, the rows of the work items, assignments, jobs and merge entries the event created or changed, the run's own fields (status, counters, timestamps) and the effects in an outbox. The plan is stored once when the run starts. The latest state of the 64 most recently used runs stays in memory and advances in place, so an event costs the same however long the run is: about 0.15 ms at 100 or 2,000 finished items with 4 KB bodies (`test/persistence-cost.test.js`), against 14 ms and 209 ms at 100 and 1,000 before. Another store on the same file is detected by sequence number and the run is reloaded from its rows.
+
+- The result's `state` is a private copy, made when first read, of the run as of that event. Reading it costs time in proportion to the run, so hosts on a hot path should read entities instead. Read after a later event on the run, it replays the log up to its event.
+- Events are stepped as stored, with sorted keys, so `verify` reproduces the state exactly.
+- Schema 1 files (the whole state rewritten on every event) are migrated when opened.
 
 - Event ids deduplicate per run. A repeat with the same type and data returns the original effects with `duplicate: true`, even with a different `at`. Different content under the same id throws `IDEMPOTENCY_CONFLICT`.
 - Rejected events leave no trace.

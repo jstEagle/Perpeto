@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RunStore } from '../src/index.js';
+import { DatabaseSync } from 'node:sqlite';
+import { RunStore, canonicalJson } from '../src/index.js';
 import { Driver, bare, sha, code } from './fixtures.js';
 
 function fixture(t) {
@@ -141,4 +142,94 @@ test('verify replays graphs whose warnings depend on key order', t => {
   run.start({ graph });
   assert.equal(run.state.plan.warnings.length, 3);
   assert.deepEqual(holder.store.verify('run_test1'), { ok: true, events: 1 });
+});
+
+test('two stores on one file stay consistent', t => {
+  const { open } = fixture(t);
+  const a = open(), b = open();
+  const holder = { store: a };
+  const run = storeDriver(holder);
+  run.start();
+  run.complete('planner', { outcome: 'success', items: [{ title: 'A' }, { title: 'B' }] });
+  holder.store = b;
+  run.complete('builder', built(1));
+  holder.store = a;
+  run.complete('builder', built(2));
+  assert.equal(a.listAssignments('run_test1', { nodeId: 'reviewer' }).length, 2);
+  assert.deepEqual(b.verify('run_test1'), { ok: true, events: 4 });
+});
+
+test('a result state is a private copy as of its event', t => {
+  const { open } = fixture(t);
+  const store = open();
+  const run = new Driver((_state, event) => store.apply('run_test1', event));
+  run.start();
+  const planned = run.complete('planner', { outcome: 'success', items: [{ title: 'A' }] });
+  run.complete('builder', built(1));
+  // Read after a later event, the state is still the one this event produced.
+  const before = planned.state;
+  assert.equal(Object.values(before.assignments).filter(a => a.nodeId === 'reviewer').length, 0);
+  assert.equal(before, planned.state);
+  run.state.status = 'mutated';
+  run.state.workItems = {};
+  assert.equal(store.getState('run_test1').status, 'running');
+  assert.equal(store.verify('run_test1').ok, true);
+  run.complete('reviewer', { outcome: 'success' });
+  assert.equal(store.getRun('run_test1').lastSeq, 4);
+});
+
+/** The schema 1 layout, which stored the whole state in `runs.state` on every event. */
+const SCHEMA_1 = `
+  CREATE TABLE runs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workflow_version INTEGER NOT NULL,
+    status TEXT NOT NULL, started_at TEXT NOT NULL, stopped_at TEXT, updated_at TEXT NOT NULL, last_seq INTEGER NOT NULL, state TEXT NOT NULL) STRICT;
+  CREATE INDEX runs_project ON runs(project_id, status);
+  CREATE TABLE run_events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, event_id TEXT NOT NULL, type TEXT NOT NULL, at TEXT NOT NULL,
+    fingerprint TEXT NOT NULL, event TEXT NOT NULL, effects TEXT NOT NULL, ignored TEXT, applied_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, seq), UNIQUE (run_id, event_id)) STRICT;
+  CREATE TABLE work_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_id TEXT NOT NULL, status TEXT NOT NULL, parent_id TEXT, data TEXT NOT NULL) STRICT;
+  CREATE INDEX work_items_run ON work_items(run_id, status);
+  CREATE TABLE assignments (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, work_item_id TEXT NOT NULL, node_id TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL) STRICT;
+  CREATE INDEX assignments_run ON assignments(run_id, status);
+  CREATE INDEX assignments_status ON assignments(status);
+  CREATE TABLE jobs (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, work_item_id TEXT NOT NULL, node_id TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL) STRICT;
+  CREATE INDEX jobs_run ON jobs(run_id, status);
+  CREATE TABLE merge_entries (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, work_item_id TEXT NOT NULL, node_id TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL) STRICT;
+  CREATE INDEX merge_entries_run ON merge_entries(run_id, status);
+  CREATE TABLE effects (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, seq INTEGER NOT NULL, effect TEXT NOT NULL, acked_at TEXT) STRICT;
+  CREATE INDEX effects_pending ON effects(acked_at, id);
+  PRAGMA user_version = 1;
+`;
+
+test('opens a schema 1 store and carries on with its runs', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'perpeto-workflow-'));
+  const filename = join(directory, 'runs.sqlite');
+  let store;
+  t.after(() => { store?.close(); rmSync(directory, { recursive: true, force: true }); });
+  const run = new Driver();
+  run.start();
+  run.complete('planner', { outcome: 'success', items: [{ title: 'A' }, { title: 'B' }] });
+  run.complete('builder', built(1));
+  const db = new DatabaseSync(filename);
+  db.exec(SCHEMA_1);
+  const { state } = run;
+  db.prepare('INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)').run(
+    state.runId, state.projectId, state.workflowId, state.workflowVersion, state.status, state.startedAt, state.updatedAt, run.events.length, JSON.stringify(state));
+  run.events.forEach((event, index) => db.prepare('INSERT INTO run_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)').run(
+    state.runId, index + 1, event.id, event.type, event.at, canonicalJson({ type: event.type, data: event.data }), canonicalJson(event), '[]', event.at));
+  for (const [key, table] of [['workItems', 'work_items'], ['assignments', 'assignments']]) {
+    for (const entity of Object.values(state[key])) {
+      db.prepare(`INSERT INTO ${table} (id, run_id, node_id, status, data, ${key === 'workItems' ? 'parent_id' : 'work_item_id'}) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(entity.id, state.runId, entity.nodeId, entity.status, JSON.stringify(entity), (key === 'workItems' ? entity.parentId : entity.workItemId) ?? null);
+    }
+  }
+  db.close();
+
+  store = new RunStore(filename);
+  assert.equal(canonicalJson(store.getState('run_test1')), canonicalJson(state));
+  assert.deepEqual(store.verify('run_test1'), { ok: true, events: 3 });
+  const next = new Driver((_state, event) => store.apply('run_test1', event));
+  Object.assign(next, { state, events: [...run.events], minute: run.minute });
+  next.complete('builder', built(2));
+  assert.equal(store.listAssignments('run_test1', { nodeId: 'reviewer' }).length, 2);
+  assert.equal(store.verify('run_test1').ok, true);
 });
