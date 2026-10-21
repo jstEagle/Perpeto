@@ -421,9 +421,15 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       // Into an idle thread T3 starts a new turn; until it appears the thread is not settled.
       const expectRun = root.isIdle() ? { after: root.runs.size, until: Date.now() + Math.max(10000, settings.settleMs * 5) } : null;
       try {
-        await t3.dispatch({ type: 'message.dispatch', commandId: `perpeto-cmd-${key}`, threadId, messageId: `perpeto-msg-${key}`,
-          text: liveText(fresh, assignment.role ?? 'this role'), attachments: [], deliveryIntent: 'auto', dispatchMode: { type: 'queue_after_active' } }, { signal });
-      } catch { return false; }
+        await t3.dispatch({ type: 'message.dispatch', createdBy: 'system', creationSource: 'server', commandId: `perpeto-cmd-${key}`, threadId,
+          messageId: `perpeto-msg-${key}`, text: liveText(fresh, assignment.role ?? 'this role'), attachments: [], deliveryIntent: 'auto',
+          dispatchMode: { type: 'queue_after_active' } }, { signal });
+      } catch (error) {
+        // Still pending: the hub re-offers the messages on the next renewal. Say why, so a rejection is visible.
+        await report({ type: 'progress', data: { interaction: 'inbox.dispatch_failed', messageIds: ids,
+          summary: String(error?.message ?? error).slice(0, 500) } }).catch(() => {});
+        return false;
+      }
       for (const id of ids) delivered.add(id);
       steered++;
       if (expectRun) pendingRun = expectRun;

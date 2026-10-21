@@ -88,6 +88,10 @@ test('wake-up: a message reaches a running T3 turn, a waiting one the next promp
   assert.equal(steered.length, 1, 'delivered into the running thread once');
   assert.equal(steered[0].threadId, threads.builder.threadId);
   assert.equal(steered[0].deliveryIntent, 'auto');
+  // Live acceptance 3: T3's message.dispatch schema requires both creation fields; without them T3 rejected
+  // every steer and the message waited for the next assignment's prompt.
+  assert.equal(steered[0].createdBy, 'system');
+  assert.equal(steered[0].creationSource, 'server');
   assert.match(steered[0].text, /Please add tests\./);
   assert.match(threads.reviewer.initialMessage.text, /Messages waiting for you[\s\S]*Check the error copy too\./);
 
