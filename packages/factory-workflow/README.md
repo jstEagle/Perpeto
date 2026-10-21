@@ -185,5 +185,5 @@ Both validate without warnings. Their provider and model choices are defaults fo
 ## Tests
 
 ```sh
-node --test packages/factory-workflow/test/
+cd packages/factory-workflow && node --test
 ```

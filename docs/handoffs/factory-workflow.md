@@ -25,7 +25,7 @@
 
 Run with Node v24.22.0.
 
-- `node --test packages/factory-workflow/test/` runs 74 tests, and all pass.
+- `node --test` in `packages/factory-workflow` runs 75 tests, and all pass.
 - `npm test` from the repo root runs 95 tests, and all pass.
 
 The tests cover:
