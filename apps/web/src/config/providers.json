@@ -1,0 +1,11 @@
+{
+  "$comment": "Harness providers offered in the workflow inspector. Provider ids are T3 driver kinds (vendor/t3code). Models are suggestions; any model string is accepted.",
+  "providers": [
+    { "id": "claudeAgent", "label": "Claude", "models": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] },
+    { "id": "codex", "label": "Codex", "models": ["gpt-5.5-codex", "gpt-5.5"] },
+    { "id": "cursor", "label": "Cursor", "models": ["auto"] },
+    { "id": "grok", "label": "Grok", "models": ["grok-5"] },
+    { "id": "opencode", "label": "OpenCode", "models": [] },
+    { "id": "ollama", "label": "Ollama", "models": [] }
+  ]
+}

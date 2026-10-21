@@ -1,0 +1,64 @@
+/*
+ * The only place the web app reads brand values from.
+ *
+ * Canonical Workshop tokens come from brand/tokens.css. When
+ * packages/design-tokens/dist/tokens.css lands, repoint the import below; it
+ * carries the same names plus the type, spacing and leading scales defined
+ * here as a stopgap. Everything else in the app uses var(--…) only: no
+ * colour literals outside this file.
+ */
+@import "../../../../brand/tokens.css";
+
+:root {
+  /* Interface type scale (brand.md: 12, 14, 16, 20, 24, 32). */
+  --text-12: 12px;
+  --text-14: 14px;
+  --text-16: 16px;
+  --text-20: 20px;
+  --text-24: 24px;
+  --text-32: 32px;
+  --leading-body: 1.55;
+  --leading-heading: 1.15;
+
+  /* 4 px spacing base. */
+  --space-1: calc(var(--space-unit) * 1);
+  --space-2: calc(var(--space-unit) * 2);
+  --space-3: calc(var(--space-unit) * 3);
+  --space-4: calc(var(--space-unit) * 4);
+  --space-5: calc(var(--space-unit) * 5);
+  --space-6: calc(var(--space-unit) * 6);
+  --space-8: calc(var(--space-unit) * 8);
+  --space-10: calc(var(--space-unit) * 10);
+  --space-12: calc(var(--space-unit) * 12);
+  --space-16: calc(var(--space-unit) * 16);
+
+  /*
+   * App-level derivatives. Tints are mixed from canonical tokens so the
+   * palette stays closed: no new hues are introduced here.
+   */
+  --surface-sunken: color-mix(in srgb, var(--canvas) 55%, var(--surface));
+  --surface-hover: color-mix(in srgb, var(--canvas) 70%, var(--surface));
+  --border-strong: color-mix(in srgb, var(--control-border) 55%, var(--border));
+  --ink-soft: color-mix(in srgb, var(--ink) 80%, var(--canvas));
+  --action-hover: color-mix(in srgb, var(--action) 86%, var(--ink));
+  --accent-tint: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  --accent-line: color-mix(in srgb, var(--accent) 45%, var(--surface));
+  --success-tint: color-mix(in srgb, var(--success) 9%, var(--surface));
+  --warning-tint: color-mix(in srgb, var(--warning) 10%, var(--surface));
+  --error-tint: color-mix(in srgb, var(--error) 8%, var(--surface));
+  --focus-tint: color-mix(in srgb, var(--focus) 8%, var(--surface));
+  --grid-line: color-mix(in srgb, var(--border) 60%, var(--canvas));
+  --scrim: color-mix(in srgb, var(--ink) 32%, transparent);
+  --shadow-color: color-mix(in srgb, var(--ink) 10%, transparent);
+
+  --shadow-raised: 0 1px 0 var(--shadow-color), 0 8px 24px -12px var(--shadow-color);
+  --focus-ring: 2px solid var(--focus);
+  --focus-offset: 2px;
+
+  --duration-quick: 120ms;
+  --duration-base: 180ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --header-height: 56px;
+  --sidebar-width: 232px;
+}
