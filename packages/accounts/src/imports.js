@@ -1,6 +1,7 @@
 import path from 'node:path';
 import * as fs from 'node:fs';
 import { assertPrivate, privatePath, readJson, readPrivate, writePrivate, fail } from './private-files.js';
+import { claudeOauth } from './claude-login.js';
 
 export const providers = new Set(['claudeAgent', 'codex']);
 export const credentialName = provider => provider === 'codex' ? 'auth.json' : '.credentials.json';
@@ -13,8 +14,13 @@ function absolute(value) {
 function credentials(text, provider) {
   let data;
   try { data = JSON.parse(text); } catch { fail('INVALID_CREDENTIAL_FILE'); }
-  const token = provider === 'codex' ? data?.tokens?.access_token ?? data?.OPENAI_API_KEY
-    : data?.claudeAiOauth?.accessToken;
+  if (provider === 'claudeAgent') {
+    // Keep only the Claude login; a credentials file can also hold MCP server OAuth tokens.
+    const oauth = claudeOauth(data);
+    if (!oauth) fail('INVALID_CREDENTIAL_FILE');
+    return `${JSON.stringify({ claudeAiOauth: oauth })}\n`;
+  }
+  const token = data?.tokens?.access_token ?? data?.OPENAI_API_KEY;
   if (typeof token !== 'string' || !token.trim()) fail('INVALID_CREDENTIAL_FILE');
   return text;
 }
@@ -55,7 +61,7 @@ export function readImport(provider, source) {
       metadata = readJson(path.join(base, 'configs', `.claude-config-${source.slot}-${record.email}.json`));
     }
   } else fail('INVALID_SOURCE');
-  credentials(text, provider);
+  text = credentials(text, provider);
   // Copy only identity/onboarding fields, never tools, hooks or user settings.
   const accountConfig = metadata ? {
     ...(metadata.oauthAccount ? { oauthAccount: metadata.oauthAccount } : {}),
@@ -76,9 +82,18 @@ export function writeHome(home, provider, imported) {
   }
 }
 
-export function checkHome(root, home, provider) {
+/**
+ * On macOS Claude moves `.credentials.json` into a keychain item for the home on its first credential write,
+ * so a missing file with that item present is still a signed-in home.
+ */
+export function checkHome(root, home, provider, claudeKeychain = () => false) {
   privatePath(root, home);
-  credentials(readPrivate(path.join(home, credentialName(provider))), provider);
+  const file = path.join(home, credentialName(provider));
+  if (provider === 'claudeAgent' && !fs.existsSync(file) && claudeKeychain(home)) {
+    if (fs.existsSync(path.join(home, '.claude.json'))) assertPrivate(path.join(home, '.claude.json'));
+    return;
+  }
+  credentials(readPrivate(file), provider);
   if (provider === 'codex') assertPrivate(path.join(home, 'config.toml'));
   if (provider === 'claudeAgent' && fs.existsSync(path.join(home, '.claude.json'))) {
     assertPrivate(path.join(home, '.claude.json'));

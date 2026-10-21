@@ -4,9 +4,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { assertPrivate, fail, guarded, privateDirectory, readJson, writePrivate } from './private-files.js';
 import { checkHome, providers, readImport, writeHome } from './imports.js';
 import { detectProviderSignal, usageWindows } from './signals.js';
+import { hasClaudeKeychainLogin } from './claude-login.js';
 
 export { AccountPoolError } from './private-files.js';
 export { detectProviderSignal, detectClaudeSignal, detectCodexSignal } from './signals.js';
+export { claudeKeychainService, claudeOauth, deleteClaudeKeychainLogin, hasClaudeKeychainLogin, readClaudeKeychainLogin } from './claude-login.js';
 
 /** @typedef {{id:string,machineId:string,provider:string,label:string,status:'active'|'cooling'|'disabled'|'invalid',cooldownUntil?:string,lastUsedAt?:string}} Account */
 /** @typedef {{kind:'provider-home',homePath:string,accountConfigPath?:string}|{kind:'ccswap',storePath:string,slot:string|number}} ImportSource */
@@ -21,12 +23,13 @@ const canonical = value => JSON.stringify(value, (_, item) => item && typeof ite
  * A busy/crashed lock fails closed; the node may retry ACCOUNT_POOL_BUSY.
  */
 export class AccountPool {
-  #root; #file; #lock; #machineId; #clock; #config;
+  #root; #file; #lock; #machineId; #clock; #config; #keychain;
 
-  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,maxReceipts?:number,receiptRetentionMs?:number,reservationLeaseMs?:number,clock?:()=>number}} options */
+  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,maxReceipts?:number,receiptRetentionMs?:number,reservationLeaseMs?:number,clock?:()=>number,claudeKeychain?:(home:string)=>boolean}} options
+   * `claudeKeychain` reports whether Claude moved a home's login into the keychain; tests replace the macOS probe. */
   constructor({ nodeDataDir, machineId, selection = 'lru', defaultCooldownMs = 300_000,
     maxConcurrentPerAccount = 1, maxReceipts = 512, receiptRetentionMs = 86_400_000,
-    reservationLeaseMs = 300_000, clock = Date.now }) {
+    reservationLeaseMs = 300_000, clock = Date.now, claudeKeychain = hasClaudeKeychainLogin }) {
     guarded(() => {
       if (typeof nodeDataDir !== 'string' || !path.isAbsolute(nodeDataDir)) fail('INVALID_PATH');
       this.#machineId = identifier(machineId);
@@ -35,7 +38,8 @@ export class AccountPool {
           || maxConcurrentPerAccount < 1 || !Number.isSafeInteger(maxReceipts) || maxReceipts < 1
           || maxReceipts > 1024 || !Number.isSafeInteger(receiptRetentionMs) || receiptRetentionMs < 1
           || !Number.isSafeInteger(reservationLeaseMs) || reservationLeaseMs < 1
-          || typeof clock !== 'function') fail('INVALID_CONFIG');
+          || typeof clock !== 'function' || typeof claudeKeychain !== 'function') fail('INVALID_CONFIG');
+      this.#keychain = claudeKeychain;
       privateDirectory(nodeDataDir);
       this.#root = path.join(fs.realpathSync(nodeDataDir), 'accounts');
       privateDirectory(this.#root);
@@ -146,10 +150,10 @@ export class AccountPool {
   }
   #usable(record, now) {
     if (this.#status(record, now) !== 'active') fail('ACCOUNT_UNAVAILABLE');
-    checkHome(this.#root, this.#home(record), record.provider);
+    checkHome(this.#root, this.#home(record), record.provider, this.#keychain);
   }
   #healthy(record) {
-    try { checkHome(this.#root, this.#home(record), record.provider); return true; }
+    try { checkHome(this.#root, this.#home(record), record.provider, this.#keychain); return true; }
     catch {
       // Quarantine locally without persisting paths, credential content or OS errors.
       record.invalid = true;
@@ -313,7 +317,7 @@ export class AccountPool {
   /** Call only after account-specific reauthentication has been confirmed externally. */
   markAuthenticated(input) {
     return this.#update('authenticated', input, record => {
-      checkHome(this.#root, this.#home(record), record.provider);
+      checkHome(this.#root, this.#home(record), record.provider, this.#keychain);
       record.invalid = false;
     });
   }
