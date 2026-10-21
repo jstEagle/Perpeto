@@ -208,7 +208,7 @@ The node ships a `fake` executor for tests and loads `@perpeto/factory-t3` for r
 
 `factory-t3` creates a T3 thread for each assignment on the configured provider and model, sends the prompt, follows the thread's events to completion, forwards token usage as `usage` events, and enforces `AgentPolicy`: subagent creation beyond `maxSubagents` or to a provider outside `allowedSubagentProviders` is refused.
 
-`factory-accounts` chooses which subscription account a T3 provider instance uses. When a harness reports a rate limit, the account cools down and the next eligible account takes over. It never copies credentials between machines.
+`factory-accounts` chooses which subscription account a T3 provider instance uses. When a harness reports a rate limit, the account cools down and new assignments and retries go to the next eligible account. A running conversation is not moved between accounts. It never copies credentials between machines.
 
 ## Clients and brand
 
