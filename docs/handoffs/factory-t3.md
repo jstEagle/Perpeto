@@ -1,5 +1,20 @@
 # factory-t3 handoff
 
+## Live acceptance fixes, 21 October 2026
+
+Branch `t3/756151ef`, from the findings in [live acceptance run 1](live-acceptance-1.md#fixed-after-the-run). Not pushed or merged.
+
+- **Agent isolation** ([isolation.js](../../packages/t3-executor/src/isolation.js), [README](../../packages/t3-executor/README.md#agent-isolation)): each assignment runs on a factory provider instance derived from the operator's or the pooled account's, through T3's existing instance `environment`, `homePath` and `launchArgs`; no vendor patch. New settings: `agentIsolation` (`factory`, or `inherit` for debugging), `gitIdentity`, `agentHomesDir`, `codexHome`, `personalSkillDirs`.
+- **Prompts:** only work roles get the closing branch and pull request request; a local origin says there is no pull request. Planner `summary` comes from the json block.
+- **Live:** `live-check.mjs --isolation`, two Codex `gpt-6.1-sol` low turns. The second, after disabling `~/.agents/skills`: commit by `Perpeto Agent <agents@perpeto.local>`, no personal context, 15,252 first-call input tokens against 31,347 in run 1. Tests: 45 of 45.
+
+Not done or not verified:
+
+- **Claude isolation live**, and whether `--setting-sources` also hides user-scope MCP servers in `~/.claude.json`.
+- **T3 context** (finding 3): T3 always attaches its MCP session, so Codex gets `t3_code_*` notes and tools. Proposed vendor change: a per-thread or per-instance flag that skips `McpProviderSessions` for factory threads (`CodexAdapterV2` `hasT3Mcp`, Claude `mcpServers`), recorded in `config/upstream-patches.json`. App-owned delegation would then need another path.
+- **Auth link:** the factory Codex home links `auth.json` to the operator's file. If a Codex release starts replacing it atomically, the executor refuses that home (`ISOLATION_AUTH_DIVERGED`) instead of using a forked copy.
+- **Hub change requested** (apps/hub is another worker's): to set the identity per project, accept `gitIdentity: { name, email }` on `POST/PATCH /projects` and copy it onto each assignment as `assignment.gitIdentity`. The executor already reads it. Per-node identity works today through `node.json` `runtime.t3.gitIdentity`.
+
 ## Account lease follow-up, 21 October 2026
 
 Implemented on `t3/executor-reservation-renewal` after merging `t3/account-reservation-retention`. Only executor files and this handoff changed beyond that dependency merge; `apps/node` remains owned by the node worker.
