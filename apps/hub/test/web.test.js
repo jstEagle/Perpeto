@@ -95,3 +95,71 @@ test('events filter by run and page from the newest, oldest first within each pa
   abort.abort();
 });
 
+const cookieOf = response => response.headers.get('set-cookie');
+const session = response => ({ cookie: cookieOf(response).split(';')[0] });
+
+test('an owner session cookie is HttpOnly, SameSite=Strict, scoped to /api/v1, expires and logs out; bearer tokens keep working', async t => {
+  const f = await fixture(t);
+  assert.deepEqual((await f.request('GET', '/session')).body, { kind: 'owner', expiresAt: null });
+  assert.equal((await f.request('GET', '/session', { auth: null })).status, 401);
+  const created = await f.request('POST', '/session', { body: { idempotencyKey: 'login-1' }, headers: { Origin: app } });
+  assert.equal(created.status, 201); assert.ok(Date.parse(created.body.expiresAt) > Date.now());
+  const header = cookieOf(created);
+  assert.match(header, /^perpeto_session=[A-Za-z0-9_-]{32,}; /);
+  for (const part of ['HttpOnly', 'SameSite=Strict', 'Path=/api/v1', 'Max-Age=43200']) assert.ok(header.split('; ').includes(part), `${part} in ${header}`);
+  assert.ok(!header.includes('Secure'), 'no Secure flag for a loopback http origin');
+  assert.equal(created.headers.get('access-control-allow-credentials'), 'true');
+  assert.equal(created.headers.get('access-control-allow-origin'), app);
+  // An idempotent retry returns the same cookie.
+  assert.equal(cookieOf(await f.request('POST', '/session', { body: { idempotencyKey: 'login-1' }, headers: { Origin: app } })).split(';')[0], header.split(';')[0]);
+  const auth = session(created);
+  const status = await f.request('GET', '/session', { auth });
+  assert.equal(status.body.kind, 'owner'); assert.equal(status.body.expiresAt, created.body.expiresAt);
+  assert.equal((await f.request('GET', '/projects', { auth })).status, 200, 'the cookie works on owner routes');
+  const stream = await fetch(`${f.url}/api/v1/events`, { headers: { Cookie: auth.cookie, Accept: 'text/event-stream' }, signal: AbortSignal.timeout(2000) });
+  assert.equal(stream.headers.get('content-type'), 'text/event-stream'); await stream.body.cancel();
+  assert.equal((await f.request('GET', '/projects')).status, 200, 'bearer tokens keep working');
+  // Remote HTTPS origins get Secure.
+  assert.ok(cookieOf(await f.request('POST', '/session', { body: {}, headers: { Origin: remote } })).split('; ').includes('Secure'));
+  // Only the owner token creates sessions.
+  assert.equal((await f.request('POST', '/session', { auth, body: {}, headers: { Origin: app } })).status, 403);
+  // Logout revokes server-side and clears the cookie.
+  const ended = await f.request('DELETE', '/session', { auth, headers: { Origin: app } });
+  assert.equal(ended.status, 204); assert.match(cookieOf(ended), /^perpeto_session=; .*Max-Age=0/);
+  assert.equal((await f.request('GET', '/session', { auth })).status, 401);
+  assert.equal((await f.request('GET', '/projects', { auth })).status, 401);
+  // Session tokens are stored only as hashes.
+  for (const suffix of ['', '-wal']) {
+    const bytes = await readFile(join(f.directory, `hub.sqlite${suffix}`)).catch(() => Buffer.alloc(0));
+    assert.equal(bytes.includes(Buffer.from(auth.cookie.split('=')[1])), false);
+  }
+  // CORS preflights allow credentials and DELETE for configured origins only.
+  const preflight = await fetch(`${f.url}/api/v1/session`, { method: 'OPTIONS', headers: { Origin: app, 'Access-Control-Request-Method': 'DELETE' } });
+  assert.equal(preflight.headers.get('access-control-allow-credentials'), 'true'); assert.match(preflight.headers.get('access-control-allow-methods'), /DELETE/);
+  assert.equal((await fetch(`${f.url}/api/v1/session`, { method: 'OPTIONS', headers: { Origin: 'https://evil.example' } })).status, 403);
+});
+
+test('cookie-authenticated mutations require an allowed Origin and a JSON body or non-simple method', async t => {
+  const f = await fixture(t);
+  const auth = session(await f.request('POST', '/session', { body: {}, headers: { Origin: app } }));
+  const project = { name: 'Cookie', repo: { url: '/tmp/c.git', defaultBranch: 'main' } };
+  const noOrigin = await f.request('POST', '/projects', { auth, body: project });
+  assert.equal(noOrigin.status, 403); assert.equal(noOrigin.body.error.code, 'CSRF_REJECTED');
+  assert.equal((await f.request('POST', '/projects', { auth, body: project, headers: { Origin: 'https://evil.example' } })).status, 403);
+  const simple = await fetch(`${f.url}/api/v1/runs/run_x/stop`, { method: 'POST', headers: { Cookie: auth.cookie, Origin: app, 'Content-Type': 'text/plain' } });
+  assert.equal(simple.status, 403, 'a simple cross-site form post is refused');
+  assert.equal((await f.request('POST', '/projects', { auth, body: project, headers: { Origin: app } })).status, 201);
+  assert.equal((await f.request('POST', '/projects', { body: project })).status, 201, 'bearer mutations need no Origin');
+});
+
+test('sessions slide while used and expire when idle', async t => {
+  const f = await fixture(t, { sessionTtlMs: 1500 });
+  const created = await f.request('POST', '/session', { body: {}, headers: { Origin: app } });
+  assert.match(cookieOf(created), /Max-Age=2(;|$)/);
+  const auth = session(created);
+  for (let index = 0; index < 8; index++) { await new Promise(resolve => setTimeout(resolve, 300)); assert.equal((await f.request('GET', '/projects', { auth })).status, 200, `request ${index}`); }
+  const refreshed = await f.request('GET', '/session', { auth });
+  assert.ok(Date.parse(refreshed.body.expiresAt) > Date.parse(created.body.expiresAt), 'activity extended the session');
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.equal((await f.request('GET', '/session', { auth })).status, 401);
+});

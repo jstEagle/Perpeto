@@ -35,10 +35,21 @@ async function readBody(request, limit) {
 export async function createHub({ configPath, engine = createWorkflowAdapter() }) {
   const config = loadConfig(configPath); const hub = new Hub(config, engine);
   const streams = new Set(); const polls = new Set(); let closing = false; let maintenanceBusy = false;
-  const json = (response, status, body) => {
+  const json = (response, status, body, headers = {}) => {
     if (response.destroyed) return;
-    response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-    response.end(JSON.stringify(body));
+    response.writeHead(status, { ...(status === 204 ? {} : { 'Content-Type': 'application/json; charset=utf-8' }), 'Cache-Control': 'no-store', ...headers });
+    response.end(status === 204 ? undefined : JSON.stringify(body));
+  };
+  /** Secure unless the browser is on a loopback http origin; HTTPS and remote origins always get it. */
+  const secure = request => {
+    if (request.socket.encrypted || request.headers['x-forwarded-proto'] === 'https') return true;
+    let url; try { url = new URL(request.headers.origin ?? `http://${request.headers.host ?? ''}`); } catch { return true; }
+    return url.protocol !== 'http:' || !(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.hostname.endsWith('.localhost'));
+  };
+  const setCookie = (request, cookie) => {
+    if (!cookie) return {};
+    const maxAge = cookie.clear ? 0 : Math.max(0, Math.ceil((Date.parse(cookie.expiresAt) - Date.now()) / 1000));
+    return { 'Set-Cookie': `perpeto_session=${cookie.clear ? '' : cookie.value}; HttpOnly; SameSite=Strict; Path=/api/v1; Max-Age=${maxAge}${secure(request) ? '; Secure' : ''}` };
   };
   async function lease(request, response, args) {
     const deadline = Date.now() + config.longPollMs;
@@ -101,9 +112,11 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
       const origin = request.headers.origin;
       if (origin) {
         if (!config.corsOrigins.includes(origin)) fail(403, 'ORIGIN_FORBIDDEN', 'This origin is not allowed.');
+        // Exact configured origins only, never `*`, so the owner's session cookie is offered to the app alone.
         response.setHeader('Access-Control-Allow-Origin', origin); response.setHeader('Vary', 'Origin');
+        response.setHeader('Access-Control-Allow-Credentials', 'true');
         response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key, Last-Event-ID');
-        response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, OPTIONS');
+        response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       }
       if (request.method === 'OPTIONS') { response.writeHead(204); response.end(); return; }
       const url = new URL(request.url, 'http://hub');
@@ -113,10 +126,11 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
       if (!url.pathname.startsWith('/api/v1/')) fail(404, 'NOT_FOUND', 'Route not found.');
       if (closing) fail(503, 'SHUTTING_DOWN', 'Hub is shutting down.');
       const body = ['POST', 'PUT', 'PATCH'].includes(request.method) ? await readBody(request, config.requestMaxBytes) : {};
-      const args = { method: request.method, path: `${url.pathname.slice('/api/v1'.length)}${url.search}`, body, authorization: request.headers.authorization, key: request.headers['idempotency-key'] };
+      const args = { method: request.method, path: `${url.pathname.slice('/api/v1'.length)}${url.search}`, body, authorization: request.headers.authorization,
+        cookie: request.headers.cookie, origin: request.headers.origin, contentType: request.headers['content-type'], key: request.headers['idempotency-key'] };
       if (args.path.split('?')[0] === '/events' && request.method === 'GET' && request.headers.accept?.split(',').some(value => value.trim() === 'text/event-stream')) return await stream(request, response, args, url);
       if (args.path === '/nodes/lease' && request.method === 'POST') return await lease(request, response, args);
-      const result = await hub.request(args); json(response, result.status, result.body);
+      const result = await hub.request(args); json(response, result.status, result.body, setCookie(request, result.cookie));
     } catch (error) {
       if (response.headersSent) { response.destroy(); return; }
       const expected = error instanceof HubError;
