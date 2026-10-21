@@ -6,7 +6,7 @@ import { routeEdges } from './router';
 import type { Route, RouteNode } from './router';
 import { buildTemplate } from './templates';
 
-const size = () => ({ w: 240, h: 172 });
+const size = () => ({ w: 208, h: 172 });
 
 function routed(graph: WorkflowGraph, positions = new Map(graph.nodes.map((n) => [n.id, n.position]))) {
   const nodes: RouteNode[] = graph.nodes.map((n) => ({ id: n.id, ...positions.get(n.id)!, ...size() }));

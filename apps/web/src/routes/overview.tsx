@@ -169,12 +169,12 @@ function AttentionCard({ projectId, run, metrics, workflows }: { projectId: stri
         <p className="muted">Nothing is holding work up.</p>
       ) : (
         <>
-          <Issue projectId={projectId} run={run} title={bottleneckTitle(issues[0], graph)} text={issues[0].evidence} draft={draft} />
+          <Issue projectId={projectId} run={run} nodeId={issues[0].nodeId} title={bottleneckTitle(issues[0], graph)} text={issues[0].evidence} draft={draft} />
           {issues.length > 1 && (
             <div className="card-foot">
               <Disclosure summary={issues.length === 2 ? '1 more issue' : `${issues.length - 1} more issues`}>
                 {issues.slice(1).map((b) => (
-                  <Issue key={b.nodeId + b.reason} projectId={projectId} run={run} title={bottleneckTitle(b, graph)} text={b.evidence} />
+                  <Issue key={b.nodeId + b.reason} projectId={projectId} run={run} nodeId={b.nodeId} title={bottleneckTitle(b, graph)} text={b.evidence} />
                 ))}
               </Disclosure>
             </div>
@@ -185,7 +185,7 @@ function AttentionCard({ projectId, run, metrics, workflows }: { projectId: stri
   );
 }
 
-function Issue({ projectId, run, title, text, draft }: { projectId: string; run: Run; title: string; text: string; draft?: Workflow }) {
+function Issue({ projectId, run, nodeId, title, text, draft }: { projectId: string; run: Run; nodeId: string; title: string; text: string; draft?: Workflow }) {
   return (
     <div className="issue">
       <span className="issue-icon">
@@ -203,7 +203,7 @@ function Issue({ projectId, run, title, text, draft }: { projectId: string; run:
               Review proposal
             </Link>
           )}
-          <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: run.id }} className={btn('ghost')}>
+          <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: run.id }} search={{ node: nodeId }} className={btn('ghost')}>
             Show on map
           </Link>
         </div>

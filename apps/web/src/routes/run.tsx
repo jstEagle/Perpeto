@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link, useParams } from '@tanstack/react-router';
+import { useRef, useState } from 'react';
+import { Link, useParams, useSearch } from '@tanstack/react-router';
 import { useHub, useResource } from '../app/hub-context';
 import type { Resource } from '../app/hub-context';
 import type { Assignment, Machine, MetricsSnapshot, MetricsWindow, Run, WorkItem, WorkflowGraph } from '../api/types';
@@ -24,21 +24,24 @@ const METRICS_REFRESH = { debounceMs: 1000, maxWaitMs: 4000 };
 
 export function RunPage() {
   const { projectId, runId } = useParams({ from: '/projects/$projectId/runs/$runId' });
+  const { node } = useSearch({ from: '/projects/$projectId/runs/$runId' });
   const run = useResource((api) => api.getRun(runId), [runId], (e) => e.subject.kind === 'run' && e.subject.id === runId);
   return (
     <div className="page">
       <Async resource={run} what="run">
-        {(r) => <RunView run={r} projectId={projectId} onChanged={run.reload} />}
+        {(r) => <RunView run={r} projectId={projectId} onChanged={run.reload} initialNode={node} />}
       </Async>
     </div>
   );
 }
 
-function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; onChanged(): void }) {
+function RunView({ run, projectId, onChanged, initialNode }: { run: Run; projectId: string; onChanged(): void; initialNode?: string }) {
   const { api } = useHub();
   const [metricsWindow, setMetricsWindow] = useState<MetricsWindow>('24h');
   const [tab, setTab] = useState<Tab>('map');
-  const [selection, setSelection] = useState<Selection>(null);
+  const [selection, setSelection] = useState<Selection>(initialNode ? { kind: 'node', id: initialNode } : null);
+  const [focus, setFocus] = useState<{ id: string } | undefined>(initialNode ? { id: initialNode } : undefined);
+  const mapRef = useRef<HTMLDivElement>(null);
   const [adding, setAdding] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -73,9 +76,12 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
   const live = run.status === 'running' || run.status === 'paused';
   const issues = byUrgency(metrics.data?.bottlenecks.filter((b) => b.severity !== 'info') ?? []);
   const today = events?.filter((e) => INTERACTION_TYPES.has(e.type) && e.at.slice(0, 10) === new Date().toISOString().slice(0, 10)).length;
+  // Select the step, bring the map on screen, and scroll or pan the map to the step.
   const showOnMap = (nodeId: string) => {
     setTab('map');
     setSelection({ kind: 'node', id: nodeId });
+    setFocus({ id: nodeId });
+    requestAnimationFrame(() => mapRef.current?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' }));
   };
 
   return (
@@ -206,8 +212,9 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
       {tab === 'map' &&
         (version && metrics.data ? (
           <>
-            <div className="hide-sm">
+            <div className="hide-sm" ref={mapRef}>
               <GraphCanvas
+                focus={focus}
                 graph={version.graph}
                 mode="live"
                 label={`Live map of ${version.name} run`}
