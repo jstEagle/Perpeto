@@ -83,4 +83,3 @@ Latest changes:
 - **Credentials** (`dd59078`): machine tokens, enrollment codes and session tokens are random and stored as hashes; the owner secret cannot mint them. Replays return the issued credential, sealed with AES-256-GCM under `credentialKeyPath` (default `./credentials.key`, owner-only, fingerprint pinned in the database). Back it up with the owner secret; the hub refuses to start without it. Tokens from older hubs keep working until rotated.
 - **Message interactions** (`5d8977e`): `agent.messaged` resolves roles to nodes through the run's graph; an end no node holds is `null` with `sourceUnknown`/`targetUnknown: true`.
 - **Cross-machine CI** (`c90abc4`): jobs whose revision lives in a hub repository carry `source: {kind: 'hub-bundle', path: '/jobs/:id/bundle'}` and `repo: {defaultBranch}`; `GET /jobs/:id/bundle?attempt=N` serves a bundle of exactly that revision to the machine holding that attempt.
-
