@@ -147,7 +147,7 @@ Interaction events are first-class. The executor and messaging layer report them
 | `assignment.state` | Assignment queued, leased, running, finished, with machine and account |
 | `gate.result` | Review, CI or human gate passed or failed |
 
-An interaction with no matching edge is recorded with `unplanned: true` and shown, rather than hidden.
+Interaction events carry `from` and `to` node ids. An interaction with no matching edge is recorded with `unplanned: true` and shown, rather than hidden.
 
 ### Metrics
 
@@ -193,7 +193,8 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /projects/:id/merge-queue` | Merge queue |
 | `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
 | `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
-| `GET /events?after=<seq>&limit=` | Event page; `Accept: text/event-stream` streams live |
+| `GET /events?after=<seq>|latest=true|before=<seq>&runId=&limit=` | Event page, always oldest first; `after` returns `{events, nextCursor, hasMore}`, `latest`/`before` add `previousCursor`; the three are mutually exclusive. `Accept: text/event-stream` streams live, also filterable by `runId` |
+| `GET /session`, `POST /session`, `DELETE /session` | Exchange the owner bearer for an HttpOnly, SameSite=Strict `perpeto_session` cookie (`sessionTtlMs`, sliding); cookie-authenticated mutations need an `Origin` in `corsOrigins` and a JSON body, else `403 CSRF_REJECTED` |
 | Messaging | Existing routes from [messaging](../guides/messaging.md), served by the hub under `/api/v1/messaging/…` |
 
 ### Node protocol

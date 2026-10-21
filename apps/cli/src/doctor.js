@@ -111,6 +111,7 @@ async function configurationChecks(dir, role, config) {
     bounds.eventRetentionMs = [604800000, Number.MAX_SAFE_INTEGER];
     for (const key of ['finishedWorkRetentionMs', 'usageRetentionMs', 'idempotencyRetentionMs']) bounds[key] = [60000, Number.MAX_SAFE_INTEGER];
     bounds.retentionSweepIntervalMs = [1000, 86400000];
+    bounds.sessionTtlMs = [1000, 2592000000];
     if (config.archiveFinished !== undefined && typeof config.archiveFinished !== 'boolean') problems.push('Set archiveFinished to true or false.');
     for (const [key, [min, max]] of Object.entries(bounds)) if (config[key] !== undefined && (!Number.isSafeInteger(config[key]) || config[key] < min || config[key] > max)) problems.push(`Set ${key} to an integer from ${min} through ${max}.`);
     if (config.host !== undefined && (typeof config.host !== 'string' || !config.host.trim())) problems.push('Set host to a non-empty address.');
