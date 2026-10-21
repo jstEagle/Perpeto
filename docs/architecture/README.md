@@ -218,7 +218,7 @@ Lease wire format, fixed after the node implementation:
 
 A run result the engine refuses is acknowledged with `200` plus a `reason` and recorded as a failed attempt, so a node never loops resending it.
 
-Heartbeats and renewals update machine and lease state only; they do not write events. Free capacity is computed from the leases the hub holds, not the heartbeat's `running` count.
+Heartbeats, renewals and CI log lines do not write events; liveness lives in machine state, logs at `GET /jobs/:id/log`. The log records only transitions (`machine.online`, `machine.offline`). `/events` and the stream accept `exclude=`, `types=` and `projectId=` filters and exclude legacy noise types by default. Free capacity is computed from the leases the hub holds, not the heartbeat's `running` count.
 
 Finished assignments and jobs are archived after `finishedWorkRetentionMs` but remain readable by id and in per-run listings. Events, usage and idempotency records have their own retention keys; event retention is at least 7 days so metric windows stay complete, and usage past retention keeps hourly rollups.
 
