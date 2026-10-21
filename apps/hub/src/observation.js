@@ -1,4 +1,5 @@
 import { object, requireValue } from './errors.js';
+import { OWNER_ROLE_ID } from './messaging.js';
 
 const windows = { '1h': 3600000, '24h': 86400000, '7d': 604800000 };
 const interactions = ['workitem.moved', 'agent.delegated', 'agent.messaged', 'assignment.state', 'gate.result'];
@@ -24,6 +25,8 @@ export class Observation {
       if (sourceNodeId === null) unknown.sourceUnknown = true;
       if (targetNodeId === null) unknown.targetUnknown = true;
     }
+    // The owner is not a graph node, so these stay unplanned edges; `human` lets clients tell them apart.
+    const human = type === 'agent.messaged' && [data.senderRoleId, data.recipientRoleId].includes(OWNER_ROLE_ID);
     const kind = { 'workitem.moved': 'flow', 'agent.delegated': 'delegates', 'agent.messaged': 'messages' }[type];
     const edge = kind && graph.edges.find(edge => edge.kind === kind && (!data.edgeId || edge.id === data.edgeId) &&
       sourceNodeId && targetNodeId && ((edge.from.node === sourceNodeId && edge.to.node === targetNodeId) ||
@@ -32,7 +35,7 @@ export class Observation {
     const event = { ...data, nodeId: data.nodeId ?? value.nodeId ?? sourceNodeId, sourceNodeId, ...(targetNodeId !== undefined ? { targetNodeId } : {}), ...unknown,
       ...(kind ? { from: sourceNodeId, ...(targetNodeId !== undefined ? { to: targetNodeId } : {}) } : {}),
       role: data.role ?? value.role, ...(value.machineId ? { machineId: value.machineId } : {}),
-      ...(kind ? { unplanned: !edge, ...(edge ? { edgeId: edge.id, kind } : {}) } : {}) };
+      ...(kind ? { unplanned: !edge, ...(edge ? { edgeId: edge.id, kind } : {}) } : {}), ...(human ? { human: true } : {}) };
     return this.hub.emit(type, subjectKind, value, event);
   }
   assignment(value) {
