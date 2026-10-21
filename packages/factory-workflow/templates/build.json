@@ -1,0 +1,325 @@
+{
+  "schema": "perpeto.workflow/1",
+  "nodes": [
+    {
+      "id": "ideas",
+      "type": "input",
+      "label": "Ideas",
+      "position": {
+        "x": 0,
+        "y": 160
+      },
+      "config": {
+        "source": "manual",
+        "docs": []
+      }
+    },
+    {
+      "id": "planner",
+      "type": "planner",
+      "label": "Planner",
+      "position": {
+        "x": 200,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "claudeAgent",
+          "model": "claude-opus-5-5"
+        },
+        "maxItems": 8,
+        "prompt": "Read the idea, the project docs and goals. Split the idea into independent work items that can each be built, reviewed and merged as one pull request. Give each item a short title and a body with acceptance criteria."
+      }
+    },
+    {
+      "id": "delivery-loop",
+      "type": "loop",
+      "label": "Delivery loop",
+      "position": {
+        "x": 400,
+        "y": 160
+      },
+      "config": {
+        "until": "ci-pass",
+        "maxIterations": 3
+      }
+    },
+    {
+      "id": "review-loop",
+      "type": "loop",
+      "label": "Review loop",
+      "position": {
+        "x": 560,
+        "y": 160
+      },
+      "config": {
+        "until": "review-pass",
+        "maxIterations": 3
+      }
+    },
+    {
+      "id": "builder",
+      "type": "agent",
+      "label": "Builder",
+      "position": {
+        "x": 720,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "codex",
+          "model": "gpt-6-astra"
+        },
+        "concurrency": 4,
+        "policy": {
+          "maxSubagents": 2,
+          "maxTurns": 200
+        },
+        "prompt": "Implement the work item on its own branch, add or update tests, and open a pull request. Report the branch, pull request URL and full head commit SHA. If feedback is attached, address every point before reporting."
+      }
+    },
+    {
+      "id": "helper",
+      "type": "agent",
+      "label": "Helper",
+      "position": {
+        "x": 720,
+        "y": 320
+      },
+      "config": {
+        "harness": {
+          "provider": "claudeAgent",
+          "model": "claude-sonnet-5-5"
+        },
+        "concurrency": 2,
+        "prompt": "Help the builder with a focused subtask such as research, a test, or a small refactor. Report what you changed."
+      }
+    },
+    {
+      "id": "reviewer",
+      "type": "review",
+      "label": "Reviewer",
+      "position": {
+        "x": 900,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "claudeAgent",
+          "model": "claude-opus-5-5"
+        },
+        "concurrency": 2,
+        "rubric": "Correct behaviour, tests cover the change, no unrelated edits, clear names, no secrets.",
+        "prompt": "Review the pull request at the given head commit against the rubric. Succeed only if it is ready to merge; otherwise fail with specific, actionable feedback."
+      }
+    },
+    {
+      "id": "ci",
+      "type": "ci",
+      "label": "CI",
+      "position": {
+        "x": 1080,
+        "y": 160
+      },
+      "config": {
+        "steps": [
+          {
+            "name": "install",
+            "run": "npm ci",
+            "timeoutSec": 900
+          },
+          {
+            "name": "test",
+            "run": "npm test",
+            "timeoutSec": 1800
+          }
+        ],
+        "requirements": {}
+      }
+    },
+    {
+      "id": "merge",
+      "type": "merge-queue",
+      "label": "Merge queue",
+      "position": {
+        "x": 1260,
+        "y": 160
+      },
+      "config": {
+        "strategy": "serial",
+        "method": "squash",
+        "requiredChecks": [
+          "ci"
+        ]
+      }
+    },
+    {
+      "id": "shipped",
+      "type": "output",
+      "label": "Shipped",
+      "position": {
+        "x": 1440,
+        "y": 160
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "ideas-planner",
+      "from": {
+        "node": "ideas"
+      },
+      "to": {
+        "node": "planner"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "planner-delivery",
+      "from": {
+        "node": "planner"
+      },
+      "to": {
+        "node": "delivery-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "delivery-review",
+      "from": {
+        "node": "delivery-loop"
+      },
+      "to": {
+        "node": "review-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "review-builder",
+      "from": {
+        "node": "review-loop"
+      },
+      "to": {
+        "node": "builder"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "builder-reviewer",
+      "from": {
+        "node": "builder"
+      },
+      "to": {
+        "node": "reviewer"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "reviewer-pass",
+      "from": {
+        "node": "reviewer",
+        "port": "pass"
+      },
+      "to": {
+        "node": "ci"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "reviewer-fail",
+      "from": {
+        "node": "reviewer",
+        "port": "fail"
+      },
+      "to": {
+        "node": "review-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "ci-pass",
+      "from": {
+        "node": "ci",
+        "port": "pass"
+      },
+      "to": {
+        "node": "merge"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "ci-fail",
+      "from": {
+        "node": "ci",
+        "port": "fail"
+      },
+      "to": {
+        "node": "delivery-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "merge-pass",
+      "from": {
+        "node": "merge",
+        "port": "pass"
+      },
+      "to": {
+        "node": "shipped"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "merge-fail",
+      "from": {
+        "node": "merge",
+        "port": "fail"
+      },
+      "to": {
+        "node": "delivery-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "builder-helper",
+      "from": {
+        "node": "builder"
+      },
+      "to": {
+        "node": "helper"
+      },
+      "kind": "delegates"
+    },
+    {
+      "id": "builder-reviewer-messages",
+      "from": {
+        "node": "builder"
+      },
+      "to": {
+        "node": "reviewer"
+      },
+      "kind": "messages"
+    },
+    {
+      "id": "planner-builder-messages",
+      "from": {
+        "node": "planner"
+      },
+      "to": {
+        "node": "builder"
+      },
+      "kind": "messages"
+    },
+    {
+      "id": "builder-helper-messages",
+      "from": {
+        "node": "builder"
+      },
+      "to": {
+        "node": "helper"
+      },
+      "kind": "messages"
+    }
+  ]
+}

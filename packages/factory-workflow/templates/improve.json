@@ -1,0 +1,263 @@
+{
+  "schema": "perpeto.workflow/1",
+  "nodes": [
+    {
+      "id": "goals",
+      "type": "input",
+      "label": "Goals",
+      "position": {
+        "x": 0,
+        "y": 160
+      },
+      "config": {
+        "source": "goals",
+        "docs": []
+      }
+    },
+    {
+      "id": "auditor",
+      "type": "planner",
+      "label": "Auditor",
+      "position": {
+        "x": 200,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "claudeAgent",
+          "model": "claude-opus-5-5"
+        },
+        "maxItems": 5,
+        "prompt": "Audit the repository against the project goals and docs. Propose the highest-value, low-risk improvements as independent work items, each small enough for one pull request, with evidence for why it matters."
+      }
+    },
+    {
+      "id": "improve-loop",
+      "type": "loop",
+      "label": "Improvement loop",
+      "position": {
+        "x": 400,
+        "y": 160
+      },
+      "config": {
+        "until": "review-pass",
+        "maxIterations": 4
+      }
+    },
+    {
+      "id": "improver",
+      "type": "agent",
+      "label": "Improver",
+      "position": {
+        "x": 580,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "codex",
+          "model": "gpt-6-astra"
+        },
+        "concurrency": 2,
+        "policy": {
+          "maxSubagents": 0
+        },
+        "prompt": "Make the improvement on its own branch without changing behaviour outside its scope. Add tests that prove it. Open a pull request and report the branch, URL and full head commit SHA. Address any attached feedback first."
+      }
+    },
+    {
+      "id": "reviewer",
+      "type": "review",
+      "label": "Reviewer",
+      "position": {
+        "x": 760,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "claudeAgent",
+          "model": "claude-opus-5-5"
+        },
+        "rubric": "The change serves a stated goal, keeps behaviour stable, is tested, and is small enough to review.",
+        "prompt": "Review the improvement at the given head commit against the rubric. Succeed only if it should merge; otherwise fail with specific feedback."
+      }
+    },
+    {
+      "id": "ci",
+      "type": "ci",
+      "label": "CI",
+      "position": {
+        "x": 940,
+        "y": 160
+      },
+      "config": {
+        "steps": [
+          {
+            "name": "install",
+            "run": "npm ci",
+            "timeoutSec": 900
+          },
+          {
+            "name": "test",
+            "run": "npm test",
+            "timeoutSec": 1800
+          }
+        ],
+        "requirements": {}
+      }
+    },
+    {
+      "id": "merge",
+      "type": "merge-queue",
+      "label": "Merge queue",
+      "position": {
+        "x": 1120,
+        "y": 160
+      },
+      "config": {
+        "strategy": "serial",
+        "method": "squash",
+        "requiredChecks": [
+          "ci"
+        ]
+      }
+    },
+    {
+      "id": "improved",
+      "type": "output",
+      "label": "Improved",
+      "position": {
+        "x": 1300,
+        "y": 160
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "goals-auditor",
+      "from": {
+        "node": "goals"
+      },
+      "to": {
+        "node": "auditor"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "auditor-loop",
+      "from": {
+        "node": "auditor"
+      },
+      "to": {
+        "node": "improve-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "loop-improver",
+      "from": {
+        "node": "improve-loop"
+      },
+      "to": {
+        "node": "improver"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "improver-reviewer",
+      "from": {
+        "node": "improver"
+      },
+      "to": {
+        "node": "reviewer"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "reviewer-pass",
+      "from": {
+        "node": "reviewer",
+        "port": "pass"
+      },
+      "to": {
+        "node": "ci"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "reviewer-fail",
+      "from": {
+        "node": "reviewer",
+        "port": "fail"
+      },
+      "to": {
+        "node": "improve-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "ci-pass",
+      "from": {
+        "node": "ci",
+        "port": "pass"
+      },
+      "to": {
+        "node": "merge"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "ci-fail",
+      "from": {
+        "node": "ci",
+        "port": "fail"
+      },
+      "to": {
+        "node": "improve-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "merge-pass",
+      "from": {
+        "node": "merge",
+        "port": "pass"
+      },
+      "to": {
+        "node": "improved"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "merge-fail",
+      "from": {
+        "node": "merge",
+        "port": "fail"
+      },
+      "to": {
+        "node": "improve-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "auditor-improver-messages",
+      "from": {
+        "node": "auditor"
+      },
+      "to": {
+        "node": "improver"
+      },
+      "kind": "messages"
+    },
+    {
+      "id": "improver-reviewer-messages",
+      "from": {
+        "node": "improver"
+      },
+      "to": {
+        "node": "reviewer"
+      },
+      "kind": "messages"
+    }
+  ]
+}
