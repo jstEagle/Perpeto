@@ -49,7 +49,7 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 
 - Node 24 (`>=24.13.1 <25`), ESM JavaScript with JSDoc types, `node:sqlite`, `node:test`. Server packages stay dependency-free unless a dependency clearly pays for itself.
 - Non-secret configuration lives in JSON files under `config/` or a user config directory. Secrets live in owner-only files (mode 600) referenced by path, never in JSON config, CLI arguments, or logs.
-- IDs are strings: a short prefix plus a random suffix, for example `prj_…`, `wf_…`, `run_…`, `wi_…`, `asg_…`, `job_…`, `mch_…`, `acct_…`, `mq_…`.
+- IDs are strings: a short prefix plus a random suffix (engine-created IDs are deterministic, `wi_<runSuffix>_<n>`, so runs replay identically), for example `prj_…`, `wf_…`, `run_…`, `wi_…`, `asg_…`, `job_…`, `mch_…`, `acct_…`, `mq_…`.
 - Timestamps are ISO 8601 UTC strings.
 - Every mutating request accepts an `idempotencyKey`. A repeat with the same body returns the original result; a repeat with a different body returns `409 conflict`.
 - Errors are `{ "error": { "code": "SNAKE_CASE", "message": "…" } }` and never include raw SQL, stack traces, or secrets.
@@ -68,7 +68,9 @@ Assignment   { id, projectId, runId? /* absent for project-scoped work such as t
 Harness      { provider: string, model: string, options?: Record<string, string|boolean> }   // provider = T3 driver kind, e.g. 'claudeAgent', 'codex'
 AgentPolicy  { maxSubagents: number, allowedSubagentProviders: string[], maxTurns?: number, maxTokens?: number, canMessage: string[] }
 MachineRequirements { os?: 'darwin'|'linux'|'windows', labels?: string[], providers?: string[] }
-AssignmentResult { outcome: 'success'|'failure'|'blocked', summary, branch?, prUrl?, headSha?, threadRef? }
+AssignmentResult { outcome: 'success'|'failure'|'blocked', summary, branch?, prUrl?, headSha?, threadRef?,
+                   verdict?: 'pass'|'fail' /* review gates; a review without a verdict is an error, not a rejection */,
+                   items?: { title, body? }[] /* planner output */, graph?, rationale? /* workflow architect */ }
 Job          { id, projectId, runId?, workItemId?, repo, revision /* full commit sha */, steps: JobStep[],
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'passed'|'failed'|'cancelled'|'error',
                machineId?, leaseExpiresAt?, attempt, logRef?, artifacts: ArtifactRef[], configHash }
@@ -107,6 +109,8 @@ GraphEdge     { id, from: { node, port? }, to: { node, port? }, kind: 'flow'|'de
 | `output` | Terminal: work item finished | none |
 
 Ports: gates have `pass` and `fail` output ports. `flow` edges move work items. `delegates` edges grant authority for the source agent to create subagents or assign to the target role, bounded by the target's `concurrency` and the source's `policy.maxSubagents`. `messages` edges permit the two roles to message each other; the engine derives each assignment's `policy.canMessage` from them.
+
+Node config may also set `concurrency`, `policy`, `requirements` and `role` on planner and review nodes, and `expectedIterations` on loops. An agent reached only by `delegates` edges is a helper role. A run completes when every work item finishes unless the run was started with `keepOpen`.
 
 The engine is deterministic: it reads the run's state plus incoming results (assignment finished, job finished, human decision) and emits new work items, assignments, jobs and merge entries. It never calls a harness. A loop counts iterations on the work item and fails it at `maxIterations`.
 
