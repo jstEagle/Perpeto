@@ -57,6 +57,7 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 - Timestamps are ISO 8601 UTC strings.
 - Every mutating request accepts an `idempotencyKey`. A repeat with the same body returns the original result; a repeat with a different body returns `409 conflict`.
 - Errors are `{ "error": { "code": "SNAKE_CASE", "message": "…" } }` and never include raw SQL, stack traces, or secrets.
+- Paths that URL normalization would rewrite (dot segments, encoded slashes, repeated slashes) are rejected with `400 INVALID_PATH`; authorization and routing always use the same normalized path.
 
 ## Entities
 
@@ -83,7 +84,7 @@ MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queu
                mergedRevision?, deliveryError? }
 // Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
-               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version }
+               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
 Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt? }
 UsageRecord  { id, projectId, runId?, assignmentId?, machineId, accountId?, provider, model,
                inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd?, at }
@@ -184,8 +185,8 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/{pause,resume,stop}` | Runs |
 | `POST /runs/:id/inputs` | Add ideas or input items to a running workflow |
 | `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |
-| `POST /work-items/:id/decision` | Answer a `human` gate |
-| `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain` | Machines |
+| `POST /work-items/:id/decision` `{ decision, note?, decisionId }` | Answer a `human` gate; `decisionId` (exposed on the work item and `human.requested`) binds the answer to one gate visit, and a stale one gets `409 STALE_DECISION` |
+| `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain`, `POST /machines/:id/revoke` | Machines; revoke permanently invalidates every token for the machine |
 | `GET /accounts` | Subscription pool across machines |
 | `GET /assignments/:id` | One assignment, used to follow the workflow architect |
 | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
@@ -200,17 +201,21 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | Method and path | Purpose |
 | --- | --- |
 | `POST /nodes/enroll` `{ code, name, os, arch, labels, providers, version }` | Exchange a one-time enrollment code for `{ machineId, token }` |
-| `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers }` | Every 10 s. Missing three marks the machine `offline` |
+| `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers, labels }` | Every 10 s. Missing three marks the machine `offline` |
 | `POST /nodes/lease` `{ kinds: ['assignment','job'], max }` | Long-poll up to 25 s. Returns leased assignments and jobs with `leaseExpiresAt` (60 s) |
 | `POST /assignments/:id/renew`, `POST /jobs/:id/renew` | Extend a lease while working |
+| `POST /assignments/:id/release`, `POST /jobs/:id/release` `{ attempt, idempotencyKey?, reason? }` | Hand back unstarted work without consuming an attempt; the same machine is not offered it again for one lease duration |
+| `POST /nodes/token` `{ idempotencyKey? }` | Rotate this machine's token; the old token works until the new one is first used |
 | `POST /assignments/:id/events` `{ type: 'started'|'progress'|'usage'|'message'|'completed'|'failed', data }` | Report progress, usage and the final `AssignmentResult` |
-| `POST /jobs/:id/events` `{ type: 'started'|'log'|'step'|'completed', data }` | Report log chunks and the final status bound to `revision` |
+| `POST /jobs/:id/events` `{ type: 'started'|'log'|'step'|'completed', data }` | Report log chunks and the final status bound to `revision`; the final result must carry `configHash` |
 
 Lease wire format, fixed after the node implementation:
 
 - `POST /nodes/lease` returns `{ assignments: Assignment[], jobs: Job[] }`. Every item includes `attempt` and `leaseExpiresAt`.
 - Renew and event bodies include `attempt` beside `idempotencyKey`. The hub checks machine ownership, attempt and expiry atomically, so an older attempt re-leased to the same machine is fenced off. Renew returns `{ leaseExpiresAt }`; a node that gets no confirmation abandons the work.
 - Heartbeat bodies include `status: 'online'|'draining'`. Heartbeat responses are `{ status, cancel: { assignments: string[], jobs: string[] } }`; the node aborts listed work and reports it `cancelled`. This is how stopping a run or cancelling a job reaches a machine.
+
+A run result the engine refuses is acknowledged with `200` plus a `reason` and recorded as a failed attempt, so a node never loops resending it.
 
 An expired lease on run work is reported to the engine as a failed attempt, and the engine's retry policy schedules the next attempt. Project-scoped work and merge-queue jobs return to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
 

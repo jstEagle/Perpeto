@@ -19,6 +19,29 @@ function sort(value) {
 }
 const active = value => ['leased', 'running'].includes(value.status);
 
+/** Parse a request path once. Anything URL normalization would rewrite, such as dot segments or backslashes, is refused. */
+function canonicalUrl(path) {
+  const url = typeof path === 'string' && path.startsWith('/') && !path.startsWith('//') ? new URL(path, 'http://hub') : null;
+  if (!url || `${url.pathname}${url.search}` !== path || url.pathname.includes('//')) fail(400, 'INVALID_PATH', 'Request path must be canonical.');
+  const segments = url.pathname.split('/').filter(Boolean).map(value => {
+    let decoded;
+    try { decoded = decodeURIComponent(value); } catch { fail(400, 'INVALID_INPUT', 'Invalid URL encoding.'); }
+    if (decoded === '.' || decoded === '..' || /[/\\]/.test(decoded)) fail(400, 'INVALID_PATH', 'Request path must be canonical.');
+    return decoded;
+  });
+  return { url, segments };
+}
+
+/** Node tokens reach only machine routes, judged on the same decoded segments route() dispatches on. */
+function nodeRoute(method, segments) {
+  const [collection, entityId, action] = segments;
+  if (collection === 'nodes') return method === 'POST' && segments.length === 2 && ['heartbeat', 'lease', 'token'].includes(entityId);
+  if (!['assignments', 'jobs'].includes(collection) || !entityId || segments.length > 3) return false;
+  if (action === undefined) return method === 'GET';
+  if (method === 'POST') return ['renew', 'events', 'release'].includes(action);
+  return method === 'GET' && collection === 'jobs' && action === 'log';
+}
+
 function prepareDatabase(path) {
   try { closeSync(openSync(path, 'wx', 0o600)); } catch (error) { if (error.code !== 'EEXIST') throw error; }
   for (const filename of [path, `${path}-wal`, `${path}-shm`]) {
@@ -33,8 +56,10 @@ function prepareDatabase(path) {
 export class Hub {
   constructor(config, engine) {
     this.config = config; this.engine = engine; this.listeners = new Set(); this.pending = Promise.resolve();
-    for (const path of [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, config.ownerTokenPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    for (const path of [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath]) prepareDatabase(path);
+    // An engine that persists run state (the workflow adapter's RunStore) gets its own private database.
+    const databases = [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, ...(engine.open ? [config.workflowDatabasePath] : [])];
+    for (const path of [...databases, config.ownerTokenPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    for (const path of databases) prepareDatabase(path);
     this.store = new HubStore(config.databasePath);
     this.workflows = new Workflows(this); this.observation = new Observation(this);
     try {
@@ -54,16 +79,26 @@ export class Hub {
       this.store.db.prepare("INSERT OR IGNORE INTO tokens VALUES(?,'owner',NULL)").run(hash(this.ownerToken));
       this.messaging = new MessagingStore(config.messagingDatabasePath);
       this.delivery = new HubDelivery(this);
+      engine.open?.({ databasePath: config.workflowDatabasePath });
       // Hub snapshots may contain private prompts/logs. Keep all persisted files private.
-      for (const file of [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath]) chmodSync(file, 0o600);
-    } catch (error) { this.messaging?.close(); this.store.close(); throw error; }
+      for (const file of databases) chmodSync(file, 0o600);
+    } catch (error) { this.engine.close?.(); this.messaging?.close(); this.store.close(); throw error; }
   }
   secret(kind, entityId) { return createHmac('sha256', this.ownerToken).update(`${kind}:${entityId}`).digest('base64url'); }
+  /** Node tokens derive from the machine and its token generation, so idempotent replays can return them without storing them. */
+  nodeToken(machineId, generation = 0) { return this.secret('node', generation ? `${machineId}:${generation}` : machineId); }
   authenticate(header) {
     const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(header ?? '');
     const token = match && this.store.db.prepare('SELECT kind,machine_id FROM tokens WHERE hash=?').get(hash(match[1]));
     if (!token) fail(401, 'UNAUTHORIZED', 'A valid bearer token is required.');
+    if (token.kind === 'node') this.retireOlderTokens(token.machine_id, hash(match[1]));
     return { kind: token.kind, machineId: token.machine_id, scope: hash(match[1]) };
+  }
+  /** The first use of a rotated token retires the machine's older ones; until then a lost rotation response cannot lock it out. */
+  retireOlderTokens(machineId, presented) {
+    if (this.store.db.prepare("SELECT COUNT(*) AS count FROM tokens WHERE kind='node' AND machine_id=?").get(machineId).count < 2) return;
+    const generation = this.store.get('machine', machineId)?.tokenGeneration ?? 0;
+    if (presented === hash(this.nodeToken(machineId, generation))) this.store.db.prepare("DELETE FROM tokens WHERE kind='node' AND machine_id=? AND hash<>?").run(machineId, presented);
   }
   serialize(fn) {
     const result = this.pending.then(fn);
@@ -73,15 +108,15 @@ export class Hub {
   notify() { for (const fn of this.listeners) fn(); }
   async request({ method, path, body = {}, authorization, key, finalLease = true }) {
     return this.serialize(async () => {
-      const enroll = method === 'POST' && path === '/nodes/enroll';
+      // Authorization and routing read the same parsed path, so no later normalization can redirect a node token.
+      const target = canonicalUrl(path);
+      const enroll = method === 'POST' && target.url.pathname === '/nodes/enroll';
       const auth = enroll ? { kind: 'enroll', scope: hash(String(body.code ?? '')) } : this.authenticate(authorization);
-      if (auth.kind === 'node' && !(/^\/nodes\/(heartbeat|lease)$/.test(path) || /^\/(assignments|jobs)\/[^/]+(?:\/(renew|events|log))?$/.test(path))) fail(403, 'FORBIDDEN', 'Node tokens cannot access owner APIs.');
-      if (auth.kind === 'node' && path.startsWith('/nodes/') && method !== 'POST') fail(403, 'FORBIDDEN', 'Node operation is not permitted.');
       const mutation = !['GET', 'HEAD'].includes(method);
       const idempotencyKey = key ?? body.idempotencyKey;
       if (key && body.idempotencyKey && key !== body.idempotencyKey) fail(400, 'INVALID_INPUT', 'Idempotency keys disagree.');
       if (idempotencyKey !== undefined) nonblank(idempotencyKey, 'idempotencyKey', 200);
-      const scope = `${auth.scope}:${method}:${path.split('?')[0]}`;
+      const scope = `${auth.scope}:${method}:${target.url.pathname}`;
       const fingerprint = hash(canonical({ method, path, body }));
       const perform = async () => {
         if (mutation && idempotencyKey) {
@@ -92,8 +127,8 @@ export class Hub {
           }
         }
         const routeBody = key && body.idempotencyKey === undefined ? { ...body, idempotencyKey: key } : body;
-        const result = await this.route(method, new URL(path, 'http://hub'), routeBody, auth);
-        const emptyLease = path === '/nodes/lease' && !result.body.assignments.length && !result.body.jobs.length;
+        const result = await this.route(method, target, routeBody, auth);
+        const emptyLease = target.url.pathname === '/nodes/lease' && !result.body.assignments.length && !result.body.jobs.length;
         if (mutation && idempotencyKey && (!emptyLease || finalLease)) {
           this.store.db.prepare('INSERT INTO idempotency VALUES(?,?,?,?)').run(scope, idempotencyKey, fingerprint, JSON.stringify(this.persistResponse(result)));
         }
@@ -101,7 +136,7 @@ export class Hub {
       };
       try {
         const result = mutation ? await this.store.transaction(perform) : await perform();
-        if (mutation && (path !== '/nodes/lease' || result.body.assignments.length || result.body.jobs.length)) this.notify();
+        if (mutation && (target.url.pathname !== '/nodes/lease' || result.body.assignments.length || result.body.jobs.length)) this.notify();
         if (this.delivery.dirty) this.delivery.schedule();
         return result;
       } catch (error) {
@@ -112,13 +147,13 @@ export class Hub {
   }
   persistResponse(result) {
     const body = { ...result.body };
-    if (body.token) { delete body.token; body._tokenMachineId = body.machineId; }
+    if (body.token) { delete body.token; body._tokenMachineId = body.machineId; body._tokenGeneration = body.generation ?? 0; }
     if (body.code) { delete body.code; body._codeId = body.id; }
     return { ...result, body };
   }
   restoreResponse(result) {
     const body = { ...result.body };
-    if (body._tokenMachineId) { body.token = this.secret('node', body._tokenMachineId); delete body._tokenMachineId; }
+    if (body._tokenMachineId) { body.token = this.nodeToken(body._tokenMachineId, body._tokenGeneration); delete body._tokenMachineId; delete body._tokenGeneration; }
     if (body._codeId) { body.code = this.secret('enrollment', body._codeId); delete body._codeId; }
     return { ...result, body };
   }
@@ -160,8 +195,36 @@ export class Hub {
       });
       if (changed) this.notify();
     });
+    await this.reconcileEngine();
     // Merge queue progress (Git preparation and publication) runs outside the request serializer between its two syncs.
     this.delivery.schedule();
+  }
+  /**
+   * The workflow RunStore commits separately from the hub's database. Apply outbox effects a rolled-back hub transaction
+   * missed, then acknowledge only effects the hub has committed. A run the hub never committed is discarded.
+   */
+  async reconcileEngine() {
+    if (!this.engine.persistsState) return;
+    await this.serialize(async () => {
+      const runs = this.engine.pendingRuns();
+      if (!runs.length) return;
+      let changed = false;
+      await this.store.transaction(async () => {
+        for (const runId of runs) { const run = this.store.get('run', runId); if (run) changed = this.catchUp(run) || changed; }
+      });
+      this.engine.acknowledge(runId => this.store.get('engine-state', runId)?.seq ?? (this.store.get('run', runId) ? 0 : Infinity));
+      if (changed) this.notify();
+    });
+  }
+  /** Bring the hub's copies up to the run store before a run's next event. Returns whether anything was applied. */
+  catchUp(run) {
+    const applied = this.store.get('engine-state', run.id)?.seq;
+    if (applied === undefined || this.engine.lastSeq(run.id) <= applied) return false;
+    const { groups, seq } = this.engine.missed(run, applied);
+    for (const group of groups) this.applyEffects(run, group);
+    // Ignored events advance the sequence without effects.
+    if (seq > (this.store.get('engine-state', run.id)?.seq ?? 0)) this.store.put('engine-state', { id: run.id, seq });
+    return groups.length > 0;
   }
   fenced(kind, entityId, auth, body, read = false) {
     const value = this.store.need(kind, entityId);
@@ -191,21 +254,38 @@ export class Hub {
     const cancellation = this.store.get('cancellation', `${kind}:${entityId}:${body.attempt}`);
     if (!cancellation || cancellation.machineId !== auth.machineId || Date.parse(cancellation.leaseExpiresAt) <= Date.now()) return null;
     if (kind === 'job') requireValue(body.data?.revision === this.store.need(kind, entityId).revision, 'Job cancellation must match the leased revision.');
-    this.store.remove('cancellation', cancellation.id);
+    this.store.remove('cancellation', cancellation.id); this.released(kind, cancellation.machineId);
     this.emit(`${kind}.cancellation-acknowledged`, kind, this.store.need(kind, entityId));
     return { status: 200, body: { accepted: true, status: 'cancelled' } };
   }
-  async engineEvent(run, event) {
+  /** A machine's running count lags until its next heartbeat; free a finished slot now so leasing does not wait for it. */
+  released(kind, machineId) {
+    const machine = machineId && this.store.get('machine', machineId);
+    const resource = kind === 'assignment' ? 'agents' : 'jobs';
+    if (machine?.running?.[resource] > 0) { machine.running[resource] -= 1; this.store.put('machine', machine); }
+  }
+  async engineEvent(run, event) { const result = await this.engineStep(run, event); this.applyEffects(run, result); return result; }
+  /**
+   * The engine's response to an event, not yet applied to the hub. A pure engine only computes it; the workflow
+   * adapter's RunStore also records it, and rejects an invalid event without a trace, so either way this validates.
+   */
+  engineStep(run, event) {
     const workflow = this.store.need('run-workflow', run.id).workflow;
     const snapshot = this.store.need('engine-state', run.id);
-    const result = await this.engine.applyEvent({ run, workflow, state: snapshot.state, event });
-    this.applyEffects(run, result);
+    if (snapshot.seq !== undefined) this.catchUp(run);
+    return this.engine.applyEvent({ run, workflow, state: snapshot.state, event });
   }
   applyEffects(run, result) {
     object(result, 'engine result'); requireValue(Array.isArray(result.effects), 'Engine effects must be an array.');
-    this.store.put('engine-state', { id: run.id, state: result.state ?? null });
+    if (result.seq !== undefined) {
+      // The engine keeps run state itself; the hub records how far it has applied the engine's effects, exactly once.
+      requireValue(Number.isSafeInteger(result.seq) && result.seq > 0, 'Invalid engine sequence.');
+      if (result.seq <= (this.store.get('engine-state', run.id)?.seq ?? 0)) return;
+      this.store.put('engine-state', { id: run.id, seq: result.seq });
+    } else this.store.put('engine-state', { id: run.id, state: result.state ?? null });
     // When the engine reports each flow-edge crossing itself, the hub does not derive a coarser move from nodeId changes.
-    const reportedMoves = new Set(result.effects.filter(effect => effect.type === 'event' && effect.value?.type === 'workitem.moved').map(effect => effect.value.data?.workItemId));
+    // Escalations are reported as workitem.escalated: they follow an escalation link, not a flow edge.
+    const reportedMoves = new Set(result.effects.filter(effect => effect.type === 'event' && ['workitem.moved', 'workitem.escalated'].includes(effect.value?.type)).map(effect => effect.value.data?.workItemId));
     for (const effect of result.effects) {
       object(effect.value, 'effect value');
       if (effect.type === 'event') {
@@ -227,6 +307,8 @@ export class Hub {
       nonblank(effect.value.id, 'effect id', 200);
       const previous = this.store.get(kind, effect.value.id);
       requireValue(!previous || previous.runId === run.id, 'Engine cannot modify another run.');
+      // Delivery settles merge entries; an engine snapshot or cancel arriving later cannot reopen or contradict them.
+      if (kind === 'merge-entry' && previous && ['merged', 'rejected'].includes(previous.status)) continue;
       // Merge entries also carry hub delivery fields (queue, job, merged revision) that engine snapshots do not know.
       const value = { ...(kind === 'merge-entry' ? previous : {}), ...effect.value, projectId: run.projectId, runId: run.id };
       if (kind === 'merge-entry' && value.status === 'queued' && !value.queueId) this.delivery.dirty = true;
@@ -244,7 +326,7 @@ export class Hub {
       }
       this.store.put(kind, value); this.emit(`${kind}.updated`, kind, value, { status: value.status });
       if (kind === 'assignment') this.observation.assignment(value);
-      if (kind === 'work-item' && previous && previous.nodeId !== value.nodeId && !reportedMoves.has(value.id)) this.observation.interaction('workitem.moved', value, { workItemId: value.id, sourceNodeId: previous.nodeId, targetNodeId: value.nodeId });
+      if (kind === 'work-item' && previous && previous.nodeId !== value.nodeId && !reportedMoves.has(value.id)) this.observation.interaction('workitem.moved', value, { workItemId: value.id, sourceNodeId: previous.nodeId, targetNodeId: value.nodeId, from: previous.nodeId, to: value.nodeId });
     }
     if (['stopped', 'completed', 'failed'].includes(run.status)) this.cancelRunWork(run);
   }
@@ -259,7 +341,8 @@ export class Hub {
   lease(machine, body) {
     const kinds = body.kinds ?? ['assignment', 'job'];
     requireValue(Array.isArray(kinds) && kinds.length > 0 && kinds.every(kind => ['assignment', 'job'].includes(kind)), 'Invalid lease kinds.');
-    const max = integer(body.max ?? 1, 'max', 1, 1000);
+    // Large node capacities are served up to 1,000 items per lease rather than refused.
+    const max = Math.min(integer(body.max ?? 1, 'max', 1), 1000);
     const result = { assignments: [], jobs: [] };
     if (machine.status !== 'online' || Date.now() - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) return result;
     let remaining = max;
@@ -275,10 +358,12 @@ export class Hub {
         if (!(requirements.labels ?? []).every(label => machine.labels.includes(label))) continue;
         if (!(requirements.providers ?? []).every(provider => machine.providers.includes(provider))) continue;
         if (kind === 'assignment' && value.harness?.provider && !machine.providers.includes(value.harness.provider)) continue;
-        if (value.runId && this.store.need('run', value.runId).status !== 'running') continue;
+        // Merge-queue jobs serve a queue shared by every run, so pausing one run must not hold the others' merges.
+        if (value.runId && !value.delivery && this.store.need('run', value.runId).status !== 'running') continue;
         // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
         if (value.notBefore && Date.parse(value.notBefore) > Date.now()) continue;
-        value.status = 'leased'; value.machineId = machine.id;
+        if (value.releasedBy?.machineId === machine.id && Date.parse(value.releasedBy.until) > Date.now()) continue;
+        value.status = 'leased'; value.machineId = machine.id; delete value.releasedBy;
         value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
         this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
         if (kind === 'assignment') this.observation.assignment(value);
@@ -287,11 +372,12 @@ export class Hub {
     }
     return result;
   }
-  async route(method, url, body, auth) {
+  async route(method, { url, segments }, body, auth) {
     const path = url.pathname; const query = url.searchParams;
-    const segments = path.split('/').filter(Boolean).map(value => {
-      try { return decodeURIComponent(value); } catch { fail(400, 'INVALID_INPUT', 'Invalid URL encoding.'); }
-    });
+    // Deny by default: only owner tokens reach routes outside the machine protocol.
+    if (auth.kind === 'node' && !nodeRoute(method, segments)) fail(403, 'FORBIDDEN', 'Node tokens cannot access owner APIs.');
+    if (auth.kind === 'enroll' && !(method === 'POST' && path === '/nodes/enroll')) fail(403, 'FORBIDDEN', 'Enrollment codes only enroll machines.');
+    if (!['owner', 'node', 'enroll'].includes(auth.kind)) fail(403, 'FORBIDDEN', 'Unknown token kind.');
     const [collection, entityId, action, childId, childAction] = segments;
     const reply = (value, status = 200) => ({ status, body: value });
     if (collection === 'messaging') return reply(this.messagingRoute(method, segments.slice(1), body, query));
@@ -369,7 +455,7 @@ export class Hub {
       const run = this.store.need('run', entityId);
       if (!action && method === 'GET') return reply(run);
       if (action === 'metrics' && method === 'GET') return reply(await this.observation.metrics({ runId: run.id, window: query.get('window') ?? '24h' }));
-      if (action === 'work-items' && method === 'GET') return reply({ workItems: this.store.list('work-item', item => item.runId === run.id) });
+      if (action === 'work-items' && method === 'GET') return reply({ workItems: this.workItems(run.id) });
       if (action === 'assignments' && method === 'GET') return reply({ assignments: this.store.list('assignment', item => item.runId === run.id) });
       if (method === 'POST' && ['pause', 'resume', 'stop'].includes(action)) {
         const target = { pause: 'paused', resume: 'running', stop: 'stopped' }[action];
@@ -377,7 +463,7 @@ export class Hub {
         run.status = target; if (action === 'stop') { run.stoppedAt = now(); this.cancelRunWork(run); }
         this.store.put('run', run); this.emit(`run.${action}`, 'run', { ...run, runId: run.id });
         // The engine closes its own items/merges; the hub already revoked leases above.
-        if (this.store.get('engine-state', run.id)?.state) await this.engineEvent(run, { type: { pause: 'run.paused', resume: 'run.resumed', stop: 'run.stopped' }[action], data: body.reason ? { reason: body.reason } : {} });
+        if (this.store.get('engine-state', run.id)) await this.engineEvent(run, { type: { pause: 'run.paused', resume: 'run.resumed', stop: 'run.stopped' }[action], data: body.reason ? { reason: body.reason } : {} });
         return reply(this.store.need('run', run.id));
       }
       if (action === 'inputs' && method === 'POST') {
@@ -386,9 +472,18 @@ export class Hub {
       }
     }
     if (collection === 'work-items' && entityId && action === 'decision' && segments.length === 3 && method === 'POST') {
-      const item = this.store.need('work-item', entityId); const run = this.store.need('run', item.runId);
+      const item = this.workItem(entityId); const run = this.store.need('run', item.runId);
+      if (body.decisionId !== undefined) nonblank(body.decisionId, 'decisionId', 200);
       if (run.status !== 'running' || item.status !== 'blocked') fail(409, 'CONFLICT', 'Work item is not awaiting a decision in a running run.');
-      await this.engineEvent(run, { type: 'human.decision', workItemId: item.id, data: body }); this.emit('work-item.decision', 'work-item', item); this.observation.interaction('gate.result', item, { nodeId: item.nodeId, decision: body.decision, source: 'human' }); return reply({ accepted: true });
+      // A decision names the wait it answers, so a retry or a second answer can never pass the item's next gate.
+      if (body.decisionId !== undefined && item.decisionId && body.decisionId !== item.decisionId) fail(409, 'STALE_DECISION', 'This decision answers an earlier wait; the work item now waits for another decision.');
+      const result = await this.engineEvent(run, { type: 'human.decision', workItemId: item.id, data: body });
+      if (!result?.duplicate) {
+        const decisionId = item.decisionId ? { decisionId: item.decisionId } : {};
+        this.emit('work-item.decision', 'work-item', item, decisionId);
+        this.observation.interaction('gate.result', item, { nodeId: item.nodeId, decision: body.decision, source: 'human', ...decisionId });
+      }
+      return reply({ accepted: true, ...(item.decisionId ? { decisionId: item.decisionId } : {}) });
     }
     if (path === '/machines' && method === 'GET') return reply({ machines: this.store.list('machine') });
     if (path === '/machines/enrollment-codes' && method === 'POST') {
@@ -401,16 +496,41 @@ export class Hub {
     if (collection === 'machines' && entityId && action === 'drain' && segments.length === 3 && method === 'POST') {
       const machine = this.store.need('machine', entityId); machine.status = 'draining'; machine.drainRequested = true; this.store.put('machine', machine); this.emit('machine.draining', 'machine', machine); return reply(machine);
     }
+    if (collection === 'machines' && entityId && action === 'revoke' && segments.length === 3 && method === 'POST') {
+      const machine = this.store.need('machine', entityId);
+      if (body.reason !== undefined) nonblank(body.reason, 'reason', 1000);
+      // Every token generation stops authenticating, including ones an enrollment or rotation replay would re-derive.
+      this.store.db.prepare("DELETE FROM tokens WHERE kind='node' AND machine_id=?").run(machine.id);
+      if (!machine.revokedAt) {
+        machine.revokedAt = now(); machine.status = 'offline'; this.store.put('machine', machine);
+        // Its leases expire at once: maintenance hands run work to the engine's retry policy and requeues the rest.
+        for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, item => item.machineId === machine.id && active(item))) {
+          value.leaseExpiresAt = now(); this.store.put(kind, value);
+        }
+        this.emit('machine.revoked', 'machine', machine, body.reason ? { reason: body.reason } : {});
+      }
+      return reply(machine);
+    }
     if (path === '/nodes/enroll' && method === 'POST') {
       nonblank(body.code, 'code'); nonblank(body.name, 'name', 200); nonblank(body.arch, 'arch', 100); nonblank(body.version, 'version', 100);
-      requireValue(['darwin', 'linux', 'windows'].includes(body.os), 'Invalid OS.'); strings(body.labels ?? [], 'labels'); strings(body.providers ?? [], 'providers');
+      const os = body.os === 'win32' ? 'windows' : body.os; // Node's platform() name for Windows.
+      requireValue(['darwin', 'linux', 'windows'].includes(os), 'Invalid OS.'); strings(body.labels ?? [], 'labels'); strings(body.providers ?? [], 'providers');
       const code = this.store.db.prepare('SELECT * FROM enrollment_codes WHERE hash=?').get(hash(body.code));
       if (!code || code.used || Date.parse(code.expires_at) <= Date.now()) fail(401, 'INVALID_ENROLLMENT_CODE', 'Enrollment code is invalid, expired, or already used.');
       this.store.db.prepare('UPDATE enrollment_codes SET used=1 WHERE hash=? AND used=0').run(hash(body.code));
-      const machine = { id: id('mch'), name: body.name, os: body.os, arch: body.arch, version: body.version, labels: body.labels ?? [], providers: body.providers ?? [], capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, status: 'online', lastHeartbeatAt: now() };
-      const token = this.secret('node', machine.id);
+      const machine = { id: id('mch'), name: body.name, os, arch: body.arch, version: body.version, labels: body.labels ?? [], providers: body.providers ?? [], capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, status: 'online', lastHeartbeatAt: now() };
+      const token = this.nodeToken(machine.id);
       this.store.put('machine', machine); this.store.db.prepare("INSERT INTO tokens VALUES(?,'node',?)").run(hash(token), machine.id); this.emit('machine.enrolled', 'machine', machine);
       return reply({ machineId: machine.id, token }, 201);
+    }
+    if (path === '/nodes/token' && method === 'POST') {
+      if (auth.kind !== 'node') fail(403, 'FORBIDDEN', 'A machine token is required.');
+      const machine = this.store.need('machine', auth.machineId);
+      machine.tokenGeneration = (machine.tokenGeneration ?? 0) + 1;
+      const token = this.nodeToken(machine.id, machine.tokenGeneration);
+      this.store.put('machine', machine); this.store.db.prepare("INSERT INTO tokens VALUES(?,'node',?)").run(hash(token), machine.id);
+      this.emit('machine.token-rotated', 'machine', machine, { generation: machine.tokenGeneration });
+      return reply({ machineId: machine.id, token, generation: machine.tokenGeneration }, 201);
     }
     if (['/nodes/heartbeat', '/nodes/lease'].includes(path) && method === 'POST') {
       if (auth.kind !== 'node') fail(403, 'FORBIDDEN', 'A machine token is required.');
@@ -420,9 +540,10 @@ export class Hub {
       for (const key of ['maxAgents', 'maxJobs']) integer(body.capacity[key], key, 0, 100000);
       for (const key of ['agents', 'jobs']) integer(body.running[key], key, 0, 100000);
       if (body.providers !== undefined) strings(body.providers, 'providers');
+      if (body.labels !== undefined) strings(body.labels, 'labels');
       requireValue(body.status === undefined || ['online', 'draining'].includes(body.status), 'Invalid heartbeat status.');
       machine.capacity = { maxAgents: body.capacity.maxAgents, maxJobs: body.capacity.maxJobs }; machine.running = { agents: body.running.agents, jobs: body.running.jobs };
-      machine.providers = body.providers ?? machine.providers; machine.lastHeartbeatAt = now(); machine.status = machine.drainRequested || body.status === 'draining' ? 'draining' : 'online';
+      machine.providers = body.providers ?? machine.providers; machine.labels = body.labels ?? machine.labels; machine.lastHeartbeatAt = now(); machine.status = machine.drainRequested || body.status === 'draining' ? 'draining' : 'online';
       if (body.accounts !== undefined) {
         requireValue(Array.isArray(body.accounts) && body.accounts.length <= 1000, 'Invalid accounts snapshot.');
         const accounts = body.accounts.map(account => {
@@ -453,8 +574,29 @@ export class Hub {
       }
       if (action === 'cancel' && kind === 'job' && method === 'POST') {
         const value = this.store.need(kind, entityId);
-        if (value.status === 'queued' || active(value)) this.cancelWork(kind, value);
+        if (value.status === 'queued' || active(value)) {
+          this.cancelWork(kind, value);
+          // The engine owns retries for run CI: report the cancelled attempt so its retry policy applies and the run can finish.
+          const run = value.runId && !value.delivery ? this.store.get('run', value.runId) : null;
+          if (run && ['running', 'paused'].includes(run.status)) await this.engineEvent(run, { type: 'job.finished', jobId: value.id, data: { status: 'cancelled', revision: value.revision }, value });
+        }
         return reply(value);
+      }
+      if (action === 'release' && method === 'POST') {
+        if (auth.kind !== 'node') fail(403, 'FORBIDDEN', 'Only the machine holding a lease can release it.');
+        const value = this.fenced(kind, entityId, auth, body);
+        if (body.reason !== undefined) nonblank(body.reason, 'reason', 1000);
+        if (value.status !== 'leased') fail(409, 'CONFLICT', 'Started work cannot be released; report its result instead.');
+        // The work never started, so it returns to the queue with the same attempt and the engine is not told. The
+        // releasing machine is not offered this attempt again for one lease duration, which also keeps a late request
+        // from the released lease (the HTTP request timeout is 30 s) from matching a new lease of the same attempt.
+        const machineId = value.machineId;
+        value.status = 'queued'; delete value.machineId; delete value.leaseExpiresAt;
+        value.releasedBy = { machineId, until: new Date(Date.now() + this.config.leaseDurationMs).toISOString() };
+        this.store.put(kind, value);
+        this.emit(`${kind}.released`, kind, value, { machineId, attempt: value.attempt, ...(body.reason ? { reason: body.reason } : {}) });
+        if (kind === 'assignment') this.observation.assignment(value);
+        return reply({ released: true, status: 'queued', attempt: value.attempt });
       }
       if (action === 'renew' && method === 'POST') {
         const value = this.fenced(kind, entityId, auth, body); value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
@@ -466,7 +608,7 @@ export class Hub {
         const value = this.fenced(kind, entityId, auth, body); object(body.data ?? {}, 'event data');
         const types = kind === 'assignment' ? ['started', 'progress', 'usage', 'message', 'completed', 'failed', 'workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'] : ['started', 'log', 'step', 'completed', 'gate.result'];
         requireValue(types.includes(body.type), 'Invalid work event type.');
-        const data = body.data ?? {};
+        let data = body.data ?? {};
         if (['workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'].includes(body.type)) {
           requireValue(Boolean(value.runId), 'Interaction events require a run.');
           this.observation.interaction(body.type, value, data);
@@ -484,7 +626,9 @@ export class Hub {
         if (body.type === 'started') value.status = 'running';
         if (kind === 'assignment' && body.type === 'usage') { this.recordUsage(value, data); if (data.accountId) { value.accountId = data.accountId; this.observation.assignment(value); } }
         if (kind === 'job' && body.type === 'log') {
-          nonblank(data.chunk, 'log chunk', this.config.requestMaxBytes); this.store.put('job-log', { id: id('log'), jobId: value.id, chunk: data.chunk, at: now() }); value.logRef = `/api/v1/jobs/${value.id}/log`;
+          // Blank lines are ordinary CI output; NUL is replaced rather than failing the step.
+          requireValue(typeof data.chunk === 'string' && data.chunk.length > 0 && data.chunk.length <= this.config.requestMaxBytes, 'Invalid log chunk.');
+          this.store.put('job-log', { id: id('log'), jobId: value.id, chunk: data.chunk.replaceAll('\0', '\uFFFD'), at: now() }); value.logRef = `/api/v1/jobs/${value.id}/log`;
         }
         const final = ['completed', 'failed'].includes(body.type);
         if (final) {
@@ -500,12 +644,29 @@ export class Hub {
           } else {
             requireValue(data.revision === value.revision, 'Job result must match the leased revision.');
             requireValue(['passed', 'failed', 'error', 'cancelled'].includes(data.status), 'Invalid final job status.');
-            if (data.configHash !== undefined) requireValue(data.configHash === value.configHash, 'Job result must match configHash.');
+            requireValue(data.configHash === value.configHash, 'Job result must match the leased configHash.');
             value.status = data.status; requireValue(Array.isArray(data.artifacts ?? []), 'Invalid artifacts.'); value.artifacts = data.artifacts ?? [];
           }
-          delete value.leaseExpiresAt;
+          delete value.leaseExpiresAt; this.released(kind, value.machineId);
+        }
+        // Validate a run result with the engine before acknowledging it; an event the engine refuses leaves no trace. A
+        // refused result (a short SHA, an oversized branch or item) becomes an explicit failure carrying the reason and
+        // the agent's summary, which the engine retries, instead of a 400 that makes the node discard the result.
+        let outcome = null; let refused = null;
+        if (final && kind === 'assignment' && value.runId) {
+          const run = this.store.need('run', value.runId);
+          const event = result => ({ type: 'assignment.finished', assignmentId: value.id, data: result, value });
+          try { outcome = await this.engineStep(run, event(data)); }
+          catch (error) {
+            if (!(error instanceof HubError) || error.code !== 'INVALID_EVENT') throw error;
+            refused = error.message;
+            data = { outcome: 'failure', summary: `The hub could not accept this result: ${refused}\n\n${data.summary}` };
+            value.result = { outcome: 'failure', summary: data.summary }; value.status = 'failed';
+            outcome = await this.engineStep(run, event(data));
+          }
         }
         this.store.put(kind, value);
+        if (refused) this.emit('assignment.result-refused', kind, value, { reason: refused });
         if (final && value.architectRequestId) await this.workflows.completed(value, data);
         if (kind === 'assignment' && (final || body.type === 'started')) this.observation.assignment(value);
         if (final && value.runId) {
@@ -516,8 +677,9 @@ export class Hub {
             result: kind === 'job' ? value.status : data.outcome === 'blocked' ? 'blocked' : data.verdict ?? 'error', ...(kind === 'job' ? { revision: value.revision } : {}) });
         }
         if (final && kind === 'job' && value.delivery) this.delivery.record(value, data);
+        else if (outcome) this.applyEffects(this.store.need('run', value.runId), outcome);
         else if (final && value.runId) await this.engineEvent(this.store.need('run', value.runId), { type: `${kind}.finished`, [kind === 'assignment' ? 'assignmentId' : 'jobId']: value.id, data, value });
-        this.emit(`${kind}.${body.type}`, kind, value, data); return reply({ accepted: true, status: value.status });
+        this.emit(`${kind}.${body.type}`, kind, value, data); return reply({ accepted: true, status: value.status, ...(refused ? { reason: refused } : {}) });
       }
     }
     if (path === '/events' && method === 'GET') {
@@ -533,6 +695,21 @@ export class Hub {
         machinesOnline: this.store.list('machine', value => value.status === 'online' && Date.now() - Date.parse(value.lastHeartbeatAt) < this.config.heartbeatIntervalMs * 3).length });
     }
     fail(404, 'NOT_FOUND', 'Route not found.');
+  }
+  /** Work items of runs whose engine keeps run state come from the engine; other runs keep the hub's copies. */
+  workItems(runId) {
+    const fromEngine = this.engine.listWorkItems && this.store.get('engine-state', runId)?.seq !== undefined;
+    return (fromEngine ? this.engine.listWorkItems(runId) : this.store.list('work-item', item => item.runId === runId)).map(item => this.workItemView(item));
+  }
+  workItem(id) {
+    const item = this.store.get('work-item', id) ?? this.engine.getWorkItem?.(id);
+    if (!item) fail(404, 'NOT_FOUND', 'work-item not found.');
+    return this.workItemView(item);
+  }
+  /** Clients answer a waiting item's human gate with its `decisionId`. */
+  workItemView(item) {
+    const run = this.store.get('run', item.runId);
+    return { ...item, ...(run ? { projectId: run.projectId } : {}), ...(item.waiting?.decisionId ? { decisionId: item.waiting.decisionId } : {}) };
   }
   workflowFields(value) {
     nonblank(value.name, 'workflow name', 200); object(value.graph, 'graph');
@@ -596,5 +773,5 @@ export class Hub {
     }
     fail(404, 'NOT_FOUND', 'Messaging route not found.');
   }
-  async close() { await this.delivery.close(); await this.pending; this.messaging.close(); this.store.close(); }
+  async close() { await this.delivery.close(); await this.pending; this.engine.close?.(); this.messaging.close(); this.store.close(); }
 }

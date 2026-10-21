@@ -16,14 +16,23 @@ if (args.length !== 2 || args[0] !== '--config') {
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+  if (process.platform !== 'win32') process.on('SIGUSR2', () => {
+    if (!node || stopping) return;
+    node.rotateToken().catch(() => console.error('Node token rotation failed. The saved credential or pending replay intent is retained.'));
+  });
   try {
     node = await createNode({ configPath: args[1], onStatus(status) {
-      if (status.state === 'error') { process.exitCode = 1; stop(); }
+      if (status.state === 'error') {
+        if (node?.error?.message.startsWith('Machine revoked;')) console.error('Machine revoked; re-enroll with a new enrollment code.');
+        process.exitCode = 1; stop();
+      }
     } });
     if (!stopping) await node.start();
   } catch {
     // Never echo errors from adapters or remote responses, which may contain credentials.
-    console.error('Node failed to start or lost hub authorization. Check configuration, owner-only credential files, and hub availability.');
-    process.exitCode = stopping ? 0 : 1;
+    console.error(node?.error?.message.startsWith('Machine revoked;')
+      ? 'Machine revoked; re-enroll with a new enrollment code.'
+      : 'Node failed to start or lost hub authorization. Check configuration, owner-only credential files, and hub availability.');
+    process.exitCode = node?.error ? 1 : stopping ? 0 : 1;
   }
 }

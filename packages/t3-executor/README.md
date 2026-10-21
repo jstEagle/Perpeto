@@ -34,9 +34,10 @@ A minted session gets `orchestration:read`, `orchestration:operate` and `provide
 1. **Account.** If the node supplies an account provider (`ctx.accountProvider` or the factory argument), the executor:
    - reserves an account with `acquire({ provider, assignmentId, attempt })`;
    - registers the binding with `server.updateSettings { patch: {}, providerInstanceMutation }`;
-   - waits until that instance is `ready`, then rechecks `bindingFor` just before launch.
+   - waits until that instance is `ready`, then rechecks `bindingFor(accountId, { reservationId })` just before launch;
+   - renews its reservation halfway through each confirmed lease, throughout setup, the turn and cancellation cleanup. The default pool lease is five minutes. Each renewal has a fresh idempotency key; if renewal hangs, a separate deadline cancels work after three quarters of the confirmed lifetime, leaving time for interrupt cleanup before expiry.
 
-   It sends every provider failure to `observe`, so the pool decides between rate-limit cooldown and auth invalidation. It always releases the reservation in `finally`. With no reservation, it uses a ready instance of the harness's driver.
+   It sends every provider failure to `observe`, so the pool decides between rate-limit cooldown and auth invalidation. Binding checks, observations and release carry the selected reservation token. It always stops renewal and releases the reservation in `finally`. Renewal loss interrupts followed root and child runs and returns an assignment `failure`. `ACCOUNT_POOL_EXHAUSTED` also returns `failure` with a retry-with-backoff summary and never selects the operator's default login. With no enrolled accounts or no pool support (`acquire` returns `null`), it uses a ready instance of the harness's driver.
 2. **Workspace from `assignment.repo`.**
    - A local working checkout (`localPath`) gets a T3-managed worktree on the work branch. An existing branch or worktree is reused.
    - Otherwise the executor clones `url` (or a bare `localPath`) into `ctx.workspace/repo`, starting from `origin/<branch>` when an earlier attempt published it.
@@ -51,6 +52,16 @@ A minted session gets `orchestration:read`, `orchestration:operate` and `provide
    - **Workflow architect** (`role: 'workflow-architect'` or `architectRequestId`): `graph` and `rationale` come from fenced JSON. Otherwise the whole reply goes back in `summary`, so the hub's parser can return its errors.
    - **Work**: the executor reports uncommitted changes, pushes new commits on the work branch, and returns `branch`, `headSha`, the last PR URL the agent mentioned, and `threadRef` (`t3-thread://v1/<threadId>`).
 6. **Cancellation.** When `ctx.signal` aborts, the executor interrupts every active run (`run.interrupt`, `holdQueue: true`), waits briefly, then rejects with the abort reason.
+
+### Local account-provider contract
+
+The node adapter owns attempt-qualified pool assignment IDs. The executor passes the original `{ assignmentId, attempt }` to it:
+
+- `acquire({ provider, model, assignmentId, attempt })` returns `{ account, binding, reservation: { id, expiresAt, ... } }` or `null`. Exhaustion must throw `ACCOUNT_POOL_EXHAUSTED`.
+- `renewReservation({ assignmentId, attempt, reservationId, idempotencyKey })` returns the renewed reservation with the same `id` and a future `expiresAt`. Missing, rejected, expired or unconfirmed renewals stop execution.
+- `bindingFor(accountId, { reservationId })` checks the same reservation before registration and launch.
+- `observe({ accountId, assignmentId, attempt, reservationId, message, idempotencyKey })` forwards provider failures.
+- `release(selection, { assignmentId, attempt, reservationId, result })` fences cleanup against a replacement reservation. Reservation tokens remain local and never enter hub events.
 
 ### Progress and usage events
 
@@ -131,6 +142,7 @@ Source: `vendor/t3code` at the pinned commit. Verified live where noted.
 ## Tests
 
 - `node --test packages/t3-executor/test/*.test.js` runs against a fake T3 server ([test/fake-t3.js](test/fake-t3.js)). The fake is real HTTP plus a minimal WebSocket using T3's RPC framing and chunk acknowledgement, and the real policy store backs its policy routes. One test drives the real `@perpeto/node` account provider and pool with a synthetic credential.
+- [Account lease tests](test/account-leases.test.js) use a real pool with synthetic credentials and short leases to cover repeated renewal, hung/lost renewals, root and child interruption, launch cancellation races, fenced cleanup, token forwarding and exhaustion with a ready default login present.
 - Vendor tests: `apps/server/src/perpeto/AgentPolicy*.test.ts`, run with `vp test run`.
 - **Opt-in live check** (not part of `npm test`; it uses this machine's existing harness logins):
 

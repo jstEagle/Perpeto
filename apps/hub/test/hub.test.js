@@ -4,7 +4,10 @@ import { mkdtemp, writeFile, readFile, stat, chmod, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { request as httpRequest } from 'node:http';
 import { createHub } from '../src/index.js';
+import { Hub } from '../src/hub.js';
+import { loadConfig } from '../src/config.js';
 import { createStubEngine } from '../src/engine/stub-engine.js';
 
 const graph = { schema: 'perpeto.workflow/1', nodes: [], edges: [] };
@@ -502,4 +505,158 @@ test('project runs are scoped, newest first, filterable by status, and durable',
   assert.equal((await f.request('GET', '/projects/missing/runs')).status, 404);
   const node = await f.enroll();
   assert.equal((await f.request('GET', path, undefined, node.token)).status, 403);
+});
+
+/** Send a request target exactly as written; fetch() would normalize it first. */
+function rawRequest(baseUrl, path, token, method = 'GET') {
+  const { hostname, port } = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({ host: hostname, port, path, method, headers: { Authorization: `Bearer ${token}` } }, response => {
+      let body = ''; response.setEncoding('utf8'); response.on('data', chunk => { body += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, body }));
+    });
+    request.on('error', reject); request.end();
+  });
+}
+const traversals = ['/jobs/%2e%2e/events', '/jobs/x/%2e%2e/%2e%2e/events', '/jobs/x/%2E%2E/%2e./events', '/jobs/.%2e/events', '/assignments/%2e%2e/events',
+  '/jobs/x\\..\\..\\events', '/jobs/x/..%2f..%2fevents', '/jobs/x/..%5c..%5cevents'];
+
+test('node tokens cannot reach owner routes through encoded, dot, backslash or double-slash paths', async t => {
+  const f = await fixture(t); await f.run(); const node = await f.enroll();
+  const owner = await rawRequest(f.baseUrl, '/api/v1/events', f.owner); assert.equal(owner.status, 200);
+  for (const path of [...traversals.map(value => `/api/v1${value}`), '/api/v1//events', '//api/v1/events', '/api/v1/jobs/x//events', '/api/v1/jobs//events']) {
+    const result = await rawRequest(f.baseUrl, path, node.token);
+    assert.ok([400, 403, 404].includes(result.status), `${path} returned ${result.status}`);
+    assert.equal(result.body.includes('"events"'), false, `${path} leaked the event log`);
+  }
+  // The same forms sent straight to the hub, as an embedding caller would, are refused before routing.
+  const directory = await mkdtemp(join(tmpdir(), 'perpeto-hub-direct-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'hub.json'); await writeFile(configPath, JSON.stringify({}));
+  const hub = new Hub(loadConfig(configPath), createStubEngine()); t.after(() => hub.close());
+  const ownerToken = (await readFile(join(directory, 'owner.secret'), 'utf8')).trim();
+  const code = (await hub.request({ method: 'POST', path: '/machines/enrollment-codes', authorization: `Bearer ${ownerToken}` })).body.code;
+  const machine = (await hub.request({ method: 'POST', path: '/nodes/enroll', body: { code, name: 'm', os: 'linux', arch: 'x64', version: 't' } })).body;
+  assert.equal((await hub.request({ method: 'GET', path: '/events', authorization: `Bearer ${ownerToken}` })).status, 200);
+  for (const path of [...traversals, '//events', '/jobs/x//events', '/jobs/x/events/..']) {
+    await assert.rejects(hub.request({ method: 'GET', path, authorization: `Bearer ${machine.token}` }), error => [400, 403, 404].includes(error.status), path);
+  }
+  await assert.rejects(hub.request({ method: 'POST', path: '/jobs/%2e%2e/projects', body: { name: 'x', repo: { url: '/r', defaultBranch: 'main' } }, authorization: `Bearer ${machine.token}` }), error => [400, 403, 404].includes(error.status));
+  assert.equal((await hub.request({ method: 'GET', path: '/projects', authorization: `Bearer ${ownerToken}` })).body.projects.length, 0);
+});
+
+test('blank, whitespace-only and NUL CI log lines are stored instead of failing the job', async t => {
+  const f = await fixture(t); const { run } = await f.run(); const node = await f.enroll();
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_logs', revision: 'e'.repeat(40), configHash: 'hash', repo: '/tmp/repo', steps: [] }] });
+  const job = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0];
+  const log = chunk => f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'log', data: { step: 'test', stream: 'stdout', chunk } }, node.token);
+  for (const chunk of ['\n', 'a\n', '\n', '   \n', '\t\r\n', 'nul\0byte\n']) assert.equal((await log(chunk)).status, 200, JSON.stringify(chunk));
+  assert.equal((await log('')).status, 400);
+  const chunks = (await f.request('GET', `/jobs/${job.id}/log`)).body.chunks.map(value => value.chunk);
+  assert.deepEqual(chunks, ['\n', 'a\n', '\n', '   \n', '\t\r\n', 'nul�byte\n']);
+  const done = await f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'completed', data: { status: 'passed', revision: job.revision, configHash: 'hash' } }, node.token);
+  assert.equal(done.status, 200); assert.equal((await f.request('GET', `/jobs/${job.id}`)).body.status, 'passed');
+});
+
+test('lease max is clamped, a finished lease frees its slot before the next heartbeat, and job results bind configHash (L6, L7, L17)', async t => {
+  const f = await fixture(t); const { run } = await f.run(); await f.seed(run.id, 2); const node = await f.enroll();
+  const first = await f.request('POST', '/nodes/lease', { kinds: ['assignment'], max: 5000 }, node.token);
+  assert.equal(first.status, 200); assert.equal(first.body.assignments.length, 1);
+  const work = first.body.assignments[0];
+  // The node's heartbeat still counts the work as running when its final result arrives.
+  await f.request('POST', '/nodes/heartbeat', { ...heartbeat, running: { agents: 1, jobs: 0 } }, node.token);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type: 'completed', data: { outcome: 'success', summary: 'Done' } }, node.token)).status, 200);
+  assert.equal((await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, node.token)).body.assignments.length, 1, 'the finished slot is free at once');
+
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_hash', revision: 'f'.repeat(40), configHash: 'config-v1', repo: '/tmp/repo', steps: [] }] });
+  const job = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0];
+  const result = data => f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'completed', data: { status: 'passed', revision: job.revision, ...data } }, node.token);
+  assert.equal((await result({})).status, 400, 'a final job result without configHash is refused');
+  assert.equal((await result({ configHash: 'config-v1' })).status, 200);
+
+  const code = (await f.request('POST', '/machines/enrollment-codes', {})).body.code;
+  const windows = await f.request('POST', '/nodes/enroll', { code, name: 'windows', os: 'win32', arch: 'x64', version: 'test' }, null);
+  assert.equal(windows.status, 201);
+  assert.equal((await f.request('GET', '/machines')).body.machines.find(machine => machine.id === windows.body.machineId).os, 'windows');
+});
+
+test('a machine releases leased work back to the queue without spending an attempt or telling the engine (M9)', async t => {
+  const base = createStubEngine(); const seen = [];
+  const engine = { ...base, applyEvent(input) { seen.push(input.event.type); return base.applyEvent(input); } };
+  const f = await fixture(t, {}, engine); const { run } = await f.run(); await f.seed(run.id, 1, { requirements: { labels: ['ci'] } });
+  const node = await f.enroll(); const other = await f.enroll(1);
+  const work = (await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, node.token)).body.assignments[0];
+  const path = `/assignments/${work.id}/release`; const events = seen.length;
+  assert.equal((await f.request('POST', path, { attempt: work.attempt + 1, reason: 'Wrong attempt' }, node.token)).body.error.code, 'lease_lost');
+  assert.equal((await f.request('POST', path, { attempt: work.attempt }, other.token)).status, 409);
+  assert.equal((await f.request('POST', path, { attempt: work.attempt })).status, 403, 'owners cancel instead');
+  const body = { attempt: work.attempt, reason: 'Labels no longer match this machine.', idempotencyKey: 'release-1' };
+  const released = await f.request('POST', path, body, node.token);
+  assert.equal(released.status, 200); assert.deepEqual(released.body, { released: true, status: 'queued', attempt: work.attempt });
+  assert.deepEqual((await f.request('POST', path, body, node.token)).body, released.body, 'idempotent retry');
+  const stored = (await f.request('GET', `/assignments/${work.id}`)).body;
+  assert.equal(stored.status, 'queued'); assert.equal(stored.attempt, work.attempt); assert.equal(stored.machineId, undefined); assert.equal(stored.leaseExpiresAt, undefined);
+  assert.equal(seen.length, events, 'the engine is not told about a release');
+  assert.equal((await f.request('POST', `/assignments/${work.id}/renew`, { attempt: work.attempt }, node.token)).status, 409);
+  assert.equal((await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, node.token)).body.assignments.length, 0, 'not offered straight back to the releasing machine');
+  const again = (await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, other.token)).body.assignments[0];
+  assert.equal(again.id, work.id); assert.equal(again.attempt, work.attempt);
+  // Started work cannot be released; its result decides the attempt.
+  await f.request('POST', `/assignments/${again.id}/events`, { attempt: again.attempt, type: 'started' }, other.token);
+  assert.equal((await f.request('POST', path, { attempt: again.attempt }, other.token)).status, 409);
+  const events2 = (await f.request('GET', '/events?limit=1000')).body.events;
+  assert.equal(events2.filter(event => event.type === 'assignment.released' && event.data.reason === body.reason).length, 1);
+
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_release', revision: 'a'.repeat(40), configHash: 'hash', repo: '/tmp/repo', steps: [] }] });
+  const job = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0];
+  assert.equal((await f.request('POST', `/jobs/${job.id}/release`, { attempt: job.attempt }, node.token)).body.status, 'queued');
+  assert.equal((await f.request('GET', `/jobs/${job.id}`)).body.attempt, job.attempt);
+});
+
+test('heartbeat labels replace enrollment labels for leasing (M9)', async t => {
+  const f = await fixture(t); const { run } = await f.run(); await f.seed(run.id, 1, { requirements: { labels: ['gpu'] } }); const node = await f.enroll();
+  assert.equal((await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments.length, 0);
+  assert.equal((await f.request('POST', '/nodes/heartbeat', { ...heartbeat, labels: ['ci', 'gpu'] }, node.token)).status, 200);
+  assert.deepEqual((await f.request('GET', '/machines')).body.machines[0].labels, ['ci', 'gpu']);
+  assert.equal((await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments.length, 1);
+  assert.equal((await f.request('POST', '/nodes/heartbeat', { ...heartbeat, labels: [''] }, node.token)).status, 400);
+});
+
+test('a machine rotates its own token without a lockout window, and retries replay the new token (H6)', async t => {
+  const f = await fixture(t); const node = await f.enroll();
+  const body = { idempotencyKey: 'rotate-1' };
+  const rotated = await f.request('POST', '/nodes/token', body, node.token);
+  assert.equal(rotated.status, 201); assert.equal(rotated.body.machineId, node.machineId); assert.equal(rotated.body.generation, 1);
+  assert.notEqual(rotated.body.token, node.token);
+  // The old token keeps working until the new one is used, so a lost response cannot lock the machine out.
+  assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, node.token)).status, 200);
+  assert.deepEqual((await f.request('POST', '/nodes/token', body, node.token)).body, rotated.body);
+  await f.restart();
+  assert.deepEqual((await f.request('POST', '/nodes/token', body, node.token)).body, rotated.body, 'replay survives restart');
+  assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, rotated.body.token)).status, 200);
+  assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, node.token)).status, 401, 'first use of the new token retires the old one');
+  assert.equal((await f.request('POST', '/nodes/token', {}, f.owner)).status, 403);
+  for (const suffix of ['', '-wal']) {
+    const bytes = await readFile(join(f.directory, `hub.sqlite${suffix}`)).catch(() => Buffer.alloc(0));
+    assert.equal(bytes.includes(Buffer.from(rotated.body.token)), false);
+  }
+});
+
+test('the owner revokes a machine token: it stops authenticating, its leases expire to other machines, and replays cannot revive it (H6)', async t => {
+  const f = await fixture(t, { leaseDurationMs: 60000 }); const { run } = await f.run(); await f.seed(run.id);
+  const input = { code: (await f.request('POST', '/machines/enrollment-codes', {})).body.code, name: 'compromised', os: 'linux', arch: 'x64', version: 'test', providers: ['codex'], labels: ['ci'], idempotencyKey: 'enroll-revoked' };
+  const node = (await f.request('POST', '/nodes/enroll', input, null)).body; const other = await f.enroll(1);
+  const work = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0]; assert.ok(work);
+  const rotated = (await f.request('POST', '/nodes/token', { idempotencyKey: 'rotate' }, node.token)).body;
+  assert.equal((await f.request('POST', `/machines/${node.machineId}/revoke`, {}, node.token)).status, 403);
+  const revoked = await f.request('POST', `/machines/${node.machineId}/revoke`, { reason: 'Token exposed in a CI log.' });
+  assert.equal(revoked.status, 200); assert.equal(revoked.body.status, 'offline'); assert.ok(revoked.body.revokedAt);
+  for (const token of [node.token, rotated.token]) assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, token)).status, 401);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type: 'completed', data: { outcome: 'success', summary: 'Forged' } }, node.token)).status, 401);
+  const moved = await eventually(async () => (await f.request('POST', '/nodes/lease', {}, other.token)).body.assignments[0]);
+  assert.equal(moved.id, work.id); assert.equal(moved.attempt, work.attempt + 1);
+  assert.equal((await f.request('POST', '/nodes/enroll', input, null)).body.machineId, node.machineId);
+  assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, (await f.request('POST', '/nodes/enroll', input, null)).body.token)).status, 401, 'an enrollment replay returns a dead token');
+  assert.equal((await f.request('POST', `/machines/${node.machineId}/revoke`, {})).status, 200, 'revoking twice is harmless');
+  await f.restart(); assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, node.token)).status, 401);
+  assert.ok((await f.request('GET', '/events?limit=1000')).body.events.some(event => event.type === 'machine.revoked' && event.data.reason === 'Token exposed in a CI log.'));
 });

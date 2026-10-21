@@ -49,9 +49,14 @@ export function validateGraph(graph: WorkflowGraph): ValidationIssue[] {
 
   const flow = graph.edges.filter((e) => e.kind === 'flow' && nodes.has(e.from.node) && nodes.has(e.to.node));
 
+  // An agent reached only by delegates edges is a helper role and needs no flow edges (@perpeto/workflow).
+  const helper = (node: GraphNode) =>
+    node.type === 'agent' && !flow.some((e) => e.to.node === node.id || e.from.node === node.id) && graph.edges.some((e) => e.kind === 'delegates' && e.to.node === node.id);
+
   for (const node of graph.nodes) {
     const spec = NODE_SPECS[node.type];
-    for (const port of spec.outputs) {
+    // Merge queues may leave `fail` unwired: a rejected merge then fails the item.
+    for (const port of helper(node) ? [] : spec.outputs.filter((p) => !(node.type === 'merge-queue' && p === 'fail'))) {
       const connected = flow.some((e) => e.from.node === node.id && (e.from.port ?? 'out') === port);
       if (!connected)
         err(port === 'out' ? `${name(node)} does not pass work anywhere.` : `${name(node)} "${port}" port is not connected.`, { nodeId: node.id }, 'open_port');
@@ -70,7 +75,7 @@ export function validateGraph(graph: WorkflowGraph): ValidationIssue[] {
       if (!p) err(`${name(node)} needs an agent policy.`, { nodeId: node.id });
       else if (!Number.isInteger(p.maxSubagents) || p.maxSubagents < 0)
         err(`${name(node)} max subagents must be 0 or more.`, { nodeId: node.id });
-      else if (p.maxSubagents > 0 && p.allowedSubagentProviders.length === 0)
+      else if (p.maxSubagents > 0 && Array.isArray(p.allowedSubagentProviders) && p.allowedSubagentProviders.length === 0)
         warn(`${name(node)} allows subagents but no providers for them.`, { nodeId: node.id });
     }
     if (node.type === 'planner') {
@@ -103,8 +108,22 @@ export function validateGraph(graph: WorkflowGraph): ValidationIssue[] {
     reached.add(id);
     for (const e of flow) if (e.from.node === id) stack.push(e.to.node);
   }
+  // Escalation targets (onExhausted, onBlocked) count as reachable, as in the engine.
   for (const node of graph.nodes)
-    if (node.type !== 'input' && !reached.has(node.id))
+    for (const key of ['onExhausted', 'onBlocked']) {
+      const target = node.config?.[key];
+      if (typeof target === 'string' && reached.has(node.id) && !reached.has(target)) {
+        const queue = [target];
+        while (queue.length) {
+          const id = queue.pop()!;
+          if (reached.has(id)) continue;
+          reached.add(id);
+          for (const e of flow) if (e.from.node === id) queue.push(e.to.node);
+        }
+      }
+    }
+  for (const node of graph.nodes)
+    if (node.type !== 'input' && !reached.has(node.id) && !helper(node))
       warn(`${name(node)} is not reachable from an input, so work never arrives.`, { nodeId: node.id }, 'unreachable');
 
   // Every flow cycle must pass through a loop node, which bounds iterations:

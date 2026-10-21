@@ -215,7 +215,7 @@ test('blocked work routes to a human gate when one is configured, otherwise wait
   const run = building();
   run.complete('builder', { outcome: 'blocked', summary: 'Need database credentials.' });
   const blocked = item(run);
-  assert.deepEqual([blocked.nodeId, blocked.status, blocked.waiting], ['triage', 'blocked', { kind: 'human', nodeId: 'triage' }]);
+  assert.deepEqual([blocked.nodeId, blocked.status, blocked.waiting], ['triage', 'blocked', { kind: 'human', nodeId: 'triage', decisionId: 'hd_test1_1' }]);
   assert.deepEqual(run.emitted('workitem.blocked')[0].data, { workItemId: blocked.id, nodeId: 'builder', summary: 'Need database credentials.', routedTo: 'triage' });
   assert.deepEqual(run.emitted('workitem.escalated')[0].data, {
     workItemId: blocked.id, from: 'builder', to: 'triage', reason: 'blocked', evidence: { summary: 'Need database credentials.' },
@@ -229,7 +229,7 @@ test('blocked work routes to a human gate when one is configured, otherwise wait
   const held = new Driver();
   held.start();
   held.complete('planner', { outcome: 'blocked', summary: 'Which product area?' });
-  assert.deepEqual(item(held).waiting, { kind: 'retry', nodeId: 'planner', summary: 'Which product area?' });
+  assert.deepEqual(item(held).waiting, { kind: 'retry', nodeId: 'planner', summary: 'Which product area?', decisionId: 'hd_test1_1' });
   const waiting = computeRunMetrics(held.state, held.log, { now: plus(held.state.updatedAt, 60) });
   assert.deepEqual(waiting.bottlenecks.map(b => `${b.nodeId}:${b.reason}`), ['planner:waiting-on-human']);
   assert.equal(waiting.run.waitingOnHuman, 1);

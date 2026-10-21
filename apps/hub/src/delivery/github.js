@@ -44,6 +44,7 @@ export function githubAdapter(record) {
     atomicMerge: true,
     getBase: async (...args) => { await ready(); return adapter.getBase(...args); },
     getHead: entry => adapter.getHead(entry),
+    isMerged: async request => { await ready(); return adapter.isMerged(request); },
     prepare: request => adapter.prepare(request),
     merge: async request => { await ready(); return adapter.merge(request); },
   };

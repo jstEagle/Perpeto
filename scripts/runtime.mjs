@@ -40,11 +40,15 @@ function main() {
       command = 'pnpm'; args = ['install', '--frozen-lockfile', '--filter', 't3...', '--filter', '@t3tools/scripts...']; break;
     case 'build':
       command = process.execPath; args = [resolve(config.directory, 'node_modules/vite-plus/bin/vp'), 'run', '--filter', 't3', 'build']; break;
+    case 'typecheck':
+      command = 'pnpm'; args = ['--filter', 't3', 'typecheck']; break;
     case 'test':
       command = process.execPath; args = [resolve(config.directory, 'node_modules/vite-plus/bin/vp'), 'test', 'run',
         'apps/server/src/orchestration-v2/runtimeLayer.test.ts',
         'apps/server/src/provider/ProviderRegistry.test.ts',
         'apps/server/src/perpeto/http.test.ts',
+        'apps/server/src/perpeto/AgentPolicy.test.ts',
+        'apps/server/src/perpeto/AgentPolicy.http.test.ts',
         'apps/server/src/http.test.ts',
         'apps/web/src/components/factory/messaging.test.ts',
         'packages/client-runtime/src/state/factoryMessagingHttp.test.ts',
@@ -58,7 +62,7 @@ function main() {
       break;
     }
     default:
-      throw new Error('Usage: node scripts/runtime.mjs setup|build|start|help|test');
+      throw new Error('Usage: node scripts/runtime.mjs setup|build|start|help|test|typecheck');
   }
   // Upstream prepare installs Git hooks for its own workspace. Keep the host
   // repository's hook configuration instead of pointing it at a nested project.

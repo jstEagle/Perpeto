@@ -20,8 +20,8 @@
     "upstreamHash": null
   },
   "apps/server/src/perpeto/AgentPolicy.test.ts": {
-    "reason": "Enforce Perpeto AgentPolicy (maxSubagents, allowedSubagentProviders) on agent-created delegated tasks and threads; expose per-thread policy and decision routes for the @perpeto/t3-executor package. Import shared storage from the restructured packages/ layout.",
-    "sha256": "cb20cfd69f4dd2e822be71f6d9359ac4f8ee63cefeda074a428b277febb7f544",
+    "reason": "Enforce Perpeto AgentPolicy (maxSubagents, allowedSubagentProviders) on agent-created delegated tasks and threads; expose per-thread policy and decision routes for the @perpeto/t3-executor package. Import shared storage from the restructured packages/ layout. Use vite-plus test hooks and the upstream diagnostic convention for synchronous filesystem fixtures.",
+    "sha256": "828b31696692f50520387c20ca48b687bf8c2dbb5c96867279b75c743b5bb3ae",
     "upstreamHash": null
   },
   "apps/server/src/perpeto/AgentPolicy.ts": {

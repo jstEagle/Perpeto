@@ -220,7 +220,8 @@ export function buildArchitectPrompt({ project, docs = [], goals = [], machines 
   return parts.join('\n\n');
 }
 
-const FENCE = /```[ \t]*(?:json|JSON)?[ \t]*\r?\n([\s\S]*?)```/g;
+// One whitespace run before the optional language tag, so an unclosed fence followed by spaces cannot backtrack quadratically.
+const FENCE = /```[ \t]*(?:(?:json|JSON)[ \t]*)?\r?\n([\s\S]*?)```/g;
 
 /**
  * Extract `{ graph, rationale }` from an architect's reply. Accepts a fenced json block holding `{ graph, rationale }`,
