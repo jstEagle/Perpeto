@@ -1,18 +1,27 @@
 import { createServer, createConnection } from 'node:net';
 import { open, chmod, unlink, mkdir, rmdir, readFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
 import { configPath, privateDir, readJson, repoRoot, writeNew } from './config.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const socketPath = (dir, role) => resolve(dir, `${role}.sock`);
-export async function acquireLock(dir, role) {
+const exec = promisify(execFile);
+async function processIdentity(pid) {
+  const { stdout } = await exec('/bin/ps', ['-p', String(pid), '-o', 'lstart='], {
+    env: { ...process.env, LC_ALL: 'C' }, timeout: 5000,
+  });
+  if (!stdout.trim()) throw new Error('Cannot determine process start identity.');
+  return stdout.trim();
+}
+export async function acquireLock(dir, role, { recover = true } = {}) {
   const path = resolve(dir, `${role}.lock`);
-  const value = JSON.stringify({ pid: process.pid, id: randomUUID() });
+  const value = JSON.stringify({ pid: process.pid, startIdentity: await processIdentity(process.pid), id: randomUUID() });
   const create = () => writeNew(path, value);
   try { await create(); } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
+    if (error.code !== 'EEXIST' || !recover) throw error;
     const recovery = `${path}.recovery`;
     await mkdir(recovery, { mode: 0o700 });
     try {
@@ -20,6 +29,11 @@ export async function acquireLock(dir, role) {
       if (!Number.isInteger(previous.pid) || previous.pid < 1) throw new Error('Invalid process lock. Inspect it manually.');
       let alive = true;
       try { process.kill(previous.pid, 0); } catch (error) { if (error.code === 'ESRCH') alive = false; }
+      if (alive && typeof previous.startIdentity === 'string' && previous.startIdentity) {
+        // Failure to inspect a live PID remains conservative; never signal it.
+        const identity = await processIdentity(previous.pid).catch(() => null);
+        if (identity && identity !== previous.startIdentity) alive = false;
+      }
       if (alive) throw new Error('Process is already running or starting.');
       await unlink(path);
       await create();
