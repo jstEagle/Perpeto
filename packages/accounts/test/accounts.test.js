@@ -472,3 +472,19 @@ test('explicit machine rebind preserves homes, rejects active work and fences ol
   assert.equal(reopened.select({ provider: 'codex', assignmentId: 'asg_new', idempotencyKey: 'new-machine' }).account.machineId, 'mch_reenrolled');
 });
 
+test('Claude overage windows remain permitted across unrelated observations and restart', t => {
+  const f = fixture(t);
+  f.add('acct_a', 'claudeAgent');
+  const limit = overage => ({ type: 'rate_limit_event', rate_limit_info: {
+    status: 'rejected', utilization: 1, rateLimitType: 'five_hour',
+    resetsAt: (f.now() + 7_200_000) / 1000, overageStatus: overage,
+  } });
+  f.observe('acct_a', limit('allowed'));
+  f.advance(3_600_000);
+  const reopened = new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now });
+  reopened.observe({ accountId: 'acct_a', message: { type: 'assistant', message: 'fixture-unrelated' }, idempotencyKey: f.next() });
+  assert.equal(reopened.snapshot()[0].status, 'active');
+  assert.equal(reopened.select({ provider: 'claudeAgent', assignmentId: 'asg_overage', idempotencyKey: f.next() }).account.id, 'acct_a');
+  f.observe('acct_a', limit('rejected'));
+  assert.equal(f.pool.snapshot()[0].status, 'cooling');
+});
