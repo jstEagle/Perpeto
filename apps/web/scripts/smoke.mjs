@@ -56,7 +56,34 @@ step('inspector edit saves a new draft version with a diff');
 
 // 4. Run controls and live map selection.
 await page.goto(`${base}/projects/prj_perpeto/runs/run_7q4m2x`);
+await page.locator('.react-flow__node[data-id="reviewer"]').waitFor();
+await page.waitForTimeout(600);
+/** Edge labels must not touch each other or any node. */
+const labelCollisions = () =>
+  page.evaluate(() => {
+    const rect = (el) => el.getBoundingClientRect();
+    const labels = [...document.querySelectorAll('.gedge-label')].map(rect);
+    const nodes = [...document.querySelectorAll('.react-flow__node')].map(rect);
+    const hit = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    let n = 0;
+    labels.forEach((a, i) => {
+      labels.slice(i + 1).forEach((b) => (n += hit(a, b) ? 1 : 0));
+      nodes.forEach((b) => (n += hit(a, b) ? 1 : 0));
+    });
+    return { labels: labels.length, collisions: n };
+  });
+const roleEdges = () => page.locator('.react-flow__edge .gedge-delegates, .react-flow__edge .gedge-messages:not(.gedge-unplanned)').count();
+assert.equal(await roleEdges(), 0, 'live map hides delegates and messages until a node is selected');
+const before = await labelCollisions();
+assert.ok(before.labels > 5 && before.collisions === 0, `labels collide: ${JSON.stringify(before)}`);
+await page.getByRole('radio', { name: /^All/ }).click();
+assert.ok((await roleEdges()) >= 2, 'All shows every delegate and message');
+const all = await labelCollisions();
+assert.equal(all.collisions, 0, `labels collide with all links shown: ${JSON.stringify(all)}`);
+await page.getByRole('radio', { name: 'Selected node' }).click();
+step('live map routes labels without collisions and toggles delegates and messages');
 await page.locator('.react-flow__node[data-id="reviewer"]').click();
+assert.ok((await roleEdges()) >= 1, "selecting the reviewer shows its messages");
 await page.getByRole('heading', { name: 'Interactions: Reviewer' }).waitFor();
 await page.screenshot({ path: `${shots}run-node-selected-desktop.png`, fullPage: false });
 step('selecting a node filters the interaction feed and shows its assignments');
@@ -86,6 +113,20 @@ await page.getByLabel('Owner token').fill('x');
 await page.getByRole('button', { name: 'Test connection' }).click();
 await page.getByText('Use HTTPS for a hub that is not on this machine').waitFor();
 step('settings refuses remote plain HTTP');
+
+// 7. Proposal and editor labels stay clear too.
+for (const path of ['/projects/prj_perpeto/workflows/wf_k3build?version=4', '/projects/prj_perpeto/workflows/wf_k3build/edit']) {
+  await page.goto(`${base}${path}`);
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.waitForTimeout(600);
+  const result = await labelCollisions();
+  assert.equal(result.collisions, 0, `${path}: ${JSON.stringify(result)}`);
+}
+step('proposal and editor labels never overlap');
+
+// 8. No owner token in localStorage.
+assert.ok(!(await page.evaluate(() => Object.keys(localStorage).some((k) => k === 'perpeto.hub.v1'))), 'legacy token key is gone');
+step('owner token is not kept in localStorage');
 
 await browser.close();
 if (errors.length) {

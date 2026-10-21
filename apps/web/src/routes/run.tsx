@@ -126,7 +126,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
           </div>
         </div>
       )}
-      {top.map((b) => (
+      {top.map((b, i) => (
         <div key={`${b.nodeId}-${b.reason}`} className={`callout callout-${b.severity}`}>
           <div className="callout-body">
             <span className="callout-title">
@@ -138,7 +138,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
             <Button size="sm" variant="ghost" onClick={() => setSelection({ kind: 'node', id: b.nodeId })}>
               Show on map
             </Button>
-            {draft && b.severity === 'critical' && (
+            {draft && b.severity === 'critical' && top.findIndex((x) => x.severity === 'critical') === i && (
               <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: run.workflowId }} search={{ version: draft.version }} className="btn btn-secondary btn-sm">
                 Review proposed v{draft.version}
               </Link>

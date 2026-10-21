@@ -524,6 +524,12 @@
   white-space: nowrap;
 }
 
+@media (max-width: 600px) {
+  .graph-bar-label {
+    display: none;
+  }
+}
+
 .graph.has-bar .react-flow {
   position: absolute;
   inset: 44px 0 0 0;
