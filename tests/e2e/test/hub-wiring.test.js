@@ -132,33 +132,51 @@ for (const publication of [undefined, 'github-merge-queue']) {
 }
 
 for (const phase of ['publication', 'hub projection']) test(`SIGKILL during ${phase} recovers the published candidate and closes the PR once`, async t => {
-  const root = await temp(t); const repository = await bareRepository(root);
-  const forge = await fakeGitHub(t, root, repository, { blockClose: phase === 'publication' });
-  const barrier = phase === 'publication' ? forge.barrier : join(root, 'sync-barrier');
-  const release = phase === 'publication' ? forge.release : join(root, 'sync-release');
-  const adapter = new GitHubAdapter({ repository: 'example/fixture' });
-  const executor = { kind: 'fixture', canRun: () => true, async run(assignment, ctx) {
-    const source = join(ctx.workspace, 'source'); await git(ctx.workspace, 'clone', assignment.repo.url, source);
-    await git(source, 'checkout', '-b', 'feature'); await writeFile(join(source, 'feature.txt'), 'recovered');
-    await git(source, 'add', '.'); await git(source, 'commit', '-m', 'Feature'); await git(source, 'push', 'origin', 'HEAD:feature');
-    return { outcome: 'success', summary: 'Ready', ...await adapter.createPullRequest({ branch: 'feature', baseBranch: 'main', title: 'Recovery', body: 'Fixture only' }) };
-  } };
-  const factory = await startFactory(t, { executor, subprocess: phase === 'publication' ? true : { pauseBeforeMergedSync: { barrier, release } }, hub: { deliveryLeaseDurationMs: 3000 } });
-  const { project, run } = await startRun(factory.request, { url: repository, defaultBranch: 'main' });
-  await eventually(() => access(barrier).then(() => true, () => false));
-  const published = await git(repository, 'rev-parse', 'main');
-  await factory.hub.kill(); await writeFile(release, 'continue'); await factory.hub.restart();
-  const finished = await eventually(async () => { const value = await factory.request('GET', `/runs/${run.id}`); return ['completed', 'failed'].includes(value.status) && value; });
-  assert.equal(finished.status, 'completed');
-  const { entries } = await factory.request('GET', `/projects/${project.id}/merge-queue`);
-  assert.equal(entries[0].mergedRevision, published); assert.equal(entries[0].status, 'merged');
-  assert.equal(await git(repository, 'rev-parse', 'main'), published);
-  const jobs = (await factory.request('GET', `/jobs?runId=${run.id}`)).jobs.filter(job => job.delivery);
-  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'passed'); assert.equal(jobs[0].revision, published);
-  const state = await forge.state(); assert.equal(state.calls.filter(call => call[1] === 'close').length, 1);
-  const events = (await factory.events()).filter(event => event.runId === run.id);
-  assert.equal(events.filter(event => event.type === 'gate.result' && event.data.gate === 'merge-queue').length, 1);
-  assert.equal(factory.node.error, undefined);
+  let factory;
+  let release;
+  try {
+    const root = await temp(t); const repository = await bareRepository(root);
+    const forge = await fakeGitHub(t, root, repository, { blockClose: phase === 'publication' });
+    const barrier = phase === 'publication' ? forge.barrier : join(root, 'sync-barrier');
+    release = phase === 'publication' ? forge.release : join(root, 'sync-release');
+    const adapter = new GitHubAdapter({ repository: 'example/fixture' });
+    const executor = { kind: 'fixture', canRun: () => true, async run(assignment, ctx) {
+      const source = join(ctx.workspace, 'source'); await git(ctx.workspace, 'clone', assignment.repo.url, source);
+      await git(source, 'checkout', '-b', 'feature'); await writeFile(join(source, 'feature.txt'), 'recovered');
+      await git(source, 'add', '.'); await git(source, 'commit', '-m', 'Feature'); await git(source, 'push', 'origin', 'HEAD:feature');
+      return { outcome: 'success', summary: 'Ready', ...await adapter.createPullRequest({ branch: 'feature', baseBranch: 'main', title: 'Recovery', body: 'Fixture only' }) };
+    } };
+    factory = await startFactory(t, { executor, subprocess: phase === 'publication' ? true : { pauseBeforeMergedSync: { barrier, release } }, hub: { deliveryLeaseDurationMs: 3000 } });
+    const { project, run } = await startRun(factory.request, { url: repository, defaultBranch: 'main' });
+    await eventually(() => access(barrier).then(() => true, () => false));
+    const published = await git(repository, 'rev-parse', 'main');
+    await factory.hub.kill(); await writeFile(release, 'continue'); await factory.hub.restart();
+    const finished = await eventually(async () => { const value = await factory.request('GET', `/runs/${run.id}`); return ['completed', 'failed'].includes(value.status) && value; });
+    assert.equal(finished.status, 'completed');
+    const { entries } = await factory.request('GET', `/projects/${project.id}/merge-queue`);
+    assert.equal(entries[0].mergedRevision, published); assert.equal(entries[0].status, 'merged');
+    assert.equal(await git(repository, 'rev-parse', 'main'), published);
+    const jobs = (await factory.request('GET', `/jobs?runId=${run.id}`)).jobs.filter(job => job.delivery);
+    assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'passed'); assert.equal(jobs[0].revision, published);
+    const state = await forge.state(); assert.equal(state.calls.filter(call => call[1] === 'close').length, 1);
+    const events = (await factory.events()).filter(event => event.runId === run.id);
+    assert.equal(events.filter(event => event.type === 'gate.result' && event.data.gate === 'merge-queue').length, 1);
+    assert.equal(factory.node.error, undefined);
+    if (phase === 'hub projection') {
+      // Teardown can remove the release marker before a final maintenance pump.
+      // Once released, the injected fault must never arm again in the restarted process.
+      await rm(release);
+      await sleep(100);
+      assert.equal((await factory.request('GET', `/runs/${run.id}`)).status, 'completed');
+    }
+  } finally {
+    // Stop the hub before temp() removes files still used by the fault injector.
+    if (factory) {
+      if (phase === 'hub projection') await writeFile(release, 'cleanup');
+      await factory.node.stop({ drain: false });
+      await factory.hub.close();
+    }
+  }
 });
 
 test('SIGKILL across lease expiry fences stale results and retries with the same live node daemon', async t => {

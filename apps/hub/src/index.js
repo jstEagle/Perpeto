@@ -102,6 +102,8 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
       }
       if (request.method === 'OPTIONS') { response.writeHead(204); response.end(); return; }
       const url = new URL(request.url, 'http://hub');
+      // Refuse targets that URL parsing rewrites (dot segments, backslashes, empty segments) instead of routing the rewrite.
+      if (request.url.split('?')[0] !== url.pathname || url.pathname.includes('//')) fail(400, 'INVALID_PATH', 'Request path must be canonical.');
       if ((url.pathname === '/health' || url.pathname === '/api/v1/health') && request.method === 'GET') return json(response, 200, { status: 'ok', version: '0.1.0' });
       if (!url.pathname.startsWith('/api/v1/')) fail(404, 'NOT_FOUND', 'Route not found.');
       if (closing) fail(503, 'SHUTTING_DOWN', 'Hub is shutting down.');

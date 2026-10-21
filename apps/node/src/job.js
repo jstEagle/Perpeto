@@ -1,29 +1,45 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { jobEnvironment, jobSandbox } from './sandbox.js';
 import { StringDecoder } from 'node:string_decoder';
 import { readSecret } from './config.js';
 import { runProcess } from './process.js';
 
 /** Lines are held until redaction is safe. Oversized lines are masked in full. */
-export function createLogStream({ report, step, stream, literals = [], patterns = [], maxBytes = 8192 }) {
+export function createLogStream({ report, step, stream, literals = [], patterns = [], maxBytes = 8192, flushMs = 100 }) {
   const decoder = new StringDecoder('utf8');
   const regexes = patterns.map(pattern => new RegExp(pattern, 'g'));
   let pending = '';
   let dropping = false;
+  let batch = '';
+  let batchBytes = 0;
+  let timer;
+  let delivery = Promise.resolve();
+  let failure;
+  async function flush() {
+    clearTimeout(timer); timer = undefined;
+    if (!batch) { await delivery; if (failure) throw failure; return; }
+    const chunk = batch;
+    batch = ''; batchBytes = 0;
+    const sending = delivery.then(() => {
+      if (failure) throw failure;
+      return report({ type: 'log', data: { step, stream, chunk } });
+    });
+    // Keep timer-triggered rejections observed, then propagate on the next write/end.
+    delivery = sending.catch(error => { failure ??= error; });
+    await sending;
+  }
   async function emit(text) {
     for (const secret of literals.filter(Boolean).sort((a, b) => b.length - a.length)) text = text.split(secret).join('[REDACTED]');
     for (const regex of regexes) text = text.replace(regex, '[REDACTED]');
-    // Iterate code points so a UTF-8 character is never split across requests.
-    let chunk = '';
-    let bytes = 0;
+    // Pack redacted lines into requests without splitting UTF-8 code points.
     for (const char of text) {
       const size = Buffer.byteLength(char);
-      if (bytes + size > maxBytes) {
-        await report({ type: 'log', data: { step, stream, chunk } }); chunk = ''; bytes = 0;
-      }
-      chunk += char; bytes += size;
+      if (batchBytes + size > maxBytes) await flush();
+      batch += char; batchBytes += size;
+      timer ??= setTimeout(() => { void flush().catch(() => {}); }, flushMs);
     }
-    if (chunk) await report({ type: 'log', data: { step, stream, chunk } });
   }
   async function consume(text) {
     // Input is bounded by the child's pipe high-water mark, retained state by maxBytes.
@@ -43,8 +59,14 @@ export function createLogStream({ report, step, stream, literals = [], patterns 
     }
   }
   return {
-    async write(chunk) { await consume(decoder.write(chunk)); },
-    async end() { await consume(decoder.end()); if (pending && !dropping) await emit(pending); pending = ''; },
+    async write(chunk) { await delivery; if (failure) throw failure; await consume(decoder.write(chunk)); },
+    async end() {
+      try {
+        await delivery; if (failure) throw failure;
+        await consume(decoder.end()); if (pending && !dropping) await emit(pending); pending = '';
+        await flush();
+      } finally { clearTimeout(timer); }
+    },
   };
 }
 
@@ -76,11 +98,13 @@ export async function runJob(job, ctx, options = {}) {
       const url = new URL(repo);
       if (url.password || url.search || url.hash || (url.username && url.protocol !== 'ssh:')) throw new Error('Repository credentials must use local credential helpers.');
     }
-    const root = resolve(dataDir, 'jobs');
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    workspace = await mkdtemp(join(root, 'job-'));
+    workspace = await mkdtemp(join(tmpdir(), 'perpeto-ci-'));
     const checkout = join(workspace, 'source');
-    const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1' };
+    const sandbox = await jobSandbox(workspace, [dataDir, process.env.GIT_CONFIG_GLOBAL, ...(options.protectedPaths ?? [])]);
+    const stepEnv = jobEnvironment(workspace, options.path);
+    // Checkout is a trusted daemon operation. Preserve its configured remote rewrites,
+    // but never expose the config path/content to untrusted shell steps.
+    const gitEnv = { ...stepEnv, ...(process.env.GIT_CONFIG_GLOBAL ? { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL } : {}) };
     const git = async args => {
       const result = await runProcess('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
         cwd: workspace, env: gitEnv, signal: ctx.signal, timeoutMs: checkoutTimeoutSec * 1000,
@@ -95,12 +119,15 @@ export async function runJob(job, ctx, options = {}) {
       const startedAt = new Date().toISOString();
       const logs = Object.fromEntries(['stdout', 'stderr'].map(stream => [stream,
         createLogStream({ ...redaction, report: ctx.report, step: index, stream, maxBytes: maxLogChunkBytes })]));
-      const result = await runProcess(process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
-        process.platform === 'win32' ? ['/d', '/s', '/c', step.run] : ['-c', step.run], {
-          cwd: checkout, signal: ctx.signal, timeoutMs: (step.timeoutSec ?? defaultTimeoutSec) * 1000,
+      let result;
+      try {
+        result = await runProcess(sandbox.command, [...sandbox.args, '-c', step.run], {
+          cwd: checkout, env: stepEnv, signal: ctx.signal, timeoutMs: (step.timeoutSec ?? defaultTimeoutSec) * 1000,
           onOutput: (stream, chunk) => logs[stream].write(chunk),
         });
-      await Promise.all(Object.values(logs).map(log => log.end()));
+      } finally {
+        await Promise.all(Object.values(logs).map(log => log.end()));
+      }
       const status = result.cancelled ? 'cancelled' : result.timedOut ? 'error' : result.code === 0 ? 'passed' : 'failed';
       const item = { index, name: step.name, status, exitCode: result.code, timedOut: result.timedOut, startedAt, finishedAt: new Date().toISOString() };
       evidence.steps.push(item);

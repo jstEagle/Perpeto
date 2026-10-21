@@ -4,6 +4,7 @@ import {
   diffGraphs, buildArchitectPrompt, parseArchitectResult, evaluateArchitectResult, describeGraphSchema,
   GRAPH_JSON_SCHEMA, NODE_TYPES, validateGraph,
 } from '../src/index.js';
+import { performance } from 'node:perf_hooks';
 import { template, code } from './fixtures.js';
 
 test('identical graphs have an empty diff', () => {
@@ -121,4 +122,12 @@ test('evaluates architect replies for the retry loop', () => {
   const missingProvider = evaluateArchitectResult({ rationale: 'x', graph: template('build') }, { providers: ['claudeAgent'] });
   assert.ok(missingProvider.errors.some(error => error.code === 'UNAVAILABLE_PROVIDER'));
   assert.deepEqual(evaluateArchitectResult('nothing').errors.map(error => error.code), ['ARCHITECT_PARSE_ERROR']);
+});
+
+test('L5: an unclosed fence with a long run of spaces parses in linear time', () => {
+  const text = `\`\`\`${' \t'.repeat(32 * 1024)}`;
+  const started = performance.now();
+  assert.throws(() => parseArchitectResult(text), code('ARCHITECT_PARSE_ERROR'));
+  assert.ok(performance.now() - started < 200, `took ${Math.round(performance.now() - started)} ms`);
+  assert.equal(parseArchitectResult('```json  \n{"rationale":"r","graph":{"schema":"x"}}\n```').rationale, 'r');
 });

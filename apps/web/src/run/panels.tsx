@@ -1,16 +1,32 @@
-import type { Assignment, Bottleneck, Machine, MetricsSnapshot, WorkflowGraph } from '../api/types';
+import type { Assignment, Bottleneck, Machine, MetricsSnapshot, MetricsWindow, WorkflowGraph } from '../api/types';
 import { Empty, Panel } from '../components/ui';
 import { MachineStatusLabel, StatusLabel } from '../components/status';
 import { duration, rate, tokens } from '../lib/format';
 import { BOTTLENECK_LABEL } from '../workflow/step-node';
 import type { Selection } from '../workflow/graph-canvas';
 
-const WEEKDAY = (offsetFromToday: number) => new Date(Date.now() - offsetFromToday * 86_400_000).toLocaleDateString('en-GB', { weekday: 'short' });
+const WINDOW_MS: Record<MetricsWindow, number> = { '1h': 3_600_000, '24h': 86_400_000, '7d': 604_800_000 };
+
+/**
+ * The hub splits the window into equal buckets (12 for 1 h, 24 for 24 h, one
+ * per day for 7 d). Label each by its start time, thinned to about six.
+ */
+function bucketLabels(window: MetricsWindow, count: number, end = Date.now()) {
+  const span = WINDOW_MS[window] / count;
+  const every = Math.ceil(count / 6);
+  return Array.from({ length: count }, (_, i) => {
+    const start = new Date(end - (count - i) * span);
+    const text = span >= 86_400_000 ? start.toLocaleDateString('en-GB', { weekday: 'short' }) : start.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    return { text, shown: (count - 1 - i) % every === 0 };
+  });
+}
 
 export function VelocityPanel({ metrics }: { metrics: MetricsSnapshot }) {
   const v = metrics.run;
   const trend = v.velocity.trend;
   const max = Math.max(1, ...trend);
+  const labels = bucketLabels(metrics.window, trend.length);
+  const counts = trend.length <= 12;
   return (
     <Panel title="Velocity" actions={<span className="note">Last {metrics.window}</span>}>
       <div className="stack-sm">
@@ -21,17 +37,17 @@ export function VelocityPanel({ metrics }: { metrics: MetricsSnapshot }) {
           </div>
         </div>
         {trend.length > 0 && (
-          <figure className="velocity-trend" aria-label={`Items done per day, last ${trend.length} days: ${trend.join(', ')}`}>
+          <figure className="velocity-trend" aria-label={`Items finished in each of ${trend.length} periods over the last ${metrics.window}: ${trend.join(', ')}`}>
             <div className="spark" aria-hidden="true">
               {trend.map((n, i) => (
-                <span key={i} style={{ height: `${(n / max) * 100}%` }} title={`${WEEKDAY(trend.length - 1 - i)}: ${n}`} />
+                <span key={i} style={{ height: `${(n / max) * 100}%` }} title={`${labels[i].text}: ${n}`} />
               ))}
             </div>
             <div className="spark-axis" aria-hidden="true">
               {trend.map((n, i) => (
                 <span key={i}>
-                  <b>{n}</b>
-                  {WEEKDAY(trend.length - 1 - i)}
+                  {counts && <b>{n}</b>}
+                  {labels[i].shown ? labels[i].text : ''}
                 </span>
               ))}
             </div>

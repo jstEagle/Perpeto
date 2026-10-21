@@ -12,6 +12,8 @@ type Listener = (event: HubEvent) => void;
 interface HubContextValue {
   api: HubApi;
   settings: HubSettings | null;
+  /** A hub whose tab-only token or cookie session ended; Settings asks for the token again. */
+  reconnect?: string;
   stream: StreamState;
   connect(settings: HubSettings | null): void;
   /** Subscribe to live events. Returns an unsubscribe function. */
@@ -21,8 +23,28 @@ interface HubContextValue {
 const HubContext = createContext<HubContextValue | null>(null);
 
 export function HubProvider({ children, initial }: { children: ReactNode; initial?: HubApi }) {
-  const [settings, setSettings] = useState<HubSettings | null>(() => (initial ? null : loadSettings()));
+  const [loaded] = useState(() => (initial ? { settings: null } : loadSettings()));
+  const [settings, setSettings] = useState<HubSettings | null>(loaded.settings);
+  const [reconnect, setReconnect] = useState<string | undefined>(loaded.reconnect);
   const api = useMemo<HubApi>(() => initial ?? (settings ? new HttpHub(settings) : new DemoHub()), [settings, initial]);
+
+  // A cookie session can expire while nothing is stored here; check it once.
+  useEffect(() => {
+    if (!(api instanceof HttpHub) || settings?.auth.kind !== 'cookie') return;
+    let cancelled = false;
+    void api
+      .hasSession()
+      .then((ok) => {
+        if (ok || cancelled) return;
+        saveSettings(null);
+        setReconnect(settings.baseUrl);
+        setSettings(null);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [api, settings]);
   const [stream, setStream] = useState<StreamState>('connecting');
   const listeners = useRef(new Set<Listener>());
 
@@ -31,11 +53,10 @@ export function HubProvider({ children, initial }: { children: ReactNode; initia
     let stop: (() => void) | null = null;
     // Start from the newest event so screens don't replay history.
     api
-      .events(0, 1)
-      .catch(() => [])
-      .then((latest) => {
+      .latestSeq()
+      .catch(() => 0)
+      .then((after) => {
         if (cancelled) return;
-        const after = latest.at(-1)?.seq ?? 0;
         stop = api.subscribe(
           after,
           (event) => listeners.current.forEach((l) => l(event)),
@@ -51,6 +72,7 @@ export function HubProvider({ children, initial }: { children: ReactNode; initia
   const connect = useCallback((next: HubSettings | null) => {
     saveSettings(next);
     setSettings(next);
+    setReconnect(undefined);
   }, []);
 
   const onEvent = useCallback((listener: Listener) => {
@@ -60,7 +82,7 @@ export function HubProvider({ children, initial }: { children: ReactNode; initia
     };
   }, []);
 
-  const value = useMemo(() => ({ api, settings, stream, connect, onEvent }), [api, settings, stream, connect, onEvent]);
+  const value = useMemo(() => ({ api, settings, reconnect, stream, connect, onEvent }), [api, settings, reconnect, stream, connect, onEvent]);
   return <HubContext.Provider value={value}>{children}</HubContext.Provider>;
 }
 
@@ -77,11 +99,21 @@ export interface Resource<T> {
   reload(): void;
 }
 
+export interface Refresh {
+  /** Quiet time after the last matching event before refetching. */
+  debounceMs?: number;
+  /** Refetch at least this often while matching events keep arriving. */
+  maxWaitMs?: number;
+}
+
 /**
  * Loads data from the hub and reloads when a matching live event arrives.
- * `refreshOn` receives each event; return true to refetch (debounced).
+ * `refreshOn` receives each event; return true to refetch. Bursts are
+ * debounced, with a ceiling so a busy stream still refreshes. Data stays on
+ * screen while a refetch runs.
  */
-export function useResource<T>(load: (api: HubApi) => Promise<T>, deps: unknown[], refreshOn?: (event: HubEvent) => boolean): Resource<T> {
+export function useResource<T>(load: (api: HubApi) => Promise<T>, deps: unknown[], refreshOn?: (event: HubEvent) => boolean, refresh: Refresh = {}): Resource<T> {
+  const { debounceMs = 250, maxWaitMs = 2000 } = refresh;
   const { api, onEvent } = useHub();
   const [state, setState] = useState<{ data?: T; error?: Error; loading: boolean }>({ loading: true });
   const [nonce, setNonce] = useState(0);
@@ -105,16 +137,24 @@ export function useResource<T>(load: (api: HubApi) => Promise<T>, deps: unknown[
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let first = 0;
+    const fire = () => {
+      timer = null;
+      first = 0;
+      setNonce((n) => n + 1);
+    };
     const off = onEvent((event) => {
       if (!refreshRef.current?.(event)) return;
+      const now = Date.now();
+      first ||= now;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => setNonce((n) => n + 1), 250);
+      timer = setTimeout(fire, Math.max(0, Math.min(debounceMs, first + maxWaitMs - now)));
     });
     return () => {
       off();
       if (timer) clearTimeout(timer);
     };
-  }, [onEvent]);
+  }, [onEvent, debounceMs, maxWaitMs]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   return { data: state.data, error: state.error, loading: state.loading, reload };

@@ -7,9 +7,9 @@ import { NODE_SPECS } from './registry';
  * the editor and the demo data.
  */
 
-export const COL = 280;
+export const COL = 304;
 const X = COL;
-export const ROW = 304;
+export const ROW = 320;
 
 function node(id: string, type: GraphNode['type'], label: string, col: number, row: number, config: Record<string, unknown> = {}): GraphNode {
   return { id, type, label, position: { x: col * X, y: row * ROW }, config: { ...NODE_SPECS[type].defaults(), ...config } };

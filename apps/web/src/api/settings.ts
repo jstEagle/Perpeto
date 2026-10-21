@@ -1,27 +1,73 @@
 import type { HubSettings } from './client';
 
 /**
- * Hub connection settings live in this browser's localStorage, as the task
- * specifies. The owner token is readable by any script on this origin, so
- * serve the app only from an origin you trust.
+ * Where the hub connection lives in this browser.
+ *
+ * The owner token is never written to localStorage. Preferred: the hub sets
+ * an HttpOnly session cookie (POST /api/v1/session), so scripts on this
+ * origin cannot read any credential and only `{ baseUrl, auth: 'cookie' }`
+ * is remembered. Until the hub serves that route, the token is kept in
+ * sessionStorage: it is gone when the tab closes, but any script running on
+ * this origin can still read it while the tab is open.
  */
-const KEY = 'perpeto.hub.v1';
+const CONFIG_KEY = 'perpeto.hub.v2';
+const TOKEN_KEY = 'perpeto.hub.token';
+/** Earlier builds kept the token here. Moved to session storage on first load. */
+const LEGACY_KEY = 'perpeto.hub.v1';
 
-export function loadSettings(): HubSettings | null {
+interface StoredConfig {
+  baseUrl: string;
+  auth: 'cookie' | 'session';
+}
+
+export interface LoadedSettings {
+  settings: HubSettings | null;
+  /** A hub this browser used before whose token or session is gone; ask for the token again. */
+  reconnect?: string;
+}
+
+function readConfig(): StoredConfig | null {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<HubSettings>;
-    if (typeof parsed.baseUrl !== 'string' || typeof parsed.token !== 'string' || !parsed.baseUrl || !parsed.token) return null;
-    return { baseUrl: parsed.baseUrl, token: parsed.token };
+    const parsed = JSON.parse(localStorage.getItem(CONFIG_KEY) ?? 'null') as Partial<StoredConfig> | null;
+    if (!parsed || typeof parsed.baseUrl !== 'string' || !parsed.baseUrl || (parsed.auth !== 'cookie' && parsed.auth !== 'session')) return null;
+    return { baseUrl: parsed.baseUrl, auth: parsed.auth };
   } catch {
     return null;
   }
 }
 
+function migrateLegacy() {
+  try {
+    const raw = localStorage.getItem(LEGACY_KEY);
+    if (!raw) return;
+    localStorage.removeItem(LEGACY_KEY);
+    const parsed = JSON.parse(raw) as { baseUrl?: unknown; token?: unknown };
+    if (typeof parsed.baseUrl !== 'string' || !parsed.baseUrl) return;
+    localStorage.setItem(CONFIG_KEY, JSON.stringify({ baseUrl: parsed.baseUrl, auth: 'session' } satisfies StoredConfig));
+    if (typeof parsed.token === 'string' && parsed.token) sessionStorage.setItem(TOKEN_KEY, parsed.token);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+export function loadSettings(): LoadedSettings {
+  migrateLegacy();
+  const config = readConfig();
+  if (!config) return { settings: null };
+  if (config.auth === 'cookie') return { settings: { baseUrl: config.baseUrl, auth: { kind: 'cookie' } } };
+  const token = sessionStorage.getItem(TOKEN_KEY);
+  return token ? { settings: { baseUrl: config.baseUrl, auth: { kind: 'bearer', token } } } : { settings: null, reconnect: config.baseUrl };
+}
+
 export function saveSettings(settings: HubSettings | null) {
-  if (settings) localStorage.setItem(KEY, JSON.stringify(settings));
-  else localStorage.removeItem(KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
+  if (!settings) {
+    localStorage.removeItem(CONFIG_KEY);
+    return;
+  }
+  const config: StoredConfig = { baseUrl: settings.baseUrl, auth: settings.auth.kind === 'cookie' ? 'cookie' : 'session' };
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  if (settings.auth.kind === 'bearer') sessionStorage.setItem(TOKEN_KEY, settings.auth.token);
 }
 
 /** Returns an error message, or null when the URL is acceptable. */
@@ -30,7 +76,7 @@ export function checkBaseUrl(value: string): string | null {
   try {
     url = new URL(value);
   } catch {
-    return 'Enter a full URL, for example http://localhost:7300.';
+    return 'Enter a full URL, for example http://127.0.0.1:4320.';
   }
   if (!['http:', 'https:'].includes(url.protocol)) return 'Use an http or https URL.';
   if (url.username || url.password) return 'Remove credentials from the URL. Put the token in the token field.';

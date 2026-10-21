@@ -123,7 +123,9 @@ function fakeAccounts({ bindingError } = {}) {
   const calls = [];
   const binding = { accountId: 'acct_1', providerInstanceId: 'factory_acct_1', mutation: { operation: 'upsert', instanceId: 'factory_acct_1', instance: { driver: 'codex', displayName: 'Build', enabled: true, config: { homePath: '/x' } } } };
   return { calls, provider: {
-    async acquire(input) { calls.push(['acquire', input]); return { account: { id: 'acct_1', provider: 'codex' }, binding }; },
+    async acquire(input) { calls.push(['acquire', input]); return { account: { id: 'acct_1', provider: 'codex' }, binding,
+      reservation: { id: 'res_1', expiresAt: new Date(Date.now() + 300_000).toISOString() } }; },
+    async renewReservation() { throw new Error('Short fixture turns should finish before renewal.'); },
     async bindingFor(id) { calls.push(['bindingFor', id]); if (bindingError && calls.filter(c => c[0] === 'bindingFor').length > 1) throw Object.assign(new Error('x'), { code: bindingError }); return binding; },
     async observe(input) { calls.push(['observe', input]); },
     async release(selection, input) { calls.push(['release', input]); },

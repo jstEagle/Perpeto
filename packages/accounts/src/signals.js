@@ -1,6 +1,8 @@
 /** Sanitized observations only. Input messages are never returned or retained. */
 const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const finite = value => typeof value === 'number' && Number.isFinite(value);
+const permittedOverage = info => info.overageStatus === 'allowed' || info.overageStatus === 'allowed_warning'
+  || info.isUsingOverage === true || info.overageInUse === true;
 const iso = value => {
   const ms = typeof value === 'number' ? value * 1000 : typeof value === 'string' ? Date.parse(value) : NaN;
   return Number.isFinite(ms) && ms > 0 && ms < 8.64e15 ? new Date(ms).toISOString() : undefined;
@@ -40,6 +42,7 @@ export function usageWindows(provider, message) {
         || !finite(info.utilization)) return [];
     const resetsAt = iso(info.resetsAt);
     return [{ id: info.rateLimitType, usedPercent: Math.min(100, Math.max(0, info.utilization * 100)),
+      overageAllowed: permittedOverage(info),
       ...(resetsAt ? { resetsAt } : {}) }];
   }
   return [];
@@ -62,14 +65,13 @@ export function detectProviderSignal(provider, message, { now = Date.now(), wind
     return { kind: 'auth-failure' };
   }
   const info = object(data.rate_limit_info);
-  const overage = info.overageStatus === 'allowed' || info.overageStatus === 'allowed_warning'
-    || info.isUsingOverage === true || info.overageInUse === true;
+  const overage = permittedOverage(info);
   // A Claude warning or permitted overage must never trigger rotation.
   if (data.type === 'rate_limit_event' && (overage || info.status !== 'rejected')) return null;
   const limits = object(data.rateLimits ?? data);
   if (provider === 'codex' && limits.limitId && limits.limitId !== 'codex') return null;
   const exhausted = (windows ?? usageWindows(provider, message)).filter(window =>
-    window.usedPercent >= 100 && (!window.resetsAt || Date.parse(window.resetsAt) > now));
+    !window.overageAllowed && window.usedPercent >= 100 && (!window.resetsAt || Date.parse(window.resetsAt) > now));
   const limited = failure.class === 'usage_limit' || status === 429
     || ['rate_limit', 'rate_limit_error', 'api_error_429', 'usageLimitExceeded', 'rateLimitExceeded'].includes(code)
     || (provider === 'claudeAgent' && (info.status === 'rejected' && !overage || data.terminal_reason === 'blocking_limit'))

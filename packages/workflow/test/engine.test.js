@@ -232,7 +232,7 @@ test('blocked assignments wait for a person to retry or fail them', () => {
   run.complete('planner', { outcome: 'success', items: [{ title: 'A' }, { title: 'B' }] });
   run.complete('builder', { outcome: 'blocked', summary: 'Need database credentials.' });
   const blocked = run.items(item => item.status === 'blocked')[0];
-  assert.deepEqual(blocked.waiting, { kind: 'retry', nodeId: 'builder', summary: 'Need database credentials.' });
+  assert.deepEqual(blocked.waiting, { kind: 'retry', nodeId: 'builder', summary: 'Need database credentials.', decisionId: 'hd_test1_1' });
   assert.equal(run.open('builder').length, 1);
 
   run.apply('human.decision', { workItemId: blocked.id, decision: 'pass', note: 'Credentials are in the vault now.' });
@@ -337,4 +337,32 @@ test('rejects invalid events', () => {
   assert.throws(() => step(run.state, { id: 'x', type: 'run.exploded', at: '2026-10-21T00:00:00Z' }), code('INVALID_EVENT'));
   assert.throws(() => step(run.state, { id: 'x', type: 'run.paused', at: 'yesterday' }), code('INVALID_EVENT'));
   assert.throws(() => run.apply('input.added', { items: [] }), code('INVALID_EVENT'));
+});
+
+test('step shares untouched entities and never writes to a frozen state', () => {
+  // Every input state is frozen, so a write to anything the step did not copy throws.
+  const run = new Driver((state, event) => step(state && deepFreeze(state), event));
+  run.start();
+  run.complete('planner', { outcome: 'success', items: [{ title: 'A' }, { title: 'B' }, { title: 'C' }] });
+  run.complete('builder', { outcome: 'blocked', summary: 'Need credentials.' });
+  run.apply('human.decision', { workItemId: run.items(item => item.status === 'blocked')[0].id, decision: 'pass' });
+  run.complete('builder', built(1));
+  run.complete('reviewer', { outcome: 'success', verdict: 'fail', summary: 'Add tests.' });
+  run.complete('builder', built(2));
+  run.complete('reviewer', { outcome: 'success', verdict: 'pass' });
+  run.apply('job.completed', { jobId: run.openJob().id, status: 'error' });
+  run.apply('job.completed', { jobId: run.openJob().id, status: 'passed' });
+  run.apply('merge.rejected', { mergeId: run.openMerge().id, reason: 'Conflicts.' });
+  run.apply('run.paused');
+  run.apply('run.resumed');
+
+  const before = run.state;
+  const untouched = run.open('builder').at(-1);
+  const result = step(deepFreeze(before), run.event('assignment.completed', { assignmentId: run.open('builder')[0].id, result: built(3) }));
+  assert.equal(result.state.assignments[untouched.id], before.assignments[untouched.id], 'untouched entities are shared');
+  assert.equal(result.state.plan, before.plan);
+
+  run.apply('run.stopped', { reason: 'Done for today.' });
+  assert.equal(run.items(item => item.status === 'failed').length, run.items().length - run.items(item => item.status === 'done').length);
+  assert.equal(canonicalJson(replay(run.events)), canonicalJson(run.state));
 });

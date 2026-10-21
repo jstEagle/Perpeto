@@ -33,11 +33,11 @@ function notFound(what: string): never {
 
 /** Interactions replayed on the live run so the map and feed move. */
 const LIVE_SCRIPT: Record<string, unknown>[] = [
-  { type: 'agent.messaged', fromNode: 'builder', toNode: 'reviewer', edgeId: 'm-builder-reviewer', summary: 'Builder asked Reviewer to look at the drain mode tests first' },
-  { type: 'workitem.moved', fromNode: 'loop', toNode: 'builder', edgeId: 'e-loop-out-builder', summary: '"Delivery: merge queue batching" back to Builder, iteration 3' },
-  { type: 'agent.delegated', fromNode: 'planner', toNode: 'builder', edgeId: 'd-planner-builder', summary: 'Planner assigned "CLI: install script" to Builder' },
+  { type: 'agent.messaged', sourceNodeId: 'builder', targetNodeId: 'reviewer', edgeId: 'm-builder-reviewer', summary: 'Builder asked Reviewer to look at the drain mode tests first' },
+  { type: 'workitem.moved', sourceNodeId: 'loop', targetNodeId: 'builder', edgeId: 'e-loop-out-builder', summary: '"Delivery: merge queue batching" back to Builder, iteration 3' },
+  { type: 'agent.delegated', sourceNodeId: 'planner', targetNodeId: 'builder', edgeId: 'd-planner-builder', summary: 'Planner assigned "CLI: install script" to Builder' },
   { type: 'assignment.state', nodeId: 'reviewer', state: 'running', machineId: DEMO_IDS.studio, summary: 'Reviewer still on "Hub: metrics endpoint", 14 min in' },
-  { type: 'agent.messaged', fromNode: 'reviewer', toNode: 'planner', unplanned: true, edgeId: 'u-reviewer-planner', summary: 'Reviewer asked Planner which goal "Hub: usage by machine" serves' },
+  { type: 'agent.messaged', sourceNodeId: 'reviewer', targetNodeId: 'planner', unplanned: true, edgeId: 'u-reviewer-planner', summary: 'Reviewer asked Planner which goal "Hub: usage by machine" serves' },
 ];
 
 /** In-memory hub backed by fixtures. Mutations persist until reload. */
@@ -73,7 +73,7 @@ export class DemoHub implements HubApi {
 
   async health() {
     await latency(60);
-    return { ok: true, version: 'demo' };
+    return { status: 'ok', version: 'demo' };
   }
 
   async overview(projectId?: string): Promise<Overview> {
@@ -85,7 +85,7 @@ export class DemoHub implements HubApi {
       .filter((u) => u.at.startsWith(today) && (!projectId || u.projectId === projectId))
       .reduce((sum, u) => sum + u.inputTokens + u.outputTokens, 0);
     return {
-      activeAgents: this.#state.assignments.filter((a) => runIds.has(a.runId) && a.status === 'running').length,
+      activeAgents: this.#state.assignments.filter((a) => !!a.runId && runIds.has(a.runId) && a.status === 'running').length,
       queuedWork: this.#state.workItems.filter((w) => runIds.has(w.runId) && w.status === 'queued').length,
       tokensToday,
       machinesOnline: this.#state.machines.filter((m) => m.status === 'online').length,
@@ -176,9 +176,8 @@ export class DemoHub implements HubApi {
     const project = this.#project(projectId);
     const assignment: Assignment = {
       id: shortId('asg'),
-      runId: '',
-      workItemId: '',
-      nodeId: '',
+      projectId,
+      nodeId: 'workflow-architect',
       role: 'workflow-architect',
       prompt: input.prompt,
       harness: { provider: 'claudeAgent', model: 'claude-opus-5-5' },
@@ -192,7 +191,7 @@ export class DemoHub implements HubApi {
     const step = (delay: number, fn: () => void) => setTimeout(fn, delay);
     const progress = (summary: string, state: Assignment['status'] = 'running') => {
       assignment.status = state;
-      this.#emit('assignment.state', { kind: 'assignment', id: assignment.id }, { state, summary, machineId: assignment.machineId, provider: 'claudeAgent', model: 'claude-opus-5-5' }, scope);
+      this.#emit('assignment.state', { kind: 'assignment', id: assignment.id }, { state, nodeId: assignment.nodeId, role: assignment.role, attempt: 1, machineId: assignment.machineId, summary }, scope);
     };
     progress('Queued for the workflow architect', 'queued');
     step(900, () => {
@@ -215,8 +214,10 @@ export class DemoHub implements HubApi {
       this.#state.versions.push(wf);
       assignment.result = { outcome: 'success', summary: `Draft version ${wf.version} of ${wf.name} saved.` };
       assignment.status = 'succeeded';
-      this.#emit('assignment.state', { kind: 'assignment', id: assignment.id }, { state: 'succeeded', summary: assignment.result.summary, workflowId: wf.id, version: wf.version }, scope);
-      this.#emit('workflow.draft', { kind: 'workflow', id: wf.id }, { version: wf.version, summary: `Architect proposed ${wf.name} version ${wf.version}` }, scope);
+      assignment.draftWorkflowId = wf.id;
+      assignment.draftVersion = wf.version;
+      this.#emit('workflow.version.saved', { kind: 'workflow', id: wf.id }, { version: wf.version, authoredBy: wf.authoredBy }, scope);
+      this.#emit('assignment.state', { kind: 'assignment', id: assignment.id }, { state: 'succeeded', nodeId: assignment.nodeId, role: assignment.role, attempt: 1, machineId: assignment.machineId, summary: assignment.result.summary }, scope);
     });
     return clone(assignment);
   }
@@ -292,8 +293,7 @@ export class DemoHub implements HubApi {
     const inputNode = graph?.nodes.find((n) => n.type === 'input')?.id ?? 'input';
     const item: WorkItem = { id: shortId('wi'), runId, title: input.title, body: input.body ?? '', nodeId: inputNode, status: 'queued', iteration: 1 };
     this.#state.workItems.push(item);
-    this.#emit('workitem.created', { kind: 'work_item', id: item.id }, { nodeId: inputNode, summary: `${input.kind === 'idea' ? 'Idea' : 'Input'} added: "${input.title}"` }, { projectId: run.projectId, runId });
-    return clone(item);
+    this.#emit('run.input', { kind: 'run', id: runId }, { nodeId: inputNode, summary: `Input added: "${input.title}"` }, { projectId: run.projectId, runId });
   }
   async listWorkItems(runId: string) {
     await latency();
@@ -307,8 +307,7 @@ export class DemoHub implements HubApi {
     await latency();
     const item = this.#state.workItems.find((w) => w.id === id) ?? notFound('Work item');
     item.status = decision.decision === 'approve' ? 'active' : 'queued';
-    this.#emit('gate.result', { kind: 'work_item', id }, { result: decision.decision === 'approve' ? 'pass' : 'fail', nodeId: item.nodeId }, { runId: item.runId });
-    return clone(item);
+    this.#emit('gate.result', { kind: 'work-item', id }, { result: decision.decision === 'approve' ? 'pass' : 'fail', decision: decision.decision === 'approve' ? 'pass' : 'fail', source: 'human', nodeId: item.nodeId }, { runId: item.runId });
   }
 
   async listMachines() {
@@ -383,6 +382,15 @@ export class DemoHub implements HubApi {
   async events(after = 0, limit = 200) {
     await latency(60);
     return clone(this.#state.events.filter((e) => e.seq > after).slice(-limit));
+  }
+
+  async latestSeq() {
+    return this.#state.seq;
+  }
+
+  async recentEvents(limit: number, match: (event: HubEvent) => boolean = () => true) {
+    await latency(60);
+    return clone(this.#state.events.filter(match).slice(-limit));
   }
 
   subscribe(after: number, onEvent: (event: HubEvent) => void, onState: (state: StreamState) => void) {

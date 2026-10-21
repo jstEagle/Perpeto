@@ -13,7 +13,7 @@ export const BOTTLENECK_RULES = Object.freeze({
   humanWaitWarningSec: 3600,
   humanWaitCriticalSec: 86400,
 });
-const INTERACTIONS = { 'workitem.moved': 'flow', 'agent.delegated': 'delegates', 'agent.messaged': 'messages' };
+const INTERACTIONS = new Map([['workitem.moved', 'flow'], ['agent.delegated', 'delegates'], ['agent.messaged', 'messages']]);
 const STARTED = new Set(['leased', 'running']);
 const OPEN_ASSIGNMENT = new Set(['queued', 'leased', 'running']);
 const OPEN_JOB = new Set(['queued', 'leased', 'running']);
@@ -49,7 +49,7 @@ function meets(machine, requirements = {}) {
 export function computeRunMetrics(state, events = [], { now, window = '24h', machines, usage = [] } = {}) {
   if (!isPlainObject(state) || !isPlainObject(state.plan)) fail('INVALID_INPUT', 'state must be a run state.');
   if (!isIsoTimestamp(now)) fail('INVALID_INPUT', 'now must be an ISO 8601 UTC timestamp.');
-  const windowSec = typeof window === 'number' ? window : METRIC_WINDOWS[window];
+  const windowSec = typeof window === 'number' ? window : Object.hasOwn(METRIC_WINDOWS, window) ? METRIC_WINDOWS[window] : NaN;
   if (!Number.isFinite(windowSec) || windowSec <= 0) fail('INVALID_INPUT', 'window must be 1h, 24h, 7d or a positive number of seconds.');
   if (!Array.isArray(events) || !Array.isArray(usage)) fail('INVALID_INPUT', 'events and usage must be arrays.');
 
@@ -73,41 +73,45 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
   const running = assignments.filter(assignment => OPEN_ASSIGNMENT.has(assignment.status) && STARTED.has(latest.get(assignment.id)?.state));
 
   const nodeOfAssignment = new Map(assignments.map(assignment => [assignment.id, assignment.nodeId]));
-  const tokensByNode = {};
+  // Per-node tables are Maps: node ids from older plans may match `Object.prototype` members.
+  const tokensByNode = new Map();
   let tokens = 0;
   for (const record of usage) {
     if (!isPlainObject(record) || !inWindow(record.at)) continue;
     const count = (Number(record.inputTokens) || 0) + (Number(record.outputTokens) || 0);
     tokens += count;
     const nodeId = record.nodeId ?? nodeOfAssignment.get(record.assignmentId);
-    if (nodeId) tokensByNode[nodeId] = (tokensByNode[nodeId] ?? 0) + count;
+    if (nodeId) tokensByNode.set(nodeId, (tokensByNode.get(nodeId) ?? 0) + count);
   }
 
   // Retries are assignments and jobs beyond attempt 1; escalations come from each item's escalation records.
-  const retriesByNode = {};
+  const retriesByNode = new Map();
   for (const entity of [...assignments, ...Object.values(state.jobs ?? {})]) {
-    if ((entity.attempt ?? 1) > 1 && inWindow(entity.createdAt)) retriesByNode[entity.nodeId] = (retriesByNode[entity.nodeId] ?? 0) + 1;
+    if ((entity.attempt ?? 1) > 1 && inWindow(entity.createdAt)) retriesByNode.set(entity.nodeId, (retriesByNode.get(entity.nodeId) ?? 0) + 1);
   }
   const escalations = items.flatMap(item => (item.escalations ?? []).map(record => ({ ...record, item })));
   const escalationsInWindow = escalations.filter(record => inWindow(record.at));
-  const escalationsByNode = {};
-  for (const record of escalationsInWindow) escalationsByNode[record.from] = (escalationsByNode[record.from] ?? 0) + 1;
+  const escalationsByNode = new Map();
+  for (const record of escalationsInWindow) escalationsByNode.set(record.from, (escalationsByNode.get(record.from) ?? 0) + 1);
 
-  const visitsByNode = {};
+  const visitsByNode = new Map();
   for (const item of items) {
-    for (const visit of item.visits ?? []) (visitsByNode[visit.nodeId] ??= []).push({ ...visit, item });
+    for (const visit of item.visits ?? []) {
+      if (!visitsByNode.has(visit.nodeId)) visitsByNode.set(visit.nodeId, []);
+      visitsByNode.get(visit.nodeId).push({ ...visit, item });
+    }
   }
   const startOf = visit => started.get(visit.assignmentId) ?? visit.startedAt;
   /** Items waiting for dispatch at a node at time t, rebuilt from visits plus the current queue. */
   const depthAt = (nodeId, t) => {
-    const fromVisits = (visitsByNode[nodeId] ?? []).filter(visit => ms(visit.enteredAt) <= t && ms(visit.startedAt) > t).length;
+    const fromVisits = (visitsByNode.get(nodeId) ?? []).filter(visit => ms(visit.enteredAt) <= t && ms(visit.startedAt) > t).length;
     const current = items.filter(item => item.nodeId === nodeId && item.status === 'queued' && ms(item.enteredAt) <= t).length;
     return fromVisits + current;
   };
 
   const nodes = Object.values(plan.nodes).map(node => {
     const here = items.filter(item => item.nodeId === node.id);
-    const visits = visitsByNode[node.id] ?? [];
+    const visits = visitsByNode.get(node.id) ?? [];
     const ended = visits.filter(visit => inWindow(visit.endedAt));
     const done = ended.filter(visit => visit.result === 'pass').length;
     const failed = ended.filter(visit => visit.result === 'fail').length;
@@ -124,16 +128,16 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
       serviceSec: stats(ended.map(visit => Math.max(0, (ms(visit.endedAt) - ms(startOf(visit))) / 1000))),
       throughputPerHour: round((done + failed + errors) / (spanSec / 3600)),
       failureRate: done + failed + errors ? round((failed + errors) / (done + failed + errors)) : null,
-      tokens: tokensByNode[node.id] ?? 0,
-      retries: retriesByNode[node.id] ?? 0,
-      escalations: escalationsByNode[node.id] ?? 0,
+      tokens: tokensByNode.get(node.id) ?? 0,
+      retries: retriesByNode.get(node.id) ?? 0,
+      escalations: escalationsByNode.get(node.id) ?? 0,
     };
   });
 
   const edgeCounts = new Map(plan.edges.map(edge => [edge.id, 0]));
   const unplanned = new Map();
   for (const event of ordered) {
-    const kind = INTERACTIONS[event.type];
+    const kind = INTERACTIONS.get(event.type);
     if (!kind || !inWindow(event.at)) continue;
     const { edgeId, from, to } = event.data;
     if (edgeId && edgeCounts.has(edgeId) && event.data.unplanned !== true) { edgeCounts.set(edgeId, edgeCounts.get(edgeId) + 1); continue; }
@@ -170,7 +174,7 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
     wip: leaves.filter(item => item.status !== 'done' && item.status !== 'failed').length,
     tokensPerItem: finished.length ? Math.round(tokens / finished.length) : null,
     activeAgents: running.length,
-    retries: Object.values(retriesByNode).reduce((sum, count) => sum + count, 0),
+    retries: [...retriesByNode.values()].reduce((sum, count) => sum + count, 0),
     escalations: escalationsInWindow.length,
     waitingOnHuman: items.filter(item => item.status === 'blocked').length,
     machines: [...machinesInUse.values()].sort((a, b) => a.machineId.localeCompare(b.machineId))
@@ -224,7 +228,7 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
       const loop = plan.loops[node.id];
       // An escalation clears the item's count, so its record keeps the iterations it used.
       const escalated = escalationsInWindow.filter(record => record.from === node.id && record.reason === 'loop_limit');
-      const peak = item => Math.max(item.loopCounts?.[node.id] ?? 0,
+      const peak = item => Math.max(item.loopCounts && Object.hasOwn(item.loopCounts, node.id) ? item.loopCounts[node.id] : 0,
         ...(item.escalations ?? []).filter(record => record.from === node.id && record.reason === 'loop_limit').map(record => record.iterations ?? 0));
       const looped = items.filter(item => peak(item) > 0 && inWindow(item.updatedAt));
       if (looped.length) {

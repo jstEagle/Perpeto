@@ -7,6 +7,7 @@ import { issueSessionToken, readCredentialFile } from './credentials.js';
 import { assignmentContext, buildPrompt } from './prompt.js';
 import { outputInstructions, outputKind, parseRoleResult } from './results.js';
 import { ThreadTracker, TERMINAL_RUN_STATUSES } from './thread-state.js';
+import { keepAccountReservation } from './account-lease.js';
 import { branchName, isDirty, prepareWorkspace, publishBranch, pullRequestUrl, revisionOf } from './workspace.js';
 
 /** Harness option keys the executor consumes instead of forwarding as model options. */
@@ -121,7 +122,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     const accountId = selection.account?.id ?? selection.binding.accountId;
     let binding = selection.binding;
     if (typeof accounts.bindingFor === 'function') {
-      try { binding = await accounts.bindingFor(accountId); }
+      try { binding = await accounts.bindingFor(accountId, { reservationId: selection.reservation?.id }); }
       catch (error) { return { ok: false, summary: `Account ${accountId} is not eligible (${error?.code ?? 'unavailable'}).` }; }
     }
     await t3.upsertProviderInstance(binding.mutation, { signal });
@@ -162,8 +163,8 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
   };
 
   async function runAssignment(t3, assignment, ctx) {
-    const signal = ctx.signal ?? new AbortController().signal;
-    signal.throwIfAborted();
+    const callerSignal = ctx.signal ?? new AbortController().signal;
+    callerSignal.throwIfAborted();
     const report = event => Promise.resolve(ctx.report?.(event)).catch(() => {});
     const target = harnessTarget(assignment);
     const policy = assignment.policy ?? { maxSubagents: 0, allowedSubagentProviders: [] };
@@ -176,22 +177,42 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     const attemptKey = { assignmentId: assignment.id, attempt: Number.isSafeInteger(assignment.attempt) ? assignment.attempt : 1 };
     let selection = null;
     if (typeof accounts?.acquire === 'function') {
-      selection = await accounts.acquire({ provider: target.provider, model: target.model, ...attemptKey }) ?? null;
+      try { selection = await accounts.acquire({ provider: target.provider, model: target.model, ...attemptKey }) ?? null; }
+      catch (error) {
+        callerSignal.throwIfAborted();
+        if (error?.code === 'ACCOUNT_POOL_EXHAUSTED') {
+          return { outcome: 'failure', summary: `ACCOUNT_POOL_EXHAUSTED: no eligible pooled ${target.provider} account has capacity. Retry with backoff.` };
+        }
+        throw error;
+      }
     }
+    const lease = selection ? keepAccountReservation(accounts, selection, attemptKey) : null;
+    const signal = lease ? AbortSignal.any([callerSignal, lease.signal]) : callerSignal;
+    const reservationId = selection?.reservation?.id;
     const accountId = selection?.account?.id ?? selection?.binding?.accountId ?? null;
     const observe = async (message, key) => {
       if (!accountId || typeof accounts?.observe !== 'function') return;
-      await Promise.resolve(accounts.observe({ accountId, message, idempotencyKey: stableId('observe', assignment.id, String(attemptKey.attempt), key) })).catch(() => {});
+      await Promise.resolve(accounts.observe({ accountId, reservationId, ...attemptKey, message, idempotencyKey: stableId('observe', assignment.id, String(attemptKey.attempt), key) })).catch(() => {});
     };
     let result;
     try {
       result = await execute();
+      callerSignal.throwIfAborted();
+      if (lease?.signal.aborted) result = { ...result, outcome: 'failure', summary: lease.signal.reason.message };
+      return result;
+    } catch (error) {
+      callerSignal.throwIfAborted();
+      if (!lease?.signal.aborted) throw error;
+      result = { outcome: 'failure', summary: lease.signal.reason.message };
       return result;
     } finally {
-      if (selection && typeof accounts?.release === 'function') await Promise.resolve(accounts.release(selection, { ...attemptKey, result })).catch(() => {});
+      lease?.stop();
+      if (selection && typeof accounts?.release === 'function') await Promise.resolve(accounts.release(selection, { ...attemptKey, reservationId, result })).catch(() => {});
     }
 
     async function execute() {
+      signal.throwIfAborted();
+      if (selection && !selection.binding) return { outcome: 'failure', summary: 'The account pool returned no provider binding. Retry with backoff.' };
       let instance;
       if (selection?.binding) {
         const registered = await registerAccountInstance(t3, accounts, selection, { signal });
@@ -231,7 +252,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
 
       if (selection && typeof accounts?.bindingFor === 'function') {
         // Recheck eligibility immediately before launch; a concurrent disable or cooldown wins.
-        try { await accounts.bindingFor(accountId); }
+        try { await accounts.bindingFor(accountId, { reservationId }); }
         catch (error) { return { outcome: 'blocked', summary: `Account ${accountId} is no longer eligible (${error?.code ?? 'unavailable'}).` }; }
       }
       const extra = [outputInstructions(kind)];
@@ -240,14 +261,23 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       }
       const runtimeMode = RUNTIME_MODES.has(target.overrides.runtimeMode) ? target.overrides.runtimeMode : settings.runtimeMode;
       const interactionMode = target.overrides.interactionMode === 'plan' ? 'plan' : settings.interactionMode;
-      const launch = await t3.launchThread({
-        commandId: stableId('perpeto-cmd-launch', assignment.id, String(attempt)),
-        threadId, creationSource: 'server', projectId: project.id,
-        title: (workItem?.title ?? assignment.role ?? 'Perpeto assignment').slice(0, 120),
-        modelSelection: { instanceId: instance.instanceId, model: target.model, ...(target.options.length ? { options: target.options } : {}) },
-        runtimeMode, interactionMode, workspaceStrategy: workspace.workspaceStrategy,
-        initialMessage: { messageId: stableId('perpeto-msg', assignment.id, String(attempt)), text: buildPrompt(assignment, { extra }), attachments: [] },
-      }, { signal, timeoutMs: 300000 });
+      signal.throwIfAborted();
+      let launch;
+      try {
+        launch = await t3.launchThread({
+          commandId: stableId('perpeto-cmd-launch', assignment.id, String(attempt)),
+          threadId, creationSource: 'server', projectId: project.id,
+          title: (workItem?.title ?? assignment.role ?? 'Perpeto assignment').slice(0, 120),
+          modelSelection: { instanceId: instance.instanceId, model: target.model, ...(target.options.length ? { options: target.options } : {}) },
+          runtimeMode, interactionMode, workspaceStrategy: workspace.workspaceStrategy,
+          initialMessage: { messageId: stableId('perpeto-msg', assignment.id, String(attempt)), text: buildPrompt(assignment, { extra }), attachments: [] },
+        }, { signal, timeoutMs: 300000 });
+      } catch (error) {
+        // Launch can have reached T3 before cancellation rejects its reply.
+        if (!signal.aborted) throw error;
+        launch = await t3.getThread(threadId).catch(() => null);
+        if (!launch) throw error;
+      }
       await report({ type: 'progress', data: {
         interaction: 'thread.started', threadRef: threadRef(threadId), threadId, projectId: project.id,
         provider: instance.driver ?? target.provider, providerInstanceId: instance.instanceId, model: target.model,
@@ -259,6 +289,8 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
   }
 
   async function follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch }) {
+    // Keep observing while cancellation interrupts and drains active runs.
+    const observation = new AbortController();
     const trackers = new Map();
     const reportedTurns = new Set();
     const reportedUsage = new Set();
@@ -266,6 +298,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     const reportedRequests = new Set();
     const reportedFailures = new Set();
     const subscriptions = [];
+    const interruptedRuns = new Set();
     let decisionsCursor = 0;
     let tokens = 0;
     let stop = null; // { outcome, summary, interrupt }
@@ -286,7 +319,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
 
     async function subscribe(tracker) {
       let failures = 0;
-      while (!signal.aborted && !tracker.closed) {
+      while (!observation.signal.aborted && !tracker.closed) {
         let handle;
         try {
           handle = await t3.subscribeThread({ threadId: tracker.threadId, afterSequence: tracker.lastSequence }, async items => {
@@ -294,15 +327,15 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
             const changes = tracker.applyItems(items);
             await handleChanges(tracker, changes);
             wake();
-          }, { signal });
+          }, { signal: observation.signal });
           subscriptions.push(handle);
           await handle.done;
-          if (tracker.closed || signal.aborted) return;
+          if (tracker.closed || observation.signal.aborted) return;
         } catch (error) {
-          if (signal.aborted || tracker.closed) return;
+          if (observation.signal.aborted || tracker.closed) return;
           if (++failures > 5) throw error;
         }
-        await sleep(Math.min(250 * 2 ** failures, 5000), signal);
+        await sleep(Math.min(250 * 2 ** failures, 5000), observation.signal);
       }
     }
 
@@ -409,7 +442,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     async function pollDecisions() {
       if (!policyEnforced) return;
       let page;
-      try { page = await t3.policyDecisions(threadId, decisionsCursor, { signal }); } catch { return; }
+      try { page = await t3.policyDecisions(threadId, decisionsCursor, { signal: observation.signal }); } catch { return; }
       for (const decision of page?.decisions ?? []) {
         decisionsCursor = Math.max(decisionsCursor, decision.seq);
         // Native subagents and accepted delegated tasks are reported from the thread's subagent events.
@@ -427,7 +460,9 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     async function interruptAll(reason) {
       for (const tracker of trackers.values()) {
         for (const run of tracker.activeRuns()) {
-          await t3.dispatch({ type: 'run.interrupt', commandId: stableId('perpeto-cmd-interrupt', run.id, reason), threadId: tracker.threadId, runId: run.id, holdQueue: true }).catch(() => {});
+          if (interruptedRuns.has(run.id)) continue;
+          await t3.dispatch({ type: 'run.interrupt', commandId: stableId('perpeto-cmd-interrupt', run.id, reason), threadId: tracker.threadId, runId: run.id, holdQueue: true })
+            .then(() => interruptedRuns.add(run.id)).catch(() => {});
         }
       }
     }
@@ -438,11 +473,12 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       const until = Date.now() + timeoutMs;
       let idleSince = null;
       while (Date.now() < until) {
-        if (fatal) throw fatal;
+        if (fatal && !signal.aborted) throw fatal;
         await pollDecisions();
+        if (!honorStop) await interruptAll('cancel');
+        if (waitSignal?.aborted || (honorStop && stop)) return false;
         if (allIdle()) { idleSince ??= Date.now(); if (Date.now() - idleSince >= settings.settleMs) return true; }
         else idleSince = null;
-        if (waitSignal?.aborted || (honorStop && stop)) return false;
         await new Promise(resolve => {
           const timer = setTimeout(done, Math.min(settings.pollMs, Math.max(1, until - Date.now())));
           function done() { clearTimeout(timer); waitSignal?.removeEventListener('abort', done); wake = () => {}; resolve(); }
@@ -467,14 +503,16 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         if (await waitIdle(remaining, { signal })) break;
       }
       if (signal.aborted || stop) {
+        if (signal.reason?.code === 'ACCOUNT_RESERVATION_LOST') requestStop('failure', signal.reason.message);
         await interruptAll(signal.aborted ? 'cancel' : 'policy');
         await waitIdle(settings.interruptGraceMs, { honorStop: false });
-        if (signal.aborted) throw signal.reason ?? new Error('Assignment was cancelled.');
+        if (signal.aborted && signal.reason?.code !== 'ACCOUNT_RESERVATION_LOST') throw signal.reason ?? new Error('Assignment was cancelled.');
       }
       await pollDecisions();
       return await finish();
     } finally {
       for (const tracker of trackers.values()) tracker.closed = true;
+      observation.abort();
       for (const handle of subscriptions) handle.cancel();
     }
 
@@ -503,9 +541,11 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       const parsed = parseRoleResult(kind, text);
       if (parsed.error) return { outcome: 'failure', summary: clip(`${parsed.error}\n\n${text}`), ...evidence };
       const summary = parsed.summary ?? (text || 'The agent finished without a written summary.');
+      signal.throwIfAborted();
       if (kind === 'work' && checkout && revision.headSha) {
         if (await isDirty(checkout)) await report({ type: 'progress', data: { interaction: 'workspace.dirty', threadRef: threadRef(threadId), branch: evidence.branch ?? branch } });
         if (settings.publishBranch && workspace.startHead && revision.headSha !== workspace.startHead && evidence.branch) {
+          signal.throwIfAborted();
           const published = await publishBranch(checkout, evidence.branch);
           await report({ type: 'progress', data: { interaction: 'branch.published', branch: evidence.branch, headSha: revision.headSha, published: published.published, ...(published.reason ? { reason: published.reason } : {}) } });
           if (published.failed) return { outcome: 'failure', summary: clip(`${published.reason}\n\n${summary}`), ...evidence };

@@ -15,6 +15,6 @@ function testsIn(directory) {
 }
 const files = workspaces.flatMap(directory => testsIn(resolve(root, directory))).sort();
 if (!files.length) throw new Error('No Perpeto tests found.');
-const result = spawnSync(process.execPath, ['--test', ...files], {cwd:root, stdio:'inherit'});
+const result = spawnSync(process.execPath, ['--test', '--test-timeout=180000', ...files], {cwd:root, stdio:'inherit'});
 if (result.error) console.error(result.error.message);
 process.exitCode = result.status ?? 1;

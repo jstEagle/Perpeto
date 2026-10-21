@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { parseArgs } from './args.js';
 import { initHub } from './config.js';
 import { daemon, start, stop, control } from './process.js';
-import { enrollCode, join, owner, request } from './api.js';
+import { enrollCode, join, owner, request, decide, rotateToken } from './api.js';
 import { doctor } from './doctor.js';
 import { service } from './service.js';
 
@@ -10,8 +11,12 @@ export const help = `Usage: perpeto <command> [--dir <data-directory>]
 hub init [--host <address>] [--port <port>] [--show-owner-token]
 hub start|stop|status
 hub enroll-code [--labels <comma-separated>] [--show-code]
+hub decide <workItemId> pass|fail [--note <text>]
 node join <hubUrl> (--code <code> | --code-file <path>) [--name <name>] [--labels <comma-separated>]
 node start|stop|status|drain
+node rotate-token
+machines
+machines revoke <id>
 service install|uninstall [hub|node] [--dry-run]
 doctor
 status
@@ -19,7 +24,7 @@ status
 Default directory: ~/.perpeto. Secrets are saved in owner-only files.
 Service --dry-run prints generated files without writing or loading them.
 The service manager uses hub/node run internally for foreground execution.`;
-export async function main(args, { print = console.log } = {}) {
+export async function main(args, { print = console.log, fetchImpl = fetch } = {}) {
   const parsed = parseArgs(args);
   if (parsed.help) { print(help); return 0; }
   const { group, action, flags, positionals, dir } = parsed;
@@ -37,6 +42,17 @@ export async function main(args, { print = console.log } = {}) {
   } else if (group === 'node' && action === 'join') {
     const result = await join(dir, positionals[0], { code: flags.code, codeFile: flags['code-file'], labels, name: flags.name });
     print(`Joined ${result.hubUrl} as ${result.machineId}. Run perpeto node start with the same --dir.`);
+  } else if (group === 'machines') {
+    const { url, token } = await owner(dir);
+    const result = await request(url, action === 'revoke' ? `/machines/${encodeURIComponent(positionals[0])}/revoke` : '/machines', {
+      token, fetchImpl, ...(action === 'revoke' ? { body: { idempotencyKey: randomUUID() } } : {}),
+    });
+    print(JSON.stringify(result));
+  } else if (group === 'hub' && action === 'decide') {
+    print(JSON.stringify(await decide(dir, positionals[0], positionals[1], flags.note, { fetchImpl })));
+  } else if (group === 'node' && action === 'rotate-token') {
+    const result = await rotateToken(dir, { fetchImpl });
+    print(`Token rotated for ${result.machineId}. Run perpeto node start with the same --dir.`);
   } else if (['hub', 'node'].includes(group)) {
     if (action === 'run') { await daemon(dir, group); return process.exitCode ?? 0; }
     let result;

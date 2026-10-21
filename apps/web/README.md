@@ -9,6 +9,12 @@ npm run typecheck -w @perpeto/web
 npm run build:web
 node apps/web/scripts/screenshots.mjs   # with the dev server running; writes apps/web/screenshots/
 node apps/web/scripts/smoke.mjs         # browser smoke test of the main flows
+
+# Against a real hub (see apps/hub/README.md; allow http://localhost:5180 in corsOrigins)
+node apps/web/scripts/seed-web-demo-hub.mjs http://127.0.0.1:4320 path/to/owner.secret --hold
+node apps/web/scripts/hub-screenshots.mjs http://127.0.0.1:4320 path/to/owner.secret
 ```
+
+Connect in Settings with the hub URL and owner token. The app asks the hub for an HttpOnly session cookie; until the hub serves that route, the token stays in this tab's session storage only.
 
 Brand values come only from `src/styles/tokens.css`. See [the handoff](../../docs/handoffs/web-app.md) for scope, verification and contract assumptions.
