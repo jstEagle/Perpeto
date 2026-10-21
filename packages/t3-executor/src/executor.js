@@ -10,11 +10,14 @@ import { ThreadTracker, TERMINAL_RUN_STATUSES } from './thread-state.js';
 import { keepAccountReservation } from './account-lease.js';
 import { factoryInstance, gitIdentity, resolveIsolation } from './isolation.js';
 import { prepareMessaging, waitingSection, liveText } from './inbox.js';
-import { branchName, isDirty, localPullRequestUrl, prepareWorkspace, publishBranch, pullRequestUrl, revisionOf } from './workspace.js';
+import { branchName, git, isDirty, localPullRequestUrl, prepareWorkspace, publishBranch, pullRequestUrl, revisionOf } from './workspace.js';
+import { verifyRebase } from './rebase.js';
 
 /** Harness option keys the executor consumes instead of forwarding as model options. */
 const RESERVED_OPTIONS = new Set(['runtimeMode', 'interactionMode']);
 const RUNTIME_MODES = new Set(['approval-required', 'auto-accept-edits', 'auto', 'full-access']);
+/** Output kinds that commit to the work branch, which the executor then publishes. */
+const BUILDS = new Set(['work', 'rebase']);
 
 const DEFAULTS = Object.freeze({
   runtimeMode: 'full-access',
@@ -289,6 +292,11 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       const { repo, workItem } = assignmentContext(assignment);
       const branch = branchName(assignment.branch ?? workItem?.branch ?? `${settings.branchPrefix}${assignment.workItemId ?? assignment.id}`);
       const workspace = await prepareWorkspace({ repo, workspace: ctx.workspace, branch, signal });
+      let rebase = null;
+      if (kind === 'rebase') {
+        rebase = await prepareRebase(workspace, branch, assignment.headSha ?? workItem?.headSha, signal);
+        if (rebase.blocked) return { outcome: 'blocked', summary: rebase.blocked };
+      }
       const project = await t3.ensureProject({
         workspaceRoot: workspace.workspaceRoot,
         title: assignmentContext(assignment).project?.name ?? workspace.workspaceRoot.split('/').at(-1) ?? 'Perpeto work',
@@ -316,6 +324,12 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       const extra = [outputInstructions(kind)];
       if (kind === 'work' && workspace.mode !== 'workspace') {
         extra.push(`Work on branch ${branch} and commit your changes there. ${settings.publishBranch ? 'The factory pushes the branch to origin when you finish; do not push other branches.' : ''}`.trim());
+      }
+      if (rebase) {
+        extra.push(`Rebase step: ${branch} is checked out at ${rebase.previousHead}, the reviewed head. Rebase it onto ${rebase.baseRef}${workspace.mode === 'clone' ? ' (run git fetch origin first)' : ''}, ` +
+          'resolve the conflicts keeping the intended behavior of both sides, and change nothing outside the conflict hunks. Run the project\'s tests if they are quick. ' +
+          `Finish the rebase so nothing is left in progress and the result is committed on ${branch}. Do not push and do not switch branches: the factory checks the result with Git, ` +
+          `works out rebaseTouchedBeyondConflicts itself and publishes ${branch} with a lease on ${rebase.previousHead}.`);
       }
       // Messaging: the agent's run-scoped commands, and messages that waited in its role's inbox for this assignment.
       messagingSetup = await prepareMessaging(assignment, { workspace: ctx.workspace, messaging: ctx.messaging }).catch(() => null);
@@ -350,12 +364,26 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       } });
       if (waiting.length) await report({ type: 'delivered', data: { messageIds: waiting.map(item => item.id), via: 'prompt', threadRef: threadRef(threadId) } });
 
-      return follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch,
+      return follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch, rebase,
         inbox: ctx.inbox, delivered: new Set(waiting.map(item => item.id)) });
     }
   }
 
-  async function follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch, inbox, delivered }) {
+  /**
+   * A rebase step rewrites the existing, published work branch. Record the head it starts from (the lease for
+   * publication and the reference for rebaseTouchedBeyondConflicts) and the base it must end up on.
+   */
+  async function prepareRebase(workspace, branch, expectedHead, signal) {
+    const checkout = workspace.mode === 'clone' ? workspace.workspaceRoot : workspace.workspaceStrategy?.worktreePath;
+    const previousHead = workspace.mode === 'clone' ? workspace.publishedHead : workspace.mode === 'existing_worktree' ? workspace.startHead : null;
+    if (!checkout || !previousHead) return { blocked: `Rebase step: there is no published work branch ${branch} to rebase.` };
+    if (expectedHead && expectedHead !== previousHead) return { blocked: `Rebase step: ${branch} is at ${previousHead}, not at the reviewed head ${expectedHead}.` };
+    const baseHead = workspace.baseRef ? await git(checkout, ['rev-parse', '--verify', '--quiet', `${workspace.baseRef}^{commit}`], { signal }).catch(() => null) : null;
+    if (!baseHead) return { blocked: `Rebase step: the base branch ${workspace.baseRef ?? '(repo.defaultBranch is not set)'} was not found.` };
+    return { baseRef: workspace.baseRef, baseHead, previousHead };
+  }
+
+  async function follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch, rebase, inbox, delivered }) {
     // Keep observing while cancellation interrupts and drains active runs.
     const observation = new AbortController();
     const trackers = new Map();
@@ -623,7 +651,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       // Worktree provisioning updates the thread after launch; read its final state.
       const snapshot = await t3.getThread(threadId).catch(() => null);
       const thread = snapshot?.projection?.thread ?? root.thread ?? {};
-      const checkout = thread.worktreePath ?? (workspace.mode === 'worktree' ? null : workspace.workspaceRoot);
+      const checkout = thread.worktreePath ?? workspace.workspaceStrategy?.worktreePath ?? (workspace.mode === 'worktree' ? null : workspace.workspaceRoot);
       const revision = await revisionOf(checkout);
       const text = latest ? root.assistantText(latest.id) : '';
       const prUrl = pullRequestUrl(root.allAssistantText());
@@ -642,7 +670,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       }
       let parsed = parseRoleResult(kind, text);
       // A message can add a turn after a structured answer; the answer stands unless a later turn gives a new one.
-      if (steered && kind !== 'work' && (parsed.error || (kind === 'review' && !parsed.fields.verdict))) {
+      if (steered && !BUILDS.has(kind) && (parsed.error || (kind === 'review' && !parsed.fields.verdict))) {
         const earlier = root.orderedRuns().filter(run => run.status === 'completed').map(run => root.assistantText(run.id)).join('\n\n');
         const fallback = parseRoleResult(kind, earlier);
         if (!fallback.error && (kind !== 'review' || fallback.fields.verdict)) parsed = fallback;
@@ -650,19 +678,33 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       if (parsed.error) return { outcome: 'failure', summary: clip(`${parsed.error}\n\n${text}`), ...evidence };
       const summary = parsed.summary ?? (text || 'The agent finished without a written summary.');
       signal.throwIfAborted();
-      if (kind === 'work' && checkout && revision.headSha) {
+      const fields = { ...parsed.fields };
+      if (rebase) {
+        if (!checkout || !revision.headSha) return { outcome: 'failure', summary: clip(`Rebase step: the rebased checkout could not be read.\n\n${summary}`), ...evidence };
+        const verified = await verifyRebase(checkout, { ...rebase, headSha: revision.headSha, signal });
+        if (!verified.ok) return { outcome: 'failure', summary: clip(`Rebase step: ${verified.reason}\n\n${summary}`), ...evidence };
+        if (revision.branch !== branch) return { outcome: 'failure', summary: clip(`Rebase step: the checkout ended on ${revision.branch ?? 'a detached head'}, not on ${branch}.\n\n${summary}`), ...evidence };
+        await report({ type: 'progress', data: { interaction: 'rebase.verified', rebaseOf: assignment.rebaseOf ?? null, branch, base: verified.base, previousHead: rebase.previousHead,
+          headSha: revision.headSha, conflicted: verified.conflicted, touchedBeyondConflicts: verified.touchedBeyondConflicts ?? null, beyondConflicts: verified.beyondConflicts ?? null, at: new Date().toISOString() } });
+        // Unknown evidence stays absent, so the engine repeats review.
+        if (verified.touchedBeyondConflicts !== undefined) fields.rebaseTouchedBeyondConflicts = verified.touchedBeyondConflicts;
+      }
+      if (BUILDS.has(kind) && checkout && revision.headSha) {
         if (await isDirty(checkout)) await report({ type: 'progress', data: { interaction: 'workspace.dirty', threadRef: threadRef(threadId), branch: evidence.branch ?? branch } });
-        if (settings.publishBranch && workspace.startHead && revision.headSha !== workspace.startHead && evidence.branch) {
+        const startHead = rebase?.previousHead ?? workspace.startHead;
+        if (settings.publishBranch && startHead && revision.headSha !== startHead && evidence.branch) {
           signal.throwIfAborted();
-          const published = await publishBranch(checkout, evidence.branch);
-          await report({ type: 'progress', data: { interaction: 'branch.published', branch: evidence.branch, headSha: revision.headSha, published: published.published, ...(published.reason ? { reason: published.reason } : {}) } });
+          // A rebase rewrote published history: replace the same branch, but only from the exact head it started from.
+          const published = await publishBranch(checkout, evidence.branch, rebase ? { expectedHead: rebase.previousHead } : {});
+          await report({ type: 'progress', data: { interaction: 'branch.published', branch: evidence.branch, headSha: revision.headSha, published: published.published,
+            ...(rebase ? { leaseHead: rebase.previousHead } : {}), ...(published.reason ? { reason: published.reason } : {}) } });
           if (published.failed) return { outcome: 'failure', summary: clip(`${published.reason}\n\n${summary}`), ...evidence };
           // Without a forge the merge queue needs the published branch as `local:<branch>`.
           const localPr = published.published && !evidence.prUrl ? localPullRequestUrl(assignment.repo, evidence.branch) : undefined;
           if (localPr) evidence.prUrl = localPr;
         }
       }
-      return { outcome: 'success', summary: parsed.unclipped ? summary : clip(summary), ...parsed.fields, ...evidence };
+      return { outcome: 'success', summary: parsed.unclipped ? summary : clip(summary), ...fields, ...evidence };
     }
   }
 }
