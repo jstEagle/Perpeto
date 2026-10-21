@@ -92,9 +92,12 @@ export async function runJob(job, ctx, options = {}) {
     if (!/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(job.revision) || typeof job.configHash !== 'string' || !job.configHash ||
         !Array.isArray(job.steps) || job.steps.some(step => !step || typeof step.name !== 'string' || typeof step.run !== 'string' ||
           (step.timeoutSec !== undefined && (!Number.isFinite(step.timeoutSec) || step.timeoutSec <= 0)))) throw new Error('Invalid job.');
-    const repo = typeof job.repo === 'string' ? job.repo : job.repo?.url ?? job.repo?.localPath;
-    if (typeof repo !== 'string' || !repo || repo.startsWith('-') || repo.includes('\0')) throw new Error('Invalid job repository.');
-    if (repo.includes('://')) {
+    // A hub source names the job's own authenticated route; otherwise the job names a repository to clone.
+    const source = job.source;
+    if (source !== undefined && !(source?.kind === 'hub-bundle' && typeof source.path === 'string' && /^\/jobs\/[A-Za-z0-9_-]+\/bundle$/.test(source.path) && ctx.fetchSource)) throw new Error('Invalid job source.');
+    const repo = source ? null : typeof job.repo === 'string' ? job.repo : job.repo?.url ?? job.repo?.localPath;
+    if (!source && (typeof repo !== 'string' || !repo || repo.startsWith('-') || repo.includes('\0'))) throw new Error('Invalid job repository.');
+    if (repo?.includes('://')) {
       const url = new URL(repo);
       if (url.password || url.search || url.hash || (url.username && url.protocol !== 'ssh:')) throw new Error('Repository credentials must use local credential helpers.');
     }
@@ -106,13 +109,25 @@ export async function runJob(job, ctx, options = {}) {
     // but never expose the config path/content to untrusted shell steps.
     const gitEnv = { ...stepEnv, ...(process.env.GIT_CONFIG_GLOBAL ? { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL } : {}) };
     const git = async args => {
+      let output = '';
       const result = await runProcess('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
         cwd: workspace, env: gitEnv, signal: ctx.signal, timeoutMs: checkoutTimeoutSec * 1000,
+        onOutput: (stream, chunk) => { if (stream === 'stdout') output += chunk; },
       });
       if (result.code !== 0 || result.cancelled || result.timedOut) throw new Error('Git checkout failed.');
+      return output.trim();
     };
-    await git(['clone', '--no-checkout', '--no-hardlinks', '--', repo, checkout]);
-    await git(['-C', checkout, 'checkout', '--detach', job.revision, '--']);
+    if (source) {
+      // Fetch the hub's bundle into this job's workspace only; no hub path is ever addressed.
+      const bundle = join(workspace, 'source.bundle');
+      await ctx.fetchSource(source.path, bundle);
+      await git(['init', '--quiet', checkout]);
+      await git(['-C', checkout, 'fetch', '--quiet', '--no-tags', bundle, '+refs/*:refs/hub/*']);
+      await rm(bundle, { force: true });
+    } else await git(['clone', '--no-checkout', '--no-hardlinks', '--', repo, checkout]);
+    await git(['-C', checkout, 'checkout', '--quiet', '--detach', job.revision, '--']);
+    // Object ids are content hashes, so checking out the exact SHA and reading it back proves the tree is the job's.
+    if (await git(['-C', checkout, 'rev-parse', 'HEAD']) !== job.revision.toLowerCase()) throw new Error('Checked-out revision does not match the job.');
     await ctx.report({ type: 'started', data: { revision: job.revision, configHash: job.configHash } });
     for (const [index, step] of job.steps.entries()) {
       ctx.signal.throwIfAborted();

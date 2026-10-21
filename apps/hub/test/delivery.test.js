@@ -63,7 +63,7 @@ async function deliveryHub(t, config = {}) {
   await request('POST', '/nodes/heartbeat', { status: 'online', capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, providers: ['codex'] }, machine.token);
   const lease = async kind => (await request('POST', '/nodes/lease', { kinds: [kind], max: 1 }, machine.token))[kind === 'job' ? 'jobs' : 'assignments'][0];
   return {
-    root, request,
+    root, request, url, token: machine.token,
     async project(repoUrl) { return request('POST', '/projects', { name: 'Delivery', repo: { url: repoUrl, defaultBranch: 'main' } }); },
     async start(project, strategy = 'serial') {
       const workflow = await request('POST', `/projects/${project.id}/workflows`, { name: 'Merge', graph: mergeGraph(strategy) });
@@ -207,4 +207,29 @@ test('a second, different result for a speculative job keeps the recorded result
   const retry = { ...job, status: 'failed' }; hub.store.put('job', retry);
   assert.doesNotThrow(() => hub.delivery.record(retry, { status: 'failed' }));
   assert.equal(hub.store.get('job', job.id).status, 'passed'); assert.equal(queue.state.jobs[0].status, 'passed');
+});
+
+test('the hub serves a job its source as a bundle of exactly its revision, only to the leasing machine at its attempt', async t => {
+  const h = await deliveryHub(t); const repo = await repository(h.root); const project = await h.project(repo.bare);
+  const change = await repo.branch('change');
+  await h.start(project); await h.build(change);
+  const job = await eventually(() => h.lease('job'), 'speculative job');
+  assert.deepEqual(job.source, { kind: 'hub-bundle', path: `/jobs/${job.id}/bundle` });
+  assert.equal(JSON.stringify(job).includes(h.root), false, 'the leased job names no hub path');
+  const code = (await h.request('POST', '/machines/enrollment-codes', {})).code;
+  const other = await h.request('POST', '/nodes/enroll', { code, name: 'other', os: 'linux', arch: 'x64', providers: ['codex'], version: 'test' });
+  const get = (query, token) => fetch(`${h.url}/api/v1/jobs/${job.id}/bundle${query}`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal((await get(`?attempt=${job.attempt + 1}`, h.token)).status, 409);
+  assert.equal((await get('', h.token)).status, 409, 'the attempt is required');
+  assert.equal((await get(`?attempt=${job.attempt}`, other.token)).status, 409, 'another machine cannot fetch it');
+  const response = await get(`?attempt=${job.attempt}`, h.token);
+  assert.equal(response.status, 200); assert.equal(response.headers.get('content-type'), 'application/x-git-bundle');
+  const bundle = join(h.root, 'fetched.bundle'); await writeFile(bundle, Buffer.from(await response.arrayBuffer()));
+  const heads = (await git(h.root, 'bundle', 'list-heads', bundle)).split('\n');
+  assert.equal(heads.length, 1); assert.equal(heads[0].split(' ')[0], job.revision, 'one ref, at the job revision');
+  const clone = join(h.root, 'fetched'); await git(h.root, 'init', '--quiet', clone);
+  await git(clone, 'fetch', '--quiet', bundle, '+refs/*:refs/hub/*');
+  assert.equal(await git(clone, 'rev-parse', '--verify', `${job.revision}^{commit}`), job.revision);
+  assert.equal(await git(repo.bare, 'for-each-ref', 'refs/perpeto/bundles'), '', 'the temporary ref is gone');
+  assert.equal((await fetch(`${h.url}/api/v1/jobs/job_missing/bundle?attempt=1`, { headers: { Authorization: `Bearer ${h.token}` } })).status, 404);
 });

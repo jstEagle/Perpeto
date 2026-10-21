@@ -223,3 +223,34 @@ test('the event log hides legacy liveness noise by default, and filters by proje
   assert.equal((await f.request('GET', `/events?types=${'x,'.repeat(100)}x`)).status, 400);
   assert.equal((await f.request('GET', `/runs/${first.id}/metrics?window=1h`)).status, 200);
 });
+
+test('agent.messaged resolves roles to nodes through the graph and records an unknown end explicitly, never as a role id', async t => {
+  const f = await fixture(t);
+  const project = (await f.request('POST', '/projects', { body: { name: 'Roles', repo: { url: '/tmp/roles.git', defaultBranch: 'main' } } })).body;
+  const roles = { schema: 'perpeto.workflow/1', nodes: [
+    node('ideas', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build.' }), node('reviewer', 'agent', { harness, prompt: 'Review.', role: 'qa' }), node('done', 'output'),
+  ], edges: [flow('ideas', 'builder'), flow('builder', 'reviewer'), flow('reviewer', 'done')] };
+  const workflow = (await f.request('POST', `/projects/${project.id}/workflows`, { body: { name: 'Roles', graph: roles } })).body;
+  await f.request('POST', `/workflows/${workflow.id}/activate`, { body: { version: 1 } });
+  const run = (await f.request('POST', `/workflows/${workflow.id}/runs`, { body: { input: { items: [{ title: 'Feature' }] } } })).body;
+  const path = `/messaging/projects/${project.id}/channels/run-${run.id}/messages`;
+  for (const [index, [senderRoleId, recipientRoleId]] of [['builder', 'qa'], ['builder', 'ghost'], ['owner', 'builder']].entries()) {
+    assert.equal((await f.request('POST', path, { body: { senderRoleId, recipientRoleId, body: 'Hi', idempotencyKey: `m${index}` } })).status, 200);
+  }
+  const [toQa, toGhost, fromOwner] = (await f.request('GET', `/events?runId=${run.id}&types=agent.messaged`)).body.events.map(event => event.data);
+  assert.equal(toQa.targetNodeId, 'reviewer', 'a role resolves to the node that holds it'); assert.equal(toQa.to, 'reviewer');
+  assert.equal(toGhost.targetNodeId, null); assert.equal(toGhost.to, null); assert.equal(toGhost.targetUnknown, true);
+  assert.equal(toGhost.recipientRoleId, 'ghost'); assert.equal(toGhost.unplanned, true);
+  assert.equal(fromOwner.sourceNodeId, null); assert.equal(fromOwner.from, null); assert.equal(fromOwner.sourceUnknown, true); assert.equal(fromOwner.unplanned, true);
+  // A node-reported message without a target node is resolved the same way.
+  const code = (await f.request('POST', '/machines/enrollment-codes', { body: {} })).body.code;
+  const machine = (await f.request('POST', '/nodes/enroll', { auth: null, body: { code, name: 'm', os: 'linux', arch: 'x64', providers: ['codex'], version: 't' } })).body;
+  await f.request('POST', '/nodes/heartbeat', { auth: machine.token, body: { status: 'online', capacity: { maxAgents: 1, maxJobs: 0 }, running: { agents: 0, jobs: 0 }, providers: ['codex'] } });
+  const build = (await f.request('POST', '/nodes/lease', { auth: machine.token, body: { kinds: ['assignment'] } })).body.assignments[0];
+  await f.request('POST', `/assignments/${build.id}/events`, { auth: machine.token, body: { attempt: build.attempt, type: 'agent.messaged', data: { recipientRoleId: 'nobody' } } });
+  const reported = (await f.request('GET', `/events?runId=${run.id}&types=agent.messaged&latest=true&limit=1`)).body.events[0].data;
+  assert.equal(reported.sourceNodeId, 'builder'); assert.equal(reported.targetNodeId, null); assert.equal(reported.targetUnknown, true);
+  const edges = (await f.request('GET', `/runs/${run.id}/metrics?window=1h`)).body.edges.filter(edge => edge.unplanned).map(edge => edge.edgeId).sort();
+  assert.ok(edges.includes('unplanned:messages:builder->?')); assert.ok(edges.includes('unplanned:messages:?->builder'));
+  assert.ok(!edges.some(edge => /ghost|nobody|owner|qa/.test(edge)), `no role id is counted as a node: ${edges}`);
+});

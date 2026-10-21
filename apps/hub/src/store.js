@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { fail } from './errors.js';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const TERMINAL = { assignment: ['succeeded', 'failed', 'cancelled'], job: ['passed', 'failed', 'cancelled', 'error'] };
 const USAGE_KEYS = ['run_id', 'assignment_id', 'machine_id', 'account_id', 'provider', 'model'];
 const TOKENS = ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'];
@@ -35,8 +35,15 @@ export class HubStore {
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, type TEXT NOT NULL, project_id TEXT, run_id TEXT, subject TEXT NOT NULL, data TEXT NOT NULL) STRICT;
       CREATE INDEX IF NOT EXISTS events_project ON events(project_id,seq);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS hub_keys (name TEXT PRIMARY KEY, fingerprint TEXT NOT NULL) STRICT;
     `);
     if (version < 2) this.#migrate();
+    if (version < 3) {
+      // Schema 3: each machine token records its rotation generation, since random tokens cannot be re-derived to tell.
+      this.db.exec('BEGIN IMMEDIATE');
+      try { this.db.exec(`ALTER TABLE tokens ADD COLUMN generation INTEGER; PRAGMA user_version=${SCHEMA_VERSION};`); this.db.exec('COMMIT'); }
+      catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
+    }
   }
   #migrate() {
     this.db.exec('BEGIN IMMEDIATE');
@@ -80,7 +87,7 @@ export class HubStore {
       for (const [kind, statuses] of Object.entries(TERMINAL)) {
         for (const value of this.byStatus(kind, statuses)) if (!value.finishedAt) this.put(kind, { ...value, finishedAt: value.updatedAt ?? value.createdAt ?? at });
       }
-      this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
+      this.db.exec('PRAGMA user_version=2');
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
   }
@@ -190,6 +197,8 @@ export class HubStore {
   messageOnce(messageId) {
     return this.#sql('INSERT INTO message_interactions VALUES(?,?) ON CONFLICT(message_id) DO NOTHING').run(messageId, new Date().toISOString()).changes === 1;
   }
+  keyFingerprint(name) { return this.#sql('SELECT fingerprint FROM hub_keys WHERE name=?').get(name)?.fingerprint ?? null; }
+  setKeyFingerprint(name, fingerprint) { this.#sql('INSERT INTO hub_keys VALUES(?,?)').run(name, fingerprint); }
   createSession(hash, id, expiresAt) { this.#sql('INSERT INTO sessions VALUES(?,?,?)').run(hash, id, expiresAt); }
   session(hash) { return this.#sql('SELECT id, expires_at FROM sessions WHERE hash=?').get(hash) ?? null; }
   extendSession(hash, expiresAt) { this.#sql('UPDATE sessions SET expires_at=? WHERE hash=?').run(expiresAt, hash); }

@@ -73,3 +73,13 @@ Architecture was not edited. The fixed `attempt` protocol supersedes the earlier
 - `53b5b4a` fixed node attempt/heartbeat/cancellation protocol and restart/cap/rollback coverage.
 - `8a9ceaf` header idempotency, account timestamp validation, private sidecar checks and CLI startup/shutdown coverage.
 - The final documentation commit follows these; use branch history for its SHA.
+
+## Update: review wave 3 follow-ups (21 October 2026)
+
+Later work on `t3/fix-hub-review-findings` supersedes several limits above; the current behaviour is in the [hub README](../../apps/hub/README.md) and each finding's fix is marked in [the wave 3 review](review-wave3.md). In short: retention, archives and usage rollups now exist; leasing wakes only machines that could take the work and queries open work through indexes; run state lives in the workflow RunStore; machine tokens can be rotated and revoked; owner session cookies, event paging and filters serve the web and Apple clients.
+
+Latest changes:
+
+- **Credentials** (`dd59078`): machine tokens, enrollment codes and session tokens are random and stored as hashes; the owner secret cannot mint them. Replays return the issued credential, sealed with AES-256-GCM under `credentialKeyPath` (default `./credentials.key`, owner-only, fingerprint pinned in the database). Back it up with the owner secret; the hub refuses to start without it. Tokens from older hubs keep working until rotated.
+- **Message interactions** (`5d8977e`): `agent.messaged` resolves roles to nodes through the run's graph; an end no node holds is `null` with `sourceUnknown`/`targetUnknown: true`.
+- **Cross-machine CI** (`c90abc4`): jobs whose revision lives in a hub repository carry `source: {kind: 'hub-bundle', path: '/jobs/:id/bundle'}` and `repo: {defaultBranch}`; `GET /jobs/:id/bundle?attempt=N` serves a bundle of exactly that revision to the machine holding that attempt.

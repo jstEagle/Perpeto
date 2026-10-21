@@ -288,7 +288,10 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       await persistSeen(record);
       if (record.kind === 'assignment') await mkdir(workspace, { recursive: true, mode: 0o700 });
       const ctx = { signal: record.work.signal, report: event => report(record, event), workspace,
-        runtimeUrl: machine.runtimeUrl, accountProvider };
+        runtimeUrl: machine.runtimeUrl, accountProvider,
+        // Jobs whose revision lives on the hub fetch it over the job's authenticated route, for this lease's attempt.
+        fetchSource: (path, file) => hub.download(`${path}?attempt=${record.attempt}`, file,
+          { signal: record.work.signal, timeoutMs: (config.jobs?.checkoutTimeoutSec ?? 120) * 1000 }) };
       let result;
       if (record.kind === 'job') {
         const redaction = await loadRedaction(config);

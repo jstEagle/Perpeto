@@ -7,7 +7,7 @@ export function loadConfig(filename) {
   const input = object(JSON.parse(readFileSync(path, 'utf8')), 'configuration');
   const defaults = {
     host: '127.0.0.1', port: 4320, databasePath: './hub.sqlite', messagingDatabasePath: './messaging.sqlite', deliveryDatabasePath: './delivery.sqlite', workflowDatabasePath: './workflow.sqlite',
-    deliveryRepositoriesPath: './delivery-repositories', deliveryLeaseDurationMs: 60000, deliveryMaxStepFailures: 5, deliveryRetryBackoffMs: 2000, ownerTokenPath: './owner.secret', corsOrigins: [], requestMaxBytes: 1048576,
+    deliveryRepositoriesPath: './delivery-repositories', deliveryLeaseDurationMs: 60000, deliveryMaxStepFailures: 5, deliveryRetryBackoffMs: 2000, ownerTokenPath: './owner.secret', credentialKeyPath: './credentials.key', corsOrigins: [], requestMaxBytes: 1048576,
     heartbeatIntervalMs: 10000, leaseDurationMs: 60000, longPollMs: 25000,
     maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
     finishedWorkRetentionMs: 604800000, eventRetentionMs: 2592000000, usageRetentionMs: 2592000000, idempotencyRetentionMs: 86400000,
@@ -33,7 +33,7 @@ export function loadConfig(filename) {
     const url = new URL(origin);
     requireValue(['http:', 'https:'].includes(url.protocol) && url.origin === origin, 'CORS origins must be exact HTTP(S) origins.');
   });
-  for (const key of ['databasePath', 'messagingDatabasePath', 'deliveryDatabasePath', 'workflowDatabasePath', 'deliveryRepositoriesPath', 'ownerTokenPath']) config[key] = resolve(dirname(path), nonblank(config[key], key, 4096));
-  requireValue(new Set([config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, config.workflowDatabasePath, config.ownerTokenPath]).size === 5, 'Hub files must have distinct paths.');
+  for (const key of ['databasePath', 'messagingDatabasePath', 'deliveryDatabasePath', 'workflowDatabasePath', 'deliveryRepositoriesPath', 'ownerTokenPath', 'credentialKeyPath']) config[key] = resolve(dirname(path), nonblank(config[key], key, 4096));
+  requireValue(new Set([config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, config.workflowDatabasePath, config.ownerTokenPath, config.credentialKeyPath]).size === 6, 'Hub files must have distinct paths.');
   return config;
 }
