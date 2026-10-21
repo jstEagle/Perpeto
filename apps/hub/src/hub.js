@@ -35,10 +35,10 @@ function canonicalUrl(path) {
 /** Node tokens reach only machine routes, judged on the same decoded segments route() dispatches on. */
 function nodeRoute(method, segments) {
   const [collection, entityId, action] = segments;
-  if (collection === 'nodes') return method === 'POST' && segments.length === 2 && ['heartbeat', 'lease'].includes(entityId);
+  if (collection === 'nodes') return method === 'POST' && segments.length === 2 && ['heartbeat', 'lease', 'token'].includes(entityId);
   if (!['assignments', 'jobs'].includes(collection) || !entityId || segments.length > 3) return false;
   if (action === undefined) return method === 'GET';
-  if (method === 'POST') return ['renew', 'events'].includes(action);
+  if (method === 'POST') return ['renew', 'events', 'release'].includes(action);
   return method === 'GET' && collection === 'jobs' && action === 'log';
 }
 
@@ -82,11 +82,20 @@ export class Hub {
     } catch (error) { this.messaging?.close(); this.store.close(); throw error; }
   }
   secret(kind, entityId) { return createHmac('sha256', this.ownerToken).update(`${kind}:${entityId}`).digest('base64url'); }
+  /** Node tokens derive from the machine and its token generation, so idempotent replays can return them without storing them. */
+  nodeToken(machineId, generation = 0) { return this.secret('node', generation ? `${machineId}:${generation}` : machineId); }
   authenticate(header) {
     const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(header ?? '');
     const token = match && this.store.db.prepare('SELECT kind,machine_id FROM tokens WHERE hash=?').get(hash(match[1]));
     if (!token) fail(401, 'UNAUTHORIZED', 'A valid bearer token is required.');
+    if (token.kind === 'node') this.retireOlderTokens(token.machine_id, hash(match[1]));
     return { kind: token.kind, machineId: token.machine_id, scope: hash(match[1]) };
+  }
+  /** The first use of a rotated token retires the machine's older ones; until then a lost rotation response cannot lock it out. */
+  retireOlderTokens(machineId, presented) {
+    if (this.store.db.prepare("SELECT COUNT(*) AS count FROM tokens WHERE kind='node' AND machine_id=?").get(machineId).count < 2) return;
+    const generation = this.store.get('machine', machineId)?.tokenGeneration ?? 0;
+    if (presented === hash(this.nodeToken(machineId, generation))) this.store.db.prepare("DELETE FROM tokens WHERE kind='node' AND machine_id=? AND hash<>?").run(machineId, presented);
   }
   serialize(fn) {
     const result = this.pending.then(fn);
@@ -135,13 +144,13 @@ export class Hub {
   }
   persistResponse(result) {
     const body = { ...result.body };
-    if (body.token) { delete body.token; body._tokenMachineId = body.machineId; }
+    if (body.token) { delete body.token; body._tokenMachineId = body.machineId; body._tokenGeneration = body.generation ?? 0; }
     if (body.code) { delete body.code; body._codeId = body.id; }
     return { ...result, body };
   }
   restoreResponse(result) {
     const body = { ...result.body };
-    if (body._tokenMachineId) { body.token = this.secret('node', body._tokenMachineId); delete body._tokenMachineId; }
+    if (body._tokenMachineId) { body.token = this.nodeToken(body._tokenMachineId, body._tokenGeneration); delete body._tokenMachineId; delete body._tokenGeneration; }
     if (body._codeId) { body.code = this.secret('enrollment', body._codeId); delete body._codeId; }
     return { ...result, body };
   }
@@ -311,7 +320,8 @@ export class Hub {
         if (value.runId && !value.delivery && this.store.need('run', value.runId).status !== 'running') continue;
         // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
         if (value.notBefore && Date.parse(value.notBefore) > Date.now()) continue;
-        value.status = 'leased'; value.machineId = machine.id;
+        if (value.releasedBy?.machineId === machine.id && Date.parse(value.releasedBy.until) > Date.now()) continue;
+        value.status = 'leased'; value.machineId = machine.id; delete value.releasedBy;
         value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
         this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
         if (kind === 'assignment') this.observation.assignment(value);
@@ -435,6 +445,21 @@ export class Hub {
     if (collection === 'machines' && entityId && action === 'drain' && segments.length === 3 && method === 'POST') {
       const machine = this.store.need('machine', entityId); machine.status = 'draining'; machine.drainRequested = true; this.store.put('machine', machine); this.emit('machine.draining', 'machine', machine); return reply(machine);
     }
+    if (collection === 'machines' && entityId && action === 'revoke' && segments.length === 3 && method === 'POST') {
+      const machine = this.store.need('machine', entityId);
+      if (body.reason !== undefined) nonblank(body.reason, 'reason', 1000);
+      // Every token generation stops authenticating, including ones an enrollment or rotation replay would re-derive.
+      this.store.db.prepare("DELETE FROM tokens WHERE kind='node' AND machine_id=?").run(machine.id);
+      if (!machine.revokedAt) {
+        machine.revokedAt = now(); machine.status = 'offline'; this.store.put('machine', machine);
+        // Its leases expire at once: maintenance hands run work to the engine's retry policy and requeues the rest.
+        for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, item => item.machineId === machine.id && active(item))) {
+          value.leaseExpiresAt = now(); this.store.put(kind, value);
+        }
+        this.emit('machine.revoked', 'machine', machine, body.reason ? { reason: body.reason } : {});
+      }
+      return reply(machine);
+    }
     if (path === '/nodes/enroll' && method === 'POST') {
       nonblank(body.code, 'code'); nonblank(body.name, 'name', 200); nonblank(body.arch, 'arch', 100); nonblank(body.version, 'version', 100);
       const os = body.os === 'win32' ? 'windows' : body.os; // Node's platform() name for Windows.
@@ -443,9 +468,18 @@ export class Hub {
       if (!code || code.used || Date.parse(code.expires_at) <= Date.now()) fail(401, 'INVALID_ENROLLMENT_CODE', 'Enrollment code is invalid, expired, or already used.');
       this.store.db.prepare('UPDATE enrollment_codes SET used=1 WHERE hash=? AND used=0').run(hash(body.code));
       const machine = { id: id('mch'), name: body.name, os, arch: body.arch, version: body.version, labels: body.labels ?? [], providers: body.providers ?? [], capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, status: 'online', lastHeartbeatAt: now() };
-      const token = this.secret('node', machine.id);
+      const token = this.nodeToken(machine.id);
       this.store.put('machine', machine); this.store.db.prepare("INSERT INTO tokens VALUES(?,'node',?)").run(hash(token), machine.id); this.emit('machine.enrolled', 'machine', machine);
       return reply({ machineId: machine.id, token }, 201);
+    }
+    if (path === '/nodes/token' && method === 'POST') {
+      if (auth.kind !== 'node') fail(403, 'FORBIDDEN', 'A machine token is required.');
+      const machine = this.store.need('machine', auth.machineId);
+      machine.tokenGeneration = (machine.tokenGeneration ?? 0) + 1;
+      const token = this.nodeToken(machine.id, machine.tokenGeneration);
+      this.store.put('machine', machine); this.store.db.prepare("INSERT INTO tokens VALUES(?,'node',?)").run(hash(token), machine.id);
+      this.emit('machine.token-rotated', 'machine', machine, { generation: machine.tokenGeneration });
+      return reply({ machineId: machine.id, token, generation: machine.tokenGeneration }, 201);
     }
     if (['/nodes/heartbeat', '/nodes/lease'].includes(path) && method === 'POST') {
       if (auth.kind !== 'node') fail(403, 'FORBIDDEN', 'A machine token is required.');
@@ -455,9 +489,10 @@ export class Hub {
       for (const key of ['maxAgents', 'maxJobs']) integer(body.capacity[key], key, 0, 100000);
       for (const key of ['agents', 'jobs']) integer(body.running[key], key, 0, 100000);
       if (body.providers !== undefined) strings(body.providers, 'providers');
+      if (body.labels !== undefined) strings(body.labels, 'labels');
       requireValue(body.status === undefined || ['online', 'draining'].includes(body.status), 'Invalid heartbeat status.');
       machine.capacity = { maxAgents: body.capacity.maxAgents, maxJobs: body.capacity.maxJobs }; machine.running = { agents: body.running.agents, jobs: body.running.jobs };
-      machine.providers = body.providers ?? machine.providers; machine.lastHeartbeatAt = now(); machine.status = machine.drainRequested || body.status === 'draining' ? 'draining' : 'online';
+      machine.providers = body.providers ?? machine.providers; machine.labels = body.labels ?? machine.labels; machine.lastHeartbeatAt = now(); machine.status = machine.drainRequested || body.status === 'draining' ? 'draining' : 'online';
       if (body.accounts !== undefined) {
         requireValue(Array.isArray(body.accounts) && body.accounts.length <= 1000, 'Invalid accounts snapshot.');
         const accounts = body.accounts.map(account => {
@@ -495,6 +530,22 @@ export class Hub {
           if (run && ['running', 'paused'].includes(run.status)) await this.engineEvent(run, { type: 'job.finished', jobId: value.id, data: { status: 'cancelled', revision: value.revision }, value });
         }
         return reply(value);
+      }
+      if (action === 'release' && method === 'POST') {
+        if (auth.kind !== 'node') fail(403, 'FORBIDDEN', 'Only the machine holding a lease can release it.');
+        const value = this.fenced(kind, entityId, auth, body);
+        if (body.reason !== undefined) nonblank(body.reason, 'reason', 1000);
+        if (value.status !== 'leased') fail(409, 'CONFLICT', 'Started work cannot be released; report its result instead.');
+        // The work never started, so it returns to the queue with the same attempt and the engine is not told. The
+        // releasing machine is not offered this attempt again for one lease duration, which also keeps a late request
+        // from the released lease (the HTTP request timeout is 30 s) from matching a new lease of the same attempt.
+        const machineId = value.machineId;
+        value.status = 'queued'; delete value.machineId; delete value.leaseExpiresAt;
+        value.releasedBy = { machineId, until: new Date(Date.now() + this.config.leaseDurationMs).toISOString() };
+        this.store.put(kind, value);
+        this.emit(`${kind}.released`, kind, value, { machineId, attempt: value.attempt, ...(body.reason ? { reason: body.reason } : {}) });
+        if (kind === 'assignment') this.observation.assignment(value);
+        return reply({ released: true, status: 'queued', attempt: value.attempt });
       }
       if (action === 'renew' && method === 'POST') {
         const value = this.fenced(kind, entityId, auth, body); value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
