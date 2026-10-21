@@ -311,6 +311,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       if (kind === 'work' && workspace.mode !== 'workspace') {
         extra.push(`Work on branch ${branch} and commit your changes there. ${settings.publishBranch ? 'The factory pushes the branch to origin when you finish; do not push other branches.' : ''}`.trim());
       }
+      const delivery = settings.publishBranch && localPullRequestUrl(assignment.repo, branch) ? 'local' : 'forge';
       const runtimeMode = RUNTIME_MODES.has(target.overrides.runtimeMode) ? target.overrides.runtimeMode : settings.runtimeMode;
       const interactionMode = target.overrides.interactionMode === 'plan' ? 'plan' : settings.interactionMode;
       signal.throwIfAborted();
@@ -322,7 +323,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
           title: (workItem?.title ?? assignment.role ?? 'Perpeto assignment').slice(0, 120),
           modelSelection: { instanceId: instance.instanceId, model: target.model, ...(target.options.length ? { options: target.options } : {}) },
           runtimeMode, interactionMode, workspaceStrategy: workspace.workspaceStrategy,
-          initialMessage: { messageId: stableId('perpeto-msg', assignment.id, String(attempt)), text: buildPrompt(assignment, { extra }), attachments: [] },
+          initialMessage: { messageId: stableId('perpeto-msg', assignment.id, String(attempt)), text: buildPrompt(assignment, { extra, kind, delivery }), attachments: [] },
         }, { signal, timeoutMs: 300000 });
       } catch (error) {
         // Launch can have reached T3 before cancellation rejects its reply.

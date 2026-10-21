@@ -101,6 +101,7 @@ test('builders clone repo.url, publish the work branch and rework from it', asyn
   assert.ok(events.some(event => event.data.interaction === 'branch.published' && event.data.published));
   const prompt = fake.state.commands.find(item => item.tag === 'orchestration.launchThread').payload.initialMessage.text;
   assert.match(prompt, /Work on branch perpeto\/wi_7 and commit your changes there/);
+  assert.match(prompt, /no pull request to open or register/, 'a local origin asks for no pull request');
 
   // A rework attempt in a fresh workspace starts from the published branch.
   reply(fake, 'Addressed feedback.', launch => {

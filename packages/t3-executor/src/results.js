@@ -21,7 +21,8 @@ export function outputKind(assignment) {
 /** Answer-format instructions appended to the prompt for structured roles. */
 export function outputInstructions(kind) {
   if (kind === 'review') return 'End your final message with exactly one fenced json block: {"verdict": "pass" | "fail", "summary": "…"}. Use "fail" with actionable feedback in summary when the work needs changes. If you could not complete the review, say so and omit the block.';
-  if (kind === 'planner') return 'End your final message with exactly one fenced json block: {"items": [{"title": "…", "body": "…"}]}. Use an empty items list when the work item is already small enough to build as one pull request.';
+  if (kind === 'planner') return 'End your final message with exactly one fenced json block: {"items": [{"title": "…", "body": "…"}], "summary": "…"}. ' +
+    'Use an empty items list when the work item is already small enough to build as one pull request, and put its contract and acceptance criteria in summary.';
   return null; // The architect prompt carries its own answer format.
 }
 
@@ -64,7 +65,9 @@ export function parseRoleResult(kind, text) {
       }
       items.push({ title: item.title.trim(), ...(item.body?.trim() ? { body: item.body.trim() } : {}) });
     }
-    return { fields: { items }, summary: prose(body) || `Planned ${items.length} work items.` };
+    // The summary reaches later roles as the item's plan, so prefer the block's over narration.
+    const summary = nonblank(block.summary, 20000) ? block.summary.trim() : prose(body);
+    return { fields: { items }, summary: summary || `Planned ${items.length} work items.` };
   }
   if (kind === 'architect') {
     const block = lastBlock(body, value => isObject(value) && isObject(value.graph) && nonblank(value.rationale, 65536));
