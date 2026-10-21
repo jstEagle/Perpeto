@@ -239,6 +239,30 @@ test('M6: executable providers without a registered executor are never advertise
   assert.deepEqual(hub.requests.find(r => r.path.endsWith('/enroll')).body.providers, []);
 });
 
+test('providers an executor reports ready are advertised even when PATH cannot see them', async t => {
+  const hub = await fakeHub(t);
+  const { configPath, dir } = await nodeConfig(t, hub, { executorPackages: [], fake: undefined, providers: ['codex', 'claudeAgent'] });
+  const previousPath = process.env.PATH;
+  process.env.PATH = dir;
+  t.after(() => { process.env.PATH = previousPath; });
+  const runtimeExecutor = { kind: 't3', canRun: (assignment, machine) => machine.providers.includes(assignment.harness.provider),
+    async run() { return { outcome: 'success', summary: 'ok' }; }, async providers() { return ['codex', 'gemini'] } };
+  const silent = { kind: 'broken', canRun: () => false, async run() {}, async providers() { throw new Error('runtime down'); } };
+  await startNode(t, configPath, { registry: new ExecutorRegistry().register(runtimeExecutor).register(silent) });
+  // gemini is reported too, but the configured provider list restricts what is advertised.
+  assert.deepEqual(hub.requests.find(r => r.path.endsWith('/enroll')).body.providers, ['codex']);
+});
+
+test('stopping the node closes its executors', async t => {
+  const hub = await fakeHub(t);
+  const { configPath } = await nodeConfig(t, hub, { executorPackages: [] });
+  let closed = 0;
+  const executor = { kind: 't3', canRun: () => false, async run() {}, async close() { closed += 1; } };
+  const node = await startNode(t, configPath, { registry: new ExecutorRegistry().register(executor) });
+  await node.stop();
+  assert.equal(closed, 1);
+});
+
 test('M6: an unsupported leased provider fails for retry rather than blocking on a human', async t => {
   const hub = await fakeHub(t);
   const { configPath } = await nodeConfig(t, hub, { executorPackages: [] });

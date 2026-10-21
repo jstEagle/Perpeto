@@ -123,6 +123,17 @@ export async function revisionOf(path, { signal } = {}) {
   } catch { return {}; }
 }
 
+/**
+ * Local bare repositories have no forge, so delivery addresses their work branches as
+ * `local:<branch>` (see @perpeto/delivery LocalGitAdapter). GitHub projects keep real PR URLs.
+ */
+export function localPullRequestUrl(repo, branch) {
+  const candidate = repo?.localPath ?? repo?.url;
+  if (typeof candidate !== 'string' || typeof branch !== 'string' || !branch) return undefined;
+  if (/^(?:https:\/\/|ssh:\/\/git@|git@)github\.com[/:]/.test(repo?.url ?? '')) return undefined;
+  return candidate.startsWith('/') || candidate.startsWith('file://') ? `local:${branch}` : undefined;
+}
+
 const PR_PATTERN = /https:\/\/[\w.-]+\/[\w.-]+\/[\w.-]+\/(?:pull|pulls|merge_requests|-\/merge_requests)\/\d+/g;
 
 /** Last pull/merge request URL mentioned by the agent, if any. */

@@ -1,0 +1,100 @@
+05:19:33 assignment.updated assignment:asg_8f7c0a72 queued
+05:19:33 assignment.state assignment:asg_8f7c0a72 queued planner
+05:19:33 workitem.moved workItem:wi_8f7c0a720 input-plan input planner
+05:19:33 run.started run:run_8f7c0a72 
+05:19:33 assignment.leased assignment:asg_8f7c0a72 m
+05:19:33 assignment.state assignment:asg_8f7c0a72 leased planner m
+05:19:33 assignment.state assignment:asg_8f7c0a72 running planner m
+05:19:33 assignment.started assignment:asg_8f7c0a72 
+05:19:34 assignment.progress assignment:asg_8f7c0a72 thread.started
+05:19:34 assignment.progress assignment:asg_8f7c0a72 turn.started
+05:19:59 assignment.usage assignment:asg_8f7c0a72 
+05:19:59 assignment.progress assignment:asg_8f7c0a72 completed turn.finished
+05:20:01 assignment.state assignment:asg_8f7c0a72 succeeded planner m
+05:20:01 assignment.updated assignment:asg_8f7c0a72 queued
+05:20:01 assignment.state assignment:asg_8f7c0a72 queued builder
+05:20:01 workitem.moved workItem:wi_8f7c0a720 plan-delivery planner delivery-loop
+05:20:01 loop.iteration workItem:wi_8f7c0a720 delivery-loop
+05:20:01 workitem.moved workItem:wi_8f7c0a720 delivery-review delivery-loop review-loop
+05:20:01 loop.iteration workItem:wi_8f7c0a720 review-loop
+05:20:01 workitem.moved workItem:wi_8f7c0a720 review-build review-loop builder
+05:20:01 assignment.completed assignment:asg_8f7c0a72 
+05:20:01 assignment.leased assignment:asg_8f7c0a72 m
+05:20:01 assignment.state assignment:asg_8f7c0a72 leased builder m
+05:20:01 assignment.state assignment:asg_8f7c0a72 running builder m
+05:20:01 assignment.started assignment:asg_8f7c0a72 
+05:20:01 assignment.progress assignment:asg_8f7c0a72 thread.started
+05:20:01 assignment.progress assignment:asg_8f7c0a72 turn.started
+05:20:57 assignment.usage assignment:asg_8f7c0a72 
+05:20:57 assignment.progress assignment:asg_8f7c0a72 completed turn.finished
+05:21:00 assignment.progress assignment:asg_8f7c0a72 branch.published
+05:21:00 assignment.state assignment:asg_8f7c0a72 succeeded builder m
+05:21:00 assignment.updated assignment:asg_8f7c0a72 queued
+05:21:00 assignment.state assignment:asg_8f7c0a72 queued reviewer
+05:21:00 workitem.moved workItem:wi_8f7c0a720 build-review builder reviewer
+05:21:00 assignment.completed assignment:asg_8f7c0a72 
+05:21:00 assignment.leased assignment:asg_8f7c0a72 m
+05:21:00 assignment.state assignment:asg_8f7c0a72 leased reviewer m
+05:21:00 assignment.state assignment:asg_8f7c0a72 running reviewer m
+05:21:00 assignment.started assignment:asg_8f7c0a72 
+05:21:01 assignment.progress assignment:asg_8f7c0a72 thread.started
+05:21:01 assignment.progress assignment:asg_8f7c0a72 turn.started
+05:21:25 assignment.usage assignment:asg_8f7c0a72 
+05:21:25 assignment.progress assignment:asg_8f7c0a72 completed turn.finished
+05:21:27 assignment.state assignment:asg_8f7c0a72 succeeded reviewer m
+05:21:27 gate.result assignment:asg_8f7c0a72 fail review reviewer m
+05:21:27 assignment.updated assignment:asg_8f7c0a72 queued
+05:21:27 assignment.state assignment:asg_8f7c0a72 queued builder
+05:21:27 workitem.moved workItem:wi_8f7c0a720 review-fail reviewer review-loop
+05:21:27 loop.iteration workItem:wi_8f7c0a720 review-loop
+05:21:27 workitem.moved workItem:wi_8f7c0a720 review-build review-loop builder
+05:21:27 assignment.completed assignment:asg_8f7c0a72 fail
+05:21:27 assignment.leased assignment:asg_8f7c0a72 m
+05:21:27 assignment.state assignment:asg_8f7c0a72 leased builder m
+05:21:27 assignment.state assignment:asg_8f7c0a72 running builder m
+05:21:27 assignment.started assignment:asg_8f7c0a72 
+05:21:28 assignment.progress assignment:asg_8f7c0a72 thread.started
+05:21:28 assignment.progress assignment:asg_8f7c0a72 turn.started
+05:21:56 assignment.usage assignment:asg_8f7c0a72 
+05:21:57 assignment.progress assignment:asg_8f7c0a72 completed turn.finished
+05:21:59 assignment.progress assignment:asg_8f7c0a72 branch.published
+05:21:59 assignment.state assignment:asg_8f7c0a72 succeeded builder m
+05:21:59 assignment.updated assignment:asg_8f7c0a72 queued
+05:21:59 assignment.state assignment:asg_8f7c0a72 queued reviewer
+05:21:59 workitem.moved workItem:wi_8f7c0a720 build-review builder reviewer
+05:21:59 assignment.completed assignment:asg_8f7c0a72 
+05:21:59 assignment.leased assignment:asg_8f7c0a72 m
+05:21:59 assignment.state assignment:asg_8f7c0a72 leased reviewer m
+05:21:59 assignment.state assignment:asg_8f7c0a72 running reviewer m
+05:21:59 assignment.started assignment:asg_8f7c0a72 
+05:21:59 assignment.progress assignment:asg_8f7c0a72 thread.started
+05:22:00 assignment.progress assignment:asg_8f7c0a72 turn.started
+05:22:22 assignment.usage assignment:asg_8f7c0a72 
+05:22:23 assignment.progress assignment:asg_8f7c0a72 completed turn.finished
+05:22:25 assignment.state assignment:asg_8f7c0a72 succeeded reviewer m
+05:22:25 gate.result assignment:asg_8f7c0a72 pass review reviewer m
+05:22:25 job.updated job:job_8f7c0a72 queued
+05:22:25 workitem.moved workItem:wi_8f7c0a720 review-pass reviewer ci
+05:22:25 assignment.completed assignment:asg_8f7c0a72 pass
+05:22:25 job.leased job:job_8f7c0a72 m
+05:22:25 job.started job:job_8f7c0a72 
+05:22:25 job.step job:job_8f7c0a72 passed
+05:22:25 job.step job:job_8f7c0a72 passed
+05:22:25 gate.result assignment:job_8f7c0a72 passed ci ci m
+05:22:25 merge-entry.updated merge-entry:mq_8f7c0a720 queued
+05:22:25 workitem.moved workItem:wi_8f7c0a720 ci-pass ci merge
+05:22:25 job.completed job:job_8f7c0a72 passed
+05:22:25 merge-entry.enqueued merge-entry:mq_8f7c0a720 
+05:22:25 job.updated job:job_mq_d2be8 queued merge-queue
+05:22:25 merge-entry.updated merge-entry:mq_8f7c0a720 testing
+05:22:25 job.leased job:job_mq_d2be8 m
+05:22:25 job.started job:job_mq_d2be8 
+05:22:26 job.step job:job_mq_d2be8 passed
+05:22:26 job.step job:job_mq_d2be8 passed
+05:22:26 gate.result assignment:job_mq_d2be8 passed merge-queue merge m
+05:22:26 job.completed job:job_mq_d2be8 passed
+05:22:26 merge-entry.updated merge-entry:mq_8f7c0a720 merged
+05:22:26 gate.result workItem:wi_8f7c0a720 pass merge-queue merge
+05:22:26 workitem.moved workItem:wi_8f7c0a720 merge-pass merge output
+05:22:26 run.updated run:run_8f7c0a72 completed
+RUN completed
