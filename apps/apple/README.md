@@ -15,6 +15,7 @@ swift test                   # model, decoding, client, validation and demo-data
 scripts/build-app.sh         # build/Perpeto.app, release, ad-hoc signed
 open build/Perpeto.app
 scripts/snapshots.sh         # rebuild screenshots/ from demo data
+scripts/snapshots.sh --themes # screenshots/themes/: main screens in light and dark
 ```
 
 iPhone and iPad:
@@ -52,9 +53,13 @@ SwiftPM builds the Mac app; the iOS app is the only Xcode project. Open `Package
 
 `Sources/PerpetoKit/Design/PerpetoTokens.swift` is a verbatim copy of `packages/design-tokens/swift/PerpetoTokens.swift`, generated from `brand/tokens.css`. Do not edit it here; regenerate the package and copy it again. Colours, spacing, radii, elevation and motion come only from it, and the app uses none of its deprecated aliases. The shared components (cards, pill buttons, status labels, disclosures, the pill segmented control) are in `Sources/PerpetoUI/Components`. The logo shapes are parsed at runtime from the identity SVG path data in `LogoPathData.swift`.
 
+## Appearance
+
+Settings has an Appearance control: System (default), Light (pure white) or Dark (graphite). The choice is stored in UserDefaults under `perpeto.appearance`; on the Mac it also sets the app appearance so menus and windows match. Every token colour resolves per appearance, including the logo, which is drawn in `ink`. Pass `-perpeto.appearance light` or `dark` at launch to override it once (`APPEARANCE=dark scripts/snapshots.sh` does this).
+
 ## Hub connection
 
-Open Settings (⌘,) on the Mac, or Connect a hub in the sidebar footer on iPhone and iPad, and enter the hub address and owner token. The address is stored in UserDefaults under `perpeto.hubURL`. The token is stored only in the Keychain (service `app.perpeto.hub`) and is sent only in the `Authorization` header. HTTPS is required except for localhost. Without both values the app shows demo data, marked in the sidebar footer and window subtitle.
+Open Settings (⌘,) on the Mac, or Settings in the sidebar footer or the More tab on iPhone and iPad, and enter the hub address and owner token. The address is stored in UserDefaults under `perpeto.hubURL`. The token is stored only in the Keychain (service `app.perpeto.hub`) and is sent only in the `Authorization` header. HTTPS is required except for localhost. Without both values the app shows demo data, marked in the sidebar footer and window subtitle.
 
 ## Keyboard shortcuts
 

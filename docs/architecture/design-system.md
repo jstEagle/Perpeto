@@ -2,7 +2,7 @@
 
 Status: selected. Justus chose Perpeto Mono as the product UI direction on 2026-10-21. It is specified here and in [`packages/design-tokens`](../../packages/design-tokens/README.md); the web and Apple clients have not been restyled yet. Values come only from the tokens, which are generated from [brand/tokens.css](../../brand/tokens.css). The [specimen](../../packages/design-tokens/specimen.html) renders every component below plus two mock screens; screenshots are in [packages/design-tokens/screenshots](../../packages/design-tokens/screenshots/).
 
-Perpeto Mono in one line: warm paper canvas, white rounded cards, near-black ink, generous space, and one small orange dot for work happening right now.
+Perpeto Mono in one line: pure white (or graphite in dark), softly rounded cards, high-contrast ink, generous space, and one small orange dot for work happening right now.
 
 ## Principles
 
@@ -11,7 +11,7 @@ Perpeto Mono in one line: warm paper canvas, white rounded cards, near-black ink
 | Minimal | One primary action per view. Three numbers up front; the rest behind a disclosure. No decoration that doesn't carry information. |
 | Spacious | 48 pt page padding, 28 pt card padding, 24 to 40 pt between blocks. Whitespace separates; rules are rare. |
 | Monochrome | Greys and ink carry every state through icon, word and weight. Orange means live. Red means failed. Nothing else has a hue. |
-| Rounded | Pill buttons and chips, 12 pt controls, 16 pt nodes, 20 pt cards, continuous corners on Apple. |
+| Rounded | Pill buttons and chips, 10 pt controls, 12 pt nodes, 16 pt cards, continuous corners on Apple. |
 | Smooth | Short ease-out transitions on hover, press, disclosure and selection. Instant under reduced motion. |
 
 ![Project overview, desktop](../../packages/design-tokens/screenshots/overview-desktop.png)
@@ -23,7 +23,7 @@ Perpeto Mono in one line: warm paper canvas, white rounded cards, near-black ink
 | Colour | `var(--ink)`, `var(--surface-subtle)` | `PerpetoColor.ink`, `PerpetoColor.surfaceSubtle` |
 | Spacing, 4 pt base | `var(--space-4)` (16) | `PerpetoSpacing.x(4)` |
 | Layout | `var(--page-padding)`, `var(--card-padding)`, `var(--content-max)` | `PerpetoLayout.pagePadding`, `.cardPadding`, `.contentMax` |
-| Radius | `var(--radius-control)` 12, `var(--radius-panel)` 20, `var(--radius-pill)` | `PerpetoRadius.control`, `.panel`, `Capsule()` |
+| Radius | `var(--radius-control)` 10, `var(--radius-panel)` 16, `var(--radius-pill)` | `PerpetoRadius.control`, `.panel`, `Capsule()` |
 | Elevation | `box-shadow: var(--shadow-card)` | `.perpetoCard()`, `.perpetoElevation(.raised)` |
 | Interface type | `var(--text-14)` with `var(--leading-body)` | `PerpetoType.text(PerpetoType.text14)`, `.perpetoBody()` |
 | Titles | `var(--display-40)`, `var(--weight-semibold)`, `var(--tracking-display)` | `.perpetoDisplay(PerpetoType.display40)`, `.perpetoTitle()` |
@@ -38,10 +38,10 @@ Never write a hex value, pixel size or font name in a client. If a value is miss
 
 | Token | Value | Use |
 | --- | --- | --- |
-| `canvas` | warm off-white | The page, the sidebar, the app window background |
+| `canvas` | pure white | The page, the sidebar, the app window background |
 | `surface` | white | Cards, nodes, inputs, menus, the selected navigation item |
-| `surface-subtle` | light warm grey | Icon tiles, selected rows, log blocks, disabled fills |
-| `grey-100` to `grey-600` | warm greys | `border` (100), dot grid (200), quiet chart tracks (100), `faint` and `control-border` (400), `muted` (500), `ink-soft` (600) |
+| `surface-subtle` | light neutral grey | Icon tiles, selected rows, log blocks, disabled fills |
+| `grey-100` to `grey-600` | neutral greys | `border` (100), dot grid (200), quiet chart tracks (100), `faint` and `control-border` (400), `muted` (500), `ink-soft` (600) |
 | `ink` | near-black | Titles, body text, primary buttons, focus ring, the strong chart bar |
 | `accent` | signal orange | The live dot and the brand mark. Nothing else. |
 | `error` | restrained red | Failed status and field errors only |
@@ -51,7 +51,8 @@ Never write a hex value, pixel size or font name in a client. If a value is miss
 - The accent is never a button, a link, a text colour, a fill larger than the dot, a border or a selection. A view with nothing live has no orange in it at all, apart from a brand moment.
 - `success` and `warning` keep their names for compatibility but are greys now (`ink-soft` and `ink`). Status is told by icon, word and weight, not hue.
 - Use red only where a failure would otherwise be missed: failed status, field validation, a failed check in a log. Never red buttons; destructive confirmations use the black primary with an explicit verb ("Stop run").
-- Dark mode is still undefined. The Apple app keeps forcing light appearance.
+- In light, `canvas` and `surface` are both white: cards separate by `shadow-card` alone, and selected or hovered items use `surface-subtle` or `canvas-strong`, never white on white.
+- Two appearances, System by default with a Light and Dark override in Settings. Light is pure white with neutral greys and near-black ink. Dark is mechanical graphite: canvas `#1a1b1d`, surface `#222326` (cards sit lighter than the page), light ink `#ececee`, a light primary pill with dark text, a brighter failure red `#ec6a5e`, and a faint light ring with deeper shadows for elevation. The orange is the same in both. The dark block in `brand/tokens.css` sets colours and shadows only; the build checks its contrast pairs too. Every role keeps its meaning, so components never branch on the theme: they use tokens, and the logo uses `ink`, so it inverts with them.
 
 ## Typography
 
@@ -74,7 +75,7 @@ Never write a hex value, pixel size or font name in a client. If a value is miss
 
 ## Shape, depth and motion
 
-- Radii: `radius-small` 8 (tiny chips, log lines), `radius-control` 12 (inputs, menus, icon tiles, nav items, table row highlights), `radius-node` 16 (map nodes, compact cards), `radius-panel` 20 (cards), `radius-sheet` 28 (sheets, dialogs, mobile frames), `radius-pill` for buttons, chips, segmented controls and meters. Apple uses `.continuous` corners.
+- Radii: `radius-small` 6 (tiny chips, log lines), `radius-control` 10 (inputs, menus, icon tiles, nav items, table row highlights), `radius-node` 12 (map nodes, compact cards), `radius-panel` 16 (cards), `radius-sheet` 22 (sheets, dialogs, mobile frames), `radius-pill` for buttons, chips, segmented controls and meters. Apple uses `.continuous` corners.
 - Elevation, all soft: `shadow-card` for resting cards, nodes, secondary buttons and the current nav item; `shadow-raised` for hover, the map toolbar and selected nodes; `shadow-overlay` for menus, popovers, sheets, the mobile tab bar and a node being dragged. Each includes a faint ring, so no border is needed.
 - Motion: `duration-fast` 140 ms with `ease-standard` for hover and press; `duration-base` 220 ms with `ease-out` for disclosure, segmented thumbs, toggles and selection; `duration-slow` 360 ms for sheets. Press scales primary and secondary buttons to 0.98. Under reduced motion every duration is 0 and Apple animations are `nil`. No looping animation in rows; the Spindle loader from `brand/motion/selected/` stays the only page-level loader.
 

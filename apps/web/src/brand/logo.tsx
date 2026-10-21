@@ -1,14 +1,16 @@
 /*
  * Spindle symbol and lockup from packages/design-tokens/assets, never
  * redrawn. Ink fills become currentColor so the mark takes the surrounding
- * ink; in the product it is always ink on canvas.
+ * ink; in the product it is always ink on canvas, so it follows the theme.
+ * Any hex fill or stroke is replaced, so a change to the asset's ink value
+ * cannot leave a hardcoded colour behind.
  */
 import symbolSvg from '@perpeto/design-tokens/assets/perpeto-symbol-ink.svg?raw';
 import lockupSvg from '@perpeto/design-tokens/assets/perpeto-lockup-ink.svg?raw';
 
 function recolor(svg: string) {
   return svg
-    .replace(/#161615/gi, 'currentColor')
+    .replace(/(fill|stroke)="#[0-9a-f]{3,8}"/gi, '$1="currentColor"')
     .replace(/<title>[^<]*<\/title>/, '')
     .replace(/\swidth="[^"]*"/, ' width="100%"')
     .replace(/\sheight="[^"]*"/, ' height="100%"')

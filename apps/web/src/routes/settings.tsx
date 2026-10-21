@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { HttpHub } from '../api/client';
 import { checkBaseUrl, defaultHubUrl } from '../api/settings';
 import { useHub } from '../app/hub-context';
-import { Button, Field, PageHeader, Panel } from '../components/ui';
+import { Button, Field, PageHeader, Panel, Segmented } from '../components/ui';
+import { type Appearance, useAppearance } from '../app/appearance';
 import { StatusLabel } from '../components/status';
 import { IconAlert } from '../components/icons';
 
@@ -17,6 +18,7 @@ export function SettingsPage() {
   const urlError = touched ? checkBaseUrl(baseUrl.trim()) : null;
   const tokenError = touched && !token.trim() ? 'Enter the owner token.' : null;
   const tabOnly = settings?.auth.kind === 'bearer';
+  const [appearance, setAppearance] = useAppearance();
 
   async function testConnection() {
     setTouched(true);
@@ -120,6 +122,21 @@ export function SettingsPage() {
             )}
           </div>
         </form>
+      </Panel>
+      <Panel title="Appearance">
+        <div className="appearance">
+          <Segmented<Appearance>
+            label="Appearance"
+            value={appearance}
+            onChange={setAppearance}
+            options={[
+              { value: 'system', label: 'System' },
+              { value: 'light', label: 'Light' },
+              { value: 'dark', label: 'Dark' },
+            ]}
+          />
+          <p className="field-help">System follows this device’s light or dark setting. Saved in this browser.</p>
+        </div>
       </Panel>
       <Panel title="About demo data">
         <p className="muted reading">

@@ -74,7 +74,7 @@ test('the accent is reserved for the live dot and the brand mark', () => {
   }
   // Every other brand colour is neutral, apart from the one failure red.
   const saturation = (h) => { const [r, g, b] = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)); return Math.max(r, g, b) - Math.min(r, g, b); };
-  for (const name of BRAND_COLORS.filter(n => !['accent', 'error'].includes(n))) assert.ok(saturation(literal(name)) <= 12, `--${name} should be a warm neutral`);
+  for (const name of BRAND_COLORS.filter(n => !['accent', 'error'].includes(n))) assert.ok(saturation(literal(name)) <= 12, `--${name} should be a neutral grey`);
 });
 
 test('tokens.json and tokens.ts agree with the CSS', () => {
@@ -90,7 +90,7 @@ test('tokens.json and tokens.ts agree with the CSS', () => {
 test('Swift tokens expose the agreed API and brand colours', () => {
   const swift = files.get('swift/PerpetoTokens.swift');
   const camel = (n) => n.replace(/-(\w)/g, (_, c) => c.toUpperCase());
-  for (const name of BRAND_COLORS) assert.match(swift, new RegExp(`public static let ${camel(name)} = Color\\(\\.sRGB, [^\\n]+ // ${literal(name)}`));
+  for (const name of BRAND_COLORS) assert.match(swift, new RegExp(`public static let ${camel(name)} = Color\\(perpetoLight: Color\\(\\.sRGB, [^\\n]+ // ${literal(name)}`));
   for (const name of ['action', 'controlBorder', 'onAction', 'success', 'warning', 'surfaceHover', 'gridMinor', 'gridMajor', 'actionPressed']) {
     assert.match(swift, new RegExp(`public static let ${name} = `), `PerpetoColor.${name} is used by the Apple client`);
   }
@@ -110,6 +110,28 @@ test('every listed colour pair meets WCAG contrast', () => {
   const { contrast } = JSON.parse(files.get('dist/tokens.json'));
   for (const { fg, bg, ratio } of contrast.text) assert.ok(ratio >= 4.5, `${fg} on ${bg} is ${ratio}`);
   for (const { fg, bg, ratio } of contrast.nonText) assert.ok(ratio >= 3, `${fg} on ${bg} is ${ratio}`);
+});
+
+test('the dark graphite palette meets the same contrast and stays neutral', () => {
+  const { dark } = JSON.parse(files.get('dist/tokens.json'));
+  for (const { fg, bg, ratio } of dark.contrast.text) assert.ok(ratio >= 4.5, `dark ${fg} on ${bg} is ${ratio}`);
+  for (const { fg, bg, ratio } of dark.contrast.nonText) assert.ok(ratio >= 3, `dark ${fg} on ${bg} is ${ratio}`);
+  const saturation = (h) => { const [r, g, b] = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)); return Math.max(r, g, b) - Math.min(r, g, b); };
+  for (const name of BRAND_COLORS.filter(n => !['accent', 'error'].includes(n))) assert.ok(saturation(dark.color[name]) <= 12, `dark --${name} should be a neutral grey`);
+  assert.equal(dark.color.accent, JSON.parse(files.get('dist/tokens.json')).color.accent, 'one orange in both appearances');
+  assert.ok(dark.color.canvas < dark.color.surface, 'dark cards sit lighter than the canvas');
+});
+
+test('the CSS switches to dark by attribute and by system preference', () => {
+  const css = files.get('dist/tokens.css');
+  assert.match(css, /:root\[data-theme="dark"\] \{\n  color-scheme: dark;[\s\S]*--canvas: #1a1b1d;/);
+  assert.match(css, /@media \(prefers-color-scheme: dark\) \{\n  :root:not\(\[data-theme="light"\]\) \{[\s\S]*--surface-hover: #/);
+});
+
+test('Swift colours follow the colour scheme', () => {
+  const swift = files.get('swift/PerpetoTokens.swift');
+  assert.match(swift, /init\(perpetoLight light: Color, dark: Color\)/);
+  assert.match(swift, /public static let canvas = Color\(perpetoLight: Color\(\.sRGB[^\n]+, dark: Color\(\.sRGB/);
 });
 
 test('identity SVGs keep the master geometry', () => {

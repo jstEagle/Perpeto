@@ -9,6 +9,9 @@ import SwiftUI
 //     demo data; the token is read from an owner-only file, never an argument
 //     --live-check   also add one input to the newest run through the API and
 //     capture again, to show live events refreshing the map without ⌘R
+//     --themes <prefix>   capture only Overview, Workflows, the live map,
+//     Messages and Settings, named <prefix>overview.png and so on; combine
+//     with -perpeto.appearance light|dark to force the appearance
 //   --render-icon <dir> write the app icon PNGs, then quit
 
 enum LaunchArgument {
@@ -47,7 +50,8 @@ struct Snapshotter {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         await store.refresh()
         guard let project = store.factory.projects.first?.id else { return }
-        let shots = store.isDemo ? demoShots(project) : hubShots(project)
+        let shots = LaunchArgument.string(after: "--themes").map { themeShots(project, prefix: $0) }
+            ?? (store.isDemo ? demoShots(project) : hubShots(project))
         try? await Task.sleep(for: .seconds(1.5))
         for (name, show) in shots {
             show()
@@ -92,6 +96,19 @@ struct Snapshotter {
             ("hub-11-after-live-input", {
                 Task { try? await source.client.addInputs(runId: run, items: ["Live update check"]) }
             }),
+        ]
+    }
+
+    /// The screens used to review light and dark appearance side by side.
+    private func themeShots(_ project: String, prefix: String) -> [(String, () -> Void)] {
+        [
+            ("\(prefix)overview", { navigator.route = .project(project, .overview) }),
+            ("\(prefix)workflows", { navigator.route = .project(project, .workflows) }),
+            ("\(prefix)run-live-map", { navigator.selectedRunId = DemoFixtures.liveRunId; navigator.route = .project(project, .runs) }),
+            ("\(prefix)run-node-selected", { navigator.selectedNodeId = "review" }),
+            ("\(prefix)messages", { navigator.route = .project(project, .messages) }),
+            ("\(prefix)usage", { navigator.route = .factory(.usage) }),
+            ("\(prefix)settings", { openSettings() }),
         ]
     }
 
@@ -148,7 +165,7 @@ struct Snapshotter {
     }
 }
 
-/// The app icon: the Spindle in ink on warm paper, on the macOS icon grid.
+/// The app icon: the Spindle in ink on white, on the macOS icon grid. Rendered in light appearance.
 struct AppIconView: View {
     var size: CGFloat
 

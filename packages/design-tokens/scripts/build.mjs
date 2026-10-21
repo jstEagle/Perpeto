@@ -51,6 +51,26 @@ export function parseTokensCss(css) {
   return entries;
 }
 
+// The dark appearance: `:root[data-theme="dark"] { ... }` overriding every brand colour and shadow.
+export const DARK_TOKENS = [...BRAND_COLORS, ...SHADOW_TOKENS];
+const DARK_BLOCK = /:root\[data-theme="dark"\]\s*\{([\s\S]*?)\}/;
+
+export function parseDarkCss(css, lightMap) {
+  const body = css.replace(/\/\*[\s\S]*?\*\//g, '').match(DARK_BLOCK)?.[1];
+  if (!body) throw new Error('brand/tokens.css: no :root[data-theme="dark"] block');
+  const entries = [...body.matchAll(/--([\w-]+)\s*:\s*([^;]+);/g)].map(([, name, value]) => [name, value.trim()]);
+  const names = entries.map(([name]) => name);
+  const missing = DARK_TOKENS.filter(name => !names.includes(name));
+  if (missing.length) throw new Error(`brand/tokens.css dark block is missing: ${missing.join(', ')}`);
+  const extra = names.filter(name => !DARK_TOKENS.includes(name));
+  if (extra.length) throw new Error(`brand/tokens.css dark block may only set colours and shadows, not: ${extra.join(', ')}`);
+  const map = { ...lightMap, ...Object.fromEntries(entries) };
+  for (const name of BRAND_COLORS) {
+    if (!HEX.test(resolveRef(map, name))) throw new Error(`dark --${name} must resolve to a 6-digit hex colour`);
+  }
+  return entries;
+}
+
 // Follows var(--name) chains to a literal value.
 export function resolveRef(map, name, seen = new Set()) {
   if (seen.has(name)) throw new Error(`brand/tokens.css: circular reference through --${name}`);
@@ -89,33 +109,38 @@ export function resolveTokens() {
   const scale = JSON.parse(readFileSync(resolve(packageRoot, 'src/scale.json'), 'utf8'));
   const unit = px(literal('space-unit'));
 
-  const color = Object.fromEntries(BRAND_COLORS.map(name => [name, literal(name).toLowerCase()]));
+  const palette = (map) => {
+    const color = Object.fromEntries(BRAND_COLORS.map(name => [name, resolveRef(map, name).toLowerCase()]));
+    const derivedColor = {};
+    for (const [name, spec] of Object.entries(scale.derivedColor)) {
+      const lookup = (n) => {
+        const hex = color[n] ?? derivedColor[n];
+        if (!hex) throw new Error(`src/scale.json: ${name} refers to unknown colour ${n}`);
+        return hex;
+      };
+      derivedColor[name] = spec.alias ? lookup(spec.alias) : mix(lookup(spec.mix[0]), lookup(spec.mix[1]), spec.mix[2]);
+    }
+    const allColor = { ...color, ...derivedColor };
+    const ratio = (pairs) => pairs.map(([fg, bg]) => {
+      if (!allColor[fg] || !allColor[bg]) throw new Error(`src/scale.json: unknown contrast pair ${fg} on ${bg}`);
+      return { fg, bg, ratio: Math.round(contrast(allColor[fg], allColor[bg]) * 100) / 100 };
+    });
+    return { color, derivedColor, contrast: { text: ratio(scale.contrast.text), nonText: ratio(scale.contrast.nonText) } };
+  };
+  const light = palette(brandMap);
+  const darkBrand = parseDarkCss(sourceCss, brandMap);
+  const darkMap = { ...brandMap, ...Object.fromEntries(darkBrand) };
+  const darkPalette = palette(darkMap);
+  const { color, derivedColor } = light;
   const alias = Object.fromEntries(BRAND_COLORS.flatMap(name => {
     const ref = brandMap[name].match(REF);
     return ref ? [[name, ref[1]]] : [];
   }));
-  const derivedColor = {};
   const legacy = [];
   for (const [name, spec] of Object.entries(scale.derivedColor)) {
-    const lookup = (n) => {
-      const hex = color[n] ?? derivedColor[n];
-      if (!hex) throw new Error(`src/scale.json: ${name} refers to unknown colour ${n}`);
-      return hex;
-    };
-    if (spec.alias) {
-      derivedColor[name] = lookup(spec.alias);
-      alias[name] = spec.alias;
-    } else {
-      const [a, b, amount] = spec.mix;
-      derivedColor[name] = mix(lookup(a), lookup(b), amount);
-    }
+    if (spec.alias) alias[name] = spec.alias;
     if (spec.legacy) legacy.push(name);
   }
-  const allColor = { ...color, ...derivedColor };
-  const ratio = (pairs) => pairs.map(([fg, bg]) => {
-    if (!allColor[fg] || !allColor[bg]) throw new Error(`src/scale.json: unknown contrast pair ${fg} on ${bg}`);
-    return { fg, bg, ratio: Math.round(contrast(allColor[fg], allColor[bg]) * 100) / 100 };
-  });
 
   const space = { unit };
   for (let step = 1; step <= scale.spaceSteps; step += 1) space[step] = unit * step;
@@ -152,7 +177,13 @@ export function resolveTokens() {
     stroke: scale.stroke,
     indicator: scale.indicator,
     editor: scale.editor,
-    contrast: { text: ratio(scale.contrast.text), nonText: ratio(scale.contrast.nonText) },
+    contrast: light.contrast,
+    dark: {
+      color: darkPalette.color,
+      derivedColor: darkPalette.derivedColor,
+      shadow: Object.fromEntries(SHADOW_TOKENS.map(name => [camel(name.slice('shadow-'.length)), resolveRef(darkMap, name)])),
+      contrast: darkPalette.contrast,
+    },
   };
 
   // Flat CSS custom properties: brand values verbatim first, then additions.
@@ -183,6 +214,9 @@ export function resolveTokens() {
   add('editor-edge-corner', `${scale.editor.edgeCorner}px`);
   for (const [name, value] of Object.entries(derivedColor)) add(name, scale.derivedColor[name].alias ? `var(--${scale.derivedColor[name].alias})` : value);
   tokens.cssVariables = Object.fromEntries(css.map(([name, value]) => [`--${name}`, value]));
+  // Dark overrides: the brand block verbatim, then mixed colours recomputed (aliases follow by var()).
+  const dark = [...darkBrand, ...Object.entries(darkPalette.derivedColor).filter(([name]) => !scale.derivedColor[name].alias)];
+  tokens.dark.cssVariables = Object.fromEntries(dark.map(([name, value]) => [`--${name}`, value]));
   return { tokens, brand, scale };
 }
 
@@ -193,15 +227,31 @@ function tokensCss({ tokens, brand }) {
     return `  ${name}: ${value};${note}`;
   });
   const brandCount = brand.length;
+  const dark = Object.entries(tokens.dark.cssVariables).map(([name, value]) => `    ${name}: ${value};`);
   return [
     `/* ${GENERATED_NOTE} */`,
-    `/* ${tokens.system}. */`,
+    `/* ${tokens.system}. Light by default; dark with data-theme="dark" on the root, or by the system unless data-theme="light". */`,
     ':root {',
+    '  color-scheme: light;',
+    '',
     '  /* Brand tokens: identical to brand/tokens.css */',
     ...lines.slice(0, brandCount),
     '',
     '  /* Derived tokens: scales and states added by @perpeto/design-tokens */',
     ...lines.slice(brandCount),
+    '}',
+    '',
+    '/* Dark: mechanical graphite */',
+    ':root[data-theme="dark"] {',
+    '  color-scheme: dark;',
+    ...dark.map(line => line.slice(2)),
+    '}',
+    '',
+    '@media (prefers-color-scheme: dark) {',
+    '  :root:not([data-theme="light"]) {',
+    '    color-scheme: dark;',
+    ...dark,
+    '  }',
     '}',
     '',
     '@media (prefers-reduced-motion: reduce) {',
@@ -248,14 +298,26 @@ function swiftRgb(rgb, opacity = 1) {
 }
 const swiftColor = (hex) => swiftRgb(hexToRgb(hex));
 
-function swiftElevation(name, value) {
-  const layers = parseShadow(value);
-  const ring = layers.find(l => l.blur === 0 && l.spread > 0 && l.x === 0 && l.y === 0);
-  const shadows = layers.filter(l => l !== ring).map(l =>
-    `            .init(color: ${swiftRgb(l.rgb, l.alpha)}, radius: ${swiftCgFloat(l.blur / 2)}, x: ${swiftCgFloat(l.x)}, y: ${swiftCgFloat(l.y)}),`);
+const swiftDynamic = (light, dark) => `Color(perpetoLight: ${light}, dark: ${dark})`;
+
+function swiftElevation(name, value, darkValue) {
+  const split = (v) => {
+    const layers = parseShadow(v);
+    const ring = layers.find(l => l.blur === 0 && l.spread > 0 && l.x === 0 && l.y === 0);
+    return { ring, shadows: layers.filter(l => l !== ring) };
+  };
+  const light = split(value), dark = split(darkValue);
+  if (!light.ring !== !dark.ring || light.shadows.length !== dark.shadows.length) throw new Error(`dark --shadow-${name} must have the same layers as light`);
+  const pair = (l, d) => swiftDynamic(swiftRgb(l.rgb, l.alpha), swiftRgb(d.rgb, d.alpha));
+  const shadows = light.shadows.map((l, i) => {
+    const d = dark.shadows[i];
+    if (l.x !== d.x || l.y !== d.y || l.blur !== d.blur) throw new Error(`dark --shadow-${name} layer ${i + 1} must keep the light geometry`);
+    return `            .init(color: ${pair(l, d)}, radius: ${swiftCgFloat(l.blur / 2)}, x: ${swiftCgFloat(l.x)}, y: ${swiftCgFloat(l.y)}),`;
+  });
+  const ring = light.ring;
   return [
     `    public static let ${name} = PerpetoElevation(`,
-    `        ring: ${ring ? swiftRgb(ring.rgb, ring.alpha) : 'nil'},`,
+    `        ring: ${ring ? pair(ring, dark.ring) : 'nil'},`,
     '        layers: [',
     ...shadows,
     '        ]',
@@ -264,19 +326,19 @@ function swiftElevation(name, value) {
 }
 
 function tokensSwift({ tokens, scale }) {
-  const colorLine = (name, hex) => {
+  const colorLine = (name, hex, darkHex) => {
     const deprecated = tokens.legacy.includes(name)
       ? `    @available(*, deprecated, message: "Legacy alias of ${tokens.alias[name]}. Use PerpetoColor.${camel(tokens.alias[name])}.")\n` : '';
-    const note = tokens.alias[name] ? ` // ${hex}, ${tokens.alias[name]}` : ` // ${hex}`;
-    return `${deprecated}    public static let ${camel(name)} = ${swiftColor(hex)}${note}`;
+    const note = ` // ${hex} / ${darkHex}${tokens.alias[name] ? `, ${tokens.alias[name]}` : ''}`;
+    return `${deprecated}    public static let ${camel(name)} = ${swiftDynamic(swiftColor(hex), swiftColor(darkHex))}${note}`;
   };
-  const colorLines = Object.entries(tokens.color).map(([name, hex]) => colorLine(name, hex));
-  const derivedLines = Object.entries(tokens.derivedColor).map(([name, hex]) => colorLine(name, hex));
+  const colorLines = Object.entries(tokens.color).map(([name, hex]) => colorLine(name, hex, tokens.dark.color[name]));
+  const derivedLines = Object.entries(tokens.derivedColor).map(([name, hex]) => colorLine(name, hex, tokens.dark.derivedColor[name]));
   const textLines = Object.keys(tokens.text).map(size => `    public static let text${size}: CGFloat = ${size}`);
   const displayLines = Object.keys(tokens.display).map(size => `    public static let display${size}: CGFloat = ${size}`);
   const radiusLines = Object.entries(tokens.radius).map(([name, value]) => `    public static let ${name}: CGFloat = ${value}`);
   const layoutLines = Object.entries(tokens.layout).map(([name, value]) => `    public static let ${name}: CGFloat = ${value}`);
-  const elevationLines = Object.entries(tokens.shadow).map(([name, value]) => swiftElevation(name, value));
+  const elevationLines = Object.entries(tokens.shadow).map(([name, value]) => swiftElevation(name, value, tokens.dark.shadow[name]));
   const em = (value) => Number(value.replace('em', ''));
   const seconds = (value) => swiftNumber(ms(value) / 1000);
   const curve = (value) => cubicBezier(value).join(', ');
@@ -284,9 +346,30 @@ function tokensSwift({ tokens, scale }) {
   return `// ${GENERATED_NOTE}
 // ${tokens.system} SwiftUI tokens for macOS and iOS. Source: ${tokens.source} (sha256 ${tokens.sourceSha256.slice(0, 12)}).
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
-/// Perpeto Mono colours: warm neutrals, near-black ink, one signal orange for live activity and the brand,
-/// one restrained red for failure. Brand roles first, then derived states.
+public extension Color {
+    /// A colour that resolves against the appearance it is drawn in: light, or dark graphite.
+    init(perpetoLight light: Color, dark: Color) {
+        #if canImport(UIKit)
+        self.init(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(dark) : UIColor(light) })
+        #elseif canImport(AppKit)
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(dark) : NSColor(light)
+        })
+        #else
+        self = light
+        #endif
+    }
+}
+
+/// Perpeto Mono colours. Light: pure white, neutral greys, near-black ink. Dark: mechanical graphite with light ink.
+/// One signal orange for live activity and the brand, one restrained red for failure. Every colour follows the
+/// view's colour scheme. Brand roles first, then derived states.
 public enum PerpetoColor {
 ${colorLines.join('\n')}
 

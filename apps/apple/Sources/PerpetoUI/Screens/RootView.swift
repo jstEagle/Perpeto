@@ -316,7 +316,7 @@ struct AccountRow: View {
                     .font(PerpetoFont.small).foregroundStyle(PerpetoColor.muted).lineLimit(1)
             }
             Spacer(minLength: 0)
-            IconButton("slider.horizontal.3", label: "Hub connection", action: openSettings)
+            IconButton("slider.horizontal.3", label: "Settings", action: openSettings)
         }
         .padding(.horizontal, PerpetoSpacing.x(1))
     }

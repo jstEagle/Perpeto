@@ -28,7 +28,7 @@ See [the visual exploration](preview.html). It compares the original concepts; t
 
 **Decision, 2026-10-21:** Justus selected Perpeto Mono as the product UI direction for the web and Apple clients, after reviewing the existing clients and asking for an interface that is minimal, spacious, monochrome, simple, elegant, rounded, smooth and clean. The [Monochrome Orange board](overviews/favorites/monochrome-orange.png) is the primary reference, with [Monochrome Blue](overviews/favorites/monochrome-blue.png) and the [monochrome set](overviews/monochrome/) as secondary references.
 
-Perpeto Mono keeps Workshop's warm paper, ink and signal orange, and drops its orange buttons, ruled surfaces and coloured status roles. [brand/tokens.css](tokens.css) is the source of truth; [packages/design-tokens](../packages/design-tokens/README.md) generates the client formats and a specimen, and [docs/architecture/design-system.md](../docs/architecture/design-system.md) specifies the components. The clients have not been restyled yet.
+Perpeto Mono keeps Workshop's ink and signal orange, trades its warm paper for pure white (and a graphite dark), and drops its orange buttons, ruled surfaces and coloured status roles. [brand/tokens.css](tokens.css) is the source of truth; [packages/design-tokens](../packages/design-tokens/README.md) generates the client formats and a specimen, and [docs/architecture/design-system.md](../docs/architecture/design-system.md) specifies the components. The clients have not been restyled yet.
 
 This decision covers the product interface. The name, trademark and domain clearance, the small Spindle variant and dark mode remain open.
 
@@ -40,13 +40,13 @@ Titles are large, semibold, tightly spaced and sentence case: 40 px page titles,
 
 ### Color and semantics
 
-Warm off-white is the canvas; white cards carry the work. Six warm greys run between them and near-black ink. Ink carries text, primary buttons and keyboard focus.
+Light is pure white: page and cards are both white, and soft shadows carry the cards. Six neutral greys run between white and near-black ink. Dark is a mechanical graphite: cool grey-black page, slightly lighter cards, light ink. Ink carries text, primary buttons and keyboard focus in both.
 
-Signal orange is the only hue, reserved for a small dot that marks live activity and for the brand mark. It is never a button, link, text colour, fill, border or selection. States are told in greys by icon, word and weight: things that need a person are filled and medium weight, quiet states are outlined and muted. One restrained red appears only where a failure would otherwise be missed. Text meets WCAG AA contrast on every surface. Dark mode is intentionally undefined until the product needs it.
+Signal orange is the only hue, reserved for a small dot that marks live activity and for the brand mark. It is never a button, link, text colour, fill, border or selection. States are told in greys by icon, word and weight: things that need a person are filled and medium weight, quiet states are outlined and muted. One restrained red appears only where a failure would otherwise be missed. Text meets WCAG AA contrast on every surface.
 
 ### Mark and wordmark
 
-The lowercase **perpeto** wordmark and the eight-arm Spindle live in [identity/](identity/). In the product they appear in ink on paper; orange is for display-size brand moments. Use clearspace at least equal to one arm width on every side. The master Spindle muddies below 24 px; the simplified small variant in `packages/design-tokens/assets/proposed/` is not approved. Avoid infinity signs, robot faces, brains and dense node meshes.
+The lowercase **perpeto** wordmark and the eight-arm Spindle live in [identity/](identity/). In the product they appear in ink, so they invert with the appearance; orange is for display-size brand moments. Use clearspace at least equal to one arm width on every side. The master Spindle muddies below 24 px; the simplified small variant in `packages/design-tokens/assets/proposed/` is not approved. Avoid infinity signs, robot faces, brains and dense node meshes.
 
 ### Interface character
 

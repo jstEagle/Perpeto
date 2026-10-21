@@ -5,11 +5,29 @@
 # Usage: scripts/snapshots.sh [output-dir] [hub-url hub-token-file [--live-check]]
 #   (default output: apps/apple/screenshots, demo data)
 # With a hub URL and token file it captures that hub's first project instead.
+#        scripts/snapshots.sh --themes [output-dir]
+#   captures the main screens in light and dark (default: screenshots/themes,
+#   light-*.png and dark-*.png). Set APPEARANCE=light|dark to force one
+#   appearance for a normal run.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "${1:-}" = "--themes" ]; then
+  OUT="${2:-$ROOT/screenshots/themes}"
+  "$ROOT/scripts/build-app.sh" debug >/dev/null
+  mkdir -p "$OUT"
+  for MODE in light dark; do
+    "$ROOT/build/Perpeto.app/Contents/MacOS/Perpeto" --snapshots "$OUT" --themes "$MODE-" -perpeto.appearance "$MODE" &
+    PID=$!
+    ( sleep 90; kill "$PID" 2>/dev/null ) &
+    wait "$PID" || true
+  done
+  ls "$OUT"
+  exit 0
+fi
 OUT="${1:-$ROOT/screenshots}"
 HUB_ARGS=""
 if [ $# -ge 3 ]; then HUB_ARGS="--hub-url $2 --hub-token-file $3 ${4:-}"; fi
+if [ -n "${APPEARANCE:-}" ]; then HUB_ARGS="$HUB_ARGS -perpeto.appearance $APPEARANCE"; fi
 "$ROOT/scripts/build-app.sh" debug >/dev/null
 mkdir -p "$OUT"
 # shellcheck disable=SC2086

@@ -201,7 +201,7 @@ struct NodeInspector: View {
             .scrollContentBackground(.hidden)
             .frame(minHeight: 72)
             .padding(PerpetoSpacing.x(1))
-            .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.control))
+            .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.control, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: PerpetoRadius.control).strokeBorder(PerpetoColor.controlBorder))
     }
 }

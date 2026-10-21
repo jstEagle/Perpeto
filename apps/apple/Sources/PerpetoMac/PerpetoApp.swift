@@ -8,6 +8,7 @@ struct PerpetoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var store: FactoryStore
     @State private var navigator = Navigator()
+    @AppStorage(AppearanceMode.defaultsKey) private var appearance: AppearanceMode = .system
 
     init() {
         // Snapshots use demo fixtures unless a hub is named for them explicitly.
@@ -23,15 +24,16 @@ struct PerpetoApp: App {
         Window("perpeto", id: "main") {
             MainWindow(store: store, navigator: navigator)
                 .frame(minWidth: 1100, minHeight: 700)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(appearance.colorScheme)
+                .onChange(of: appearance, initial: true) { _, mode in AppDelegate.apply(mode) }
         }
         .defaultSize(width: 1440, height: 960)
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands { PerpetoCommands(store: store, navigator: navigator) }
 
         Settings {
-            HubConnectionView(store: store)
-                .preferredColorScheme(.light)
+            SettingsView(store: store)
+                .preferredColorScheme(appearance.colorScheme)
         }
     }
 }
@@ -53,12 +55,23 @@ struct MainWindow: View {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // Dark mode is intentionally undefined in brand/README.md; stay in light appearance.
-        NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.setActivationPolicy(.regular)
         if let directory = IconRenderer.requestedDirectory {
+            // The icon is always the light mark on white.
+            NSApp.appearance = NSAppearance(named: .aqua)
             IconRenderer.render(to: directory)
             exit(0)
+        }
+        Self.apply(.current)
+    }
+
+    /// Menus, alerts and window chrome follow the chosen appearance; nil follows the system.
+    @MainActor
+    static func apply(_ mode: AppearanceMode) {
+        switch mode {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
         }
     }
 

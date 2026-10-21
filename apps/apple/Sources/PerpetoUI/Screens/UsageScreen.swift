@@ -17,7 +17,7 @@ enum TokenKind: String, CaseIterable, Identifiable {
         case .input: PerpetoColor.ink
         case .output: PerpetoColor.grey500
         case .cacheWrite: PerpetoColor.grey300
-        case .cacheRead: PerpetoColor.grey100
+        case .cacheRead: PerpetoColor.grey200
         }
     }
 

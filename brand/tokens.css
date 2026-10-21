@@ -2,24 +2,26 @@
   Perpeto Mono: the product UI direction for the web and Apple clients, selected by Justus on 2026-10-21.
   Source of truth. packages/design-tokens generates CSS, JSON, TypeScript and Swift from this file.
 
-  Minimal, spacious, monochrome, rounded, smooth. Warm off-white canvas, white cards, near-black ink.
+  Minimal, spacious, monochrome, rounded, smooth. Two appearances:
+  light is pure white with neutral greys and near-black ink; dark is a mechanical graphite grey
+  with soft light ink. The dark block below overrides colours and elevation only.
   Signal orange is the only hue: a small live-activity dot and the brand mark, never buttons or large areas.
   Failure may use the one restrained red where meaning would otherwise be lost.
 */
 :root {
   /* Surfaces */
-  --canvas: #f6f5f2;
+  --canvas: #ffffff;
   --surface: #ffffff;
-  --surface-subtle: #f0efeb;
+  --surface-subtle: #f4f4f5;
 
   /* Greys, light to dark */
-  --grey-100: #e8e7e3;
-  --grey-200: #d9d7d2;
-  --grey-300: #b8b6b0;
-  --grey-400: #8a8883;
-  --grey-500: #6a6863;
-  --grey-600: #43423e;
-  --ink: #161615;
+  --grey-100: #ebebec;
+  --grey-200: #dadadc;
+  --grey-300: #b8b8bb;
+  --grey-400: #8a8a8e;
+  --grey-500: #67676b;
+  --grey-600: #404043;
+  --ink: #111112;
 
   /* Roles */
   --ink-soft: var(--grey-600);
@@ -55,17 +57,17 @@
   --sidebar-width: 248px;
 
   /* Radii */
-  --radius-small: 8px;
-  --radius-control: 12px;
-  --radius-node: 16px;
-  --radius-panel: 20px;
-  --radius-sheet: 28px;
+  --radius-small: 6px;
+  --radius-control: 10px;
+  --radius-node: 12px;
+  --radius-panel: 16px;
+  --radius-sheet: 22px;
   --radius-pill: 999px;
 
   /* Elevation: a faint ring and soft, low shadows instead of borders */
-  --shadow-card: 0 0 0 1px rgb(22 22 21 / 0.045), 0 1px 2px rgb(22 22 21 / 0.04), 0 8px 24px rgb(22 22 21 / 0.035);
-  --shadow-raised: 0 0 0 1px rgb(22 22 21 / 0.05), 0 2px 6px rgb(22 22 21 / 0.06), 0 16px 40px rgb(22 22 21 / 0.08);
-  --shadow-overlay: 0 0 0 1px rgb(22 22 21 / 0.06), 0 8px 24px rgb(22 22 21 / 0.1), 0 24px 64px rgb(22 22 21 / 0.1);
+  --shadow-card: 0 0 0 1px rgb(17 17 18 / 0.045), 0 1px 2px rgb(17 17 18 / 0.04), 0 8px 24px rgb(17 17 18 / 0.035);
+  --shadow-raised: 0 0 0 1px rgb(17 17 18 / 0.05), 0 2px 6px rgb(17 17 18 / 0.06), 0 16px 40px rgb(17 17 18 / 0.08);
+  --shadow-overlay: 0 0 0 1px rgb(17 17 18 / 0.06), 0 8px 24px rgb(17 17 18 / 0.1), 0 24px 64px rgb(17 17 18 / 0.1);
 
   /* Motion: short and eased out; the generated CSS drops durations to 0 under reduced motion */
   --duration-fast: 140ms;
@@ -73,4 +75,46 @@
   --duration-slow: 360ms;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/*
+  Dark: mechanical graphite. Cool, slightly blue-black greys like machined aluminium in shadow,
+  light ink, and the same single orange. Selected with data-theme="dark" on the root element,
+  or by the system when data-theme is not "light".
+*/
+:root[data-theme="dark"] {
+  /* Surfaces */
+  --canvas: #1a1b1d;
+  --surface: #222326;
+  --surface-subtle: #2a2b2f;
+
+  /* Greys, dark to light */
+  --grey-100: #323338;
+  --grey-200: #3e4045;
+  --grey-300: #575960;
+  --grey-400: #7e8088;
+  --grey-500: #a3a5ac;
+  --grey-600: #c9cacf;
+  --ink: #ececee;
+
+  /* Roles */
+  --ink-soft: var(--grey-600);
+  --muted: var(--grey-500);
+  --faint: var(--grey-400);
+  --border: var(--grey-100);
+  --control-border: var(--grey-400);
+  --action: var(--ink);
+  --on-action: var(--canvas);
+  --focus: var(--ink);
+
+  /* Signal and status */
+  --accent: #f05a28;
+  --success: var(--grey-600);
+  --warning: var(--ink);
+  --error: #ec6a5e;
+
+  /* Elevation: a light hairline ring and deeper shadows, since shadows read weakly on grey */
+  --shadow-card: 0 0 0 1px rgb(255 255 255 / 0.06), 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.22);
+  --shadow-raised: 0 0 0 1px rgb(255 255 255 / 0.08), 0 2px 6px rgb(0 0 0 / 0.35), 0 16px 40px rgb(0 0 0 / 0.35);
+  --shadow-overlay: 0 0 0 1px rgb(255 255 255 / 0.1), 0 8px 24px rgb(0 0 0 / 0.4), 0 24px 64px rgb(0 0 0 / 0.45);
 }

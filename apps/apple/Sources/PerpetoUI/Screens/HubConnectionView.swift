@@ -5,10 +5,13 @@ import SwiftUI
 /// it as the Settings window, iOS as a sheet.
 public struct HubConnectionView: View {
     var store: FactoryStore
+    /// Inside `SettingsView`, which supplies the page padding and canvas.
+    var embedded: Bool
     private let settings = HubSettings()
 
-    public init(store: FactoryStore) {
+    public init(store: FactoryStore, embedded: Bool = false) {
         self.store = store
+        self.embedded = embedded
     }
 
     @State private var url = ""
@@ -26,11 +29,19 @@ public struct HubConnectionView: View {
     #endif
 
     public var body: some View {
-        #if os(macOS)
-        form.frame(width: 580)
-        #else
-        ScrollView { form }.background(PerpetoColor.canvas)
-        #endif
+        if embedded {
+            form
+        } else {
+            #if os(macOS)
+            page.frame(width: 580)
+            #else
+            ScrollView { page }.background(PerpetoColor.canvas)
+            #endif
+        }
+    }
+
+    private var page: some View {
+        form.padding(PerpetoSpacing.x(6)).background(PerpetoColor.canvas)
     }
 
     private var form: some View {
@@ -75,8 +86,6 @@ public struct HubConnectionView: View {
             #endif
         }
         .card()
-        .padding(PerpetoSpacing.x(6))
-        .background(PerpetoColor.canvas)
         .onAppear {
             url = settings.hubURLString
             hasToken = settings.tokens.read() != nil

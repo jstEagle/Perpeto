@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="-480 -480 960 960" fill="none">
   <title>Perpeto Spindle, simplified for 16 px (proposal, not approved)</title>
-  <g fill="#161615">
+  <g fill="#111112">
     <path id="arm-1" d="M-100 -180L-100 -300.6L24.7 -398.5L-24.7 -461.5L-180 -339.4L-180 -180Z"/>
     <path id="arm-2" d="M56.6 -198L141.8 -283.2L299.3 -264.3L308.8 -343.8L112.7 -367.3L0 -254.6Z"/>
     <path id="arm-3" d="M180 -100L300.6 -100L398.5 24.7L461.5 -24.7L339.4 -180L180 -180Z"/>

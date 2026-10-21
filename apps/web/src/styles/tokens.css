@@ -1,13 +1,31 @@
 /*
  * The only place the web app reads brand values from: Perpeto Mono tokens,
  * generated from brand/tokens.css by @perpeto/design-tokens. Everything else
- * in the app uses var(--…) only.
+ * in the app uses var(--…) only. Appearance (System, Light, Dark) switches
+ * the tokens through data-theme on the root; see src/app/appearance.ts.
  */
 @import "@perpeto/design-tokens/tokens.css";
 
 :root {
   /* Backdrop behind sheets and the mobile menu: ink at low opacity. */
   --scrim: color-mix(in srgb, var(--ink) 22%, transparent);
+  /* Selected segmented option: a white pill on the grey track. */
+  --seg-thumb: var(--surface);
   /* Room the floating tab bar keeps free at the bottom of narrow pages. */
   --tabbar-clearance: calc(var(--space-24) + var(--space-4));
+}
+
+/*
+ * Dark: ink is light, so the scrim darkens with the canvas instead, and the
+ * selected segment is lifted one grey step above the track.
+ */
+:root[data-theme="dark"] {
+  --scrim: color-mix(in srgb, var(--canvas) 72%, transparent);
+  --seg-thumb: var(--grey-100);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --scrim: color-mix(in srgb, var(--canvas) 72%, transparent);
+    --seg-thumb: var(--grey-100);
+  }
 }

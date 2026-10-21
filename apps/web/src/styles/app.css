@@ -14,6 +14,7 @@
   box-sizing: border-box;
 }
 html {
+  accent-color: var(--ink);
   background: var(--canvas);
   color: var(--ink);
   font-family: var(--font-sans);
@@ -183,7 +184,7 @@ svg {
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   box-shadow: var(--shadow-card);
   font-size: var(--text-16);
@@ -656,7 +657,7 @@ legend {
 .seg [aria-checked='true'],
 .seg [aria-selected='true'],
 .seg [aria-current='page'] {
-  background: var(--surface);
+  background: var(--seg-thumb);
   color: var(--ink);
   box-shadow: var(--shadow-card);
 }
@@ -925,7 +926,7 @@ a.row-title:hover,
 .tile-sm {
   width: 32px;
   height: 32px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
 }
 .tile-sm .i {
   width: 17px;
@@ -1644,4 +1645,11 @@ a.row-title:hover,
 .bars-even > span.zero {
   height: 3px;
   min-height: 3px;
+}
+
+/* ---------- Appearance (Settings) ---------- */
+.appearance {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-3);
 }

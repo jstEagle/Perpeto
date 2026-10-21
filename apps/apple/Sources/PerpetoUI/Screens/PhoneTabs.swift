@@ -86,7 +86,7 @@ struct PhoneTabs: View {
                     Button(project.name) { navigator.route = .project(project.id, .overview) }
                 }
                 Divider()
-                Button("Hub connection", action: openSettings)
+                Button("Settings", action: openSettings)
             } label: {
                 Image(systemName: "line.3.horizontal")
                     .font(.system(size: 14, weight: .medium))
@@ -118,7 +118,7 @@ struct PhoneTabs: View {
                     Button(action: openSettings) {
                         HStack(spacing: PerpetoSpacing.x(3)) {
                             IconTile("slider.horizontal.3")
-                            RowText("Hub connection", meta: store.isDemo ? "Demo data. Connect a hub to see live work." : "Connected")
+                            RowText("Settings", meta: store.isDemo ? "Appearance and hub. Showing demo data." : "Appearance and hub. Connected.")
                             Spacer()
                             Image(systemName: "chevron.right").font(.system(size: 12, weight: .medium)).foregroundStyle(PerpetoColor.faint)
                         }

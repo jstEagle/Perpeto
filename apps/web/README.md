@@ -8,6 +8,7 @@ npm test -w @perpeto/web            # Vitest
 npm run typecheck -w @perpeto/web
 npm run build:web
 node apps/web/scripts/screenshots.mjs   # with the dev server running; writes apps/web/screenshots/
+node apps/web/scripts/theme-screenshots.mjs  # light and dark captures in apps/web/screenshots/themes/
 node apps/web/scripts/smoke.mjs         # browser smoke test of the main flows
 node apps/web/scripts/perf.mjs http://localhost:5180 200   # live map frame rates and latencies, synthetic graph
 
@@ -18,6 +19,8 @@ node apps/web/scripts/hub-screenshots.mjs http://localhost:4320 path/to/owner.se
 ```
 
 Connect in Settings with the hub URL and owner token. The app exchanges the token for the hub's HttpOnly session cookie and stores no token. The cookie is SameSite=Strict, so use the same host name for the app and the hub (`localhost` for both, not `localhost` and `127.0.0.1`). Only a hub without the session route falls back to keeping the token in this tab's session storage.
+
+Settings › Appearance switches between System (the default, follows the device), Light (pure white) and Dark (graphite). The choice is saved in this browser under `perpeto.appearance` and applied before first paint through `data-theme` on `<html>`.
 
 Brand values come only from `src/styles/tokens.css`. See [the handoff](../../docs/handoffs/web-app.md) for scope, verification and contract assumptions.
 

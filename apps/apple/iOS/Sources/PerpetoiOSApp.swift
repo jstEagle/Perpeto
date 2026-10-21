@@ -9,6 +9,7 @@ struct PerpetoiOSApp: App {
     @State private var store: FactoryStore
     @State private var navigator: Navigator
     @State private var showConnection = false
+    @AppStorage(AppearanceMode.defaultsKey) private var appearance: AppearanceMode = .system
 
     init() {
         let (source, error) = LaunchOptions.hubSource().map { ($0 as FactoryDataSource, nil) } ?? FactoryStore.makeSource()
@@ -23,21 +24,21 @@ struct PerpetoiOSApp: App {
             RootView(store: store, navigator: navigator, openSettings: { showConnection = true })
                 .sheet(isPresented: $showConnection) {
                     NavigationStack {
-                        HubConnectionView(store: store)
-                            .navigationTitle("Hub connection")
+                        SettingsView(store: store)
+                            .navigationTitle("Settings")
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
                                 ToolbarItem(placement: .cancellationAction) { Button("Done") { showConnection = false } }
                             }
                     }
                     .tint(PerpetoColor.ink)
+                    .preferredColorScheme(appearance.colorScheme)
                 }
                 .task {
                     await LaunchOptions.apply(to: navigator, store: store)
                     if CommandLine.arguments.contains("--settings") { showConnection = true }
                 }
-                // Dark mode is intentionally undefined in brand/README.md.
-                .preferredColorScheme(.light)
+                .preferredColorScheme(appearance.colorScheme)
         }
     }
 }
@@ -48,7 +49,8 @@ struct PerpetoiOSApp: App {
 ///   --node <node id>     select a node on the run map
 ///   --run <run id>       open this run instead of the running one
 ///   --detail-only        hide the sidebar (iPad)
-///   --settings           open the hub connection sheet
+///   --settings           open the settings sheet
+///   -perpeto.appearance <system|light|dark>   override the appearance for this launch
 ///   --hub-url <url> --hub-token-file <path>   read a live hub; the token
 ///     comes from an owner-only file, never an argument
 enum LaunchOptions {
