@@ -105,7 +105,7 @@ GraphEdge     { id, from: { node, port? }, to: { node, port? }, kind: 'flow'|'de
 | `agent` | Agent role that does a work item | `harness`, `prompt`, `concurrency`, `policy` |
 | `review` | Agent review gate; passes or returns work | `harness`, `prompt`, `rubric` |
 | `ci` | CI gate run on a user-owned machine at the exact head commit | `steps`, `requirements` |
-| `merge-queue` | Serialises merges into the base branch | `strategy: 'serial'|'batch'`, `requiredChecks`, `method: 'squash'|'merge'|'rebase'` |
+| `merge-queue` | Serialises merges into the base branch | `strategy: 'serial'|'batch'`, `requiredChecks`, `method: 'squash'|'merge'|'rebase'`, `publication: 'fast-forward-push'|'github-merge-queue'` |
 | `loop` | Repeats its body until a condition or limit | `until: 'review-pass'|'ci-pass'|'manual'`, `maxIterations` |
 | `human` | Pauses for a person | `prompt` |
 | `output` | Terminal: work item finished | none |
