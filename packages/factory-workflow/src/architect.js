@@ -30,11 +30,19 @@ const policy = {
     maxTurns: { type: 'integer', minimum: 1 }, maxTokens: { type: 'integer', minimum: 1 },
   },
 };
+const retry = {
+  type: 'object', required: ['maxAttempts'], additionalProperties: false,
+  properties: {
+    maxAttempts: { type: 'integer', minimum: 1, maximum: LIMITS.maxAttempts },
+    backoffSec: { type: 'integer', minimum: 0, maximum: LIMITS.backoffSec },
+  },
+};
+const nodeRef = { type: 'string', pattern: ID_PATTERN };
 const role = (extra = {}, required = []) => ({
   type: 'object', required: ['harness', 'prompt', ...required],
   properties: {
     harness, prompt: text, concurrency: { type: 'integer', minimum: 1, maximum: LIMITS.concurrency }, policy, requirements,
-    role: { type: 'string', pattern: ID_PATTERN }, ...extra,
+    role: { type: 'string', pattern: ID_PATTERN }, retry, onExhausted: nodeRef, onBlocked: nodeRef, ...extra,
   },
 });
 const CONFIG_SCHEMAS = {
@@ -50,7 +58,7 @@ const CONFIG_SCHEMAS = {
         items: { type: 'object', required: ['name', 'run'], additionalProperties: false,
           properties: { name: text, run: text, timeoutSec: { type: 'integer', minimum: 1, maximum: 86400 } } },
       },
-      requirements,
+      requirements, retry, onExhausted: nodeRef,
     },
   },
   'merge-queue': {
@@ -63,6 +71,7 @@ const CONFIG_SCHEMAS = {
       until: { enum: ['review-pass', 'ci-pass', 'manual'] },
       maxIterations: { type: 'integer', minimum: 1, maximum: LIMITS.maxIterations },
       expectedIterations: { type: 'number', minimum: 1, maximum: LIMITS.maxIterations },
+      onExhausted: nodeRef,
     },
   },
   human: { type: 'object', required: ['prompt'], properties: { prompt: text } },
@@ -113,25 +122,27 @@ Nodes are { "id", "type", "label", "position": { "x", "y" }, "config" }. Ids use
 | type | meaning | config (* = required) |
 | --- | --- | --- |
 | input | where work enters | source* ("manual", "goals" or "issues"), docs (doc ids) |
-| planner | agent that splits input into work items | harness*, prompt*, maxItems (1-${LIMITS.maxItems}, default 20), concurrency, policy, requirements, role |
-| agent | agent role that does a work item | harness*, prompt*, concurrency (default 1), policy, requirements, role |
-| review | agent review gate | harness*, prompt*, rubric, concurrency, policy, requirements, role |
-| ci | CI gate run on a user machine at the exact head commit | steps* ([{ name, run, timeoutSec? }]), requirements |
+| planner | agent that splits input into work items | harness*, prompt*, maxItems (1-${LIMITS.maxItems}, default 20), concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
+| agent | agent role that does a work item | harness*, prompt*, concurrency (default 1), policy, requirements, role, retry, onExhausted, onBlocked |
+| review | agent review gate; the reviewer reports verdict "pass" or "fail" | harness*, prompt*, rubric, concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
+| ci | CI gate run on a user machine at the exact head commit | steps* ([{ name, run, timeoutSec? }]), requirements, retry, onExhausted |
 | merge-queue | serialises merges into the base branch | strategy* ("serial" or "batch"), method* ("squash", "merge" or "rebase"), requiredChecks |
-| loop | repeats its body; fails the item after maxIterations passes | until* ("review-pass", "ci-pass" or "manual"), maxIterations* (1-${LIMITS.maxIterations}), expectedIterations |
+| loop | repeats its body; after maxIterations passes the item escalates to onExhausted or fails | until* ("review-pass", "ci-pass" or "manual"), maxIterations* (1-${LIMITS.maxIterations}), expectedIterations, onExhausted |
 | human | waits for a person to pass or fail the item | prompt* |
 | output | terminal: work item finished | none |
 
 harness is { "provider": T3 driver kind such as "claudeAgent" or "codex", "model": model id, "options"?: { string: string | boolean } }.
 policy is { "maxSubagents"?, "allowedSubagentProviders"?, "maxTurns"?, "maxTokens"? }. Do not set canMessage; it comes from messages edges.
 requirements is { "os"?: "darwin" | "linux" | "windows", "labels"?: [string], "providers"?: [string] }.
+retry is { "maxAttempts": 1-${LIMITS.maxAttempts} (total attempts, default 1), "backoffSec"?: 0-${LIMITS.backoffSec} }. It covers errors, not verdicts: an agent reporting failure, a review without a verdict, or a CI job that errored or was cancelled. Retry n waits backoffSec × 2^(n-1) seconds.
+onExhausted names a human, agent or review node that takes the item once retries or loop iterations run out; without it the item fails. onBlocked names a human node for items an agent reports as blocked; it defaults to onExhausted when that is a human node, otherwise blocked items wait in place for a person. A human node used as an escalation target may leave "fail" unwired: failing there ends the item.
 
 Edges are { "id", "kind", "from": { "node", "port"? }, "to": { "node" } }:
 - "flow" moves work items. review, ci and human nodes need exactly one flow edge on port "pass" and one on port "fail". merge-queue needs "pass" and may have "fail" (without it a rejected merge fails the item). Every other node except output has exactly one unported flow edge out. Nothing flows into input or out of output.
 - "delegates" runs from a planner or agent to an agent and lets the source assign work or spawn subagents in the target role, bounded by the target's concurrency and the source's policy.maxSubagents. An agent reached only by delegates edges is a helper role and needs no flow edges.
 - "messages" connects planner, agent or review roles that may message each other, in both directions.
 
-Rules: every node must be reachable from an input; every flow cycle must return into a loop node from inside that loop's body; a loop with until "review-pass" needs a review gate in its body whose fail edge returns to the loop ("ci-pass" needs a ci gate, "manual" a human gate). Work items carry branch, pull request URL and head commit from the agent that built them; ci and merge-queue nodes need those, so put an agent before them.`;
+Rules: every node must be reachable from an input, through flow edges or escalation targets; every cycle, including one through an escalation, must return into a loop node from inside that loop's body; a loop with until "review-pass" needs a review gate in its body whose fail edge returns to the loop ("ci-pass" needs a ci gate, "manual" a human gate). Work items carry branch, pull request URL and head commit from the agent that built them; ci and merge-queue nodes need those, so put an agent before them.`;
 
 /** Plain-language description of graph v1 for agent prompts. */
 export function describeGraphSchema() { return GRAPH_GUIDE; }
