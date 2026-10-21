@@ -1,7 +1,8 @@
-import { mkdir, lstat, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, lstat, readFile, writeFile, open, rename, unlink } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { homedir, hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { readConfiguration } from '../../../scripts/runtime.mjs';
 
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -28,7 +29,12 @@ export async function readJson(path) { return JSON.parse(await readFile(path, 'u
 export function hubConfig(dir, { host = '127.0.0.1', port = 4320 } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Port must be 0–65535.');
   return { host, port, databasePath: './hub/hub.sqlite', messagingDatabasePath: './hub/messaging.sqlite',
-    ownerTokenPath: './hub/owner.secret' };
+    deliveryDatabasePath: './hub/delivery.sqlite', workflowDatabasePath: './hub/workflow.sqlite',
+    deliveryRepositoriesPath: './hub/repositories', deliveryLeaseDurationMs: 60000,
+    deliveryMaxStepFailures: 5, deliveryRetryBackoffMs: 2000, ownerTokenPath: './hub/owner.secret',
+    corsOrigins: [], requestMaxBytes: 1048576, heartbeatIntervalMs: 10000, leaseDurationMs: 60000,
+    longPollMs: 25000, maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
+    architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' } };
 }
 export function hubUrl(value) {
   let url;
@@ -47,7 +53,10 @@ export function nodeConfig(dir, url, { labels = [], name = hostname() } = {}) {
   const runtime = readConfiguration();
   const host = ['0.0.0.0', '::'].includes(runtime.host) ? '127.0.0.1' : runtime.host;
   return { hubUrl: hubUrl(url), name, labels, dataDir: './node', credentialFile: './node/machine.json',
-    capacity: { maxAgents: 1, maxJobs: 1 }, runtime: { enabled: false, repoRoot,
+    capacity: { maxAgents: 1, maxJobs: 1 }, allowInsecureHttp: false,
+    executorPackages: ['@perpeto/t3-executor'],
+    timing: { heartbeatMs: 10000, renewMs: 20000, requestMs: 30000, pollIdleMs: 200, backoffMinMs: 250, backoffMaxMs: 10000 },
+    jobs: { defaultTimeoutSec: 600, checkoutTimeoutSec: 120, maxLogChunkBytes: 8192, redactPatterns: [], protectedPaths: [] }, runtime: { enabled: false, repoRoot,
       url: `http://${host.includes(':') ? `[${host}]` : host}:${runtime.port}` } };
 }
 export async function initHub(dir, options) {
@@ -61,4 +70,15 @@ export async function initHub(dir, options) {
     await hub.close();
   } catch { throw new Error('Hub initialization failed. Check JSON configuration and private data files.'); }
   return path;
+}
+
+// Write credentials completely before making a new token visible to the daemon.
+export async function writePrivateJson(path, value) {
+  const temp = `${path}.${randomUUID()}.tmp`;
+  const file = await open(temp, 'wx', 0o600);
+  try {
+    await file.writeFile(JSON.stringify(value));
+    await file.sync();
+  } finally { await file.close(); }
+  try { await rename(temp, path); } finally { await unlink(temp).catch(() => {}); }
 }
