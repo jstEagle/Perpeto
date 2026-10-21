@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -56,6 +56,10 @@ const now = () => new Date().toISOString();
  */
 export async function startFakeT3({ token = 'test-token', policyRoutes = true, providers } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'fake-t3-'));
+  // A stand-in for the operator's Codex home, so factory isolation never links a real login in tests.
+  const operatorCodexHome = join(directory, 'operator-codex');
+  mkdirSync(operatorCodexHome);
+  writeFileSync(join(operatorCodexHome, 'auth.json'), '{}');
   const policies = new AgentPolicyStore(join(directory, 'policy.sqlite'));
   const state = {
     token,
@@ -64,6 +68,7 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
       { instanceId: 'claudeAgent', driver: 'claudeAgent', enabled: true, status: 'ready', models: [{ slug: 'claude-test' }] },
       { instanceId: 'cursor', driver: 'cursor', enabled: false, status: 'disabled', models: [] },
     ],
+    providerInstances: { codex: { driver: 'codex', config: { homePath: operatorCodexHome } } },
     projects: [],
     threads: new Map(),
     sequence: 0,
@@ -151,10 +156,12 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
       const payload = message.payload;
       switch (message.tag) {
         case 'server.getConfig': return reply({ providers: state.providers });
+        case 'server.getSettings': return reply({ providerInstances: state.providerInstances ?? {} });
         case 'server.updateSettings': {
           state.commands.push({ tag: message.tag, payload });
           const mutation = payload.providerInstanceMutation;
           if (mutation?.operation === 'upsert') {
+            state.providerInstances = { ...(state.providerInstances ?? {}), [mutation.instanceId]: mutation.instance };
             state.providers = state.providers.filter(item => item.instanceId !== mutation.instanceId);
             state.providers.push({ instanceId: mutation.instanceId, driver: mutation.instance.driver, enabled: mutation.instance.enabled !== false,
               status: state.newInstanceStatus ?? 'ready', auth: { status: state.newInstanceAuth ?? 'authenticated' }, models: [] });
@@ -215,6 +222,8 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
   const api = {
     state, policies, emit, thread,
     url: `http://127.0.0.1:${server.address().port}`,
+    /** Pass as the executor's `agentHomesDir` so factory homes stay inside the fake's directory. */
+    homes: join(directory, 'agent-homes'),
     /** Drop every live WebSocket to exercise reconnection. */
     dropSockets() { for (const ws of state.sockets) ws.destroy(); state.sockets.clear(); state.subscribers.clear(); },
     commandsOf(type) { return state.commands.filter(item => item.payload?.type === type); },

@@ -90,6 +90,8 @@ export class T3Client {
   close() { this.#connection?.close(); this.#connection = null; }
 
   async getConfig(options) { return this.request('server.getConfig', {}, options); }
+  /** Server settings as T3 shows clients: provider instance configs, with secret values redacted. */
+  async getSettings(options) { return this.request('server.getSettings', {}, options); }
 
   /** Register or update one provider instance (needs the `providers:manage` scope). */
   async upsertProviderInstance(mutation, options) {
