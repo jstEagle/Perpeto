@@ -543,3 +543,16 @@ test('node tokens cannot reach owner routes through encoded, dot, backslash or d
   await assert.rejects(hub.request({ method: 'POST', path: '/jobs/%2e%2e/projects', body: { name: 'x', repo: { url: '/r', defaultBranch: 'main' } }, authorization: `Bearer ${machine.token}` }), error => [400, 403, 404].includes(error.status));
   assert.equal((await hub.request({ method: 'GET', path: '/projects', authorization: `Bearer ${ownerToken}` })).body.projects.length, 0);
 });
+
+test('blank, whitespace-only and NUL CI log lines are stored instead of failing the job', async t => {
+  const f = await fixture(t); const { run } = await f.run(); const node = await f.enroll();
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_logs', revision: 'e'.repeat(40), configHash: 'hash', repo: '/tmp/repo', steps: [] }] });
+  const job = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0];
+  const log = chunk => f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'log', data: { step: 'test', stream: 'stdout', chunk } }, node.token);
+  for (const chunk of ['\n', 'a\n', '\n', '   \n', '\t\r\n', 'nul\0byte\n']) assert.equal((await log(chunk)).status, 200, JSON.stringify(chunk));
+  assert.equal((await log('')).status, 400);
+  const chunks = (await f.request('GET', `/jobs/${job.id}/log`)).body.chunks.map(value => value.chunk);
+  assert.deepEqual(chunks, ['\n', 'a\n', '\n', '   \n', '\t\r\n', 'nul�byte\n']);
+  const done = await f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'completed', data: { status: 'passed', revision: job.revision, configHash: 'hash' } }, node.token);
+  assert.equal(done.status, 200); assert.equal((await f.request('GET', `/jobs/${job.id}`)).body.status, 'passed');
+});

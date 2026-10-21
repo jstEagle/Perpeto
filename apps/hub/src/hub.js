@@ -508,7 +508,9 @@ export class Hub {
         if (body.type === 'started') value.status = 'running';
         if (kind === 'assignment' && body.type === 'usage') { this.recordUsage(value, data); if (data.accountId) { value.accountId = data.accountId; this.observation.assignment(value); } }
         if (kind === 'job' && body.type === 'log') {
-          nonblank(data.chunk, 'log chunk', this.config.requestMaxBytes); this.store.put('job-log', { id: id('log'), jobId: value.id, chunk: data.chunk, at: now() }); value.logRef = `/api/v1/jobs/${value.id}/log`;
+          // Blank lines are ordinary CI output; NUL is replaced rather than failing the step.
+          requireValue(typeof data.chunk === 'string' && data.chunk.length > 0 && data.chunk.length <= this.config.requestMaxBytes, 'Invalid log chunk.');
+          this.store.put('job-log', { id: id('log'), jobId: value.id, chunk: data.chunk.replaceAll('\0', '\uFFFD'), at: now() }); value.logRef = `/api/v1/jobs/${value.id}/log`;
         }
         const final = ['completed', 'failed'].includes(body.type);
         if (final) {
