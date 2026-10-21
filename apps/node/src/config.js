@@ -18,14 +18,20 @@ export async function writePrivate(path, value) {
     await file.writeFile(JSON.stringify(value));
     await file.sync();
   } finally { await file.close(); }
-  try { await rename(temp, path); } finally { await unlink(temp).catch(() => {}); }
+  try {
+    await rename(temp, path);
+    if (process.platform !== 'win32') {
+      const directory = await open(dirname(path), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
+  } finally { await unlink(temp).catch(() => {}); }
 }
 
 export async function loadConfig(configPath) {
   const root = dirname(resolve(configPath));
   const raw = JSON.parse(await readFile(configPath, 'utf8'));
   const allowed = ['hubUrl', 'name', 'dataDir', 'credentialFile', 'enrollmentCodeFile', 'labels', 'capacity', 'providers',
-    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp'];
+    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs'];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !allowed.includes(key))) {
     throw new Error('Invalid node configuration; credentials belong in owner-only files.');
   }
@@ -54,13 +60,15 @@ export async function loadConfig(configPath) {
   for (const key of ['labels', 'providers', 'executorPackages']) {
     if (raw[key] !== undefined && (!Array.isArray(raw[key]) || raw[key].some(value => typeof value !== 'string' || !value.trim()))) throw new Error(`Invalid ${key}.`);
   }
+  const tokenRotationMs = raw.tokenRotationMs ?? 86400000;
+  if (!Number.isSafeInteger(tokenRotationMs) || tokenRotationMs < 0 || tokenRotationMs > 2147483647) throw new Error('Invalid tokenRotationMs.');
   const timing = { heartbeatMs: 10000, renewMs: 20000, requestMs: 30000, pollIdleMs: 200,
     backoffMinMs: 250, backoffMaxMs: 10000, ...(raw.timing ?? {}) };
   for (const [key, value] of Object.entries(timing)) {
     if (!['heartbeatMs', 'renewMs', 'requestMs', 'pollIdleMs', 'backoffMinMs', 'backoffMaxMs'].includes(key) || !Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new Error('Invalid timing configuration.');
   }
   if (timing.backoffMaxMs < timing.backoffMinMs) throw new Error('Invalid backoff bounds.');
-  return { ...raw, hubUrl: url.href.replace(/\/+$/, ''), dataDir, capacity, timing,
+  return { ...raw, hubUrl: url.href.replace(/\/+$/, ''), dataDir, capacity, timing, tokenRotationMs,
     credentialFile: raw.credentialFile ? path(raw.credentialFile) : resolve(dataDir, 'machine.json'),
     enrollmentCodeFile: raw.enrollmentCodeFile ? path(raw.enrollmentCodeFile) : undefined,
     labels: raw.labels ?? [], configRoot: root };
