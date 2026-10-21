@@ -20,7 +20,7 @@ Create a local JSON configuration file. All non-secret configuration belongs her
 
 Put the hub owner bearer token, as a single raw token, in `session.secret`. The client does not mint credentials. For a T3-hosted endpoint, set `messagingPrefix` to `/api/perpeto`, use that runtime's base URL and existing session credential. Omitting `messagingPrefix` selects `/api/v1/messaging`. Make the file owner-only (`chmod 600 session.secret`). Relative credential paths resolve against the config file's directory. The client rejects symlinks, files owned by another user, and files readable by group or others. Never commit the secret file or put the token in config, CLI arguments, or a harness configuration.
 
-Use an HTTPS endpoint for remote connections or forward the remote endpoint to loopback through a trusted tunnel. HTTP loopback is supported. Explicit `"allowInsecureHttp": true` in the JSON config permits remote HTTP when needed; that sends the bearer credential without TLS. The host owns networking and remote authentication setup.
+For a hub serving its own self-signed certificate, set `"tlsFingerprints": ["<sha256 hex>"]` (up to four, as during rotation); the client then trusts exactly those certificates and sends nothing to any other. Use an HTTPS endpoint for remote connections or forward the remote endpoint to loopback through a trusted tunnel. HTTP loopback is supported. Explicit `"allowInsecureHttp": true` in the JSON config permits remote HTTP when needed; that sends the bearer credential without TLS. The host owns networking and remote authentication setup.
 
 ## CLI
 
@@ -33,6 +33,16 @@ node packages/sdk/src/cli.js --config /absolute/path/client.json channels
 node packages/sdk/src/cli.js --config /absolute/path/client.json send --body 'Revision abc123 is ready' --key review-abc123 --to reviewer
 node packages/sdk/src/cli.js --config /absolute/path/client.json read --limit 50
 node packages/sdk/src/cli.js --config /absolute/path/client.json read --latest --limit 50
+```
+
+Threads and receipts:
+
+```sh
+node packages/sdk/src/cli.js --config /absolute/path/client.json reply MESSAGE_ID --body 'Fixed in def456' --key reply-def456
+node packages/sdk/src/cli.js --config /absolute/path/client.json thread THREAD_ID
+node packages/sdk/src/cli.js --config /absolute/path/client.json message MESSAGE_ID
+node packages/sdk/src/cli.js --config /absolute/path/client.json ack MESSAGE_ID --note 'Re-reviewing'
+node packages/sdk/src/cli.js --config /absolute/path/client.json unread --mark-read
 ```
 
 All successful CLI responses are JSON. Use `--channel ID` on send/read to override the configured channel. `read --to ROLE` filters to explicitly addressed messages, while unfiltered reads include all channel messages. Save the returned `nextCursor` and pass it to `read --after CURSOR` for subsequent arrivals. Use `read --latest` for a bounded newest page, then `read --before PREVIOUS_CURSOR` to fetch older history. Directions `--latest`, `--before`, and `--after` are mutually exclusive. Results are always ascending. `hasMore` refers to older history for latest/before and newer messages for default/after; `previousCursor` and `nextCursor` mark the oldest and newest message returned.
@@ -64,8 +74,14 @@ Tools:
 - `factory_channels`: list the configured project's channels.
 - `factory_send`: `{body, idempotencyKey, recipientRoleId?, channelId?}`; sender comes from the configured role.
 - `factory_read`: `{after?, before?, latest?, limit?, recipientRoleId?, channelId?}`; returns the server's message page. Use only one direction.
+- `factory_reply`: `{messageId, body, idempotencyKey, recipientRoleId?, channelId?}`; replies in the message's thread, to its sender unless `recipientRoleId` says otherwise.
+- `factory_thread`: `{threadId, after?, limit?, channelId?}`; the root and its replies, oldest first.
+- `factory_ack`: `{messageId, note?, channelId?}`; reports that a message addressed to the configured role was received and handled. Idempotent.
+- `factory_unread`: `{limit?, markRead?, channelId?}`; messages for the role after its read cursor; `markRead` advances the cursor past them.
 
-The stdio server implements newline-delimited MCP JSON-RPC initialization, ping, tool discovery, and tool calls. It advertises only tools, writes protocol JSON exclusively to stdout, handles notifications without responding, and returns tool failures using `isError`. It supports protocol versions 2024-11-05, 2025-03-26, 2025-06-18, and 2025-11-25. This initial implementation handles requests sequentially and does not offer subscriptions, cancellation, prompts, resources, or agent wake-ups.
+Reply, thread, ack and unread use hub routes; the T3-hosted prefix has none of them. In a factory run, agents get a run-scoped credential from the executor instead of the owner token, and the hub fixes their sender role and applies the workflow's messaging policy (see [messaging](../../docs/architecture/messaging.md)).
+
+The stdio server implements newline-delimited MCP JSON-RPC initialization, ping, tool discovery, and tool calls. It advertises only tools, writes protocol JSON exclusively to stdout, handles notifications without responding, and returns tool failures using `isError`. It supports protocol versions 2024-11-05, 2025-03-26, 2025-06-18, and 2025-11-25. It handles requests sequentially and does not offer subscriptions, cancellation, prompts or resources. Wake-ups do not go through MCP: the node and executor deliver messages into the agent's T3 thread.
 
 ## Validation
 
