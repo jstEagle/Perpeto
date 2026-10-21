@@ -918,7 +918,9 @@ function buildPrompt(s, item, node, role) {
   }
   if (node.type === 'planner') {
     parts.push(`Split the work item into at most ${node.config.maxItems} items, each small enough for one pull request, with a title and a body that states its contract and acceptance criteria. ` +
-      'If it is already that small, keep it whole: return no items and put its contract and acceptance criteria in your summary. The builder and reviewer receive that summary.');
+      (node.config.emptyResult === 'complete'
+        ? 'An explicit empty items array completes this pass without sending work downstream. Return items: [] when no justified work remains; otherwise include every proposed item explicitly, even a single item.'
+        : 'If it is already that small, keep it whole: return no items and put its contract and acceptance criteria in your summary. The builder and reviewer receive that summary.'));
   }
   if (node.type === 'review') {
     parts.push('Give verdict "pass" if the work passes review, or verdict "fail" with actionable feedback in the summary. If you could not complete the review, give no verdict.');

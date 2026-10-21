@@ -129,6 +129,8 @@ test('planner expansion defers every item beyond active and daily budgets withou
 test('explicit empty auditor output ends a pass; other planners keep whole-item semantics', () => {
   const g = graph(); g.nodes[1].type='planner';g.nodes[1].config.emptyResult='complete';
   const d = new Driver(); d.start({graph:g,keepOpen:true,inputs:[{title:'audit'}]});
+  assert.match(d.open('dev')[0].prompt, /empty items array completes this pass/);
+  assert.doesNotMatch(d.open('dev')[0].prompt, /keep it whole/);
   d.complete('dev',{outcome:'success',items:[]});
   assert.equal(d.items()[0].status,'done');
   assert.equal(d.items()[0].nodeId,'dev');
