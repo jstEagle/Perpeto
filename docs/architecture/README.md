@@ -84,7 +84,7 @@ MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queu
                mergedRevision?, deliveryError? }
 // Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
-               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version }
+               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
 Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt? }
 UsageRecord  { id, projectId, runId?, assignmentId?, machineId, accountId?, provider, model,
                inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd?, at }
@@ -186,7 +186,7 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `POST /runs/:id/inputs` | Add ideas or input items to a running workflow |
 | `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |
 | `POST /work-items/:id/decision` | Answer a `human` gate |
-| `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain` | Machines |
+| `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain`, `POST /machines/:id/revoke` | Machines; revoke permanently invalidates every token for the machine |
 | `GET /accounts` | Subscription pool across machines |
 | `GET /assignments/:id` | One assignment, used to follow the workflow architect |
 | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
@@ -201,9 +201,11 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | Method and path | Purpose |
 | --- | --- |
 | `POST /nodes/enroll` `{ code, name, os, arch, labels, providers, version }` | Exchange a one-time enrollment code for `{ machineId, token }` |
-| `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers }` | Every 10 s. Missing three marks the machine `offline` |
+| `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers, labels }` | Every 10 s. Missing three marks the machine `offline` |
 | `POST /nodes/lease` `{ kinds: ['assignment','job'], max }` | Long-poll up to 25 s. Returns leased assignments and jobs with `leaseExpiresAt` (60 s) |
 | `POST /assignments/:id/renew`, `POST /jobs/:id/renew` | Extend a lease while working |
+| `POST /assignments/:id/release`, `POST /jobs/:id/release` `{ attempt, idempotencyKey?, reason? }` | Hand back unstarted work without consuming an attempt; the same machine is not offered it again for one lease duration |
+| `POST /nodes/token` `{ idempotencyKey? }` | Rotate this machine's token; the old token works until the new one is first used |
 | `POST /assignments/:id/events` `{ type: 'started'|'progress'|'usage'|'message'|'completed'|'failed', data }` | Report progress, usage and the final `AssignmentResult` |
 | `POST /jobs/:id/events` `{ type: 'started'|'log'|'step'|'completed', data }` | Report log chunks and the final status bound to `revision`; the final result must carry `configHash` |
 
