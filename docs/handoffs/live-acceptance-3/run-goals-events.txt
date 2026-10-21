@@ -1,0 +1,123 @@
+07:06:58 input.requested run:run_5963a410 goals ideas
+07:06:58 run.started run:run_5963a410 
+07:06:58 assignment.state assignment:asg_5963a410 queued builder
+07:06:58 assignment.state assignment:asg_5963a410 queued builder
+07:06:58 workitem.moved workItem:wi_5963a4109 in ideas delivery-loop
+07:06:58 loop.iteration workItem:wi_5963a4109 delivery-loop
+07:06:58 workitem.moved workItem:wi_5963a4109 dr delivery-loop review-loop
+07:06:58 loop.iteration workItem:wi_5963a4109 review-loop
+07:06:58 workitem.moved workItem:wi_5963a4109 rb review-loop builder
+07:06:58 workitem.moved workItem:wi_5963a4109 in ideas delivery-loop
+07:06:58 loop.iteration workItem:wi_5963a4109 delivery-loop
+07:06:58 workitem.moved workItem:wi_5963a4109 dr delivery-loop review-loop
+07:06:58 loop.iteration workItem:wi_5963a4109 review-loop
+07:06:58 workitem.moved workItem:wi_5963a4109 rb review-loop builder
+07:06:58 budget.exhausted run:run_5963a410 
+07:06:58 assignment.leased assignment:asg_5963a410 m
+07:06:58 assignment.state assignment:asg_5963a410 leased builder m
+07:06:58 assignment.leased assignment:asg_5963a410 m
+07:06:58 assignment.state assignment:asg_5963a410 leased builder m
+07:06:58 assignment.state assignment:asg_5963a410 running builder m
+07:06:58 assignment.started assignment:asg_5963a410 
+07:06:58 assignment.state assignment:asg_5963a410 running builder m
+07:06:58 assignment.started assignment:asg_5963a410 
+07:06:58 assignment.state assignment:asg_5963a410 failed builder m
+07:06:58 assignment.state assignment:asg_5963a410 queued builder
+07:06:58 workitem.retried workItem:wi_5963a4109 builder assignment_failed
+07:06:58 assignment.failed assignment:asg_5963a410 
+07:07:29 assignment.leased assignment:asg_5963a410 m
+07:07:29 assignment.state assignment:asg_5963a410 leased builder m
+07:07:29 assignment.state assignment:asg_5963a410 running builder m
+07:07:29 assignment.started assignment:asg_5963a410 
+07:07:48 assignment.usage assignment:asg_5963a410 
+07:07:50 assignment.state assignment:asg_5963a410 succeeded builder m
+07:07:50 assignment.state assignment:asg_5963a410 queued reviewer
+07:07:50 workitem.moved workItem:wi_5963a4109 br builder reviewer
+07:07:50 assignment.completed assignment:asg_5963a410 
+07:07:50 assignment.leased assignment:asg_5963a410 m
+07:07:50 assignment.state assignment:asg_5963a410 leased reviewer m
+07:07:50 assignment.state assignment:asg_5963a410 running reviewer m
+07:07:50 assignment.started assignment:asg_5963a410 
+07:08:08 assignment.usage assignment:asg_5963a410 
+07:08:09 assignment.usage assignment:asg_5963a410 
+07:08:10 assignment.state assignment:asg_5963a410 succeeded reviewer m
+07:08:10 gate.result assignment:asg_5963a410 pass review reviewer m
+07:08:10 job.updated job:job_5963a410 queued
+07:08:10 workitem.moved workItem:wi_5963a4109 rp reviewer ci
+07:08:10 assignment.completed assignment:asg_5963a410 pass
+07:08:10 job.leased job:job_5963a410 m
+07:08:11 job.started job:job_5963a410 
+07:08:11 job.step job:job_5963a410 passed
+07:08:11 job.step job:job_5963a410 passed
+07:08:11 gate.result assignment:job_5963a410 passed ci ci m
+07:08:11 merge-entry.updated merge-entry:mq_5963a4109 queued
+07:08:11 workitem.moved workItem:wi_5963a4109 cp ci merge
+07:08:11 job.completed job:job_5963a410 passed
+07:08:11 merge-entry.enqueued merge-entry:mq_5963a4109 
+07:08:11 job.updated job:job_mq_6e367 queued merge-queue
+07:08:11 merge-entry.updated merge-entry:mq_5963a4109 testing
+07:08:11 job.leased job:job_mq_6e367 m
+07:08:11 job.started job:job_mq_6e367 
+07:08:12 assignment.state assignment:asg_5963a410 succeeded builder m
+07:08:12 assignment.state assignment:asg_5963a410 queued reviewer
+07:08:12 workitem.moved workItem:wi_5963a4109 br builder reviewer
+07:08:12 assignment.completed assignment:asg_5963a410 
+07:08:12 assignment.leased assignment:asg_5963a410 m
+07:08:12 assignment.state assignment:asg_5963a410 leased reviewer m
+07:08:12 assignment.state assignment:asg_5963a410 running reviewer m
+07:08:12 assignment.started assignment:asg_5963a410 
+07:08:12 job.step job:job_mq_6e367 passed
+07:08:12 job.step job:job_mq_6e367 passed
+07:08:12 gate.result assignment:job_mq_6e367 passed merge-queue merge m
+07:08:12 job.completed job:job_mq_6e367 passed
+07:08:12 merge-entry.updated merge-entry:mq_5963a4109 merged
+07:08:12 gate.result workItem:wi_5963a4109 pass merge-queue merge
+07:08:12 workitem.moved workItem:wi_5963a4109 mp merge shipped
+07:08:29 assignment.usage assignment:asg_5963a410 
+07:08:32 assignment.state assignment:asg_5963a410 succeeded reviewer m
+07:08:32 gate.result assignment:asg_5963a410 pass review reviewer m
+07:08:32 job.updated job:job_5963a410 queued
+07:08:32 workitem.moved workItem:wi_5963a4109 rp reviewer ci
+07:08:32 assignment.completed assignment:asg_5963a410 pass
+07:08:32 job.leased job:job_5963a410 m
+07:08:32 job.started job:job_5963a410 
+07:08:32 job.step job:job_5963a410 passed
+07:08:32 job.step job:job_5963a410 passed
+07:08:32 gate.result assignment:job_5963a410 passed ci ci m
+07:08:32 merge-entry.updated merge-entry:mq_5963a4109 queued
+07:08:32 workitem.moved workItem:wi_5963a4109 cp ci merge
+07:08:32 job.completed job:job_5963a410 passed
+07:08:32 merge-entry.enqueued merge-entry:mq_5963a4109 
+07:08:32 merge-entry.updated merge-entry:mq_5963a4109 rejected Merge conflict with the speculative base.
+07:08:32 assignment.state assignment:asg_5963a410 queued builder
+07:08:32 gate.result workItem:wi_5963a4109 fail merge-queue merge
+07:08:32 workitem.moved workItem:wi_5963a4109 merge builder
+07:08:32 assignment.leased assignment:asg_5963a410 m
+07:08:32 assignment.state assignment:asg_5963a410 leased builder m
+07:08:32 assignment.state assignment:asg_5963a410 running builder m
+07:08:32 assignment.started assignment:asg_5963a410 
+07:09:02 assignment.usage assignment:asg_5963a410 
+07:09:04 assignment.state assignment:asg_5963a410 succeeded builder m
+07:09:04 job.updated job:job_5963a410 queued
+07:09:04 workitem.moved workItem:wi_5963a4109 builder ci
+07:09:04 assignment.completed assignment:asg_5963a410 
+07:09:04 job.leased job:job_5963a410 m
+07:09:04 job.started job:job_5963a410 
+07:09:05 job.step job:job_5963a410 passed
+07:09:05 job.step job:job_5963a410 passed
+07:09:05 gate.result assignment:job_5963a410 passed ci ci m
+07:09:05 merge-entry.updated merge-entry:mq_5963a4109 queued
+07:09:05 workitem.moved workItem:wi_5963a4109 ci merge
+07:09:05 job.completed job:job_5963a410 passed
+07:09:05 merge-entry.enqueued merge-entry:mq_5963a4109 
+07:09:05 job.updated job:job_mq_b9148 queued merge-queue
+07:09:05 merge-entry.updated merge-entry:mq_5963a4109 testing
+07:09:05 job.leased job:job_mq_b9148 m
+07:09:05 job.started job:job_mq_b9148 
+07:09:05 job.step job:job_mq_b9148 passed
+07:09:06 job.step job:job_mq_b9148 passed
+07:09:06 gate.result assignment:job_mq_b9148 passed merge-queue merge m
+07:09:06 job.completed job:job_mq_b9148 passed
+07:09:06 merge-entry.updated merge-entry:mq_5963a4109 merged
+07:09:06 gate.result workItem:wi_5963a4109 pass merge-queue merge
+07:09:06 workitem.moved workItem:wi_5963a4109 mp merge shipped

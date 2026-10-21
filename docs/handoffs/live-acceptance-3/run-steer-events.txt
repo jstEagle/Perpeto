@@ -1,0 +1,52 @@
+07:40:06 assignment.state assignment:asg_7adc17e7 queued builder
+07:40:06 workitem.moved workItem:wi_7adc17e7e in ideas delivery-loop
+07:40:06 loop.iteration workItem:wi_7adc17e7e delivery-loop
+07:40:06 workitem.moved workItem:wi_7adc17e7e dr delivery-loop review-loop
+07:40:06 loop.iteration workItem:wi_7adc17e7e review-loop
+07:40:06 workitem.moved workItem:wi_7adc17e7e rb review-loop builder
+07:40:06 run.started run:run_7adc17e7 
+07:40:06 assignment.leased assignment:asg_7adc17e7 m
+07:40:06 assignment.state assignment:asg_7adc17e7 leased builder m
+07:40:06 assignment.state assignment:asg_7adc17e7 running builder m
+07:40:06 assignment.started assignment:asg_7adc17e7 
+07:40:17 agent.messaged assignment:19360ba7-b57 builder
+07:40:21 message.delivered message:19360ba7-b57 
+07:40:42 agent.messaged assignment:cb5cf35b-0e3 builder
+07:40:42 message.acked message:19360ba7-b57 
+07:40:54 assignment.usage assignment:asg_7adc17e7 
+07:40:56 assignment.state assignment:asg_7adc17e7 succeeded builder m
+07:40:56 assignment.state assignment:asg_7adc17e7 queued reviewer
+07:40:56 workitem.moved workItem:wi_7adc17e7e br builder reviewer
+07:40:56 assignment.completed assignment:asg_7adc17e7 
+07:40:56 assignment.leased assignment:asg_7adc17e7 m
+07:40:56 assignment.state assignment:asg_7adc17e7 leased reviewer m
+07:40:56 assignment.state assignment:asg_7adc17e7 running reviewer m
+07:40:56 assignment.started assignment:asg_7adc17e7 
+07:41:12 assignment.usage assignment:asg_7adc17e7 
+07:41:14 assignment.state assignment:asg_7adc17e7 succeeded reviewer m
+07:41:14 gate.result assignment:asg_7adc17e7 pass review reviewer m
+07:41:14 job.updated job:job_7adc17e7 queued
+07:41:14 workitem.moved workItem:wi_7adc17e7e rp reviewer ci
+07:41:14 assignment.completed assignment:asg_7adc17e7 pass
+07:41:14 job.leased job:job_7adc17e7 m
+07:41:14 job.started job:job_7adc17e7 
+07:41:15 job.step job:job_7adc17e7 passed
+07:41:15 job.step job:job_7adc17e7 passed
+07:41:15 gate.result assignment:job_7adc17e7 passed ci ci m
+07:41:15 merge-entry.updated merge-entry:mq_7adc17e7e queued
+07:41:15 workitem.moved workItem:wi_7adc17e7e cp ci merge
+07:41:15 job.completed job:job_7adc17e7 passed
+07:41:15 merge-entry.enqueued merge-entry:mq_7adc17e7e 
+07:41:15 job.updated job:job_mq_08f2c queued merge-queue
+07:41:15 merge-entry.updated merge-entry:mq_7adc17e7e testing
+07:41:15 job.leased job:job_mq_08f2c m
+07:41:15 job.started job:job_mq_08f2c 
+07:41:15 job.step job:job_mq_08f2c passed
+07:41:15 job.step job:job_mq_08f2c passed
+07:41:15 gate.result assignment:job_mq_08f2c passed merge-queue merge m
+07:41:15 job.completed job:job_mq_08f2c passed
+07:41:16 merge-entry.updated merge-entry:mq_7adc17e7e merged
+07:41:16 gate.result workItem:wi_7adc17e7e pass merge-queue merge
+07:41:16 workitem.moved workItem:wi_7adc17e7e mp merge shipped
+07:41:16 run.updated run:run_7adc17e7 completed
+RUN completed

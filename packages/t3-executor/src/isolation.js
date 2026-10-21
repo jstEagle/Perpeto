@@ -146,8 +146,11 @@ export async function prepareCodexHome(home, sourceHome, { personalSkillDirs = P
     // Codex replaced the link with its own file; that copy would drift from the operator's login.
     throw Object.assign(new Error(`The factory Codex home ${home} holds its own auth.json; remove it so the factory uses ${target}.`), { code: 'ISOLATION_AUTH_DIVERGED' });
   }
-  if (existing) await unlink(link);
-  await symlink(target, link);
+  if (existing) await unlink(link).catch(error => { if (error?.code !== 'ENOENT') throw error; });
+  try { await symlink(target, link); } catch (error) {
+    // Another assignment starting at the same moment linked it first; accept only the same target.
+    if (error?.code !== 'EEXIST' || await readlink(link).catch(() => null) !== target) throw error;
+  }
   return { home, auth: 'linked' };
 }
 

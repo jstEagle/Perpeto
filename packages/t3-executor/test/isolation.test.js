@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import { createT3Executor, T3Client } from '../src/index.js';
-import { DEFAULT_GIT_IDENTITY, claudeSourceHome, factoryInstance, gitEnvironment, resolveIsolation } from '../src/isolation.js';
+import { DEFAULT_GIT_IDENTITY, claudeSourceHome, factoryInstance, gitEnvironment, prepareCodexHome, resolveIsolation } from '../src/isolation.js';
 import { startFakeT3, build } from './fake-t3.js';
 
 // Live acceptance run 1, finding 2: factory agents loaded the operator's personal instructions
@@ -290,4 +290,17 @@ test('agentIsolation inherit keeps the operator instance, for debugging only', a
   await executor.run(assignment(), await ctx());
   assert.deepEqual(upserts(fake), []);
   assert.equal(launches(fake)[0].modelSelection.instanceId, 'codex');
+});
+
+// Live acceptance run 3: two assignments leased together on a fresh node both linked auth.json,
+// and the second symlink failed with EEXIST, so its turn ended as "Executor failed.".
+test('concurrent first uses of a factory Codex home both link the one login', async t => {
+  const dir = await temp(t, 'iso-codex-race-');
+  const source = join(dir, 'operator-codex');
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, 'auth.json'), '{"fixture":true}');
+  const home = join(dir, 'homes', 'codex-race');
+  const results = await Promise.all(Array.from({ length: 4 }, () => prepareCodexHome(home, source, { personalSkillDirs: [] })));
+  assert.deepEqual(results.map(result => result.auth), ['linked', 'linked', 'linked', 'linked']);
+  assert.equal(await readlink(join(home, 'auth.json')), join(source, 'auth.json'));
 });
