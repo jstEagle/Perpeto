@@ -304,6 +304,8 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
 
     async function onSubagent(tracker, subagent) {
       if (subagent.origin === 'app_owned') {
+        // T3 records the task before it creates the child thread; report once the child is known.
+        if (!subagent.childThreadId && !['completed', 'failed', 'cancelled', 'interrupted'].includes(subagent.status)) return;
         await delegated({ key: subagent.id, allowed: true, kind: 'delegated_task', provider: subagent.driver, model: subagent.model ?? subagent.modelSelection?.model, childThreadId: subagent.childThreadId, from: tracker.threadId });
         if (subagent.childThreadId) watch(subagent.childThreadId, { provider: subagent.driver, model: subagent.model ?? subagent.modelSelection?.model });
         return;
@@ -353,12 +355,13 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       try { page = await t3.policyDecisions(threadId, decisionsCursor, { signal }); } catch { return; }
       for (const decision of page?.decisions ?? []) {
         decisionsCursor = Math.max(decisionsCursor, decision.seq);
-        if (decision.kind === 'provider_native') continue; // reported from the subagent event
+        // Native subagents and accepted delegated tasks are reported from the thread's subagent events.
+        if (decision.kind === 'provider_native' || (decision.kind === 'delegated_task' && decision.outcome === 'created')) continue;
         if (decision.outcome === 'refused') {
           await delegated({ key: `refused:${decision.seq}`, allowed: false, kind: decision.kind, provider: decision.driver ?? decision.providerInstanceId, model: decision.model, reason: decision.reason, from: decision.callerThreadId });
-        } else if (decision.outcome === 'created') {
-          await delegated({ key: decision.childRef, allowed: true, kind: decision.kind, provider: decision.driver ?? decision.providerInstanceId, model: decision.model, childThreadId: decision.kind === 'thread' ? decision.childRef : null, from: decision.callerThreadId });
-          if (decision.kind === 'thread' && decision.childRef) watch(decision.childRef, { provider: decision.driver ?? decision.providerInstanceId, model: decision.model });
+        } else if (decision.outcome === 'created' && decision.childRef) {
+          await delegated({ key: decision.childRef, allowed: true, kind: decision.kind, provider: decision.driver ?? decision.providerInstanceId, model: decision.model, childThreadId: decision.childRef, from: decision.callerThreadId });
+          watch(decision.childRef, { provider: decision.driver ?? decision.providerInstanceId, model: decision.model });
         }
       }
       if (page?.hasMore) await pollDecisions();

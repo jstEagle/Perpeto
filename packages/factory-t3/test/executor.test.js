@@ -82,6 +82,8 @@ test('reports app-owned delegation, refused attempts and follows child usage bef
     assert.equal(fake.policies.authorize({ requestKey: 'k1', callerThreadId: root, kind: 'delegated_task', providerInstanceId: 'codex', driver: 'codex', model: 'gpt-test' }).allowed, true);
     fake.policies.recordCreated({ requestKey: 'k1', callerThreadId: root, childThreadId: 'child-1', childRef: 'node:task-1' });
     assert.equal(fake.policies.authorize({ requestKey: 'k2', callerThreadId: root, kind: 'delegated_task', providerInstanceId: 'claudeAgent', driver: 'claudeAgent', model: 'claude-test' }).allowed, false);
+    // As live T3 does, the task appears before its child thread exists.
+    fake.emit(root, 'subagent.updated', { id: 'node:task-1', origin: 'app_owned', driver: 'codex', providerInstanceId: 'codex', model: 'gpt-test', childThreadId: null, status: 'pending' });
     fake.emit(root, 'subagent.updated', { id: 'node:task-1', origin: 'app_owned', driver: 'codex', providerInstanceId: 'codex', model: 'gpt-test', childThreadId: 'child-1', status: 'running' });
     fake.emit(root, 'run.updated', build.run(root, 1, 'completed'));
     setTimeout(() => {
