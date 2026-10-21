@@ -70,6 +70,8 @@ export const LANE = 20;
 export const STUB = 12;
 /** Top and bottom attachments of flow edges: leaving right of centre, arriving left of it, so they never share a line. */
 const ATTACH = 20;
+/** How far outside the graph a band-wrapping connector runs. */
+const MARGIN = 32;
 const CLEAR = 24;
 const LABEL_H = 20;
 const BUNDLE_STEP = 5;
@@ -105,9 +107,7 @@ function clusterRows(nodes: RouteNode[]): { rows: Row[]; rowOf: Map<string, numb
  * above, `up` from the row below. Gutters outside the outermost rows have
  * only one neighbour, and all their lanes stack away from it.
  */
-type Plan =
-  | { type: 'fixed'; points: Pt[] }
-  | { type: 'lane'; gutter: number; dir: 'down' | 'up'; span: [number, number]; build(y: number): Pt[] };
+type Plan = { type: 'fixed'; points: Pt[] } | { type: 'lane'; gutter: number; dir: 'down' | 'up'; span: [number, number]; build(y: number): Pt[]; shared?: boolean };
 
 type Box = { x1: number; y1: number; x2: number; y2: number };
 
@@ -118,12 +118,23 @@ interface Bundle {
   edges: RouteEdge[];
 }
 
-export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
+export interface RouteOptions {
+  /**
+   * The main line is one row with side lanes below it (no bands). Returns
+   * from a side lane then run below it rather than through the gap under the
+   * main line, where they would cross the side lane's links up to it.
+   */
+  singleRow?: boolean;
+}
+
+export function routeEdges(nodes: RouteNode[], edges: RouteEdge[], options: RouteOptions = {}): Routing {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const { rows, rowOf } = clusterRows(nodes);
   const valid = edges.filter((e) => byId.has(e.from) && byId.has(e.to) && e.from !== e.to);
 
   const plans = new Map<string, Plan>();
+  /** Returns that share a row's return channel, by channel. */
+  const returnChannel = new Map<string, string>();
   const port = (n: RouteNode, name: string, side: 'in' | 'out'): Pt => [side === 'in' ? n.x : n.x + n.w, n.y + (PORT_Y[name] ?? PORT_Y.out)];
 
   // Flow edges.
@@ -148,22 +159,35 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
       plans.set(e.id, { type: 'fixed', points: Math.abs(sp[1] - tp[1]) < 1 ? [sp, tp] : [sp, [midX, sp[1]], [midX, tp[1]], tp] });
       continue;
     }
-    // Wrapping to the next band (target below and to the left): leave the
-    // bottom of the step and come down into the top of the next one.
-    if (!back && rt > rs && tp[0] < sp[0] && clear({ x1: outX, y1: s.y + s.h, x2: outX, y2: t.y }, [s, t]) && clear({ x1: inX, y1: s.y + s.h, x2: inX, y2: t.y }, [s, t])) {
-      const sx = outX;
-      const tx = inX;
-      plans.set(e.id, { type: 'lane', gutter: rt, dir: 'up', span: [Math.min(sx, tx), Math.max(sx, tx)], build: (y) => [[sx, s.y + s.h], [sx, y], [tx, y], [tx, t.y]] });
+    // Wrapping to the next band (target below and to the left): one
+    // connector out to the right margin, back along the gap above the next
+    // band, and down the left margin into the first step's input.
+    if (!back && rt > rs && tp[0] < sp[0]) {
+      const right = Math.max(...nodes.map((n) => n.x + n.w)) + MARGIN;
+      const left = Math.min(...nodes.map((n) => n.x)) - MARGIN;
+      // Every wrap across this gap is the same connector: one shared lane.
+      plans.set(e.id, { type: 'lane', gutter: rt, dir: 'up', span: [left, right], build: (y) => [sp, [right, sp[1]], [right, y], [left, y], [left, tp[1]], tp], shared: true });
       continue;
     }
     // Back up to an earlier band: rise from the top of the step through the
     // gap above its row and come up into the bottom of the earlier step.
-    if (back && rs > rt) {
+    if (back && rs > rt && !options.singleRow) {
       const sx = outX;
       const tx = inX;
       const gap = rows[rs].top - CLEAR;
       if (clear({ x1: tx, y1: t.y + t.h, x2: tx, y2: gap }, [t]) && clear({ x1: Math.min(sx, tx), y1: gap, x2: Math.max(sx, tx), y2: gap }, [])) {
-        plans.set(e.id, { type: 'lane', gutter: rs, dir: 'up', span: [Math.min(sx, tx), Math.max(sx, tx)], build: (y) => [[sx, s.y], [sx, y], [tx, y], [tx, t.y + t.h]] });
+        plans.set(e.id, {
+          type: 'lane',
+          gutter: rs,
+          dir: 'up',
+          span: [Math.min(sx, tx), Math.max(sx, tx)],
+          build: (y) => [
+            [sx, s.y],
+            [sx, y],
+            [tx, y],
+            [tx, t.y + t.h],
+          ],
+        });
         continue;
       }
       // Something sits under the earlier step: rise through the column gap into its input instead.
@@ -189,7 +213,21 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
       // down into the top of the earlier one, so loops read as arcs.
       const sx = outX;
       const tx = inX;
-      plans.set(e.id, { type: 'lane', gutter: rs, dir: 'up', span: [Math.min(sx, tx), Math.max(sx, tx)], build: (y) => [[sx, s.y], [sx, y], [tx, y], [tx, t.y]] });
+      // All returns over a row share one lane: a single return channel.
+      plans.set(e.id, {
+        type: 'lane',
+        gutter: rs,
+        dir: 'up',
+        span: [Math.min(sx, tx), Math.max(sx, tx)],
+        build: (y) => [
+          [sx, s.y],
+          [sx, y],
+          [tx, y],
+          [tx, t.y],
+        ],
+        shared: true,
+      });
+      returnChannel.set(e.id, `returns:${rs}`);
       continue;
     }
     if (rs === rt) {
@@ -255,7 +293,9 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
     const n = byId.get(list[0].node)!;
     const center = n.x + n.w / 2;
     const used = new Set<number>();
-    const ordered = [...list].sort((p, q) => Number(q.fixed !== undefined || shape.get(q.bundle.key)?.kind === 'straight') - Number(p.fixed !== undefined || shape.get(p.bundle.key)?.kind === 'straight'));
+    const ordered = [...list].sort(
+      (p, q) => Number(q.fixed !== undefined || shape.get(q.bundle.key)?.kind === 'straight') - Number(p.fixed !== undefined || shape.get(p.bundle.key)?.kind === 'straight'),
+    );
     const free: Attach[] = [];
     for (const at of ordered) {
       if (shape.get(at.bundle.key)?.kind === 'straight' && !used.has(0) && at.fixed === undefined) {
@@ -264,7 +304,9 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
       } else if (at.fixed !== undefined) attachX.set(`${at.bundle.key}|${at.node}`, at.fixed);
       else free.push(at);
     }
-    const slots = SLOTS.filter((s) => !used.has(s) && Math.abs(s) <= n.w / 2 - 16).slice(0, free.length).sort((p, q) => p - q);
+    const slots = SLOTS.filter((s) => !used.has(s) && Math.abs(s) <= n.w / 2 - 16)
+      .slice(0, free.length)
+      .sort((p, q) => p - q);
     free.sort((p, q) => p.other - q.other).forEach((at, i) => attachX.set(`${at.bundle.key}|${at.node}`, center + (slots[i] ?? 0)));
   }
 
@@ -276,14 +318,25 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
     const ux = attachX.get(`${bundle.key}|${upper.id}`)!;
     const lx = attachX.get(`${bundle.key}|${lower.id}`)!;
     if (s.kind === 'straight') {
-      bundlePlan.set(bundle.key, { type: 'fixed', points: [[ux, upper.y + upper.h], [ux, lower.y]] });
+      bundlePlan.set(bundle.key, {
+        type: 'fixed',
+        points: [
+          [ux, upper.y + upper.h],
+          [ux, lower.y],
+        ],
+      });
     } else if (s.kind === 'channel') {
       bundlePlan.set(bundle.key, {
         type: 'lane',
         gutter: rowOf.get(upper.id)! + 1,
         dir: 'down',
         span: [Math.min(ux, lx), Math.max(ux, lx)],
-        build: (y) => [[ux, upper.y + upper.h], [ux, y], [lx, y], [lx, lower.y + lower.h]],
+        build: (y) => [
+          [ux, upper.y + upper.h],
+          [ux, y],
+          [lx, y],
+          [lx, lower.y + lower.h],
+        ],
       });
     } else {
       bundlePlan.set(bundle.key, {
@@ -291,7 +344,12 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
         gutter: rowOf.get(lower.id)!,
         dir: 'up',
         span: [Math.min(ux, lx), Math.max(ux, lx)],
-        build: (y) => [[ux, upper.y + upper.h], [ux, y], [lx, y], [lx, lower.y]],
+        build: (y) => [
+          [ux, upper.y + upper.h],
+          [ux, y],
+          [lx, y],
+          [lx, lower.y],
+        ],
       });
     }
   }
@@ -308,11 +366,15 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
     const g = `${p.gutter}|${p.gutter === 0 || p.gutter >= rows.length ? 'edge' : p.dir}`;
     groups.set(g, [...(groups.get(g) ?? []), { id, span: p.span }]);
   }
+  const sharedIds = new Set(lanePlans.filter(([, p]) => p.shared).map(([id]) => id));
   for (const [g, list] of groups) {
     list.sort((p, q) => p.span[1] - p.span[0] - (q.span[1] - q.span[0]) || p.span[0] - q.span[0]);
-    const lanes: [number, number][][] = [];
-    for (const item of list) {
-      let lane = lanes.findIndex((spans) => spans.every(([x1, x2]) => item.span[1] + 12 < x1 || item.span[0] - 12 > x2));
+    // The shared return channel takes the lane nearest the row; everything else stacks beyond it.
+    const shared = list.filter((item) => sharedIds.has(item.id));
+    for (const item of shared) laneOf.set(item.id, 0);
+    const lanes: [number, number][][] = shared.length ? [shared.map((i) => i.span)] : [];
+    for (const item of list.filter((i) => !sharedIds.has(i.id))) {
+      let lane = lanes.findIndex((spans, i) => !(shared.length && i === 0) && spans.every(([x1, x2]) => item.span[1] + 12 < x1 || item.span[0] - 12 > x2));
       if (lane === -1) lane = lanes.push([]) - 1;
       lanes[lane].push(item.span);
       laneOf.set(item.id, lane);
@@ -357,7 +419,7 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
         const vertical = (q?: Pt) => q && Math.abs(q[0] - x) < 0.5;
         const horizontal = (q?: Pt) => q && Math.abs(q[1] - y) < 0.5;
         const dx = vertical(prev) || vertical(next) ? d : 0;
-        const dy = (j > 0 && j < base.length - 1) && (horizontal(prev) || horizontal(next)) ? d : 0;
+        const dy = j > 0 && j < base.length - 1 && (horizontal(prev) || horizontal(next)) ? d : 0;
         return [x + dx, y + dy];
       });
       const points = e.from === upperId || (shape.get(bundle.key)!.kind === 'channel' && e.from === bundle.a) ? shifted : [...shifted].reverse();
@@ -371,7 +433,7 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
     });
   }
 
-  placeLabels(nodes, valid, bundles, routes);
+  placeLabels(nodes, valid, bundles, routes, returnChannel);
   return { routes, gutterNeeds };
 }
 
@@ -386,9 +448,17 @@ function segmentRects(points: Pt[], pad: number): Rect[] {
 }
 
 /** Label positions along a route: horizontal runs first, longest first, sliding out from the middle in 4 px steps. */
-function candidates(points: Pt[], w: number): [number, number][] {
+function candidates(points: Pt[], w: number, nearEnd = false): [number, number][] {
   const segs = points.slice(1).map((p, i) => [points[i], p] as [Pt, Pt]);
   const out: [number, number][] = [];
+  if (nearEnd) {
+    // From the target end of the channel run inwards.
+    const [a, b] = segs.filter(([p, q]) => Math.abs(p[1] - q[1]) < 0.5).at(-1) ?? [];
+    if (a && b) {
+      const dir = Math.sign(a[0] - b[0]) || 1;
+      for (let d = w / 2 + 12; d <= Math.abs(a[0] - b[0]) - w / 2; d += 4) out.push([b[0] + dir * d, b[1]]);
+    }
+  }
   const horizontal = segs.filter(([a, b]) => Math.abs(a[1] - b[1]) < 0.5).sort(([a, b], [c, d]) => Math.abs(d[0] - c[0]) - Math.abs(b[0] - a[0]));
   for (const [a, b] of horizontal) {
     const lo = Math.min(a[0], b[0]);
@@ -440,18 +510,20 @@ class RectIndex {
   }
 }
 
-function placeLabels(nodes: RouteNode[], edges: RouteEdge[], bundles: Map<string, Bundle>, routes: Map<string, Route>) {
+function placeLabels(nodes: RouteNode[], edges: RouteEdge[], bundles: Map<string, Bundle>, routes: Map<string, Route>, returnChannel: Map<string, string>) {
   const blocked = new RectIndex();
   for (const n of nodes) blocked.add({ x1: n.x - 4, y1: n.y - 4, x2: n.x + n.w + 4, y2: n.y + n.h + 4 });
   const ownerOf = new Map<string, string>();
   for (const b of bundles.values()) for (const e of b.edges) ownerOf.set(e.id, b.key);
+  // Returns in one channel overlap by design; their labels may sit on any part of it.
+  for (const [id, channel] of returnChannel) ownerOf.set(id, channel);
   const lines = new RectIndex();
   for (const [id, r] of routes) for (const rect of segmentRects(r.points, 3)) lines.add(rect, ownerOf.get(id) ?? id);
 
   // One label per flow edge and per bundle.
   const jobs: { owner: string; carrier: string; text: string; priority: number }[] = [];
   for (const e of edges) {
-    if (e.kind === 'flow' && e.label) jobs.push({ owner: e.id, carrier: e.id, text: e.label, priority: e.priority ?? 0 });
+    if (e.kind === 'flow' && e.label) jobs.push({ owner: ownerOf.get(e.id) ?? e.id, carrier: e.id, text: e.label, priority: e.priority ?? 0 });
   }
   for (const b of bundles.values()) {
     const texts = b.edges.map((e) => e.label).filter((t): t is string => !!t);
@@ -462,7 +534,8 @@ function placeLabels(nodes: RouteNode[], edges: RouteEdge[], bundles: Map<string
   for (const job of jobs) {
     const route = routes.get(job.carrier)!;
     const w = labelWidth(job.text);
-    const spot = candidates(route.points, w).find(([x, y]) => {
+    // A return's label sits by the step it returns to.
+    const spot = candidates(route.points, w, returnChannel.has(job.carrier)).find(([x, y]) => {
       const r = { x1: x - w / 2 - 2, y1: y - LABEL_H / 2 - 2, x2: x + w / 2 + 2, y2: y + LABEL_H / 2 + 2 };
       return !blocked.hits(r) && !lines.hits(r, job.owner);
     });

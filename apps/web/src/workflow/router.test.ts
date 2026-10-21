@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import buildGraph from '../../../../packages/workflow/templates/build.json';
 import type { GraphEdge, GraphNode, WorkflowGraph } from '../api/types';
-import { autoLayout, COL_PITCH, hasUsablePositions, layer, mainLine, nodesOverlap } from './layout';
+import { autoLayout, backEdges, COL_PITCH, hasUsablePositions, layer, mainLine, nodesOverlap } from './layout';
 import { routeEdges } from './router';
 import type { Route, RouteNode } from './router';
 import { buildTemplate } from './templates';
@@ -45,9 +45,9 @@ function expectCleanLabels(nodes: RouteNode[], routes: Map<string, Route>) {
   }
 }
 
-/** No two horizontal runs of different edges share the same y over overlapping x. */
-function expectSeparateLanes(routes: Map<string, Route>) {
-  const runs = [...routes.entries()].flatMap(([id, r]) =>
+/** No two horizontal runs of different edges share the same y over overlapping x, except returns, which share one channel by design. */
+function expectSeparateLanes(routes: Map<string, Route>, shared: Set<string> = new Set()) {
+  const runs = [...routes.entries()].filter(([id]) => !shared.has(id)).flatMap(([id, r]) =>
     r.points.slice(1).flatMap((p, i) => {
       const q = r.points[i];
       return Math.abs(p[1] - q[1]) < 0.5 && Math.abs(p[0] - q[0]) > 24 ? [{ id, y: p[1], x1: Math.min(p[0], q[0]) + 13, x2: Math.max(p[0], q[0]) - 13 }] : [];
@@ -63,7 +63,7 @@ describe('edge router', () => {
     const { nodes, routes } = routed(g, laidOut(g));
     expect(routes.size).toBe(buildTemplate().edges.length);
     expectCleanLabels(nodes, routes);
-    expectSeparateLanes(routes);
+    expectSeparateLanes(routes, backEdges(g.nodes, g.edges));
   });
 
   it('keeps main-line flow edges straight and delegates off the main line', () => {
@@ -90,14 +90,14 @@ describe('edge router', () => {
     line.forEach((id, i) => expect(positions.get(id)).toEqual({ x: i * COL_PITCH, y: top }));
     const { nodes, routes } = routed(g, positions);
     expectCleanLabels(nodes, routes);
-    expectSeparateLanes(routes);
+    expectSeparateLanes(routes, backEdges(g.nodes, g.edges));
     expectNoEdgeThroughNodes(nodes, routes, g);
     // Forward steps run straight; returns into loops run above the main line, nested.
     for (const e of g.edges.filter((x) => x.kind === 'flow' && line.includes(x.from.node) && line.indexOf(x.to.node) === line.indexOf(x.from.node) + 1)) expect(routes.get(e.id)!.points).toHaveLength(2);
     const arcTop = (id: string) => Math.min(...routes.get(id)!.points.map(([, y]) => y));
+    // Returns run in one channel above the main line.
     for (const id of ['reviewer-fail', 'ci-fail', 'merge-fail']) expect(arcTop(id)).toBeLessThan(top);
-    expect(arcTop('reviewer-fail')).toBeGreaterThan(arcTop('ci-fail'));
-    expect(arcTop('ci-fail')).toBeGreaterThan(arcTop('merge-fail'));
+    expect(new Set(['reviewer-fail', 'ci-fail', 'merge-fail'].map(arcTop)).size).toBe(1);
     // The helper sits under the builder, so their delegate and messages run straight down as one cable.
     expect(positions.get('helper')!.x).toBe(positions.get('builder')!.x);
     const cable = [routes.get('builder-helper')!, routes.get('builder-helper-messages')!];
@@ -147,15 +147,17 @@ describe('auto layout', () => {
     expect(bandTop[2]).toBeGreaterThan(bandTop[1]);
     const laid = g.nodes.map((n) => ({ id: n.id, position: p.get(n.id)! }));
     expect(nodesOverlap(laid, size)).toBe(false);
-    // The wrap from one band to the next leaves the bottom of the step and enters the top of the next.
+    // The wrap from one band to the next runs down the right margin, back along the gap and into the next band's first input.
     const { nodes, routes } = routed(g, p);
     const wrap = routes.get(g.edges.find((e) => e.from.node === 'delivery-loop' && e.to.node === 'review-loop')!.id)!.points;
-    const from = nodes.find((n) => n.id === 'delivery-loop')!;
     const to = nodes.find((n) => n.id === 'review-loop')!;
-    expect(wrap[0][1]).toBe(from.y + from.h);
-    expect(wrap.at(-1)![1]).toBe(to.y);
+    expect(Math.max(...wrap.map(([x]) => x))).toBeGreaterThan(Math.max(...nodes.map((n) => n.x + n.w)));
+    expect(Math.min(...wrap.map(([x]) => x))).toBeLessThan(Math.min(...nodes.map((n) => n.x)));
+    expect(wrap.at(-1)).toEqual([to.x, to.y + 32]);
     expectCleanLabels(nodes, routes);
-    expectSeparateLanes(routes);
+    // Returns share the channel above, and wraps into the next band share one connector.
+    const wraps = g.edges.filter((e) => e.kind === 'flow' && p.get(e.to.node)!.y > p.get(e.from.node)!.y && p.get(e.to.node)!.x < p.get(e.from.node)!.x).map((e) => e.id);
+    expectSeparateLanes(routes, new Set([...backEdges(g.nodes, g.edges), ...wraps]));
   });
 
   it('orders nodes within a column to remove crossings', () => {

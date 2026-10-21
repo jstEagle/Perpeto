@@ -8,7 +8,8 @@ const WINDOW_TEXT: Record<MetricsWindow, string> = { '1h': '1 h', '24h': '24 h',
 export function VelocityPanel({ metrics }: { metrics: MetricsSnapshot }) {
   const v = metrics.run;
   const trend = v.velocity.trend;
-  const max = Math.max(1, ...trend);
+  // Scale against at least four, so a single finished item reads as a short bar, not a spike.
+  const max = Math.max(4, ...trend);
   const cycle = duration(v.cycleTimeSec.avg);
   const [cycleValue, cycleUnit] = cycle === '—' ? ['—', undefined] : cycle.split(' ');
   return (
@@ -19,9 +20,9 @@ export function VelocityPanel({ metrics }: { metrics: MetricsSnapshot }) {
       </dl>
       {trend.length > 0 && (
         <figure className="velocity-chart" aria-label={`Items finished in each of ${trend.length} periods over the last ${WINDOW_TEXT[metrics.window]}: ${trend.join(', ')}`}>
-          <div className="bars" aria-hidden="true">
+          <div className="bars bars-even" aria-hidden="true">
             {trend.map((n, i) => (
-              <span key={i} className={i === trend.length - 1 ? 'now' : n === 0 ? 'zero' : ''} style={{ height: n === 0 ? undefined : `${(n / max) * 100}%` }} />
+              <span key={i} className={`${i === trend.length - 1 && n > 0 ? 'now' : ''} ${n === 0 ? 'zero' : ''}`} style={{ height: n === 0 ? undefined : `${Math.max(12, (n / max) * 100)}%` }} />
             ))}
           </div>
           <div className="bars-axis" aria-hidden="true">

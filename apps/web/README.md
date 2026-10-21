@@ -20,3 +20,7 @@ node apps/web/scripts/hub-screenshots.mjs http://localhost:4320 path/to/owner.se
 Connect in Settings with the hub URL and owner token. The app exchanges the token for the hub's HttpOnly session cookie and stores no token. The cookie is SameSite=Strict, so use the same host name for the app and the hub (`localhost` for both, not `localhost` and `127.0.0.1`). Only a hub without the session route falls back to keeping the token in this tab's session storage.
 
 Brand values come only from `src/styles/tokens.css`. See [the handoff](../../docs/handoffs/web-app.md) for scope, verification and contract assumptions.
+
+## Third-party notices
+
+The workflow map is drawn with [React Flow](https://reactflow.dev) (`@xyflow/react`), MIT License, Copyright (c) 2019-2025 webkid GmbH. The map hides the library's on-canvas attribution through its supported `proOptions.hideAttribution` option; this notice and the license text shipped in `node_modules/@xyflow/react/LICENSE` carry the attribution instead.
