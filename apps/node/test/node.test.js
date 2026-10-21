@@ -253,6 +253,16 @@ test('providers an executor reports ready are advertised even when PATH cannot s
   assert.deepEqual(hub.requests.find(r => r.path.endsWith('/enroll')).body.providers, ['codex']);
 });
 
+test('stopping the node closes its executors', async t => {
+  const hub = await fakeHub(t);
+  const { configPath } = await nodeConfig(t, hub, { executorPackages: [] });
+  let closed = 0;
+  const executor = { kind: 't3', canRun: () => false, async run() {}, async close() { closed += 1; } };
+  const node = await startNode(t, configPath, { registry: new ExecutorRegistry().register(executor) });
+  await node.stop();
+  assert.equal(closed, 1);
+});
+
 test('M6: an unsupported leased provider fails for retry rather than blocking on a human', async t => {
   const hub = await fakeHub(t);
   const { configPath } = await nodeConfig(t, hub, { executorPackages: [] });

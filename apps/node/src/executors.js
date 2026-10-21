@@ -16,6 +16,8 @@ export class ExecutorRegistry {
     return this;
   }
   find(assignment, machine) { return this.#executors.find(executor => executor.canRun(assignment, machine)); }
+  /** Close every executor; an open runtime connection would otherwise keep a stopped daemon's process alive. */
+  async close() { await Promise.allSettled(this.#executors.map(executor => Promise.resolve().then(() => executor.close?.()))); }
   /** Providers executors report as ready (T3 knows harnesses PATH cannot see); a failing executor reports none. */
   async providers(options = {}) {
     const { signal } = options;

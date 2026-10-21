@@ -409,7 +409,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     cleanupTask ??= (async () => {
       service.abort(); polling.abort();
       await Promise.allSettled([heartbeatTask, rotationLoopTask, rotationTask, ...pollTasks]);
-      try { if (integrationsReady) await accountProvider?.close?.(); }
+      try { if (integrationsReady) { await registry?.close?.(); await accountProvider?.close?.(); } }
       finally {
         try { if (runtimeAttempted) await runtime.stop(); }
         finally {
