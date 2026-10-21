@@ -4,3 +4,4 @@ export {
   validateGraph, compileGraph, classifyInteraction,
 } from './graph.js';
 export { STATE_VERSION, EVENT_TYPES, MAX_ITEM_HOPS, step, replay } from './engine.js';
+export { RunStore } from './run-store.js';
