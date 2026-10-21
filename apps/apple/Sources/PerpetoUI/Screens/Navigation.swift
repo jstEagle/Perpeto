@@ -1,0 +1,109 @@
+import Observation
+import PerpetoKit
+import SwiftUI
+
+/// Project-level screens, in contract order.
+public enum ProjectSection: String, CaseIterable, Hashable, Sendable, Identifiable {
+    case overview, workflows, runs, work, messages, mergeQueue
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .overview: "Overview"
+        case .workflows: "Workflows"
+        case .runs: "Runs"
+        case .work: "Work"
+        case .messages: "Messages"
+        case .mergeQueue: "Merge queue"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .overview: "square.grid.2x2"
+        case .workflows: "point.3.connected.trianglepath.dotted"
+        case .runs: "play.square"
+        case .work: "checklist"
+        case .messages: "bubble.left.and.bubble.right"
+        case .mergeQueue: "arrow.triangle.merge"
+        }
+    }
+
+    public var shortcut: KeyEquivalent {
+        KeyEquivalent(Character(String(ProjectSection.allCases.firstIndex(of: self)! + 1)))
+    }
+}
+
+public enum FactorySection: String, CaseIterable, Hashable, Sendable, Identifiable {
+    case machines, accounts, usage
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .machines: "Machines"
+        case .accounts: "Accounts"
+        case .usage: "Usage"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .machines: "desktopcomputer"
+        case .accounts: "person.2"
+        case .usage: "chart.bar.xaxis"
+        }
+    }
+
+    public var shortcut: KeyEquivalent {
+        KeyEquivalent(Character(String(FactorySection.allCases.firstIndex(of: self)! + 1)))
+    }
+}
+
+public enum Route: Hashable, Sendable {
+    case project(String, ProjectSection)
+    case factory(FactorySection)
+
+    public var title: String {
+        switch self {
+        case .project(_, let section): section.title
+        case .factory(let section): section.title
+        }
+    }
+
+    public var projectId: String? {
+        if case .project(let id, _) = self { return id }
+        return nil
+    }
+}
+
+/// Selection shared by the window, menus and keyboard shortcuts.
+@MainActor
+@Observable
+public final class Navigator {
+    public var route: Route?
+    public var selectedRunId: String?
+    public var selectedWorkflowId: String?
+    /// Set by ⌘N to open the architect prompt.
+    public var composeWorkflowRequest = 0
+    /// Opens the hand editor for the workflow version on screen.
+    public var editWorkflowRequest = 0
+    /// Node to select on the run map, for deep links.
+    public var selectedNodeId: String?
+
+    public init(route: Route? = nil) {
+        self.route = route
+    }
+
+    public var projectId: String? { route?.projectId }
+
+    public func show(_ section: ProjectSection, fallbackProject: String?) {
+        guard let id = projectId ?? fallbackProject else { return }
+        route = .project(id, section)
+    }
+
+    public func show(_ section: FactorySection) {
+        route = .factory(section)
+    }
+}
