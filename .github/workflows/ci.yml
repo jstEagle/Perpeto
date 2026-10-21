@@ -15,6 +15,9 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npm run verify:upstream
+      - run: npm run typecheck -w @perpeto/web
+      - run: npm test -w @perpeto/web
+      - run: npm run build:web
   upstream:
     runs-on: ubuntu-latest
     steps:
