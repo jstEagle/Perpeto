@@ -59,6 +59,10 @@ public struct GraphLayout: Sendable {
     private let frames: [String: CGRect]
     private let routes: [String: Route]
     private let sides: [String: RoleSide]
+    /// Flow edges that return to each step, keyed by that step. They share
+    /// one line into it; `route(id: "ret:<step>")` is where their combined
+    /// label goes.
+    public let returnGroups: [String: [String]]
 
     /// - Parameters:
     ///   - overrides: live origins while dragging, in stored coordinates.
@@ -113,60 +117,128 @@ public struct GraphLayout: Sendable {
         }
 
         // Plan every edge: straight, or attached to card sides through lanes.
-        struct Plan { var a: Side; var b: Side; var ca: Channel; var cb: Channel; var gutter: Channel?; var isReturn: Bool; var role: Bool }
+        // Lane keys name a lane in a channel; returns into the same step share
+        // one key, so they merge into a single line with one label.
+        // Lane order inside a channel, nearest the cards first: work that
+        // skips rows leaves first, then work moving to the next row, then
+        // skips arriving, then returns, then roles.
+        enum Kind: Int { case skipOut = 0, forward = 1, skipIn = 2, back = 3, role = 4 }
+        let depthOf = graph.flowDepths
+        struct Plan {
+            var a: Side; var b: Side; var ca: Channel; var cb: Channel; var gutter: Channel?
+            var aKey: String; var bKey: String; var gKey: String; var bSlot: String
+            var isReturn: Bool
+        }
         var straight: Set<String> = []
         var plans: [String: Plan] = [:]
-        var requests: [(id: String, channel: Channel, span: CGFloat, role: Bool)] = []
+        var requests: [String: (key: String, channel: Channel, span: CGFloat, kind: Kind)] = [:]
+        var returnGroups: [String: [String]] = [:]
         let allMinX = raw.values.map(\.minX).min() ?? 0
         let allMaxX = raw.values.map(\.maxX).max() ?? 0
 
+        func request(_ key: String, _ channel: Channel, _ span: CGFloat, _ kind: Kind) {
+            let id = key + "@" + Self.key(channel)
+            if let existing = requests[id], existing.span >= span { return }
+            requests[id] = (key, channel, span, kind)
+        }
+
         func plan(_ edge: GraphEdge, role: Bool) {
             guard let a = raw[edge.from.node], let b = raw[edge.to.node], let ra = rowOf[edge.from.node], let rb = rowOf[edge.to.node] else { return }
-            var sa: Side, sb: Side, isReturn = false
             if role {
-                sa = sides[edge.from.node] == .top ? .top : .bottom
-                sb = sides[edge.to.node] == .top ? .top : .bottom
-            } else if ra == rb {
+                let sa: Side = sides[edge.from.node] == .top ? .top : .bottom
+                let sb: Side = sides[edge.to.node] == .top ? .top : .bottom
+                let ca = channel(sa, row: ra), cb = channel(sb, row: rb)
+                if ca == cb {
+                    plans[edge.id] = Plan(a: sa, b: sb, ca: ca, cb: cb, gutter: nil, aKey: edge.id, bKey: edge.id, gKey: "", bSlot: edge.id + "<", isReturn: false)
+                    request(edge.id, ca, abs(a.midX - b.midX), .role)
+                } else {
+                    let leftCost = (a.midX - allMinX) + (b.midX - allMinX)
+                    let rightCost = (allMaxX - a.midX) + (allMaxX - b.midX)
+                    let gutter: Channel = leftCost <= rightCost ? .left : .right
+                    let edgeX = gutter == .left ? allMinX : allMaxX
+                    plans[edge.id] = Plan(a: sa, b: sb, ca: ca, cb: cb, gutter: gutter, aKey: edge.id + "#a", bKey: edge.id + "#b", gKey: edge.id, bSlot: edge.id + "<", isReturn: false)
+                    request(edge.id + "#a", ca, 10_000 + abs(a.midX - edgeX), .role)
+                    request(edge.id + "#b", cb, 10_000 + abs(b.midX - edgeX), .role)
+                    request(edge.id, gutter, abs(a.midY - b.midY), .role)
+                }
+                return
+            }
+            // A return goes back to an earlier step in the flow. Without
+            // depths (unreachable steps), fall back to the drawing.
+            let isReturn: Bool
+            if edge.from.node == edge.to.node {
+                isReturn = true
+            } else if let da = depthOf[edge.from.node], let db = depthOf[edge.to.node] {
+                isReturn = db < da
+            } else {
+                isReturn = rb < ra || (ra == rb && b.minX <= a.minX)
+            }
+            if isReturn {
+                // Returns go back over the top: into the top of the earlier
+                // step from the channel above its row. From a later row they
+                // climb the right gutter, outside the work moving down.
+                let target = edge.to.node
+                let key = "ret:" + target
+                returnGroups[target, default: []].append(edge.id)
+                let cb = channel(.top, row: rb)
+                if ra == rb {
+                    plans[edge.id] = Plan(a: .top, b: .top, ca: cb, cb: cb, gutter: nil, aKey: key, bKey: key, gKey: "", bSlot: key, isReturn: true)
+                    request(key, cb, abs(a.midX - b.midX), .back)
+                } else {
+                    let ca = channel(.top, row: ra)
+                    plans[edge.id] = Plan(a: .top, b: .top, ca: ca, cb: cb, gutter: .right, aKey: edge.id + "#a", bKey: key, gKey: key, bSlot: key, isReturn: true)
+                    request(edge.id + "#a", ca, allMaxX - a.midX, .back)
+                    request(key, cb, 10_000 + allMaxX - b.midX, .back)
+                    request(key, .right, a.midY - b.midY, .back)
+                }
+                return
+            }
+            if ra == rb {
                 let blocked = graph.nodes.contains { n in
                     n.id != edge.from.node && n.id != edge.to.node && rowOf[n.id] == ra && raw[n.id]!.maxX > a.maxX && raw[n.id]!.minX < b.minX
                 }
-                if b.minX > a.maxX + 8 && !blocked && edge.from.port != "fail" {
+                if b.minX > a.maxX && !blocked && edge.from.port != "fail" {
                     straight.insert(edge.id)
                     return
                 }
-                isReturn = b.minX <= a.minX
-                sa = .top; sb = .top
-            } else if ra < rb {
-                sa = .bottom; sb = .top
+                let c = channel(.top, row: ra)
+                plans[edge.id] = Plan(a: .top, b: .top, ca: c, cb: c, gutter: nil, aKey: edge.id, bKey: edge.id, gKey: "", bSlot: edge.id + "<", isReturn: false)
+                request(edge.id, c, abs(a.midX - b.midX), .forward)
+            } else if abs(rb - ra) == 1 {
+                // The next row down enters from the top; a forward step drawn
+                // a row higher is reached from below.
+                let (sa, sb): (Side, Side) = rb > ra ? (.bottom, .top) : (.top, .bottom)
+                let c = channel(sa, row: ra)
+                plans[edge.id] = Plan(a: sa, b: sb, ca: c, cb: c, gutter: nil, aKey: edge.id, bKey: edge.id, gKey: "", bSlot: edge.id + "<", isReturn: false)
+                request(edge.id, c, abs(a.midX - b.midX), .forward)
             } else {
-                isReturn = true
-                sa = .top; sb = .bottom
-            }
-            let ca = channel(sa, row: ra), cb = channel(sb, row: rb)
-            if ca == cb {
-                plans[edge.id] = Plan(a: sa, b: sb, ca: ca, cb: cb, gutter: nil, isReturn: isReturn, role: role)
-                requests.append((edge.id, ca, abs(a.midX - b.midX), role))
-            } else {
-                let leftCost = (a.midX - allMinX) + (b.midX - allMinX)
-                let rightCost = (allMaxX - a.midX) + (allMaxX - b.midX)
-                let gutter: Channel = leftCost <= rightCost ? .left : .right
-                plans[edge.id] = Plan(a: sa, b: sb, ca: ca, cb: cb, gutter: gutter, isReturn: isReturn, role: role)
-                let edgeX = gutter == .left ? allMinX : allMaxX
-                // Routes that wrap to a gutter enclose their channels, so they take the outer lanes.
-                requests.append((edge.id + "#a", ca, 10_000 + abs(a.midX - edgeX), role))
-                requests.append((edge.id + "#b", cb, 10_000 + abs(b.midX - edgeX), role))
-                requests.append((edge.id, gutter, abs(a.midY - b.midY), role))
+                // Work that skips a row goes down the left gutter, so it never
+                // crosses the rows it passes or the returns on the right.
+                let (sa, sb): (Side, Side) = rb > ra ? (.bottom, .top) : (.top, .bottom)
+                let ca = channel(sa, row: ra), cb = channel(sb, row: rb)
+                plans[edge.id] = Plan(a: sa, b: sb, ca: ca, cb: cb, gutter: .left, aKey: edge.id + "#a", bKey: edge.id + "#b", gKey: edge.id, bSlot: edge.id + "<", isReturn: false)
+                request(edge.id + "#a", ca, a.midX - allMinX, .skipOut)
+                request(edge.id + "#b", cb, b.midX - allMinX, .skipIn)
+                request(edge.id, .left, abs(b.midY - a.midY), .forward)
             }
         }
         for edge in graph.edges where edge.kind == .flow || edge.kind == .unknown { plan(edge, role: false) }
         for edge in roleEdges { plan(edge, role: true) }
 
-        // Allocate lanes per channel: flow before roles, shortest span first.
+        // Allocate lanes per channel: work moving forward nearest the cards,
+        // then returns, then roles; within a group, shorter spans inside.
+        // Return lanes in a gap leave the row below, so their order flips.
         var laneIndex: [String: Int] = [:]
         var laneCount: [Channel: Int] = [:]
-        for (channel, items) in Dictionary(grouping: requests, by: \.channel) {
-            let ordered = items.sorted { ($0.role ? 1 : 0, $0.span, $0.id) < ($1.role ? 1 : 0, $1.span, $1.id) }
-            for (i, item) in ordered.enumerated() { laneIndex[item.id + "@" + Self.key(channel)] = i }
+        for (channel, items) in Dictionary(grouping: requests.values, by: \.channel) {
+            let isGap: Bool
+            if case .gap = channel { isGap = true } else { isGap = false }
+            let ordered = items.sorted { l, r in
+                if l.kind != r.kind { return l.kind.rawValue < r.kind.rawValue }
+                if l.span != r.span { return isGap && l.kind == .back ? l.span > r.span : l.span < r.span }
+                return l.key < r.key
+            }
+            for (i, item) in ordered.enumerated() { laneIndex[item.key + "@" + Self.key(channel)] = i }
             laneCount[channel] = ordered.count
         }
 
@@ -189,8 +261,8 @@ public struct GraphLayout: Sendable {
             let room = shiftedRows[g + 1].minY - shiftedRows[g].maxY - 2 * Self.laneStart
             return max(5, min(Self.lanePitch, room / CGFloat(n - 1)))
         }
-        func lane(_ channel: Channel, _ id: String) -> CGFloat {
-            let i = CGFloat(laneIndex[id + "@" + Self.key(channel)] ?? 0)
+        func lane(_ channel: Channel, _ key: String) -> CGFloat {
+            let i = CGFloat(laneIndex[key + "@" + Self.key(channel)] ?? 0)
             switch channel {
             case .top: return (shiftedRows.first?.minY ?? 0) - Self.laneStart - i * pitch(channel)
             case .gap(let g):
@@ -217,49 +289,49 @@ public struct GraphLayout: Sendable {
         }
 
         // Attachment slots: spread lanes along each card side, ordered so
-        // stubs do not cross lanes that leave the same side.
-        struct Attachment { var edgeId: String; var isFrom: Bool; var heading: CGFloat; var depth: Int }
+        // stubs do not cross lanes that leave the same side. Returns into a
+        // step share one slot.
+        struct Attachment { var slot: String; var heading: CGFloat; var depth: Int }
         var attachments: [String: [Attachment]] = [:]
         var laneY: [String: (a: CGFloat, b: CGFloat, gutterX: CGFloat?)] = [:]
         let planned = graph.edges.filter { plans[$0.id] != nil && !roleEdges.contains($0) } + roleEdges
+        func depth(_ key: String, _ channel: Channel, _ side: Side) -> Int {
+            // Gap lanes are numbered downward, so for a card below the gap they count back.
+            let i = laneIndex[key + "@" + Self.key(channel)] ?? 0
+            if case .gap = channel, side == .top { return (laneCount[channel] ?? 1) - 1 - i }
+            return i
+        }
         for edge in planned {
             guard let plan = plans[edge.id], let a = frames[edge.from.node], let b = frames[edge.to.node] else { continue }
-            let gutterX = plan.gutter.map { lane($0, edge.id) }
-            let ya = plan.gutter == nil ? lane(plan.ca, edge.id) : lane(plan.ca, edge.id + "#a")
-            let yb = plan.gutter == nil ? ya : lane(plan.cb, edge.id + "#b")
+            let gutterX = plan.gutter.map { lane($0, plan.gKey) }
+            let ya = lane(plan.ca, plan.aKey)
+            let yb = plan.gutter == nil ? ya : lane(plan.cb, plan.bKey)
             laneY[edge.id] = (ya, yb, gutterX)
-            // Depth is how far the lane is from the card. Gap lanes are
-            // numbered downward, so for a card below the gap they count back.
-            func depth(_ id: String, _ channel: Channel, _ side: Side) -> Int {
-                let i = laneIndex[id + "@" + Self.key(channel)] ?? 0
-                if case .gap = channel, side == .top { return (laneCount[channel] ?? 1) - 1 - i }
-                return i
-            }
-            let depthA = depth(plan.gutter == nil ? edge.id : edge.id + "#a", plan.ca, plan.a)
-            let depthB = depth(plan.gutter == nil ? edge.id : edge.id + "#b", plan.cb, plan.b)
             var headingA = (gutterX ?? b.midX) - a.midX
             var headingB = (gutterX ?? a.midX) - b.midX
             if edge.from.node == edge.to.node { headingA = -1; headingB = 1 }
-            // Depth grows away from the card: toward the top for top sides.
-            attachments[edge.from.node + Self.key(plan.a), default: []].append(Attachment(edgeId: edge.id, isFrom: true, heading: headingA, depth: depthA))
-            attachments[edge.to.node + Self.key(plan.b), default: []].append(Attachment(edgeId: edge.id, isFrom: false, heading: headingB, depth: depthB))
+            attachments[edge.from.node + Self.key(plan.a), default: []].append(Attachment(slot: edge.id + ">", heading: headingA, depth: depth(plan.aKey, plan.ca, plan.a)))
+            let bKey = edge.to.node + Self.key(plan.b)
+            if !(attachments[bKey]?.contains { $0.slot == plan.bSlot } ?? false) {
+                attachments[bKey, default: []].append(Attachment(slot: plan.bSlot, heading: headingB, depth: depth(plan.bKey, plan.cb, plan.b)))
+            }
         }
         var slotX: [String: CGFloat] = [:]
         for (key, list) in attachments {
             let nodeId = String(key.dropLast(key.hasSuffix("top") ? 3 : 6))
             guard let f = frames[nodeId] else { continue }
-            let left = list.filter { $0.heading < 0 }.sorted { ($0.depth, $0.edgeId) < ($1.depth, $1.edgeId) }
-            let right = list.filter { $0.heading >= 0 }.sorted { ($0.depth, $0.edgeId) > ($1.depth, $1.edgeId) }
+            let left = list.filter { $0.heading < 0 }.sorted { ($0.depth, $0.slot) < ($1.depth, $1.slot) }
+            let right = list.filter { $0.heading >= 0 }.sorted { ($0.depth, $0.slot) > ($1.depth, $1.slot) }
             let ordered = left + right
             let n = CGFloat(ordered.count)
             let step = n > 1 ? min(Self.slotPitch, (f.width - 48) / (n - 1)) : 0
             for (k, item) in ordered.enumerated() {
-                slotX[item.edgeId + (item.isFrom ? ">" : "<")] = f.midX + (CGFloat(k) - (n - 1) / 2) * step
+                slotX[item.slot] = f.midX + (CGFloat(k) - (n - 1) / 2) * step
             }
         }
         for edge in planned {
             guard let plan = plans[edge.id], let y = laneY[edge.id], let a = frames[edge.from.node], let b = frames[edge.to.node] else { continue }
-            let xa = slotX[edge.id + ">"] ?? a.midX, xb = slotX[edge.id + "<"] ?? b.midX
+            let xa = slotX[edge.id + ">"] ?? a.midX, xb = slotX[plan.bSlot] ?? b.midX
             let pa = CGPoint(x: xa, y: plan.a == .top ? a.minY : a.maxY)
             let pb = CGPoint(x: xb, y: plan.b == .top ? b.minY : b.maxY)
             if let gx = y.gutterX {
@@ -272,6 +344,16 @@ public struct GraphLayout: Sendable {
                     labelPoint: CGPoint(x: (xa + xb) / 2, y: y.a), isReturn: plan.isReturn)
             }
         }
+        // One label route per step that work returns to: the shared lane above it.
+        for (target, members) in returnGroups {
+            let ends = members.compactMap { routes[$0]?.points }
+            guard let first = ends.first, first.count >= 2 else { continue }
+            let pb = first[first.count - 1], corner = first[first.count - 2]
+            let farX = ends.map { $0[$0.count - 3].x }.max { abs($0 - pb.x) < abs($1 - pb.x) } ?? pb.x
+            let far = CGPoint(x: farX, y: corner.y)
+            routes["ret:" + target] = Route(points: [corner, far], labelPoint: CGPoint(x: (corner.x + far.x) / 2, y: corner.y), isReturn: true)
+        }
+        self.returnGroups = returnGroups
         self.routes = routes
 
         let allPoints = routes.values.flatMap(\.points)
@@ -405,6 +487,26 @@ public struct GraphLayout: Sendable {
 }
 
 extension WorkflowGraph {
+    /// Steps from the inputs along flow edges and escalation links
+    /// (`onExhausted`, `onBlocked`), shortest first. A flow edge to a step
+    /// with a smaller depth goes back: a loop or a failed gate.
+    public var flowDepths: [String: Int] {
+        var depth: [String: Int] = [:]
+        var queue = nodes.filter { $0.type == .input }.map(\.id)
+        for id in queue { depth[id] = 0 }
+        while !queue.isEmpty {
+            let id = queue.removeFirst()
+            let d = depth[id] ?? 0
+            var next = edges.filter { $0.kind == .flow && $0.from.node == id }.map(\.to.node)
+            if let node = node(id) { next += ["onExhausted", "onBlocked"].compactMap { node.config[$0]?.stringValue } }
+            for target in next where depth[target] == nil && node(target) != nil {
+                depth[target] = d + 1
+                queue.append(target)
+            }
+        }
+        return depth
+    }
+
     /// Nodes in flow order: breadth first from the inputs along flow edges,
     /// ignoring returns, then anything unreachable. Used by the step list.
     public var flowOrder: [GraphNode] {

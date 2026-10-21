@@ -89,6 +89,59 @@ struct GraphLayoutTests {
         #expect(result.issues.filter { $0.severity == .error }.map(\.message) == [])
     }
 
+    /// Perpendicular crossings between two edges' segments, away from their ends.
+    static func crossings(_ r1: GraphLayout.Route, _ r2: GraphLayout.Route) -> Int {
+        var count = 0
+        for (a, b) in segments(r1) {
+            for (c, d) in segments(r2) {
+                let h1 = abs(a.y - b.y) < 0.5, h2 = abs(c.y - d.y) < 0.5
+                guard h1 != h2 else { continue }
+                let (h, v) = h1 ? ((a, b), (c, d)) : ((c, d), (a, b))
+                let x = v.0.x, y = h.0.y
+                let inH = x > min(h.0.x, h.1.x) + 0.5 && x < max(h.0.x, h.1.x) - 0.5
+                let inV = y > min(v.0.y, v.1.y) + 0.5 && y < max(v.0.y, v.1.y) - 0.5
+                if inH && inV { count += 1 }
+            }
+        }
+        return count
+    }
+
+    @Test func flowLinesNeverCross() {
+        for (name, layout) in Self.layouts() {
+            let flow = layout.graph.edges.filter { $0.kind == .flow }.compactMap { e in layout.route(e).map { (e, $0) } }
+            for (i, (e1, r1)) in flow.enumerated() {
+                for (e2, r2) in flow[(i + 1)...] {
+                    #expect(Self.crossings(r1, r2) == 0, "\(name): \(e1.id) crosses \(e2.id)")
+                }
+            }
+        }
+    }
+
+    @Test func returnsShareOneLineAndOneLabel() throws {
+        let layout = GraphLayout(graph: DemoFixtures.buildGraphV3(), nodeHeight: 120)
+        let returns = try #require(layout.returnGroups["loop"])
+        #expect(Set(returns) == ["e6", "e8"])
+        let ends = returns.compactMap { layout.route(id: $0)?.points.last }
+        #expect(Set(ends.map { "\($0.x),\($0.y)" }).count == 1, "returns enter the loop at one point")
+        let label = try #require(layout.route(id: "ret:loop"))
+        let loop = try #require(layout.frame(id: "loop"))
+        // The shared return lane runs above the node rows.
+        #expect(label.points.allSatisfy { $0.y < loop.minY })
+        #expect(layout.route(id: "e6")?.isReturn == true)
+    }
+
+    @Test func forwardEdgesThatSkipRowsUseTheLeftGutter() throws {
+        var graph = DemoFixtures.buildGraphV4()
+        graph.edges.append(GraphEdge(id: "skip", from: .init(node: "plan"), to: .init(node: "review-ui"), kind: .flow))
+        let layout = GraphLayout(graph: graph, nodeHeight: 120)
+        let route = try #require(layout.route(id: "skip"))
+        let minX = graph.nodes.map { layout.frame($0).minX }.min() ?? 0
+        #expect(route.points.contains { $0.x < minX })
+        for (_, other) in graph.edges.filter({ $0.kind == .flow && $0.id != "skip" }).compactMap({ e in layout.route(e).map { (e, $0) } }) {
+            #expect(Self.crossings(route, other) == 0)
+        }
+    }
+
     @Test func crowdedLayoutsSpreadApart() throws {
         let graph = try #require(Self.template())
         let layout = GraphLayout(graph: graph, nodeHeight: 76)
