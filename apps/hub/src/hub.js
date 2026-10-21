@@ -233,7 +233,7 @@ export class Hub {
     const resource = kind === 'assignment' ? 'agents' : 'jobs';
     if (machine?.running?.[resource] > 0) { machine.running[resource] -= 1; this.store.put('machine', machine); }
   }
-  async engineEvent(run, event) { this.applyEffects(run, await this.engineStep(run, event)); }
+  async engineEvent(run, event) { const result = await this.engineStep(run, event); this.applyEffects(run, result); return result; }
   /** Compute the engine's response to an event without applying it. Engines are pure, so this doubles as validation. */
   engineStep(run, event) {
     const workflow = this.store.need('run-workflow', run.id).workflow;
@@ -413,7 +413,7 @@ export class Hub {
       const run = this.store.need('run', entityId);
       if (!action && method === 'GET') return reply(run);
       if (action === 'metrics' && method === 'GET') return reply(await this.observation.metrics({ runId: run.id, window: query.get('window') ?? '24h' }));
-      if (action === 'work-items' && method === 'GET') return reply({ workItems: this.store.list('work-item', item => item.runId === run.id) });
+      if (action === 'work-items' && method === 'GET') return reply({ workItems: this.store.list('work-item', item => item.runId === run.id).map(item => this.workItemView(item)) });
       if (action === 'assignments' && method === 'GET') return reply({ assignments: this.store.list('assignment', item => item.runId === run.id) });
       if (method === 'POST' && ['pause', 'resume', 'stop'].includes(action)) {
         const target = { pause: 'paused', resume: 'running', stop: 'stopped' }[action];
@@ -430,9 +430,18 @@ export class Hub {
       }
     }
     if (collection === 'work-items' && entityId && action === 'decision' && segments.length === 3 && method === 'POST') {
-      const item = this.store.need('work-item', entityId); const run = this.store.need('run', item.runId);
+      const item = this.workItemView(this.store.need('work-item', entityId)); const run = this.store.need('run', item.runId);
+      if (body.decisionId !== undefined) nonblank(body.decisionId, 'decisionId', 200);
       if (run.status !== 'running' || item.status !== 'blocked') fail(409, 'CONFLICT', 'Work item is not awaiting a decision in a running run.');
-      await this.engineEvent(run, { type: 'human.decision', workItemId: item.id, data: body }); this.emit('work-item.decision', 'work-item', item); this.observation.interaction('gate.result', item, { nodeId: item.nodeId, decision: body.decision, source: 'human' }); return reply({ accepted: true });
+      // A decision names the wait it answers, so a retry or a second answer can never pass the item's next gate.
+      if (body.decisionId !== undefined && item.decisionId && body.decisionId !== item.decisionId) fail(409, 'STALE_DECISION', 'This decision answers an earlier wait; the work item now waits for another decision.');
+      const result = await this.engineEvent(run, { type: 'human.decision', workItemId: item.id, data: body });
+      if (!result?.duplicate) {
+        const decisionId = item.decisionId ? { decisionId: item.decisionId } : {};
+        this.emit('work-item.decision', 'work-item', item, decisionId);
+        this.observation.interaction('gate.result', item, { nodeId: item.nodeId, decision: body.decision, source: 'human', ...decisionId });
+      }
+      return reply({ accepted: true, ...(item.decisionId ? { decisionId: item.decisionId } : {}) });
     }
     if (path === '/machines' && method === 'GET') return reply({ machines: this.store.list('machine') });
     if (path === '/machines/enrollment-codes' && method === 'POST') {
@@ -644,6 +653,11 @@ export class Hub {
         machinesOnline: this.store.list('machine', value => value.status === 'online' && Date.now() - Date.parse(value.lastHeartbeatAt) < this.config.heartbeatIntervalMs * 3).length });
     }
     fail(404, 'NOT_FOUND', 'Route not found.');
+  }
+  /** Clients answer a waiting item's human gate with its `decisionId`. */
+  workItemView(item) {
+    const run = this.store.get('run', item.runId);
+    return { ...item, ...(run ? { projectId: run.projectId } : {}), ...(item.waiting?.decisionId ? { decisionId: item.waiting.decisionId } : {}) };
   }
   workflowFields(value) {
     nonblank(value.name, 'workflow name', 200); object(value.graph, 'graph');

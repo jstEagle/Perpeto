@@ -22,7 +22,7 @@ import { HubError } from '../errors.js';
  * @typedef {{ validate: Function, startRun: Function, applyEvent: Function }} WorkflowEngine
  */
 
-const STATUS = { NOT_FOUND: 404, RUN_EXISTS: 409, RUN_NOT_ACTIVE: 409, NOT_WAITING: 409, INVALID_TRANSITION: 409, IDEMPOTENCY_CONFLICT: 409 };
+const STATUS = { NOT_FOUND: 404, RUN_EXISTS: 409, RUN_NOT_ACTIVE: 409, NOT_WAITING: 409, INVALID_TRANSITION: 409, IDEMPOTENCY_CONFLICT: 409, STALE_DECISION: 409 };
 const RUN_STATUSES = new Set(['running', 'paused', 'stopped', 'completed', 'failed']);
 // The hub records these itself (lifecycle, CI/review/human gates and run transitions); the engine's copies would duplicate them.
 const HUB_OWNED_EVENTS = new Set(['assignment.state', 'run.started', 'run.paused', 'run.resumed', 'run.stopped', 'run.completed', 'run.failed']);
@@ -128,7 +128,10 @@ function hubEvent(state, event) {
         result: { outcome: 'failure', summary: 'The machine running this assignment stopped renewing its lease (crashed harness or lost connection).' } } };
   }
   if (type === 'human.decision') {
-    return { id: `human:${event.workItemId}:${randomUUID()}`, type: 'human.decision', data: { workItemId: event.workItemId, decision: data.decision, ...(data.note !== undefined ? { note: data.note } : {}) } };
+    // The decisionId binds the answer to the wait it was given for; the engine refuses it for any later wait.
+    const decisionId = data.decisionId;
+    return { id: `human:${event.workItemId}:${decisionId ?? randomUUID()}`, type: 'human.decision', data: { workItemId: event.workItemId, decision: data.decision,
+      ...(data.note !== undefined ? { note: data.note } : {}), ...(decisionId !== undefined ? { decisionId } : {}) } };
   }
   if (['run.paused', 'run.resumed', 'run.stopped'].includes(type)) return { id: `${type}:${randomUUID()}`, type, data: data.reason ? { reason: data.reason } : {} };
   throw new HubError(400, 'INVALID_INPUT', `Unknown engine event ${type}.`);
