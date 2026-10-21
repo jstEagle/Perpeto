@@ -93,7 +93,9 @@ Maintenance sends one stable tick per observed UTC minute, including after resta
 
 `GET /workflow-templates` returns `{templates: [{id, description, graph}]}` from the workflow package's six-template library. A project may run multiple independently activated workflows concurrently, sharing machine capacity and delivery queues. Architect replies can name `templateId` and up to three `additionalWorkflows`; every graph validates before any draft is saved. Errors on additional graphs carry `workflowIndex`; successful assignments return `drafts: [{workflowId, version}]` as well as the original primary draft fields. Each draft needs separate activation.
 
-Merge rejections carry `rejectionKind: conflict|ci_failure|other` into the engine. Known delivery reasons and failed CI evidence supply the kind until delivery emits it directly. The current engine retains its existing fail route; this field alone does not introduce conflict-specific recovery.
+Merge rejections persist a typed `rejectionKind: conflict|ci|other` from delivery and map to engine `merge.rejected.data.kind`; historical/untyped reasons stay `other`. Conflicts can now schedule `step: 'rebase'` assignments with `rebaseOf`. The hub preserves their `rebaseTouchedBeyondConflicts` result: under default `rebaseReview: 'changed'`, only explicit `false` skips repeated review; fresh CI still precedes the next merge. Planner `items[].touches` also survive result transport, enabling the engine's declared-scope scheduling. Both fields remain engine-validated.
+
+Node/run metrics include `conflictRejections` and `rebases`, summed in project metrics, with per-run `conflict-churn` findings retained. Engine recovery movements preserve `step: 'rebase'`, `edgeId: null`, `unplanned: false` and are excluded from authored-edge counts. Actual Git/HTTP integration is tested with an explicit node result; live executor output parsing remains a separate requirement in [the handoff](../../docs/handoffs/factory-hub.md#executor-handoff).
 
 ## Node protocol
 

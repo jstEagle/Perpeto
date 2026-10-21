@@ -11,7 +11,7 @@ const roleNode = (graph, role) => typeof role === 'string'
 export class Observation {
   constructor(hub) { this.hub = hub; this.store = hub.store; }
   isInteraction(type) { return interactions.includes(type); }
-  interaction(type, value, data, subjectKind = 'assignment') {
+  interaction(type, value, data, subjectKind = 'assignment', engineOwned = false) {
     requireValue(interactions.includes(type), 'Invalid interaction type.'); object(data, 'interaction data');
     const run = this.store.need('run', value.runId);
     const graph = this.store.need('run-workflow', run.id).workflow.graph;
@@ -27,6 +27,7 @@ export class Observation {
     }
     // The owner is not a graph node, so these stay unplanned edges; `human` lets clients tell them apart.
     const human = type === 'agent.messaged' && [data.senderRoleId, data.recipientRoleId].includes(OWNER_ROLE_ID);
+    const recovery = engineOwned && type === 'workitem.moved' && data.step === 'rebase' && data.edgeId === null && data.unplanned === false;
     const kind = { 'workitem.moved': 'flow', 'agent.delegated': 'delegates', 'agent.messaged': 'messages' }[type];
     const edge = kind && graph.edges.find(edge => edge.kind === kind && (!data.edgeId || edge.id === data.edgeId) &&
       sourceNodeId && targetNodeId && ((edge.from.node === sourceNodeId && edge.to.node === targetNodeId) ||
@@ -35,7 +36,7 @@ export class Observation {
     const event = { ...data, nodeId: data.nodeId ?? value.nodeId ?? sourceNodeId, sourceNodeId, ...(targetNodeId !== undefined ? { targetNodeId } : {}), ...unknown,
       ...(kind ? { from: sourceNodeId, ...(targetNodeId !== undefined ? { to: targetNodeId } : {}) } : {}),
       role: data.role ?? value.role, ...(value.machineId ? { machineId: value.machineId } : {}),
-      ...(kind ? { unplanned: !edge, ...(edge ? { edgeId: edge.id, kind } : {}) } : {}), ...(human ? { human: true } : {}) };
+      ...(recovery ? { step: 'rebase', edgeId: null, unplanned: false, kind } : kind ? { unplanned: !edge, ...(edge ? { edgeId: edge.id, kind } : {}) } : {}), ...(human ? { human: true } : {}) };
     return this.hub.emit(type, subjectKind, value, event);
   }
   assignment(value) {

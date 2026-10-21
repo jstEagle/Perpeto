@@ -299,7 +299,7 @@ test('runs whose whole engine state predates the RunStore keep advancing from th
   assert.equal(query(join(hub.directory, 'workflow.sqlite'), 'SELECT COUNT(*) AS count FROM runs WHERE id=?', legacyId)[0].count, 0);
 });
 
-test('merge rejection kind is passed through additively to workflow events', async t => {
+test('merge rejection kind uses the engine conflict-recovery contract', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'perpeto-rejection-'));
   const path = join(directory, 'workflow.sqlite');
   const adapter = createWorkflowAdapter(); adapter.open({ databasePath: path });
@@ -310,7 +310,7 @@ test('merge rejection kind is passed through additively to workflow events', asy
     node('merge', 'merge-queue', { strategy: 'serial', method: 'squash', requiredChecks: [] }), node('done', 'output'),
   ], edges: [flow('input', 'builder'), flow('builder', 'merge'), flow('merge', 'done', 'pass'), flow('merge', 'done', 'fail')] };
   const workflow = { id: 'wf_test', version: 1, graph: value };
-  for (const rejectionKind of ['conflict', 'ci_failure', 'other']) {
+  for (const rejectionKind of ['conflict', 'ci', 'other']) {
     const run = { id: `run_${rejectionKind}`, projectId: 'prj_test', status: 'running' };
     adapter.startRun({ run, workflow, input: { keepOpen: true, items: [{ title: 'Change' }] }, project: { repo: { url: '/tmp/unused', defaultBranch: 'main' } } });
     const assignment = Object.values(adapter.runState(run.id).assignments)[0];
@@ -321,5 +321,48 @@ test('merge rejection kind is passed through additively to workflow events', asy
   const db = new DatabaseSync(path);
   t.after(() => db.close());
   const rows = db.prepare("SELECT event FROM run_events WHERE type='merge.rejected' ORDER BY seq").all();
-  assert.deepEqual(rows.map(row => JSON.parse(row.event).data.rejectionKind), ['conflict', 'ci_failure', 'other']);
+  assert.deepEqual(rows.map(row => JSON.parse(row.event).data.kind), ['conflict', 'ci', 'other']);
+});
+
+test('conflict metrics aggregate across runs and rebase results skip review only on explicit false', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'perpeto-conflict-metrics-'));
+  const adapter = createWorkflowAdapter(); adapter.open({ databasePath: join(directory, 'workflow.sqlite') });
+  t.after(async () => { adapter.close(); await rm(directory, { recursive: true, force: true }); });
+  const value = { schema: 'perpeto.workflow/1', nodes: [
+    node('input', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build.' }),
+    node('review', 'review', { harness, prompt: 'Review.' }), node('merge', 'merge-queue', { strategy: 'serial', method: 'squash', requiredChecks: [] }), node('done', 'output'),
+  ], edges: [flow('input', 'builder'), flow('builder', 'review'), flow('review', 'merge', 'pass'), flow('review', 'builder', 'fail'), flow('merge', 'done', 'pass'), flow('merge', 'done', 'fail')] };
+  // Use a loop for the review fail route so this is a valid graph.
+  value.nodes.push(node('loop', 'loop', { until: 'review-pass', maxIterations: 3 }));
+  value.edges.find(edge => edge.from.node === 'input').to.node = 'loop';
+  value.edges.find(edge => edge.id === 'review-fail-builder').to.node = 'loop';
+  value.edges.push(flow('loop', 'builder'));
+  const workflow = { id: 'wf_test', version: 1, graph: value };
+  const runs = [];
+  for (let n = 0; n < 2; n++) {
+    const run = { id: `run_metrics${n}`, projectId: 'prj_test', status: 'running' }; runs.push(run);
+    adapter.startRun({ run, workflow, input: { keepOpen: true, items: [{ title: 'Change' }] }, project: { repo: { url: '/tmp/unused', defaultBranch: 'main' } } });
+    const state = () => adapter.runState(run.id);
+    const open = role => Object.values(state().assignments).find(assignment => assignment.nodeId === role && assignment.status === 'queued');
+    const finish = (assignment, data) => adapter.applyEvent({ run, workflow, event: { type: 'assignment.finished', assignmentId: assignment.id, value: assignment, data } });
+    const built = digit => ({ outcome: 'success', summary: 'Built.', branch: 'feature', prUrl: 'local:feature', headSha: String(digit).repeat(40) });
+    finish(open('builder'), built(1)); finish(open('review'), { outcome: 'success', verdict: 'pass', summary: 'Approved.' });
+    for (let conflict = 0; conflict < 2; conflict++) {
+      const merge = Object.values(state().merges).find(entry => entry.status === 'queued');
+      adapter.applyEvent({ run, workflow, event: { type: 'merge.finished', mergeEntryId: merge.id, data: { status: 'rejected', reason: 'Candidate rejected.', rejectionKind: 'conflict' } } });
+      const rebase = open('builder'); assert.equal(rebase.step, 'rebase'); assert.equal(rebase.rebaseOf, merge.id);
+      finish(rebase, { ...built(conflict + 2), rebaseTouchedBeyondConflicts: n === 1 });
+      if (n === 0) assert.equal(open('review'), undefined, 'explicit conflict-only result bypasses repeated review');
+      else {
+        assert.ok(open('review'), 'behavior-changing evidence preserves the review path');
+        finish(open('review'), { outcome: 'success', verdict: 'pass', summary: 'Re-reviewed.' });
+      }
+    }
+  }
+  const at = new Date().toISOString();
+  const metrics = adapter.computeRunMetrics({ runs, events: [], machines: [], usage: [], window: '1h', at });
+  assert.equal(metrics.run.conflictRejections, 4); assert.equal(metrics.run.rebases, 4);
+  assert.equal(metrics.nodes.find(node => node.nodeId === 'merge').conflictRejections, 4);
+  assert.equal(metrics.nodes.find(node => node.nodeId === 'builder').rebases, 4);
+  assert.equal(metrics.bottlenecks.filter(value => value.reason === 'conflict-churn').length, 2);
 });

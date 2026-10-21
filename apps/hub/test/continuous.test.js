@@ -242,3 +242,21 @@ test('late usage stays in its ledger day instead of consuming the current budget
   assert.equal((await f.request('GET', `/runs/${run.id}`)).body.budgetUsage.tokens, 4);
   assert.equal((await f.request('GET', `/usage?runId=${run.id}`)).body.totals.inputTokens, 103);
 });
+
+test('planner touches survive HTTP assignment results and serialize overlapping children', async t => {
+  const f = await fixture(t); const machine = await f.machine();
+  const planned = structuredClone(graph);
+  planned.nodes.find(node => node.id === 'builder').config.concurrency = 2;
+  planned.nodes.push({ id: 'planner', type: 'planner', label: 'Plan', position: { x: 0, y: 1 }, config: { harness: { provider: 'codex', model: 'test' }, prompt: 'Plan.' } });
+  planned.edges[0].to.node = 'planner';
+  planned.edges.push({ id: 'plan-build', kind: 'flow', from: { node: 'planner' }, to: { node: 'builder' } });
+  const wf = (await f.request('POST', `/projects/${f.project.id}/workflows`, { name: 'Scoped plan', graph: planned })).body;
+  await f.request('POST', `/workflows/${wf.id}/activate`, { version: 1 });
+  const run = await f.start({ items: [{ title: 'Plan two changes' }] }, wf.id);
+  const assignment = (await f.request('POST', '/nodes/lease', { kinds: ['assignment'], max: 1 }, machine.token)).body.assignments[0];
+  const items = [{ title: 'One', touches: ['src/shared.js'] }, { title: 'Two', touches: ['src/shared.js'] }];
+  await f.request('POST', `/assignments/${assignment.id}/events`, { attempt: assignment.attempt, type: 'completed', data: { outcome: 'success', summary: 'Shared scope.', items } }, machine.token);
+  const children = (await f.items(run)).filter(item => item.parentId);
+  assert.deepEqual(children.map(item => item.touches), items.map(item => item.touches));
+  assert.equal((await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments.filter(value => value.nodeId === 'builder').length, 1);
+});

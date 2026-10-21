@@ -69,22 +69,23 @@ DocRef       { id, title, path?: string, url?: string, kind: 'requirements'|'vis
 Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom'|'bugfix'|'docs'|'security-audit'|'dependency-upgrade', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
 Run          { id, projectId, workflowId, workflowVersion, status: 'running'|'paused'|'stopped'|'completed'|'failed', startedAt, stoppedAt?, completedAt?, keepOpen, source?: 'goals'|'schedule'|'manual', schedule?: string /* numeric UTC cron */,
                budget?: { maxTokensPerDay?, maxActiveItems?, maxItemsPerDay? }, intake?, budgetUsage? }
-WorkItem     { id, runId, title, body, nodeId, status: 'queued'|'active'|'blocked'|'done'|'failed', branch?, prUrl?, headSha?, iteration, parentId?, goalId?, plan?: { from, summary } }
+WorkItem     { id, runId, title, body, nodeId, status: 'queued'|'active'|'blocked'|'done'|'failed', branch?, prUrl?, headSha?, iteration, parentId?, goalId?, touches?: string[], plan?: { from, summary } }
 Assignment   { id, projectId, repo: { url, defaultBranch, localPath? } /* copied from the project when created */, runId? /* absent for project-scoped work such as the workflow architect */, workItemId?, nodeId, role, prompt, harness: Harness, policy: AgentPolicy,
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'succeeded'|'failed'|'cancelled',
-               machineId?, leaseExpiresAt?, attempt, result?: AssignmentResult }
+               machineId?, leaseExpiresAt?, attempt, step?: 'rebase', rebaseOf?: string /* rejected merge entry */, result?: AssignmentResult }
 Harness      { provider: string, model: string, options?: Record<string, string|boolean> }   // provider = T3 driver kind, e.g. 'claudeAgent', 'codex'
 AgentPolicy  { maxSubagents: number, allowedSubagentProviders: string[], maxTurns?: number, maxTokens?: number, canMessage: string[] }
 MachineRequirements { os?: 'darwin'|'linux'|'windows', labels?: string[], providers?: string[] }
 AssignmentResult { outcome: 'success'|'failure'|'blocked', summary, branch?, prUrl?, headSha?, threadRef?,
                    verdict?: 'pass'|'fail' /* review gates; a review without a verdict is an error, not a rejection */,
-                   items?: { title, body? }[] /* planner output; summary is retained as plan when keeping an item whole */, graph?, rationale?, templateId?, additionalWorkflows?: { name, graph, rationale, templateId? }[] /* workflow architect */ }
+                   rebaseTouchedBeyondConflicts?: boolean /* explicit false permits the default conflict-only review bypass */,
+                   items?: { title, body?, touches?: string[] }[] /* planner output; summary is retained as plan when keeping an item whole */, graph?, rationale?, templateId?, additionalWorkflows?: { name, graph, rationale, templateId? }[] /* workflow architect */ }
 Job          { id, projectId, runId?, workItemId?, repo, revision /* full commit sha */, steps: JobStep[],
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'passed'|'failed'|'cancelled'|'error',
                machineId?, leaseExpiresAt?, attempt, logRef?, artifacts: ArtifactRef[], configHash }
 JobStep      { name, run: string /* shell command */, timeoutSec? }
 MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queued'|'testing'|'merging'|'merged'|'rejected', jobId?, reason?,
-               mergedRevision?, deliveryError?, rejectionKind?: 'conflict'|'ci_failure'|'other' }
+               mergedRevision?, deliveryError?, rejectionKind?: 'conflict'|'ci'|'other' }
 // Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
                running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
@@ -109,11 +110,11 @@ GraphEdge     { id, from: { node, port? }, to: { node, port? }, kind: 'flow'|'de
 | Node type | Meaning | Key config |
 | --- | --- | --- |
 | `input` | Source of work: ideas, backlog, goals, docs | `source: 'manual'|'goals'|'schedule'|'issues'`, `schedule: numeric UTC cron`, `docs: DocRef ids` |
-| `planner` | Agent that turns input into work items | `harness`, `prompt`, `maxItems` |
+| `planner` | Agent that turns input into work items | `harness`, `prompt`, `maxItems`, `serializeOverlappingTouches: boolean` (default true) |
 | `agent` | Agent role that does a work item | `harness`, `prompt`, `concurrency`, `policy` |
 | `review` | Agent review gate; passes or returns work | `harness`, `prompt`, `rubric` |
 | `ci` | CI gate run on a user-owned machine at the exact head commit | `steps`, `requirements` |
-| `merge-queue` | Serialises merges into the base branch | `strategy: 'serial'|'batch'`, `requiredChecks`, `method: 'squash'|'merge'|'rebase'`, `publication: 'fast-forward-push'|'github-merge-queue'` |
+| `merge-queue` | Serialises merges into the base branch | `strategy: 'serial'|'batch'`, `requiredChecks`, `method: 'squash'|'merge'|'rebase'`, `publication: 'fast-forward-push'|'github-merge-queue'`, `onConflict: 'rebase'|'review'`, `rebaseReview: 'changed'|'always'|'never'` |
 | `loop` | Repeats its body until a condition or limit | `until: 'review-pass'|'ci-pass'|'manual'`, `maxIterations` |
 | `human` | Pauses for a person | `prompt` |
 | `output` | Terminal: work item finished | none |
@@ -158,11 +159,11 @@ Interaction events carry `from` and `to` node ids; an end that cannot be resolve
 
 ```ts
 NodeMetrics   { nodeId, queued, active, done, failed, concurrency, utilization /* active ÷ concurrency */,
-                waitSec: { avg, p90 }, serviceSec: { avg, p90 }, throughputPerHour, failureRate, tokens }
+                waitSec: { avg, p90 }, serviceSec: { avg, p90 }, throughputPerHour, failureRate, tokens, conflictRejections, rebases }
 EdgeMetrics   { edgeId, kind, count, unplanned }
 RunMetrics    { velocity: { itemsDonePerDay, trend: number[] }, cycleTimeSec: { avg, p90 }, wip,
-                tokensPerItem, activeAgents, machines: { machineId, activeAgents, nodes: string[] }[] }
-Bottleneck    { nodeId, reason: 'saturated'|'queue-growing'|'high-failure'|'waiting-on-human'|'no-capacity'|'rework-loop',
+                tokensPerItem, activeAgents, conflictRejections, rebases, machines: { machineId, activeAgents, nodes: string[] }[] }
+Bottleneck    { nodeId, reason: 'saturated'|'queue-growing'|'high-failure'|'waiting-on-human'|'no-capacity'|'rework-loop'|'conflict-churn',
                 evidence: string, severity: 'info'|'warning'|'critical' }
 ```
 
@@ -215,7 +216,11 @@ Manual batches are split to available capacity and retained until admitted. A fi
 
 Run detail and `/overview.runs` expose `intake` (including its pause reason) and `budgetUsage: {day, tokens, items}` separately from user pause state. `completedAt` records successful completion; `stoppedAt` records any terminal end, preserving the engine's timestamp when available. `/usage?groupBy=role` groups by assignment role, falling back to its node id; new usage retains that attribution through rollup or assignment deletion. Older usage without retained assignment evidence groups as `unknown`.
 
-Delivery forwards `merge.rejected.data.rejectionKind` as `conflict`, `ci_failure` or `other`. Until delivery emits a structured kind, the hub classifies its known conflict reason and failed speculative CI evidence, with infrastructure/publication errors as `other`. This checkout's engine accepts the field additively but still uses its existing fail route; conflict-specific review bypass is not implemented here.
+Delivery persists `MergeEntry.rejectionKind: 'conflict'|'ci'|'other'` from typed queue transitions. Preparation `MERGE_CONFLICT` is `conflict`; failed speculative checks or missing/stale evidence are `ci`; infrastructure/publication/withdrawal failures are `other`. The hub copies it to its merge entry and maps it to `merge.rejected.data.kind`. Historical/untyped causes remain `other`; reason text never activates recovery.
+
+Merge config defaults to `onConflict: 'rebase'` and `rebaseReview: 'changed'`. Explicit conflicts lease the most recent successful builder with `assignment.step: 'rebase'` and `rebaseOf` naming the rejected merge. The hub retains `rebaseTouchedBeyondConflicts?: boolean` in stored and engine results. Only explicit `false` skips repeated review under the default policy; true or missing evidence repeats it. Fresh CI still runs at the new head before another merge. Recovery movement events keep `step: 'rebase'`, `edgeId: null` and `unplanned: false`; these engine-owned moves are excluded from authored-edge traffic. Node and run metrics expose `conflictRejections` and `rebases`, summed across project runs; per-run `conflict-churn` findings remain tagged with `runId`.
+
+Planner `items[].touches?: string[]` survive hub result transport and remain engine-validated declarations, not actual edit enforcement. With `serializeOverlappingTouches` enabled, overlapping file/directory scopes serialize within a run until terminal delivery; absent/empty declarations preserve legacy concurrency. Cross-run edit coordination is not implied. Executor parser/output-format support for these result fields is a separate integration boundary, recorded precisely in [the hub handoff](../handoffs/factory-hub.md#executor-handoff).
 
 ### Node protocol
 

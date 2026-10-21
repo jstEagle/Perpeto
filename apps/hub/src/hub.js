@@ -439,7 +439,7 @@ export class Hub {
       if (effect.type === 'event') {
         const subject = effect.value.subject ?? { kind: 'assignment', id: effect.value.assignmentId ?? run.id };
         const context = { id: subject.id, runId: run.id, projectId: run.projectId, nodeId: effect.value.data?.nodeId };
-        if (this.observation.isInteraction(effect.value.type)) this.observation.interaction(effect.value.type, context, effect.value.data ?? {}, subject.kind);
+        if (this.observation.isInteraction(effect.value.type)) this.observation.interaction(effect.value.type, context, effect.value.data ?? {}, subject.kind, true);
         else this.emit(nonblank(effect.value.type, 'engine event type', 200), subject.kind, context, object(effect.value.data ?? {}, 'engine event data'));
         continue;
       }
@@ -871,6 +871,7 @@ export class Hub {
             value.result = { outcome: data.outcome, summary: data.summary };
             for (const key of ['branch', 'prUrl', 'headSha', 'threadRef']) if (data[key] !== undefined) value.result[key] = nonblank(data[key], key, 4096);
             if (data.verdict !== undefined) { requireValue(['pass', 'fail'].includes(data.verdict), 'verdict must be pass or fail.'); value.result.verdict = data.verdict; }
+            if (data.rebaseTouchedBeyondConflicts !== undefined) value.result.rebaseTouchedBeyondConflicts = data.rebaseTouchedBeyondConflicts;
             if (data.items !== undefined) { requireValue(Array.isArray(data.items) && data.items.length <= 1000, 'items must be an array.'); value.result.items = data.items; }
             value.status = data.outcome === 'success' ? 'succeeded' : 'failed';
             if (value.architectRequestId) { value.result.graph = data.graph; value.result.rationale = data.rationale; value.result.templateId = data.templateId; value.result.additionalWorkflows = data.additionalWorkflows; }

@@ -135,7 +135,8 @@ function engineResult(data, node) {
   const result = { outcome: data.outcome, summary };
   for (const key of ['branch', 'prUrl', 'threadRef']) if (typeof data[key] === 'string') result[key] = data[key];
   if (typeof data.headSha === 'string') result.headSha = data.headSha.toLowerCase();
-  if (Array.isArray(data.items)) result.items = data.items.map(item => ({ title: item?.title, ...(item?.body !== undefined ? { body: item.body } : {}) }));
+  if (Array.isArray(data.items)) result.items = data.items.map(item => ({ title: item?.title, ...(item?.body !== undefined ? { body: item.body } : {}), ...(item?.touches !== undefined ? { touches: item.touches } : {}) }));
+  if (data.rebaseTouchedBeyondConflicts !== undefined) result.rebaseTouchedBeyondConflicts = data.rebaseTouchedBeyondConflicts;
   if (node?.type !== 'review') return result;
   if (data.verdict === 'pass' || data.verdict === 'fail') return { ...result, verdict: data.verdict };
   if (data.outcome !== 'success') return result;
@@ -171,7 +172,7 @@ function hubEvent(event, nodeOf) {
   if (type === 'merge.finished') {
     return data.status === 'merged'
       ? { id: `merge:${event.mergeEntryId}`, type: 'merge.completed', data: { mergeId: event.mergeEntryId, ...(data.mergedRevision ? { mergedSha: data.mergedRevision } : {}) } }
-      : { id: `merge:${event.mergeEntryId}`, type: 'merge.rejected', data: { mergeId: event.mergeEntryId, reason: data.reason || 'Merge queue rejected the entry.', rejectionKind: data.rejectionKind ?? 'other' } };
+      : { id: `merge:${event.mergeEntryId}`, type: 'merge.rejected', data: { mergeId: event.mergeEntryId, reason: data.reason || 'Merge queue rejected the entry.', kind: data.rejectionKind ?? 'other' } };
   }
   if (type === 'lease.expired') {
     // The machine stopped renewing (crash, network loss). Report it as a failed attempt so the engine's retry policy decides.
@@ -218,7 +219,7 @@ function aggregate(results) {
       waitSec: stat(parts, part => part.waitSec, part => finished(part) + part.active), serviceSec: stat(parts, part => part.serviceSec, finished),
       throughputPerHour: Math.round(sum(parts, 'throughputPerHour') * 100) / 100,
       failureRate: done + failed + sum(parts, 'errors') ? Math.round((failed + sum(parts, 'errors')) / (done + failed + sum(parts, 'errors')) * 100) / 100 : null,
-      tokens: sum(parts, 'tokens'), errors: sum(parts, 'errors'), retries: sum(parts, 'retries'), escalations: sum(parts, 'escalations') };
+      tokens: sum(parts, 'tokens'), errors: sum(parts, 'errors'), retries: sum(parts, 'retries'), escalations: sum(parts, 'escalations'), conflictRejections: sum(parts, 'conflictRejections'), rebases: sum(parts, 'rebases') };
   });
   const edges = new Map();
   for (const { edges: list } of results) for (const edge of list) {
@@ -238,7 +239,7 @@ function aggregate(results) {
       cycleTimeSec: stat(runs, run => run.cycleTimeSec, run => run.velocity.trend.reduce((a, b) => a + b, 0)),
       wip: sum(runs, 'wip'), tokensPerItem: totalDone ? Math.round(tokens / totalDone) : null,
       activeAgents: sum(runs, 'activeAgents'), machines: [],
-      retries: sum(runs, 'retries'), escalations: sum(runs, 'escalations'), waitingOnHuman: sum(runs, 'waitingOnHuman'),
+      retries: sum(runs, 'retries'), escalations: sum(runs, 'escalations'), waitingOnHuman: sum(runs, 'waitingOnHuman'), conflictRejections: sum(runs, 'conflictRejections'), rebases: sum(runs, 'rebases'),
     },
     bottlenecks: results.flatMap(result => result.bottlenecks.map(bottleneck => ({ ...bottleneck, runId: result.runId }))),
     runs: results.map(result => result.runId),
