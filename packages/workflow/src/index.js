@@ -11,3 +11,4 @@ export {
   describeGraphSchema, buildArchitectPrompt, parseArchitectResult, evaluateArchitectResult,
 } from './architect.js';
 export { METRIC_WINDOWS, BOTTLENECK_RULES, computeRunMetrics } from './metrics.js';
+export { listTemplates, getTemplate } from './templates.js';

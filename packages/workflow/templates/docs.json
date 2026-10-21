@@ -1,0 +1,204 @@
+{
+  "schema": "perpeto.workflow/1",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "input",
+      "label": "Input",
+      "position": {
+        "x": 0,
+        "y": 160
+      },
+      "config": {
+        "source": "manual"
+      }
+    },
+    {
+      "id": "delivery-loop",
+      "type": "loop",
+      "label": "Delivery loop",
+      "position": {
+        "x": 200,
+        "y": 160
+      },
+      "config": {
+        "until": "review-pass",
+        "maxIterations": 3,
+        "onExhausted": "triage"
+      }
+    },
+    {
+      "id": "doc-writer",
+      "type": "agent",
+      "label": "Doc writer",
+      "position": {
+        "x": 400,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "claudeAgent",
+          "model": "claude-sonnet-5-5"
+        },
+        "prompt": "Write the requested docs against the actual repository. Check links, examples and terminology. Publish the work branch and report the delivery reference and full head SHA.",
+        "concurrency": 2,
+        "policy": {
+          "maxSubagents": 0
+        },
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 30
+        },
+        "onExhausted": "triage"
+      }
+    },
+    {
+      "id": "doc-reviewer",
+      "type": "review",
+      "label": "Doc reviewer",
+      "position": {
+        "x": 600,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "codex",
+          "model": "gpt-6-astra"
+        },
+        "prompt": "Verify accuracy, links, examples and rendered layout when available. Return pass or fail with evidence; do not approve unverified product claims.",
+        "concurrency": 1,
+        "policy": {
+          "maxSubagents": 0
+        },
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 30
+        },
+        "onExhausted": "triage"
+      }
+    },
+    {
+      "id": "merge",
+      "type": "merge-queue",
+      "label": "Merge",
+      "position": {
+        "x": 800,
+        "y": 160
+      },
+      "config": {
+        "strategy": "serial",
+        "method": "squash",
+        "requiredChecks": []
+      }
+    },
+    {
+      "id": "done",
+      "type": "output",
+      "label": "Done",
+      "position": {
+        "x": 1000,
+        "y": 160
+      },
+      "config": {}
+    },
+    {
+      "id": "triage",
+      "type": "human",
+      "label": "Triage",
+      "position": {
+        "x": 1200,
+        "y": 160
+      },
+      "config": {
+        "prompt": "Review the evidence and scope. Pass with guidance to retry; fail to stop this item."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "input-next",
+      "kind": "flow",
+      "from": {
+        "node": "input"
+      },
+      "to": {
+        "node": "delivery-loop"
+      }
+    },
+    {
+      "id": "delivery-loop-next",
+      "kind": "flow",
+      "from": {
+        "node": "delivery-loop"
+      },
+      "to": {
+        "node": "doc-writer"
+      }
+    },
+    {
+      "id": "doc-writer-next",
+      "kind": "flow",
+      "from": {
+        "node": "doc-writer"
+      },
+      "to": {
+        "node": "doc-reviewer"
+      }
+    },
+    {
+      "id": "doc-reviewer-pass",
+      "kind": "flow",
+      "from": {
+        "node": "doc-reviewer",
+        "port": "pass"
+      },
+      "to": {
+        "node": "merge"
+      }
+    },
+    {
+      "id": "doc-reviewer-fail",
+      "kind": "flow",
+      "from": {
+        "node": "doc-reviewer",
+        "port": "fail"
+      },
+      "to": {
+        "node": "delivery-loop"
+      }
+    },
+    {
+      "id": "merge-pass",
+      "kind": "flow",
+      "from": {
+        "node": "merge",
+        "port": "pass"
+      },
+      "to": {
+        "node": "done"
+      }
+    },
+    {
+      "id": "merge-fail",
+      "kind": "flow",
+      "from": {
+        "node": "merge",
+        "port": "fail"
+      },
+      "to": {
+        "node": "delivery-loop"
+      }
+    },
+    {
+      "id": "triage-pass",
+      "kind": "flow",
+      "from": {
+        "node": "triage",
+        "port": "pass"
+      },
+      "to": {
+        "node": "delivery-loop"
+      }
+    }
+  ]
+}

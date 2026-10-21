@@ -1,0 +1,291 @@
+{
+  "schema": "perpeto.workflow/1",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "input",
+      "label": "Input",
+      "position": {
+        "x": 0,
+        "y": 160
+      },
+      "config": {
+        "source": "manual"
+      }
+    },
+    {
+      "id": "dependency-planner",
+      "type": "planner",
+      "label": "Dependency planner",
+      "position": {
+        "x": 200,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "claudeAgent",
+          "model": "claude-sonnet-5-5"
+        },
+        "prompt": "Inspect dependency manifests, lockfiles and migration notes. Propose small compatible upgrade groups with risk and acceptance checks; avoid unrelated upgrades.",
+        "concurrency": 1,
+        "policy": {
+          "maxSubagents": 0
+        },
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 30
+        },
+        "maxItems": 3
+      }
+    },
+    {
+      "id": "delivery-loop",
+      "type": "loop",
+      "label": "Delivery loop",
+      "position": {
+        "x": 400,
+        "y": 160
+      },
+      "config": {
+        "until": "ci-pass",
+        "maxIterations": 3,
+        "onExhausted": "triage"
+      }
+    },
+    {
+      "id": "upgrader",
+      "type": "agent",
+      "label": "Upgrader",
+      "position": {
+        "x": 600,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "codex",
+          "model": "gpt-6-astra"
+        },
+        "prompt": "Upgrade the scoped dependencies and lockfiles, apply required migrations, and verify tests. Publish the branch and report delivery reference and full head SHA. Address feedback first.",
+        "concurrency": 2,
+        "policy": {
+          "maxSubagents": 0
+        },
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 30
+        },
+        "onExhausted": "triage"
+      }
+    },
+    {
+      "id": "reviewer",
+      "type": "review",
+      "label": "Reviewer",
+      "position": {
+        "x": 800,
+        "y": 160
+      },
+      "config": {
+        "harness": {
+          "provider": "claudeAgent",
+          "model": "claude-sonnet-5-5"
+        },
+        "prompt": "Review dependency provenance, compatibility, lockfile consistency and migration/test evidence. Report verdict pass or fail.",
+        "concurrency": 1,
+        "policy": {
+          "maxSubagents": 0
+        },
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 30
+        },
+        "onExhausted": "triage"
+      }
+    },
+    {
+      "id": "ci",
+      "type": "ci",
+      "label": "Ci",
+      "position": {
+        "x": 1000,
+        "y": 160
+      },
+      "config": {
+        "steps": [
+          {
+            "name": "install",
+            "run": "npm ci",
+            "timeoutSec": 900
+          },
+          {
+            "name": "test",
+            "run": "npm test",
+            "timeoutSec": 900
+          }
+        ],
+        "retry": {
+          "maxAttempts": 2,
+          "backoffSec": 30
+        },
+        "onExhausted": "triage"
+      }
+    },
+    {
+      "id": "merge",
+      "type": "merge-queue",
+      "label": "Merge",
+      "position": {
+        "x": 1200,
+        "y": 160
+      },
+      "config": {
+        "strategy": "serial",
+        "method": "squash",
+        "requiredChecks": [
+          "test"
+        ]
+      }
+    },
+    {
+      "id": "done",
+      "type": "output",
+      "label": "Done",
+      "position": {
+        "x": 1400,
+        "y": 160
+      },
+      "config": {}
+    },
+    {
+      "id": "triage",
+      "type": "human",
+      "label": "Triage",
+      "position": {
+        "x": 1600,
+        "y": 160
+      },
+      "config": {
+        "prompt": "Review the evidence and scope. Pass with guidance to retry; fail to stop this item."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "input-next",
+      "kind": "flow",
+      "from": {
+        "node": "input"
+      },
+      "to": {
+        "node": "dependency-planner"
+      }
+    },
+    {
+      "id": "dependency-planner-next",
+      "kind": "flow",
+      "from": {
+        "node": "dependency-planner"
+      },
+      "to": {
+        "node": "delivery-loop"
+      }
+    },
+    {
+      "id": "delivery-loop-next",
+      "kind": "flow",
+      "from": {
+        "node": "delivery-loop"
+      },
+      "to": {
+        "node": "upgrader"
+      }
+    },
+    {
+      "id": "upgrader-next",
+      "kind": "flow",
+      "from": {
+        "node": "upgrader"
+      },
+      "to": {
+        "node": "reviewer"
+      }
+    },
+    {
+      "id": "reviewer-pass",
+      "kind": "flow",
+      "from": {
+        "node": "reviewer",
+        "port": "pass"
+      },
+      "to": {
+        "node": "ci"
+      }
+    },
+    {
+      "id": "reviewer-fail",
+      "kind": "flow",
+      "from": {
+        "node": "reviewer",
+        "port": "fail"
+      },
+      "to": {
+        "node": "delivery-loop"
+      }
+    },
+    {
+      "id": "ci-pass",
+      "kind": "flow",
+      "from": {
+        "node": "ci",
+        "port": "pass"
+      },
+      "to": {
+        "node": "merge"
+      }
+    },
+    {
+      "id": "ci-fail",
+      "kind": "flow",
+      "from": {
+        "node": "ci",
+        "port": "fail"
+      },
+      "to": {
+        "node": "delivery-loop"
+      }
+    },
+    {
+      "id": "merge-pass",
+      "kind": "flow",
+      "from": {
+        "node": "merge",
+        "port": "pass"
+      },
+      "to": {
+        "node": "done"
+      }
+    },
+    {
+      "id": "merge-fail",
+      "kind": "flow",
+      "from": {
+        "node": "merge",
+        "port": "fail"
+      },
+      "to": {
+        "node": "delivery-loop"
+      }
+    },
+    {
+      "id": "triage-pass",
+      "kind": "flow",
+      "from": {
+        "node": "triage",
+        "port": "pass"
+      },
+      "to": {
+        "node": "delivery-loop"
+      }
+    }
+  ]
+}

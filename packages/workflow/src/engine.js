@@ -1,10 +1,11 @@
+import { scheduleMatches, validSchedule } from './schedule.js';
 import { compileGraph } from './graph.js';
 import { canonicalJson, fail, isIsoTimestamp, isPlainObject, isText, sha256 } from './util.js';
 
 export const STATE_VERSION = 1;
 export const EVENT_TYPES = Object.freeze([
   'run.started', 'input.added', 'assignment.completed', 'job.completed', 'merge.completed', 'merge.rejected',
-  'human.decision', 'run.paused', 'run.resumed', 'run.stopped',
+  'human.decision', 'run.paused', 'run.resumed', 'run.stopped', 'input.tick', 'usage.recorded',
 ]);
 /** A work item that crosses more flow edges than this fails, as a backstop against unbounded routing. */
 export const MAX_ITEM_HOPS = 1000;
@@ -95,7 +96,7 @@ function settled(ctx) {
 function context(state, at, inPlace) {
   return {
     base: state, inPlace, s: state && (inPlace ? state : { ...state, counters: { ...state.counters } }),
-    effects: [], at, ignored: null, index: state ? indexFor(state, inPlace) : emptyIndex(),
+    effects: [], at, ignored: null, refill: false, index: state ? indexFor(state, inPlace) : emptyIndex(),
     touched: Object.fromEntries(ENTITY_KEYS.map(key => [key, new Set()])),
   };
 }
@@ -161,8 +162,37 @@ export function replay(events) {
 const HANDLERS = {
   'input.added'(ctx, data) {
     requireActive(ctx);
-    if (!Array.isArray(data.items) || data.items.length < 1) fail('INVALID_EVENT', 'input.added needs a nonempty items array.');
-    addInputs(ctx, data.items);
+    if (!Array.isArray(data.items)) fail('INVALID_EVENT', 'input.added needs an items array.');
+    let items = data.items;
+    let request;
+    if (data.requestId !== undefined) {
+      request = Object.values(ctx.s.intake?.requests ?? {}).find(r => r.requestId === data.requestId);
+      if (!request) fail('STALE_INPUT_REQUEST', 'No outstanding input request has this requestId.');
+      if (items.some(item => !isPlainObject(item) || (item.nodeId !== undefined && item.nodeId !== request.nodeId))) {
+        fail('INVALID_EVENT', 'Requested inputs must target the requested input node.');
+      }
+      items = items.map(item => ({ ...item, nodeId: request.nodeId }));
+    } else if (!items.length) fail('INVALID_EVENT', 'input.added needs a nonempty items array without requestId.');
+    if (items.length && !addInputs(ctx, items)) return;
+    if (request) delete intake(ctx).requests[request.nodeId];
+    // Empty source responses wait for the next tick, never spin in the outbox.
+  },
+
+  'input.tick'(ctx) {
+    if (ctx.s.status !== 'running') return ignore(ctx, 'run_not_running');
+    ctx.refill = true;
+    refreshBudget(ctx);
+  },
+
+  'usage.recorded'(ctx, data) {
+    for (const key of ['inputTokens', 'outputTokens']) {
+      if (!Number.isSafeInteger(data[key]) || data[key] < 0) fail('INVALID_EVENT', `${key} must be a nonnegative safe integer.`);
+    }
+    const usage = budgetUsage(ctx);
+    const total = usage.tokens + data.inputTokens + data.outputTokens;
+    if (!Number.isSafeInteger(total)) fail('INVALID_EVENT', 'Daily token total exceeds the safe integer range.');
+    usage.tokens = total;
+    refreshBudget(ctx);
   },
 
   'assignment.completed'(ctx, { assignmentId, result }) {
@@ -177,6 +207,7 @@ const HANDLERS = {
     assignment.status = result.outcome === 'success' ? 'succeeded' : 'failed';
     assignment.result = structuredClone(result);
     assignment.completedAt = assignment.updatedAt = ctx.at;
+    ctx.refill = true;
     assignmentState(ctx, assignment, { outcome: result.outcome, ...(result.verdict ? { verdict: result.verdict } : {}) });
 
     const item = edit(ctx, 'workItems', assignment.workItemId);
@@ -204,7 +235,13 @@ const HANDLERS = {
       for (const key of ['branch', 'prUrl', 'headSha']) if (result[key] !== undefined) item[key] = result[key];
     }
     closeVisit(ctx, item, 'pass');
-    if (node.type === 'planner') return planned(ctx, item, node, result.items ?? [], result.summary);
+    if (node.type === 'planner') {
+      if (node.config.emptyResult === 'complete' && Array.isArray(result.items) && !result.items.length) {
+        ctx.refill = false;
+        return finish(ctx, item, 'done');
+      }
+      return planned(ctx, item, node, result.items ?? [], result.summary);
+    }
     delete item.feedback;
     move(ctx, item, node.id, 'next');
   },
@@ -245,6 +282,7 @@ const HANDLERS = {
     if (mergedSha !== undefined && !SHA.test(mergedSha)) fail('INVALID_EVENT', 'mergedSha must be a full commit SHA.');
     if (!open) return;
     const entry = edit(ctx, 'merges', mergeId);
+    ctx.refill = true;
     entry.status = 'merged';
     if (mergedSha) entry.mergedSha = mergedSha;
     entry.completedAt = entry.updatedAt = ctx.at;
@@ -321,6 +359,7 @@ const HANDLERS = {
     if (ctx.s.status === 'running') return ignore(ctx, 'already_running');
     if (ctx.s.status !== 'paused') fail('INVALID_TRANSITION', `Cannot resume a ${ctx.s.status} run.`);
     ctx.s.status = 'running';
+    ctx.refill = true;
     emit(ctx, 'run.resumed', null, {});
   },
 
@@ -365,12 +404,24 @@ const HANDLERS = {
 };
 
 function start(ctx, data) {
-  const { runId, projectId, workflowId, workflowVersion, graph, repo, inputs, keepOpen } = data;
+  const { runId, projectId, workflowId, workflowVersion, graph, repo, inputs, keepOpen, budget, source, schedule } = data;
   if (typeof runId !== 'string' || !RUN_ID.test(runId)) fail('INVALID_EVENT', 'runId must look like run_<suffix>.');
   if (!isText(projectId, 200) || !isText(workflowId, 200)) fail('INVALID_EVENT', 'run.started needs projectId and workflowId.');
   if (!Number.isSafeInteger(workflowVersion) || workflowVersion < 1) fail('INVALID_EVENT', 'workflowVersion must be a positive integer.');
   if (keepOpen !== undefined && typeof keepOpen !== 'boolean') fail('INVALID_EVENT', 'keepOpen must be a boolean.');
+  if (budget !== undefined && (!isPlainObject(budget) || Object.entries(budget).some(([key, value]) =>
+    !['maxTokensPerDay', 'maxActiveItems', 'maxItemsPerDay'].includes(key) || !Number.isSafeInteger(value) || value < 1))) {
+    fail('INVALID_EVENT', 'budget needs positive integer maxTokensPerDay, maxActiveItems and/or maxItemsPerDay.');
+  }
+  if (source !== undefined && !['manual', 'goals', 'schedule'].includes(source)) fail('INVALID_EVENT', 'source must be manual, goals or schedule.');
+  if (schedule !== undefined && !validSchedule(schedule)) fail('INVALID_EVENT', 'schedule must be a five-field UTC cron expression.');
   const plan = compileGraph(graph);
+  for (const id of plan.inputs) {
+    const config = plan.nodes[id].config;
+    if ((source ?? config.source) === 'schedule' && !validSchedule(schedule ?? config.schedule)) {
+      fail('INVALID_EVENT', 'Scheduled intake needs a five-field UTC cron schedule.');
+    }
+  }
   const needsRepo = Object.values(plan.nodes).some(node => node.type === 'ci' || node.type === 'merge-queue');
   if (repo !== undefined || needsRepo) {
     if (!isPlainObject(repo) || !isText(repo.defaultBranch, 255) || !(isText(repo.url, 2000) || isText(repo.localPath, 4096))) {
@@ -381,10 +432,15 @@ function start(ctx, data) {
     version: STATE_VERSION, runId, projectId, workflowId, workflowVersion,
     ...(repo ? { repo: { ...(repo.url ? { url: repo.url } : {}), defaultBranch: repo.defaultBranch, ...(repo.localPath ? { localPath: repo.localPath } : {}) } } : {}),
     keepOpen: keepOpen ?? false,
+    ...(source ? { source } : {}), ...(schedule ? { schedule } : {}),
+    ...(budget ? { budget: structuredClone(budget) } : {}),
+    intake: { paused: false, requests: {}, lastTicks: {} },
+    budgetUsage: { day: ctx.at.slice(0, 10), tokens: 0, items: 0 },
     status: 'running', startedAt: ctx.at, updatedAt: ctx.at, plan,
     counters: { workItem: 0, assignment: 0, job: 0, merge: 0, queue: 0, decision: 0 },
     workItems: {}, assignments: {}, jobs: {}, merges: {},
   };
+  ctx.refill = true;
   emit(ctx, 'run.started', null, { workflowId, workflowVersion, graphHash: plan.graphHash });
   if (inputs !== undefined) {
     if (!Array.isArray(inputs)) fail('INVALID_EVENT', 'inputs must be an array.');
@@ -396,8 +452,11 @@ function settle(ctx) {
   const { s } = ctx;
   s.updatedAt = ctx.at;
   if (s.status !== 'running') return;
+  drainPlans(ctx);
   dispatch(ctx);
   refreshIndex(ctx);
+  if (s.budget) refreshBudget(ctx);
+  if (ctx.refill) requestInputs(ctx);
   if (!s.keepOpen && s.counters.workItem > 0 && ctx.index.unfinished.size === 0) {
     const roots = Object.values(s.workItems).filter(item => !item.parentId);
     const failed = roots.filter(item => item.status === 'failed').length;
@@ -456,14 +515,17 @@ function addInputs(ctx, items) {
     if (plan.inputs.length !== 1) fail('AMBIGUOUS_INPUT', 'Workflow has several input nodes; give each item a nodeId.');
     return plan.inputs[0];
   });
+  if (!allowIntake(ctx, items.length)) return false;
   items.forEach((input, index) => {
     const item = createItem(ctx, { title: input.title, body: input.body ?? '', nodeId: resolved[index] });
     move(ctx, item, resolved[index], 'next');
   });
+  return true;
 }
 
 function createItem(ctx, { title, body, nodeId, parentId }) {
   const { s, at } = ctx;
+  budgetUsage(ctx).items += 1;
   const item = {
     id: nextId(ctx, 'workItem', 'wi'), runId: s.runId, title, body, nodeId, status: 'queued', iteration: 0, attempt: 1,
     ...(parentId ? { parentId } : {}), createdAt: at, updatedAt: at, enteredAt: at, hops: 0, loopCounts: {}, visits: [],
@@ -553,7 +615,7 @@ function finish(ctx, item, status, failure) {
   const current = item.parentId && ctx.s.workItems[item.parentId];
   if (!current || TERMINAL_ITEM.has(current.status)) return;
   const children = current.childIds.map(id => ctx.s.workItems[id]);
-  if (!children.every(child => TERMINAL_ITEM.has(child.status))) return;
+  if (current.pendingPlan?.length || !children.every(child => TERMINAL_ITEM.has(child.status))) return;
   const failed = children.filter(child => child.status === 'failed').length;
   const parent = edit(ctx, 'workItems', current.id);
   if (failed) failItem(ctx, parent, 'children_failed', `${failed} of ${children.length} planned items failed.`);
@@ -664,9 +726,104 @@ function planned(ctx, item, node, items, summary) {
   }
   item.status = 'active';
   item.waiting = { kind: 'children' };
-  const children = kept.map(child => createItem(ctx, { title: child.title, body: child.body ?? '', nodeId: node.id, parentId: item.id }));
-  item.childIds = children.map(child => child.id);
-  for (const child of children) move(ctx, child, node.id, 'next');
+  item.childIds = [];
+  item.pendingPlan = structuredClone(kept);
+}
+
+/** Copy core subobjects before writing; pure steps must preserve the previous state. */
+function intake(ctx) {
+  if (!ctx.s.intake) ctx.s.intake = { paused: false, requests: {}, lastTicks: {} };
+  else if (!ctx.inPlace && ctx.s.intake === ctx.base?.intake) ctx.s.intake = structuredClone(ctx.s.intake);
+  return ctx.s.intake;
+}
+function budgetUsage(ctx) {
+  const day = ctx.at.slice(0, 10);
+  if (!ctx.s.budgetUsage || day > ctx.s.budgetUsage.day) ctx.s.budgetUsage = { day, tokens: 0, items: 0 };
+  else if (!ctx.inPlace && ctx.s.budgetUsage === ctx.base?.budgetUsage) ctx.s.budgetUsage = { ...ctx.s.budgetUsage };
+  return ctx.s.budgetUsage;
+}
+function activeItems(ctx) {
+  refreshIndex(ctx);
+  let count = 0;
+  for (const id of ctx.index.unfinished) if (ctx.s.workItems[id].waiting?.kind !== 'children') count++;
+  return count;
+}
+function budgetBlock(ctx, count = 1) {
+  if (!ctx.s.budget || !Object.keys(ctx.s.budget).length) return null;
+  const budget = ctx.s.budget, usage = budgetUsage(ctx);
+  for (const [limit, used, extra] of [
+    ['maxTokensPerDay', usage.tokens, 0],
+    ['maxActiveItems', activeItems(ctx), count],
+    ['maxItemsPerDay', usage.items, count],
+  ]) {
+    if (budget[limit] !== undefined && (limit === 'maxTokensPerDay' ? used >= budget[limit] : used + extra > budget[limit])) {
+      return { limit, used, maximum: budget[limit], requested: count, day: usage.day };
+    }
+  }
+  return null;
+}
+function allowIntake(ctx, count = 1) {
+  const blocked = budgetBlock(ctx, count), state = intake(ctx);
+  if (blocked) {
+    if (!state.paused || state.reason?.limit !== blocked.limit || state.reason?.day !== blocked.day) {
+      emit(ctx, 'budget.exhausted', null, { ...blocked, summary: `Intake paused: ${blocked.limit} (${blocked.used}/${blocked.maximum}). Active work may finish.` });
+    }
+    state.paused = true;
+    state.reason = blocked;
+    return false;
+  }
+  if (state.paused) emit(ctx, 'budget.available', null, { previousLimit: state.reason.limit });
+  state.paused = false;
+  delete state.reason;
+  return true;
+}
+function refreshBudget(ctx) { allowIntake(ctx); }
+
+function drainPlans(ctx) {
+  refreshIndex(ctx);
+  for (const id of [...ctx.index.unfinished]) {
+    const current = ctx.s.workItems[id];
+    if (!current.pendingPlan?.length) continue;
+    const parent = edit(ctx, 'workItems', id);
+    while (parent.pendingPlan.length && allowIntake(ctx)) {
+      const child = parent.pendingPlan.shift();
+      const item = createItem(ctx, { ...child, body: child.body ?? '', nodeId: parent.nodeId, parentId: id });
+      parent.childIds.push(item.id);
+      move(ctx, item, parent.nodeId, 'next');
+    }
+    if (!parent.pendingPlan.length) {
+      delete parent.pendingPlan;
+      // Children can finish synchronously, for example at an output node.
+      const children = parent.childIds.map(childId => ctx.s.workItems[childId]);
+      if (children.every(child => TERMINAL_ITEM.has(child.status))) {
+        if (children.some(child => child.status === 'failed')) failItem(ctx, parent, 'children_failed', 'Planned items failed.');
+        else finish(ctx, parent, 'done');
+      }
+    }
+  }
+}
+function requestInputs(ctx) {
+  const { s } = ctx;
+  if (!s.keepOpen || s.status !== 'running') return;
+  const state = intake(ctx);
+  for (const nodeId of s.plan.inputs) {
+    const config = s.plan.nodes[nodeId].config;
+    const source = s.source ?? config.source;
+    if (!['goals', 'schedule'].includes(source) || state.requests[nodeId]) continue;
+    if (source === 'goals' && ctx.index.unfinished.size) continue;
+    if (source === 'schedule') {
+      const minute = ctx.at.slice(0, 16);
+      if (state.lastTicks[nodeId] >= minute || !scheduleMatches(s.schedule ?? config.schedule, ctx.at)) continue;
+      state.lastTicks[nodeId] = minute;
+    }
+    if (!allowIntake(ctx)) continue;
+    const usage = budgetUsage(ctx), budget = s.budget ?? {};
+    const limit = Math.min(MAX_INPUTS, (budget.maxActiveItems ?? Infinity) - activeItems(ctx), (budget.maxItemsPerDay ?? Infinity) - usage.items);
+    const request = { requestId: nextId(ctx, 'inputRequest', 'ir'), nodeId, source, docs: config.docs ?? [], limit };
+    state.requests[nodeId] = request;
+    emit(ctx, 'input.requested', null, request);
+    ctx.effects.push({ type: 'request-input', ...structuredClone(request) });
+  }
 }
 
 function dispatch(ctx) {
@@ -761,7 +918,9 @@ function buildPrompt(s, item, node, role) {
   }
   if (node.type === 'planner') {
     parts.push(`Split the work item into at most ${node.config.maxItems} items, each small enough for one pull request, with a title and a body that states its contract and acceptance criteria. ` +
-      'If it is already that small, keep it whole: return no items and put its contract and acceptance criteria in your summary. The builder and reviewer receive that summary.');
+      (node.config.emptyResult === 'complete'
+        ? 'An explicit empty items array completes this pass without sending work downstream. Return items: [] when no justified work remains; otherwise include every proposed item explicitly, even a single item.'
+        : 'If it is already that small, keep it whole: return no items and put its contract and acceptance criteria in your summary. The builder and reviewer receive that summary.'));
   }
   if (node.type === 'review') {
     parts.push('Give verdict "pass" if the work passes review, or verdict "fail" with actionable feedback in the summary. If you could not complete the review, give no verdict.');

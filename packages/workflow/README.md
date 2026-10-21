@@ -1,6 +1,6 @@
 # Workflow engine
 
-Workflow graphs, their validation and compilation, the deterministic run engine, a SQLite run store, graph diffs, workflow-architect support and run metrics. It implements the workflow parts of [the architecture contract](../../docs/architecture/README.md). It never calls a harness or the network. The only I/O is the store's SQLite file and reading the bundled build template for architect prompts.
+Workflow graphs, their validation and compilation, the deterministic run engine, a SQLite run store, graph diffs, workflow-architect support and run metrics. It implements the workflow parts of [the architecture contract](../../docs/architecture/README.md). It never calls a harness or the network. The only I/O is the store's SQLite file and reading bundled templates for clients and architect prompts.
 
 Requires Node 24. No dependencies or environment variables.
 
@@ -76,8 +76,10 @@ Events are `{ id, type, at, data }`:
 
 | Type | Data |
 | --- | --- |
-| `run.started` | `{ runId, projectId, workflowId, workflowVersion, graph, repo?: { url or localPath, defaultBranch }, inputs?: [{ title, body?, nodeId? }], keepOpen? }`. `repo` is required when the graph has CI or a merge queue |
-| `input.added` | `{ items: [{ title, body?, nodeId? }] }`. `nodeId` is needed when there are several input nodes |
+| `run.started` | `{ runId, projectId, workflowId, workflowVersion, graph, repo?: { url or localPath, defaultBranch }, inputs?: [{ title, body?, nodeId? }], keepOpen?, source?: 'manual' or 'goals' or 'schedule', schedule?: string, budget?: { maxTokensPerDay?, maxActiveItems?, maxItemsPerDay? } }`. `repo` is required when the graph has CI or a merge queue |
+| `input.added` | `{ items: [{ title, body?, nodeId? }], requestId? }`. `nodeId` is needed when there are several input nodes |
+| `input.tick` | `{}`; the hub drives UTC minute ticks, including day rollover |
+| `usage.recorded` | `{ inputTokens, outputTokens }` nonnegative integer deltas, deduplicated by event id |
 | `assignment.completed` | `{ assignmentId, result: AssignmentResult }` |
 | `job.completed` | `{ jobId, status: 'passed', 'failed', 'error' or 'cancelled', summary?, logRef? }` |
 | `merge.completed` / `merge.rejected` | `{ mergeId, mergedSha? }` / `{ mergeId, reason }` |
@@ -90,6 +92,24 @@ Assignment results are interpreted by the role that produced them:
 - **Review:** `verdict` decides the gate: `pass` passes and `fail` returns the work, with the summary as feedback in the next agent prompt. A legacy result with `outcome: 'success'` and no verdict passes, and `gate.result` carries `legacyVerdict: true`. `outcome: 'failure'` without a verdict is an error, never a rejection.
 - **Planner:** `success` may include `items: [{ title, body? }]`, truncated to `maxItems`. Each item becomes a child work item at the planner's next node. The parent stays `active` until every child finishes, then becomes `done`, or `failed` if any child failed. With no items, the original item continues as the work item, and a nonblank `summary` becomes its `plan` (`{ from, summary }`, at most 8,000 characters): the contract and acceptance criteria every later role receives.
 - **Any role:** `failure` from a planner or agent is an error. `blocked` goes to the node's human gate if it has one. Otherwise the item waits as `blocked` at the node until `human.decision` either retries it (`pass`, with the optional note as feedback) or fails it (`fail`).
+
+### Continuous intake and budgets
+
+`keepOpen: true` leaves a drained run running. Input node `config.source` controls refill; `run.started.source` optionally overrides all inputs. Sources:
+
+- `manual`: only `input.added` supplies work. No automatic requests.
+- `goals`: when the run drains, emit `input.requested` and a durable `request-input` effect. The hub creates inputs for unfinished goals and supplies relevant metrics and previous outcomes in their bodies. Empty responses wait for another tick.
+- `schedule`: an input also needs `config.schedule`, such as `0 2 * * *` for nightly at 02:00 UTC. A run-level `schedule` can override it. `input.tick` checks five numeric UTC cron fields, with lists, ranges and steps; weekdays are 0–6, and restricted day-of-month/day-of-week fields use OR semantics. There is no timer or missed-tick catch-up in the engine. It requests at most once per matching minute per input, including when start or completion falls in that minute. A busy outstanding request coalesces later occurrences.
+
+Each request is `{ requestId, nodeId, source, docs, limit }`, carried identically by `input.requested` and `request-input`. Only one request per input can be outstanding. Fulfil with `input.added { requestId, items }`; an empty array is allowed only with a current request id. The engine targets that input automatically and rejects stale ids or mismatched node ids. Hosts must honour `limit`, avoid duplicate goals across workflows and persist the response before acknowledging the request effect. The source adapter decides when a goal is unfinished; the pure engine never queries project data.
+
+`budget` accepts optional positive safe integers. Counters live in `state.budgetUsage`, resetting at the next event in a later UTC day. Older timestamps never roll the current bucket backwards. `maxItemsPerDay` counts every created root and planner child, including failed work; retries do not create items. `maxActiveItems` counts unfinished executable items, including queued and blocked items, but excludes parents waiting only for children.
+
+A full budget sets `state.intake.paused` with `reason` and emits `budget.exhausted { limit, used, maximum, requested, day, summary }`, once per reason/day while paused. A later event with room emits `budget.available`. The run stays running and existing work can finish. Input batches are atomic: if they do not fit, no items are created and the outstanding request stays open. Preserve a rejected manual batch or source response in the hub and retry with a new event id when capacity returns, or split it into batches that fit. Planner fan-out instead retains uncreated proposals in `item.pendingPlan`, and creates children as capacity returns. Daily limits can defer them to the next day.
+
+`maxTokensPerDay` uses `usage.recorded` input-plus-output deltas. It blocks intake and new planner children after the reported limit, not already admitted assignments, retries, CI or merges. In-flight work can overshoot; this is not a hard spend ceiling. The hub must forward usage promptly and use assignment policy/lease controls if it needs a stricter execution cap. Do not feed cumulative usage snapshots as deltas.
+
+A planner can set `emptyResult: 'complete'` to finish its input at that node when a success explicitly returns `items: []`, then wait for a tick before refilling. The improve auditor uses this to avoid busywork. Without the setting, or with `items` omitted, the existing keep-whole planner behaviour remains.
 
 ### Work-item context in role prompts
 
@@ -189,10 +209,10 @@ Reads: `getRun`, `listRuns({ projectId?, status? })`, `getState`, `listWorkItems
 - Each `changed` entry lists leaf `changes: [{ path, before?, after? }]`, such as `config.harness.model`. `layoutOnly` is true when only `position` moved.
 - `a` may be `null` when there is no active version.
 
-`buildArchitectPrompt({ project, docs, goals, machines, providers, existingWorkflow?, userPrompt, previousErrors? })` builds a deterministic prompt for the `workflow-architect` role. It includes the graph guide (`describeGraphSchema()`), defaults for unattended runs (three attempts with 30 s backoff for agent roles and two for CI, loops of 3 passes, concurrency within machine capacity, strong models for builders and escalations and cheaper ones for planning and first-pass review), the build template as an example, previous validation errors and the answer format: one fenced json block holding `{ rationale, graph }`. When the repository is a local path, it explains that delivery uses published `local:<branch>` branches and asks for prompts that never mention pull requests.
+`buildArchitectPrompt({ project, docs, goals, machines, providers, existingWorkflow?, existingWorkflows?, userPrompt, previousErrors? })` builds a deterministic prompt for the `workflow-architect` role. It includes the graph guide (`describeGraphSchema()`), defaults for unattended runs (three attempts with 30 s backoff for agent roles and two for CI, loops of 3 passes, concurrency within machine capacity, strong models for builders and escalations and cheaper ones for planning and first-pass review), the complete template library, descriptions and graphs, previous validation errors and the answer format: one fenced json block holding `{ rationale, graph, templateId?, additionalWorkflows? }`. When the repository is a local path, it explains that delivery uses published `local:<branch>` branches and asks for prompts that never mention pull requests.
 
-- `parseArchitectResult(text)` extracts `{ graph, rationale }`. It takes the last usable fenced block, accepting either a wrapper object or a bare graph with prose as the rationale. It throws `ARCHITECT_PARSE_ERROR`.
-- `evaluateArchitectResult(text, { providers? })` parses and validates in one step for the hub's retry loop, which is capped by `ARCHITECT_MAX_ATTEMPTS`.
+- `parseArchitectResult(text)` extracts `{ graph, rationale, templateId?, additionalWorkflows? }`. Up to three additional proposals are `{ name, rationale, templateId?, graph }`; nested proposals and unknown template ids are rejected. Each remains a separate draft. Existing single-graph replies remain supported. It takes the last usable fenced block, accepting either a wrapper object or a bare graph with prose as the rationale. It throws `ARCHITECT_PARSE_ERROR`.
+- `evaluateArchitectResult(text, { providers? })` parses and validates every proposed graph in one step (additional issues carry `workflowIndex`, starting at 1) for the hub's retry loop, which is capped by `ARCHITECT_MAX_ATTEMPTS`.
 - `GRAPH_JSON_SCHEMA` is the JSON Schema 2020-12 for the graph's structure.
 
 ## Metrics
@@ -228,6 +248,19 @@ Every bottleneck's `evidence` carries the measured numbers, for example `utiliza
 
 ## Templates
 
+`listTemplates()` returns stable `{ id, description }` metadata for the architect and clients. `getTemplate(id)` returns a fresh editable graph, or throws `UNKNOWN_TEMPLATE`. The JSON files remain plain graph v1 documents.
+
+| Template | Default route |
+| --- | --- |
+| `build` | Planner → builder → review → CI → merge |
+| `improve` | Goals/metrics auditor → improver → review → CI → merge |
+| `bugfix` | Triage planner → reproduction test → fix → review → CI → merge |
+| `docs` | Doc writer → doc review → merge |
+| `security-audit` | Auditor → finding verification → fix → review → CI → merge |
+| `dependency-upgrade` | Dependency planner → upgrader → review → CI → merge |
+
+New templates use three role attempts with 30-second backoff, two CI attempts, a delivery loop capped at three passes and one or two concurrent workers per role. Planning and reproduction/verification can use cheaper models; implementation and sensitive reviews use stronger ones. Exhausted or blocked delivery reaches human triage. Planning errors end after bounded retries. Docs use a bounded review loop and rely on the reviewer's link/example/layout evidence instead of a generic code test command. CI commands and models must be adapted to the repository and installed providers.
+
 `templates/build.json` runs ideas → planner → delivery loop (until CI passes, 3 passes) → review loop (until review passes, 3 passes) → builder, which can delegate to a helper → reviewer → CI → merge queue → shipped. CI failures and rejected merges return through the delivery loop. For unattended runs:
 
 - Every agent, review and CI node retries errors two or three times with backoff.
@@ -236,7 +269,7 @@ Every bottleneck's `evidence` carries the measured numbers, for example `utiliza
 
 `templates/improve.json` runs goals → auditor → improvement loop (4 passes) → improver → reviewer → CI → merge queue → improved. It has the same retries, and exhausted or blocked work goes to a triage gate that returns it to the improvement loop.
 
-Both validate without warnings. Their provider and model choices are defaults for people to edit.
+All six validate without warnings. Their provider and model choices are defaults for people to edit.
 
 ## Tests
 

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { getTemplate, listTemplates } from './templates.js';
 import { EDGE_KINDS, GRAPH_SCHEMA, LIMITS, NODE_TYPES, SAFE_MAX_ITERATIONS, validateGraph } from './graph.js';
 import { WorkflowError, fail, isPlainObject, isText } from './util.js';
 
@@ -46,8 +46,8 @@ const role = (extra = {}, required = []) => ({
   },
 });
 const CONFIG_SCHEMAS = {
-  input: { type: 'object', required: ['source'], properties: { source: { enum: ['manual', 'goals', 'issues'] }, docs: strings } },
-  planner: role({ maxItems: { type: 'integer', minimum: 1, maximum: LIMITS.maxItems } }),
+  input: { type: 'object', required: ['source'], properties: { source: { enum: ['manual', 'goals', 'issues', 'schedule'] }, docs: strings, schedule: { type: 'string', description: 'Five-field numeric UTC cron expression.' } } },
+  planner: role({ emptyResult: { enum: ['continue', 'complete'] }, maxItems: { type: 'integer', minimum: 1, maximum: LIMITS.maxItems } }),
   agent: role(),
   review: role({ rubric: text }),
   ci: {
@@ -121,8 +121,8 @@ Nodes are { "id", "type", "label", "position": { "x", "y" }, "config" }. Ids use
 
 | type | meaning | config (* = required) |
 | --- | --- | --- |
-| input | where work enters | source* ("manual", "goals" or "issues"), docs (doc ids) |
-| planner | agent that splits input into work items | harness*, prompt*, maxItems (1-${LIMITS.maxItems}, default 20), concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
+| input | where work enters | source* ("manual", "goals", "issues" or "schedule"), docs (doc ids), schedule (five-field UTC cron, required for schedule source) |
+| planner | agent that splits input into work items | harness*, prompt*, emptyResult ("continue" or "complete"; complete ends an explicit empty items result), maxItems (1-${LIMITS.maxItems}, default 20), concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
 | agent | agent role that does a work item | harness*, prompt*, concurrency (default 1), policy, requirements, role, retry, onExhausted, onBlocked |
 | review | agent review gate; the reviewer reports verdict "pass" or "fail" | harness*, prompt*, rubric, concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
 | ci | CI gate run on a user machine at the exact head commit | steps* ([{ name, run, timeoutSec? }]), requirements, retry, onExhausted |
@@ -162,8 +162,6 @@ const LOCAL_DELIVERY = 'This project uses a local repository, not a forge such a
 /** Plain-language description of graph v1 for agent prompts. */
 export function describeGraphSchema() { return GRAPH_GUIDE; }
 
-let example;
-const buildExample = () => example ??= JSON.stringify(JSON.parse(readFileSync(new URL('../templates/build.json', import.meta.url), 'utf8')));
 const clip = (value, max) => value.length > max ? `${value.slice(0, max)}\n[truncated ${value.length - max} characters]` : value;
 const list = items => items.map(item => `- ${item}`).join('\n');
 
@@ -171,18 +169,20 @@ const list = items => items.map(item => `- ${item}`).join('\n');
  * Build the prompt for a `workflow-architect` assignment. Deterministic for the same input.
  * @param {{ project: { name: string, repo?: { url?: string, defaultBranch?: string } }, docs?: Array<{ title: string, kind?: string, path?: string, url?: string, excerpt?: string }>,
  *   goals?: string[], machines?: Array<{ name?: string, id?: string, os?: string, arch?: string, labels?: string[], providers?: string[], capacity?: { maxAgents?: number, maxJobs?: number }, status?: string }>,
- *   providers?: Array<string | { provider: string, models?: string[] }>, existingWorkflow?: { name?: string, version?: number, graph: object },
+ *   providers?: Array<string | { provider: string, models?: string[] }>, existingWorkflow?: { name?: string, version?: number, graph: object }, existingWorkflows?: Array<{ name?: string, version?: number, graph: object }>,
  *   userPrompt: string, previousErrors?: Array<{ code: string, message: string, nodeId?: string, edgeId?: string }> }} input
  */
-export function buildArchitectPrompt({ project, docs = [], goals = [], machines = [], providers = [], existingWorkflow, userPrompt, previousErrors = [] }) {
+export function buildArchitectPrompt({ project, docs = [], goals = [], machines = [], providers = [], existingWorkflow, existingWorkflows = [], userPrompt, previousErrors = [] }) {
   if (!isText(userPrompt, 20000)) fail('INVALID_INPUT', 'userPrompt must be a nonblank string of at most 20000 characters.');
   if (!isPlainObject(project) || !isText(project.name, 200)) fail('INVALID_INPUT', 'project needs a name.');
-  for (const [label, value] of [['docs', docs], ['goals', goals], ['machines', machines], ['providers', providers], ['previousErrors', previousErrors]]) {
+  for (const [label, value] of [['docs', docs], ['goals', goals], ['machines', machines], ['providers', providers], ['previousErrors', previousErrors], ['existingWorkflows', existingWorkflows]]) {
     if (!Array.isArray(value)) fail('INVALID_INPUT', `${label} must be an array.`);
   }
   if (existingWorkflow !== undefined && !(isPlainObject(existingWorkflow) && isPlainObject(existingWorkflow.graph))) {
     fail('INVALID_INPUT', 'existingWorkflow needs a graph.');
   }
+
+  if (existingWorkflows.some(workflow => !isPlainObject(workflow) || !isPlainObject(workflow.graph))) fail('INVALID_INPUT', 'Each existing workflow needs a graph.');
 
   const parts = [
     `You are the ${ARCHITECT_ROLE} for the Perpeto project "${project.name}". Design how this project's software should be built as a ${GRAPH_SCHEMA} workflow graph. ` +
@@ -220,15 +220,20 @@ export function buildArchitectPrompt({ project, docs = [], goals = [], machines 
     const title = [existingWorkflow.name, existingWorkflow.version && `version ${existingWorkflow.version}`].filter(Boolean).join(', ');
     parts.push(`## Current workflow${title ? ` (${title})` : ''}\n\nChange it only where the request or the evidence calls for it, and keep ids of unchanged nodes and edges so people can review the diff.\n\n\`\`\`json\n${JSON.stringify(existingWorkflow.graph)}\n\`\`\``);
   }
+  if (existingWorkflows.length) {
+    parts.push(`## Existing project workflows\n\n${JSON.stringify(existingWorkflows)}\n\nThese workflows can stay active together. Propose a second workflow alongside build when goals call for continuous improvement; do not replace an existing workflow unless requested.`);
+  }
+  parts.push('## Template library\n\nStart from the closest template and adapt prompts, models and CI to this repository and the available providers. These model choices are defaults, not claims that they are available.\n\n' +
+    listTemplates().map(entry => `### ${entry.id}\n\n${entry.description}\n\n\`\`\`json\n${JSON.stringify(getTemplate(entry.id))}\n\`\`\``).join('\n\n'));
+  parts.push('## Continuous and parallel workflows\n\nA project may run build and improve workflows independently. Keep each graph separate and account for their combined machine capacity. For continuous improve use goals or a schedule input, with emptyResult: "complete" on the auditor to avoid busywork. The host starts keepOpen runs with per-run budget limits, feeds unfinished goals and metrics, and drives input.tick events. Numeric five-field cron is UTC. The graph does not own timers or start another workflow.');
   if (previousErrors.length) {
     parts.push(`## Your previous graph was invalid\n\nFix every error below and return the complete corrected graph.\n\n${list(previousErrors.map(error =>
       `${error.code}${error.nodeId ? ` at node ${error.nodeId}` : ''}${error.edgeId ? ` at edge ${error.edgeId}` : ''}: ${error.message}`))}`);
   }
   parts.push(`## Graph format\n\n${GRAPH_GUIDE}`);
   parts.push(`## Defaults\n\n${DEFAULTS_GUIDE}`);
-  parts.push(`## Example: the default build workflow\n\n\`\`\`json\n${buildExample()}\n\`\`\``);
   parts.push('## Answer format\n\n' +
-    'Reply with exactly one fenced json block containing { "rationale": string, "graph": object }. The rationale explains, in a few short paragraphs, ' +
+    'Reply with exactly one fenced json block containing { "rationale": string, "graph": object, "templateId"?: string, "additionalWorkflows"?: [{ "name": string, "rationale": string, "templateId"?: string, "graph": object }] }. Include up to three additionalWorkflows only when the request benefits from separate workflows; all proposals are drafts and need independent activation. The rationale explains, in a few short paragraphs, ' +
     'why this shape suits the project: roles, models, concurrency, gates and loop limits. ' +
     (providers.length ? 'Use only the providers listed above. ' : '') +
     (machines.length ? 'Keep total agent concurrency within the machines\' capacity and give CI requirements that some machine meets. ' : '') +
@@ -245,7 +250,7 @@ const FENCE = /```[ \t]*(?:(?:json|JSON)[ \t]*)?\r?\n([\s\S]*?)```/g;
  * Also accepts an already-parsed `{ graph, rationale }` object. Throws `WorkflowError('ARCHITECT_PARSE_ERROR')`.
  */
 export function parseArchitectResult(text) {
-  if (isPlainObject(text)) return checked(text.graph, text.rationale);
+  if (isPlainObject(text)) return checked(text.graph, text.rationale, text);
   if (typeof text !== 'string' || !text.trim()) fail('ARCHITECT_PARSE_ERROR', 'Architect reply is empty.');
   if (text.length > 2_000_000) fail('ARCHITECT_PARSE_ERROR', 'Architect reply is too large.');
   const blocks = [...text.matchAll(FENCE)];
@@ -255,7 +260,7 @@ export function parseArchitectResult(text) {
     let value;
     try { value = JSON.parse(candidate); } catch { continue; }
     parsedAny = true;
-    if (isPlainObject(value) && isPlainObject(value.graph)) return checked(value.graph, value.rationale);
+    if (isPlainObject(value) && isPlainObject(value.graph)) return checked(value.graph, value.rationale, value);
     if (isPlainObject(value) && value.schema === GRAPH_SCHEMA) {
       return checked(value, text.replace(FENCE, '').trim());
     }
@@ -265,15 +270,28 @@ export function parseArchitectResult(text) {
     : 'Reply did not contain a parseable fenced json block.');
 }
 
-function checked(graph, rationale) {
+function checked(graph, rationale, extra = {}) {
   if (!isPlainObject(graph)) fail('ARCHITECT_PARSE_ERROR', 'Reply has no graph object.');
   if (!isText(rationale, 20000)) fail('ARCHITECT_PARSE_ERROR', 'Reply needs a nonblank rationale of at most 20000 characters.');
-  return { graph, rationale: rationale.trim() };
+  const result = { graph, rationale: rationale.trim() };
+  if (extra.templateId !== undefined) {
+    if (!listTemplates().some(t => t.id === extra.templateId)) fail('ARCHITECT_PARSE_ERROR', 'Unknown templateId.');
+    result.templateId = extra.templateId;
+  }
+  if (extra.additionalWorkflows !== undefined) {
+    if (!Array.isArray(extra.additionalWorkflows) || extra.additionalWorkflows.length > 3) fail('ARCHITECT_PARSE_ERROR', 'additionalWorkflows must be an array of at most three proposals.');
+    result.additionalWorkflows = extra.additionalWorkflows.map(proposal => {
+      if (!isPlainObject(proposal) || !isText(proposal.name, 200)) fail('ARCHITECT_PARSE_ERROR', 'Each additional workflow needs a name.');
+      if (proposal.additionalWorkflows !== undefined) fail('ARCHITECT_PARSE_ERROR', 'Workflow proposals cannot nest.');
+      return { name: proposal.name, ...checked(proposal.graph, proposal.rationale, proposal) };
+    });
+  }
+  return result;
 }
 
 /**
  * Parse and validate an architect reply in one step, for the hub's retry loop.
- * @returns {{ ok: boolean, graph?: object, rationale?: string, errors: object[], warnings: object[] }}
+ * @returns {{ ok: boolean, graph?: object, rationale?: string, templateId?: string, additionalWorkflows?: object[], errors: object[], warnings: object[] }}
  */
 export function evaluateArchitectResult(text, options) {
   let parsed;
@@ -281,5 +299,12 @@ export function evaluateArchitectResult(text, options) {
     if (!(error instanceof WorkflowError)) throw error;
     return { ok: false, errors: [{ code: error.code, message: error.message }], warnings: [] };
   }
-  return { ...validateGraph(parsed.graph, options), ...parsed };
+  const primary = validateGraph(parsed.graph, options);
+  const errors = [...primary.errors], warnings = [...primary.warnings];
+  for (const [index, workflow] of (parsed.additionalWorkflows ?? []).entries()) {
+    const validation = validateGraph(workflow.graph, options);
+    for (const issue of validation.errors) errors.push({ ...issue, workflowIndex: index + 1 });
+    for (const issue of validation.warnings) warnings.push({ ...issue, workflowIndex: index + 1 });
+  }
+  return { ...parsed, ok: errors.length === 0, errors, warnings };
 }
