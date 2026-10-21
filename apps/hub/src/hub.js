@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, lstatSync, mkdirSync, chmodSync, openSync,
 import { dirname } from 'node:path';
 import { MessagingStore, MessagingError } from '@perpeto/messaging';
 import { HubStore } from './store.js';
+import { Credentials } from './credentials.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
 import { HubDelivery } from './delivery/index.js';
@@ -61,7 +62,7 @@ export class Hub {
     this.signals = { work: [], machines: new Set(), events: false };
     // An engine that persists run state (the workflow adapter's RunStore) gets its own private database.
     const databases = [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, ...(engine.open ? [config.workflowDatabasePath] : [])];
-    for (const path of [...databases, config.ownerTokenPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    for (const path of [...databases, config.ownerTokenPath, config.credentialKeyPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     for (const path of databases) prepareDatabase(path);
     this.store = new HubStore(config.databasePath);
     this.store.onPut = (kind, value) => this.observe(kind, value);
@@ -83,7 +84,15 @@ export class Hub {
       }
       const owner = this.store.db.prepare("SELECT hash FROM tokens WHERE kind='owner'").get();
       if (owner && owner.hash !== hash(this.ownerToken)) fail(500, 'OWNER_TOKEN_MISMATCH', 'Owner token file does not match this hub.');
-      this.store.db.prepare("INSERT OR IGNORE INTO tokens VALUES(?,'owner',NULL)").run(hash(this.ownerToken));
+      this.store.db.prepare("INSERT OR IGNORE INTO tokens(hash,kind) VALUES(?,'owner')").run(hash(this.ownerToken));
+      this.credentials = new Credentials(config.credentialKeyPath, this.store);
+      // Tokens from before random issue were HMACs of the owner secret. Tag their generation once so rotation can retire them.
+      for (const row of this.store.db.prepare("SELECT hash, machine_id FROM tokens WHERE kind='node' AND generation IS NULL").all()) {
+        const top = this.store.get('machine', row.machine_id)?.tokenGeneration ?? 0;
+        let generation = -1;
+        for (let candidate = 0; candidate <= top && generation < 0; candidate++) if (hash(this.legacyNodeToken(row.machine_id, candidate)) === row.hash) generation = candidate;
+        this.store.db.prepare('UPDATE tokens SET generation=? WHERE hash=?').run(generation, row.hash);
+      }
       this.messaging = new MessagingStore(config.messagingDatabasePath);
       this.delivery = new HubDelivery(this);
       engine.open?.({ databasePath: config.workflowDatabasePath });
@@ -91,9 +100,18 @@ export class Hub {
       for (const file of databases) chmodSync(file, 0o600);
     } catch (error) { this.engine.close?.(); this.messaging?.close(); this.store.close(); throw error; }
   }
-  secret(kind, entityId) { return createHmac('sha256', this.ownerToken).update(`${kind}:${entityId}`).digest('base64url'); }
-  /** Node tokens derive from the machine and its token generation, so idempotent replays can return them without storing them. */
-  nodeToken(machineId, generation = 0) { return this.secret('node', generation ? `${machineId}:${generation}` : machineId); }
+  /**
+   * How hubs before random credentials derived them from the owner secret. Used only to replay idempotency records and
+   * to recognise machine tokens issued before the upgrade; nothing new is derived this way.
+   */
+  legacySecret(kind, entityId) { return createHmac('sha256', this.ownerToken).update(`${kind}:${entityId}`).digest('base64url'); }
+  legacyNodeToken(machineId, generation = 0) { return this.legacySecret('node', generation ? `${machineId}:${generation}` : machineId); }
+  /** Store a new machine token's hash; the token itself is random and never stored in the clear. */
+  addMachineToken(machineId, generation) {
+    const token = this.credentials.issue();
+    this.store.db.prepare("INSERT INTO tokens(hash,kind,machine_id,generation) VALUES(?,'node',?,?)").run(hash(token), machineId, generation);
+    return token;
+  }
   /**
    * A bearer token, or else an owner session cookie. Sessions slide: activity extends them, written at most once per
    * tenth of their lifetime.
@@ -119,7 +137,9 @@ export class Hub {
   retireOlderTokens(machineId, presented) {
     if (this.store.db.prepare("SELECT COUNT(*) AS count FROM tokens WHERE kind='node' AND machine_id=?").get(machineId).count < 2) return;
     const generation = this.store.get('machine', machineId)?.tokenGeneration ?? 0;
-    if (presented === hash(this.nodeToken(machineId, generation))) this.store.db.prepare("DELETE FROM tokens WHERE kind='node' AND machine_id=? AND hash<>?").run(machineId, presented);
+    if (this.store.db.prepare('SELECT generation FROM tokens WHERE hash=?').get(presented)?.generation === generation) {
+      this.store.db.prepare("DELETE FROM tokens WHERE kind='node' AND machine_id=? AND hash<>?").run(machineId, presented);
+    }
   }
   serialize(fn) {
     const result = this.pending.then(fn);
@@ -219,7 +239,7 @@ export class Hub {
         let result = mutation ? await this.store.transaction(perform) : await perform();
         if (!mutation) this.flush();
         // The session cookie to set: a new session (re-derived on an idempotent replay), a logout, or a slid expiry.
-        const session = result.session ? { value: this.secret('session', result.session.id), expiresAt: result.session.expiresAt }
+        const session = result.session ? { value: result.session.sealed ? this.credentials.open(result.session.sealed) : this.legacySecret('session', result.session.id), expiresAt: result.session.expiresAt }
           : result.endSession ? { clear: true } : auth.session?.refreshed ? { value: auth.session.value, expiresAt: auth.session.expiresAt } : null;
         if (session) result = { ...result, cookie: session };
         if (this.delivery.dirty) this.delivery.schedule();
@@ -232,14 +252,18 @@ export class Hub {
   }
   persistResponse(result) {
     const body = { ...result.body };
-    if (body.token) { delete body.token; body._tokenMachineId = body.machineId; body._tokenGeneration = body.generation ?? 0; }
-    if (body.code) { delete body.code; body._codeId = body.id; }
+    // Replays must return the credential first issued; it is kept sealed under the credential key, never in the clear.
+    if (body.token) { body._token = this.credentials.seal(body.token); delete body.token; }
+    if (body.code) { body._code = this.credentials.seal(body.code); delete body.code; }
     return { ...result, body };
   }
   restoreResponse(result) {
     const body = { ...result.body };
-    if (body._tokenMachineId) { body.token = this.nodeToken(body._tokenMachineId, body._tokenGeneration); delete body._tokenMachineId; delete body._tokenGeneration; }
-    if (body._codeId) { body.code = this.secret('enrollment', body._codeId); delete body._codeId; }
+    if (body._token) { body.token = this.credentials.open(body._token); delete body._token; }
+    if (body._code) { body.code = this.credentials.open(body._code); delete body._code; }
+    // Records written before random credentials hold only the ids their credential was derived from.
+    if (body._tokenMachineId) { body.token = this.legacyNodeToken(body._tokenMachineId, body._tokenGeneration); delete body._tokenMachineId; delete body._tokenGeneration; }
+    if (body._codeId) { body.code = this.legacySecret('enrollment', body._codeId); delete body._codeId; }
     return { ...result, body };
   }
   emit(type, kind, value, data = {}) {
@@ -598,7 +622,7 @@ export class Hub {
     }
     if (path === '/machines' && method === 'GET') return reply({ machines: this.store.list('machine') });
     if (path === '/machines/enrollment-codes' && method === 'POST') {
-      const codeId = id('enr'); const code = this.secret('enrollment', codeId);
+      const codeId = id('enr'); const code = this.credentials.issue();
       const ttl = integer(body.ttlMs ?? this.config.enrollmentTtlMs, 'ttlMs', 1, this.config.enrollmentTtlMs);
       const expiresAt = new Date(Date.now() + ttl).toISOString();
       this.store.db.prepare('INSERT INTO enrollment_codes(hash,id,expires_at) VALUES(?,?,?)').run(hash(code), codeId, expiresAt);
@@ -630,16 +654,14 @@ export class Hub {
       if (!code || code.used || Date.parse(code.expires_at) <= Date.now()) fail(401, 'INVALID_ENROLLMENT_CODE', 'Enrollment code is invalid, expired, or already used.');
       this.store.db.prepare('UPDATE enrollment_codes SET used=1 WHERE hash=? AND used=0').run(hash(body.code));
       const machine = { id: id('mch'), name: body.name, os, arch: body.arch, version: body.version, labels: body.labels ?? [], providers: body.providers ?? [], capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, status: 'online', lastHeartbeatAt: now() };
-      const token = this.nodeToken(machine.id);
-      this.store.put('machine', machine); this.store.db.prepare("INSERT INTO tokens VALUES(?,'node',?)").run(hash(token), machine.id); this.emit('machine.enrolled', 'machine', machine);
+      this.store.put('machine', machine); const token = this.addMachineToken(machine.id, 0); this.emit('machine.enrolled', 'machine', machine);
       return reply({ machineId: machine.id, token }, 201);
     }
     if (path === '/nodes/token' && method === 'POST') {
       if (auth.kind !== 'node') fail(403, 'FORBIDDEN', 'A machine token is required.');
       const machine = this.store.need('machine', auth.machineId);
       machine.tokenGeneration = (machine.tokenGeneration ?? 0) + 1;
-      const token = this.nodeToken(machine.id, machine.tokenGeneration);
-      this.store.put('machine', machine); this.store.db.prepare("INSERT INTO tokens VALUES(?,'node',?)").run(hash(token), machine.id);
+      this.store.put('machine', machine); const token = this.addMachineToken(machine.id, machine.tokenGeneration);
       this.emit('machine.token-rotated', 'machine', machine, { generation: machine.tokenGeneration });
       return reply({ machineId: machine.id, token, generation: machine.tokenGeneration }, 201);
     }
@@ -815,10 +837,10 @@ export class Hub {
       if (method === 'GET') return reply({ kind: 'owner', expiresAt: auth.session?.expiresAt ?? null });
       if (method === 'POST') {
         if (auth.via === 'cookie') fail(403, 'FORBIDDEN', 'Sessions are created with the owner token.');
-        // Session tokens derive from a random id, so an idempotent retry re-sends the same cookie; only hashes are stored.
-        const sessionId = id('ses'); const expiresAt = new Date(Date.now() + this.config.sessionTtlMs).toISOString();
-        this.store.createSession(hash(this.secret('session', sessionId)), sessionId, expiresAt);
-        return { status: 201, body: { expiresAt }, session: { id: sessionId, expiresAt } };
+        // Session tokens are random and stored as hashes; the response keeps one sealed so a retry re-sends the same cookie.
+        const sessionId = id('ses'); const expiresAt = new Date(Date.now() + this.config.sessionTtlMs).toISOString(); const token = this.credentials.issue();
+        this.store.createSession(hash(token), sessionId, expiresAt);
+        return { status: 201, body: { expiresAt }, session: { id: sessionId, expiresAt, sealed: this.credentials.seal(token) } };
       }
       if (method === 'DELETE') {
         if (auth.via !== 'cookie') fail(400, 'INVALID_INPUT', 'Only a session cookie can be ended.');

@@ -166,7 +166,7 @@ test('schema 1 databases migrate usage, job logs and finish times into the index
   old.prepare("INSERT INTO idempotency VALUES('scope','key','f','{}')").run();
   old.close();
   const store = new HubStore(file); t.after(() => store.close());
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
   assert.deepEqual(store.logs('job_1').map(value => value.chunk), ['hello\n']);
   assert.equal(store.usageGroups({}, { group: 'provider' })[0].inputTokens, 5);
   assert.equal(store.get('assignment', 'asg_1').finishedAt, '2026-10-01T10:20:00.000Z');
