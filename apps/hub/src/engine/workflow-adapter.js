@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
-  WorkflowError, step, validateGraph, diffGraphs as diff, buildArchitectPrompt as architectPrompt,
+  WorkflowError, RunStore, step, validateGraph, diffGraphs as diff, buildArchitectPrompt as architectPrompt,
   parseArchitectResult as parseArchitect, computeRunMetrics as runMetrics,
 } from '@perpeto/workflow';
 import { HubError } from '../errors.js';
@@ -10,6 +10,10 @@ import { HubError } from '../errors.js';
  * validate(graph) -> { valid: boolean, errors: unknown[], warnings?: unknown[] }
  * startRun({ run, workflow, input, project? }) -> { state: JSONValue, effects: Effect[] }
  * applyEvent({ run, workflow, state, event }) -> { state: JSONValue, effects: Effect[] }
+ * An engine with `persistsState: true` keeps run state itself and returns `{ seq, duplicate?, effects }` instead of
+ * `state`. The hub then stores only the last applied `seq` per run. Through `lastSeq` and `missed` it applies the
+ * effects of events a rolled-back hub transaction missed; `pendingRuns` and `acknowledge` drain the engine's outbox. `open({ databasePath })` and `close()` bracket
+ * the hub's lifetime; `listWorkItems(runId)`, `getWorkItem(id)` and `runState(runId)` read its run state.
  * diffGraphs(fromGraph, toGraph) -> JSON graph diff
  * buildArchitectPrompt({ prompt, project, machines, providers, workflows, baseGraph, validationErrors, attempt }) -> string
  * parseArchitectResult(assignmentResult) -> { graph, rationale } (throw on malformed output)
@@ -17,17 +21,18 @@ import { HubError } from '../errors.js';
  *   -> { nodes: NodeMetrics[], edges: EdgeMetrics[], run: RunMetrics, bottlenecks: Bottleneck[] }
  * The hub overlays run.activeAgents/machines from unexpired leases.
  * Effect is { type: 'work-item'|'assignment'|'job'|'merge-entry'|'run'|'event', value: object }.
- * Entity effects carry IDs; run effects patch the current run. State is opaque and
- * persisted atomically with effects by the hub. Engines must perform no side effects.
+ * Entity effects carry IDs; run effects patch the current run. Opaque state is persisted atomically with effects by
+ * the hub. Engines must perform no side effects beyond their own persistence.
  * @typedef {{ validate: Function, startRun: Function, applyEvent: Function }} WorkflowEngine
  */
 
-const STATUS = { NOT_FOUND: 404, RUN_EXISTS: 409, RUN_NOT_ACTIVE: 409, NOT_WAITING: 409, INVALID_TRANSITION: 409, IDEMPOTENCY_CONFLICT: 409, STALE_DECISION: 409 };
+const STATUS = { NOT_FOUND: 404, RUN_NOT_FOUND: 404, RUN_EXISTS: 409, RUN_NOT_ACTIVE: 409, NOT_WAITING: 409, INVALID_TRANSITION: 409, IDEMPOTENCY_CONFLICT: 409, STALE_DECISION: 409 };
 const RUN_STATUSES = new Set(['running', 'paused', 'stopped', 'completed', 'failed']);
 // The hub records these itself (lifecycle, CI/review/human gates and run transitions); the engine's copies would duplicate them.
 const HUB_OWNED_EVENTS = new Set(['assignment.state', 'run.started', 'run.paused', 'run.resumed', 'run.stopped', 'run.completed', 'run.failed']);
 const ENTITY_KINDS = [['workItems', 'work-item'], ['merges', 'merge-entry']];
 const SUMMARY_MAX = 20000;
+const OUTBOX_PAGE = 500;
 
 /** Run engine calls, translating workflow errors to the hub's error envelope. */
 function engine(fn) {
@@ -37,22 +42,11 @@ function engine(fn) {
   }
 }
 
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const clip = (text, max = SUMMARY_MAX) => text.length > max ? `${text.slice(0, max - 15)}\n[truncated]` : text;
 
-/** Translate engine effects into hub effects. Entity values come from the new state so they are always complete. */
-function translate(run, before, result) {
-  const { state, effects } = result;
+/** Engine `emit-event` effects become hub events, except those the hub records itself. */
+function events(effects) {
   const out = [];
-  for (const effect of effects) {
-    if (effect.type === 'create-assignment') out.push({ type: 'assignment', value: { ...effect.assignment, projectId: run.projectId } });
-    if (effect.type === 'create-job') out.push({ type: 'job', value: effect.job });
-  }
-  for (const [key, type] of ENTITY_KINDS) {
-    for (const [id, value] of Object.entries(state[key] ?? {})) {
-      if (!same(before?.[key]?.[id], value)) out.push({ type, value: { ...value, projectId: run.projectId } });
-    }
-  }
   for (const effect of effects) {
     if (effect.type !== 'emit-event') continue;
     const { type, subject, data } = effect.event;
@@ -63,12 +57,48 @@ function translate(run, before, result) {
     if (type === 'workitem.moved') Object.assign(value.data, { nodeId: data.from, sourceNodeId: data.from, targetNodeId: data.to });
     out.push({ type: 'event', value });
   }
+  return out;
+}
+
+/**
+ * Hub effects from the engine's own effects alone, so outbox effects the hub missed translate the same way. Work items
+ * stay in the run store. Merge entries change only through `enqueue-merge`, `cancel-merge` and results the hub itself
+ * reports, so these two effects keep the hub's merge entries complete.
+ */
+function translateEffects(run, effects, status) {
+  const out = [];
+  for (const effect of effects) {
+    if (effect.type === 'create-assignment') out.push({ type: 'assignment', value: { ...effect.assignment, projectId: run.projectId } });
+    if (effect.type === 'create-job') out.push({ type: 'job', value: effect.job });
+    if (effect.type === 'enqueue-merge') out.push({ type: 'merge-entry', value: { ...effect.mergeEntry, projectId: run.projectId } });
+    if (effect.type === 'cancel-merge') out.push({ type: 'merge-entry', value: { id: effect.mergeId, status: 'rejected', reason: effect.reason } });
+  }
+  out.push(...events(effects));
+  if (status && status !== run.status && RUN_STATUSES.has(status)) out.push({ type: 'run', value: { status } });
+  return out;
+}
+
+/** Runs started before state moved to the run store keep their whole state in the hub. Steps share untouched entities. */
+function translate(run, before, result) {
+  const { state, effects } = result;
+  const out = [];
+  for (const effect of effects) {
+    if (effect.type === 'create-assignment') out.push({ type: 'assignment', value: { ...effect.assignment, projectId: run.projectId } });
+    if (effect.type === 'create-job') out.push({ type: 'job', value: effect.job });
+  }
+  for (const [key, type] of ENTITY_KINDS) {
+    if (state[key] === before?.[key]) continue;
+    for (const [id, value] of Object.entries(state[key] ?? {})) if (before?.[key]?.[id] !== value) out.push({ type, value: { ...value, projectId: run.projectId } });
+  }
+  out.push(...events(effects));
   if (state.status !== run.status && RUN_STATUSES.has(state.status)) out.push({ type: 'run', value: { status: state.status } });
   return out;
 }
 
+const stamped = event => ({ id: event.id ?? randomUUID(), at: event.at ?? new Date().toISOString(), type: event.type, data: event.data });
+
 function apply(run, state, event) {
-  const result = engine(() => step(state, { id: event.id ?? randomUUID(), at: event.at ?? new Date().toISOString(), type: event.type, data: event.data }));
+  const result = engine(() => step(state, stamped(event)));
   if (result.ignored) return { state, effects: [], ignored: result.ignored };
   return { state: result.state, effects: translate(run, state, result) };
 }
@@ -96,7 +126,7 @@ function jobSummary(data, status) {
   return steps ? `CI failed: ${steps}.` : undefined;
 }
 
-function hubEvent(state, event) {
+function hubEvent(event, nodeOf) {
   const { type, data = {} } = event;
   if (type === 'input') {
     const items = Array.isArray(data.items) ? data.items : Array.isArray(data.inputs) ? data.inputs : null;
@@ -104,7 +134,7 @@ function hubEvent(state, event) {
     return { id: `input:${data.idempotencyKey ?? randomUUID()}`, type: 'input.added', data: { items } };
   }
   if (type === 'assignment.finished') {
-    const node = state.plan.nodes[state.assignments[event.assignmentId]?.nodeId];
+    const node = nodeOf(event.value?.nodeId);
     return { id: `assignment:${event.assignmentId}:${event.value?.attempt ?? 1}`, type: 'assignment.completed', data: { assignmentId: event.assignmentId, result: engineResult(data, node) } };
   }
   if (type === 'job.finished') {
@@ -191,11 +221,58 @@ function aggregate(results) {
   };
 }
 
-/** Hub adapter over `@perpeto/workflow`: the pure engine, graph validation, diffs, architect support and metrics. */
+/**
+ * Hub adapter over `@perpeto/workflow`: the engine with its incremental RunStore, graph validation, diffs, architect
+ * support and metrics. Each event costs what it changes; the hub keeps only the last applied sequence per run.
+ */
 export function createWorkflowAdapter() {
+  let store = null; let path = null;
+  const runs = () => store ?? (() => { throw new Error('The workflow adapter is not open.'); })();
+  function applyStored(run, event) {
+    const result = engine(() => runs().apply(run.id, stamped(event)));
+    const status = runs().getRun(run.id)?.status;
+    return { seq: result.seq, ...(result.duplicate ? { duplicate: true } : {}), ...(result.ignored ? { ignored: result.ignored } : {}), effects: translateEffects(run, result.effects, status) };
+  }
   return {
     /** The engine owns retries: the hub reports expired leases instead of requeueing run work itself. */
     retriesLostWork: true,
+    persistsState: true,
+    open({ databasePath }) {
+      if (store && path !== databasePath) throw new Error('This workflow adapter is already open on another database.');
+      store ??= new RunStore(databasePath); path = databasePath;
+    },
+    close() { store?.close(); store = null; path = null; },
+    lastSeq(runId) { return runs().getRun(runId)?.lastSeq ?? 0; },
+    /**
+     * The translated effects of every event after `after`, by sequence. Re-applying a stored event returns its
+     * original effects without stepping the engine again, and the event log pages by sequence, so nothing is skipped.
+     */
+    missed(run, after) {
+      const groups = []; let seq = after;
+      for (;;) {
+        const page = engine(() => runs().listEvents(run.id, { after: seq, limit: OUTBOX_PAGE }));
+        for (const row of page) {
+          seq = row.seq;
+          if (!row.ignored) groups.push({ seq: row.seq, raw: engine(() => runs().apply(run.id, row.event)).effects });
+        }
+        if (page.length < OUTBOX_PAGE) break;
+      }
+      const status = runs().getRun(run.id)?.status;
+      return { seq, groups: groups.map((group, index) => ({ seq: group.seq, effects: translateEffects(run, group.raw, index === groups.length - 1 ? status : null) })) };
+    },
+    pendingRuns() { return [...new Set(runs().pendingEffects({ limit: OUTBOX_PAGE }).map(row => row.runId))]; },
+    /** Acknowledge outbox effects the hub has committed: those at or below `applied(runId)`. */
+    acknowledge(applied) {
+      for (;;) {
+        const rows = runs().pendingEffects({ limit: OUTBOX_PAGE });
+        const ids = rows.filter(row => row.seq <= applied(row.runId)).map(row => row.id);
+        if (ids.length) runs().ackEffects(ids);
+        if (rows.length < OUTBOX_PAGE || !ids.length) return;
+      }
+    },
+    listWorkItems(runId) { return engine(() => runs().listWorkItems(runId)); },
+    getWorkItem(id) { return engine(() => runs().getWorkItem(id)); },
+    runState(runId) { return engine(() => runs().getState(runId)); },
     validate(graph) {
       const { ok, errors, warnings } = validateGraph(graph);
       // Delivery config is hub-owned until the shared workflow schema recognizes publication.
@@ -214,12 +291,11 @@ export function createWorkflowAdapter() {
       const data = { runId: run.id, projectId: run.projectId, workflowId: workflow.id, workflowVersion: workflow.version, graph: workflow.graph,
         ...(repo ? { repo: { ...(repo.url ? { url: repo.url } : {}), defaultBranch: repo.defaultBranch, ...(repo.localPath ? { localPath: repo.localPath } : {}) } } : {}),
         ...(items !== undefined && items !== null ? { inputs: items } : {}), ...(typeof input?.keepOpen === 'boolean' ? { keepOpen: input.keepOpen } : {}) };
-      return apply(run, null, { id: `run:${run.id}`, type: 'run.started', data });
+      return applyStored(run, { id: `run:${run.id}`, type: 'run.started', data });
     },
-    applyEvent({ run, state, event }) {
-      const translated = hubEvent(state, event);
-      if (!translated) return { state, effects: [] };
-      return apply(run, state, translated);
+    applyEvent({ run, workflow, state, event }) {
+      const translated = hubEvent(event, nodeId => workflow.graph.nodes.find(node => node.id === nodeId));
+      return state ? apply(run, state, translated) : applyStored(run, translated);
     },
     diffGraphs(from, to) { return diff(from ?? null, to); },
     buildArchitectPrompt({ prompt, project, machines = [], providers = [], baseGraph, validationErrors = [] }) {
@@ -234,7 +310,7 @@ export function createWorkflowAdapter() {
     computeRunMetrics({ runId, runs, states = {}, events, machines, usage, window, at }) {
       const results = [];
       for (const run of runs) {
-        const state = states[run.id];
+        const state = states[run.id] ?? (store ? this.runState(run.id) : null);
         if (!state?.plan) continue;
         // Hub lifecycle events identify the assignment by subject; the engine's formulas read it from data.
         const runEvents = events.filter(event => event.runId === run.id).map(event => event.type === 'assignment.state'

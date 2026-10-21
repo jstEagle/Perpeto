@@ -56,8 +56,10 @@ function prepareDatabase(path) {
 export class Hub {
   constructor(config, engine) {
     this.config = config; this.engine = engine; this.listeners = new Set(); this.pending = Promise.resolve();
-    for (const path of [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, config.ownerTokenPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    for (const path of [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath]) prepareDatabase(path);
+    // An engine that persists run state (the workflow adapter's RunStore) gets its own private database.
+    const databases = [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, ...(engine.open ? [config.workflowDatabasePath] : [])];
+    for (const path of [...databases, config.ownerTokenPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    for (const path of databases) prepareDatabase(path);
     this.store = new HubStore(config.databasePath);
     this.workflows = new Workflows(this); this.observation = new Observation(this);
     try {
@@ -77,9 +79,10 @@ export class Hub {
       this.store.db.prepare("INSERT OR IGNORE INTO tokens VALUES(?,'owner',NULL)").run(hash(this.ownerToken));
       this.messaging = new MessagingStore(config.messagingDatabasePath);
       this.delivery = new HubDelivery(this);
+      engine.open?.({ databasePath: config.workflowDatabasePath });
       // Hub snapshots may contain private prompts/logs. Keep all persisted files private.
-      for (const file of [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath]) chmodSync(file, 0o600);
-    } catch (error) { this.messaging?.close(); this.store.close(); throw error; }
+      for (const file of databases) chmodSync(file, 0o600);
+    } catch (error) { this.engine.close?.(); this.messaging?.close(); this.store.close(); throw error; }
   }
   secret(kind, entityId) { return createHmac('sha256', this.ownerToken).update(`${kind}:${entityId}`).digest('base64url'); }
   /** Node tokens derive from the machine and its token generation, so idempotent replays can return them without storing them. */
@@ -192,8 +195,36 @@ export class Hub {
       });
       if (changed) this.notify();
     });
+    await this.reconcileEngine();
     // Merge queue progress (Git preparation and publication) runs outside the request serializer between its two syncs.
     this.delivery.schedule();
+  }
+  /**
+   * The workflow RunStore commits separately from the hub's database. Apply outbox effects a rolled-back hub transaction
+   * missed, then acknowledge only effects the hub has committed. A run the hub never committed is discarded.
+   */
+  async reconcileEngine() {
+    if (!this.engine.persistsState) return;
+    await this.serialize(async () => {
+      const runs = this.engine.pendingRuns();
+      if (!runs.length) return;
+      let changed = false;
+      await this.store.transaction(async () => {
+        for (const runId of runs) { const run = this.store.get('run', runId); if (run) changed = this.catchUp(run) || changed; }
+      });
+      this.engine.acknowledge(runId => this.store.get('engine-state', runId)?.seq ?? (this.store.get('run', runId) ? 0 : Infinity));
+      if (changed) this.notify();
+    });
+  }
+  /** Bring the hub's copies up to the run store before a run's next event. Returns whether anything was applied. */
+  catchUp(run) {
+    const applied = this.store.get('engine-state', run.id)?.seq;
+    if (applied === undefined || this.engine.lastSeq(run.id) <= applied) return false;
+    const { groups, seq } = this.engine.missed(run, applied);
+    for (const group of groups) this.applyEffects(run, group);
+    // Ignored events advance the sequence without effects.
+    if (seq > (this.store.get('engine-state', run.id)?.seq ?? 0)) this.store.put('engine-state', { id: run.id, seq });
+    return groups.length > 0;
   }
   fenced(kind, entityId, auth, body, read = false) {
     const value = this.store.need(kind, entityId);
@@ -234,15 +265,24 @@ export class Hub {
     if (machine?.running?.[resource] > 0) { machine.running[resource] -= 1; this.store.put('machine', machine); }
   }
   async engineEvent(run, event) { const result = await this.engineStep(run, event); this.applyEffects(run, result); return result; }
-  /** Compute the engine's response to an event without applying it. Engines are pure, so this doubles as validation. */
+  /**
+   * The engine's response to an event, not yet applied to the hub. A pure engine only computes it; the workflow
+   * adapter's RunStore also records it, and rejects an invalid event without a trace, so either way this validates.
+   */
   engineStep(run, event) {
     const workflow = this.store.need('run-workflow', run.id).workflow;
     const snapshot = this.store.need('engine-state', run.id);
+    if (snapshot.seq !== undefined) this.catchUp(run);
     return this.engine.applyEvent({ run, workflow, state: snapshot.state, event });
   }
   applyEffects(run, result) {
     object(result, 'engine result'); requireValue(Array.isArray(result.effects), 'Engine effects must be an array.');
-    this.store.put('engine-state', { id: run.id, state: result.state ?? null });
+    if (result.seq !== undefined) {
+      // The engine keeps run state itself; the hub records how far it has applied the engine's effects, exactly once.
+      requireValue(Number.isSafeInteger(result.seq) && result.seq > 0, 'Invalid engine sequence.');
+      if (result.seq <= (this.store.get('engine-state', run.id)?.seq ?? 0)) return;
+      this.store.put('engine-state', { id: run.id, seq: result.seq });
+    } else this.store.put('engine-state', { id: run.id, state: result.state ?? null });
     // When the engine reports each flow-edge crossing itself, the hub does not derive a coarser move from nodeId changes.
     // Escalations are reported as workitem.escalated: they follow an escalation link, not a flow edge.
     const reportedMoves = new Set(result.effects.filter(effect => effect.type === 'event' && ['workitem.moved', 'workitem.escalated'].includes(effect.value?.type)).map(effect => effect.value.data?.workItemId));
@@ -267,6 +307,8 @@ export class Hub {
       nonblank(effect.value.id, 'effect id', 200);
       const previous = this.store.get(kind, effect.value.id);
       requireValue(!previous || previous.runId === run.id, 'Engine cannot modify another run.');
+      // Delivery settles merge entries; an engine snapshot or cancel arriving later cannot reopen or contradict them.
+      if (kind === 'merge-entry' && previous && ['merged', 'rejected'].includes(previous.status)) continue;
       // Merge entries also carry hub delivery fields (queue, job, merged revision) that engine snapshots do not know.
       const value = { ...(kind === 'merge-entry' ? previous : {}), ...effect.value, projectId: run.projectId, runId: run.id };
       if (kind === 'merge-entry' && value.status === 'queued' && !value.queueId) this.delivery.dirty = true;
@@ -413,7 +455,7 @@ export class Hub {
       const run = this.store.need('run', entityId);
       if (!action && method === 'GET') return reply(run);
       if (action === 'metrics' && method === 'GET') return reply(await this.observation.metrics({ runId: run.id, window: query.get('window') ?? '24h' }));
-      if (action === 'work-items' && method === 'GET') return reply({ workItems: this.store.list('work-item', item => item.runId === run.id).map(item => this.workItemView(item)) });
+      if (action === 'work-items' && method === 'GET') return reply({ workItems: this.workItems(run.id) });
       if (action === 'assignments' && method === 'GET') return reply({ assignments: this.store.list('assignment', item => item.runId === run.id) });
       if (method === 'POST' && ['pause', 'resume', 'stop'].includes(action)) {
         const target = { pause: 'paused', resume: 'running', stop: 'stopped' }[action];
@@ -421,7 +463,7 @@ export class Hub {
         run.status = target; if (action === 'stop') { run.stoppedAt = now(); this.cancelRunWork(run); }
         this.store.put('run', run); this.emit(`run.${action}`, 'run', { ...run, runId: run.id });
         // The engine closes its own items/merges; the hub already revoked leases above.
-        if (this.store.get('engine-state', run.id)?.state) await this.engineEvent(run, { type: { pause: 'run.paused', resume: 'run.resumed', stop: 'run.stopped' }[action], data: body.reason ? { reason: body.reason } : {} });
+        if (this.store.get('engine-state', run.id)) await this.engineEvent(run, { type: { pause: 'run.paused', resume: 'run.resumed', stop: 'run.stopped' }[action], data: body.reason ? { reason: body.reason } : {} });
         return reply(this.store.need('run', run.id));
       }
       if (action === 'inputs' && method === 'POST') {
@@ -430,7 +472,7 @@ export class Hub {
       }
     }
     if (collection === 'work-items' && entityId && action === 'decision' && segments.length === 3 && method === 'POST') {
-      const item = this.workItemView(this.store.need('work-item', entityId)); const run = this.store.need('run', item.runId);
+      const item = this.workItem(entityId); const run = this.store.need('run', item.runId);
       if (body.decisionId !== undefined) nonblank(body.decisionId, 'decisionId', 200);
       if (run.status !== 'running' || item.status !== 'blocked') fail(409, 'CONFLICT', 'Work item is not awaiting a decision in a running run.');
       // A decision names the wait it answers, so a retry or a second answer can never pass the item's next gate.
@@ -607,9 +649,9 @@ export class Hub {
           }
           delete value.leaseExpiresAt; this.released(kind, value.machineId);
         }
-        // Validate a run result with the engine before acknowledging it. A result the engine refuses (a short SHA, an
-        // oversized branch or item) becomes an explicit failure carrying the reason and the agent's summary, which the
-        // engine retries, instead of a 400 that makes the node discard the result.
+        // Validate a run result with the engine before acknowledging it; an event the engine refuses leaves no trace. A
+        // refused result (a short SHA, an oversized branch or item) becomes an explicit failure carrying the reason and
+        // the agent's summary, which the engine retries, instead of a 400 that makes the node discard the result.
         let outcome = null; let refused = null;
         if (final && kind === 'assignment' && value.runId) {
           const run = this.store.need('run', value.runId);
@@ -653,6 +695,16 @@ export class Hub {
         machinesOnline: this.store.list('machine', value => value.status === 'online' && Date.now() - Date.parse(value.lastHeartbeatAt) < this.config.heartbeatIntervalMs * 3).length });
     }
     fail(404, 'NOT_FOUND', 'Route not found.');
+  }
+  /** Work items of runs whose engine keeps run state come from the engine; other runs keep the hub's copies. */
+  workItems(runId) {
+    const fromEngine = this.engine.listWorkItems && this.store.get('engine-state', runId)?.seq !== undefined;
+    return (fromEngine ? this.engine.listWorkItems(runId) : this.store.list('work-item', item => item.runId === runId)).map(item => this.workItemView(item));
+  }
+  workItem(id) {
+    const item = this.store.get('work-item', id) ?? this.engine.getWorkItem?.(id);
+    if (!item) fail(404, 'NOT_FOUND', 'work-item not found.');
+    return this.workItemView(item);
   }
   /** Clients answer a waiting item's human gate with its `decisionId`. */
   workItemView(item) {
@@ -721,5 +773,5 @@ export class Hub {
     }
     fail(404, 'NOT_FOUND', 'Messaging route not found.');
   }
-  async close() { await this.delivery.close(); await this.pending; this.messaging.close(); this.store.close(); }
+  async close() { await this.delivery.close(); await this.pending; this.engine.close?.(); this.messaging.close(); this.store.close(); }
 }
