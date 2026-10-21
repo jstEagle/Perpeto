@@ -2,6 +2,10 @@ import { object, requireValue } from './errors.js';
 
 const windows = { '1h': 3600000, '24h': 86400000, '7d': 604800000 };
 const interactions = ['workitem.moved', 'agent.delegated', 'agent.messaged', 'assignment.state', 'gate.result'];
+const ROLE_TYPES = ['planner', 'agent', 'review'];
+/** The node holding a role in this graph (roles are unique per graph), or null when no node does. */
+const roleNode = (graph, role) => typeof role === 'string'
+  ? graph.nodes.find(node => ROLE_TYPES.includes(node.type) && (typeof node.config?.role === 'string' ? node.config.role : node.id) === role)?.id ?? null : null;
 
 export class Observation {
   constructor(hub) { this.hub = hub; this.store = hub.store; }
@@ -10,15 +14,23 @@ export class Observation {
     requireValue(interactions.includes(type), 'Invalid interaction type.'); object(data, 'interaction data');
     const run = this.store.need('run', value.runId);
     const graph = this.store.need('run-workflow', run.id).workflow.graph;
-    const sourceNodeId = data.sourceNodeId ?? data.fromNodeId ?? data.nodeId ?? value.nodeId;
-    const targetNodeId = data.targetNodeId ?? data.toNodeId ?? (type === 'agent.messaged' ? data.recipientRoleId : undefined);
+    let sourceNodeId = data.sourceNodeId ?? data.fromNodeId ?? data.nodeId ?? value.nodeId;
+    let targetNodeId = data.targetNodeId ?? data.toNodeId;
+    const unknown = {};
+    if (type === 'agent.messaged') {
+      // Messages name roles. Each end resolves to the node holding that role; an end no node holds is recorded as
+      // explicitly unknown (null), never as the role id, so it can never be counted against a real edge.
+      sourceNodeId ??= roleNode(graph, data.senderRoleId); targetNodeId ??= roleNode(graph, data.recipientRoleId);
+      if (sourceNodeId === null) unknown.sourceUnknown = true;
+      if (targetNodeId === null) unknown.targetUnknown = true;
+    }
     const kind = { 'workitem.moved': 'flow', 'agent.delegated': 'delegates', 'agent.messaged': 'messages' }[type];
     const edge = kind && graph.edges.find(edge => edge.kind === kind && (!data.edgeId || edge.id === data.edgeId) &&
-      ((edge.from.node === sourceNodeId && edge.to.node === targetNodeId) ||
+      sourceNodeId && targetNodeId && ((edge.from.node === sourceNodeId && edge.to.node === targetNodeId) ||
        (kind === 'messages' && edge.to.node === sourceNodeId && edge.from.node === targetNodeId)));
     // Metrics read edge endpoints as from/to; clients read sourceNodeId/targetNodeId. Record both.
-    const event = { ...data, nodeId: data.nodeId ?? value.nodeId, sourceNodeId, ...(targetNodeId ? { targetNodeId } : {}),
-      ...(kind ? { from: sourceNodeId, ...(targetNodeId ? { to: targetNodeId } : {}) } : {}),
+    const event = { ...data, nodeId: data.nodeId ?? value.nodeId ?? sourceNodeId, sourceNodeId, ...(targetNodeId !== undefined ? { targetNodeId } : {}), ...unknown,
+      ...(kind ? { from: sourceNodeId, ...(targetNodeId !== undefined ? { to: targetNodeId } : {}) } : {}),
       role: data.role ?? value.role, ...(value.machineId ? { machineId: value.machineId } : {}),
       ...(kind ? { unplanned: !edge, ...(edge ? { edgeId: edge.id, kind } : {}) } : {}) };
     return this.hub.emit(type, subjectKind, value, event);

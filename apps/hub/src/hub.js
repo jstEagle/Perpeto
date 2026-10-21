@@ -923,11 +923,9 @@ export class Hub {
   messageInteraction(runId, message) {
     if (!this.store.messageOnce(message.id)) return;
     const run = this.store.need('run', runId);
-    const assignments = this.store.forRun('assignment', runId, false);
-    const source = assignments.find(value => value.role === message.senderRoleId);
-    const target = assignments.find(value => value.role === message.recipientRoleId);
-    this.observation.interaction('agent.messaged', { id: message.id, projectId: run.projectId, runId, nodeId: source?.nodeId ?? message.senderRoleId, role: message.senderRoleId },
-      { messageId: message.id, sourceNodeId: source?.nodeId ?? message.senderRoleId, targetNodeId: target?.nodeId ?? message.recipientRoleId, senderRoleId: message.senderRoleId, recipientRoleId: message.recipientRoleId });
+    // Observation resolves both roles to their nodes through the run's graph, or records an end as unknown.
+    this.observation.interaction('agent.messaged', { id: message.id, projectId: run.projectId, runId, role: message.senderRoleId },
+      { messageId: message.id, senderRoleId: message.senderRoleId, recipientRoleId: message.recipientRoleId });
   }
   messagingRoute(method, segments, body, query) {
     const [collection, projectId, channels, channelId, messages] = segments;
