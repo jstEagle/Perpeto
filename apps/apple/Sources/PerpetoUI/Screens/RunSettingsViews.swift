@@ -16,11 +16,13 @@ struct BudgetLine: View {
         if let budget = run.settings.budget, !budget.isEmpty {
             let usage = run.budgetUsage
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
+                // The hub reports today's use once intake has state; until then show the limit only.
                 if let max = budget.maxTokensPerDay {
-                    row("Tokens today", used: usage?.tokens ?? 0, of: max, text: "\(Format.tokens(usage?.tokens ?? 0)) of \(Format.tokens(max))")
+                    row("Tokens today", used: usage?.tokens ?? 0, of: max,
+                        text: usage.map { "\(Format.tokens($0.tokens)) of \(Format.tokens(max))" } ?? "Up to \(Format.tokens(max))", meter: usage != nil)
                 }
                 if let max = budget.maxItemsPerDay {
-                    row("Items today", used: usage?.items ?? 0, of: max, text: "\(usage?.items ?? 0) of \(max)")
+                    row("Items today", used: usage?.items ?? 0, of: max, text: usage.map { "\($0.items) of \(max)" } ?? "Up to \(max)", meter: usage != nil)
                 }
                 if let max = budget.maxActiveItems {
                     let active = run.intake?.reason?.limit == .maxActiveItems ? run.intake?.reason?.used : nil

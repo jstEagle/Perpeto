@@ -46,6 +46,7 @@ struct PerpetoiOSApp: App {
 ///   --route <overview|workflows|runs|runs-list|work|messages|merge-queue|machines|accounts|usage>
 ///     (`runs` opens the running run's map; `runs-list` the list of runs)
 ///   --node <node id>     select a node on the run map
+///   --run <run id>       open this run instead of the running one
 ///   --detail-only        hide the sidebar (iPad)
 ///   --settings           open the hub connection sheet
 ///   --hub-url <url> --hub-token-file <path>   read a live hub; the token
@@ -77,7 +78,7 @@ enum LaunchOptions {
         case "runs-list": navigator.route = .project(project, .runs)
         default:
             let section = ProjectSection.allCases.first { $0.rawValue == route || $0.title.lowercased().replacingOccurrences(of: " ", with: "-") == route } ?? .overview
-            if section == .runs { navigator.selectedRunId = store.state(project).runs.first { $0.status == .running }?.id }
+            if section == .runs { navigator.selectedRunId = value("--run") ?? store.state(project).runs.first { $0.status == .running }?.id }
             navigator.route = .project(project, section)
         }
         navigator.selectedNodeId = value("--node")

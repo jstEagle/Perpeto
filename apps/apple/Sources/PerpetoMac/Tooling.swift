@@ -62,11 +62,15 @@ struct Snapshotter {
         let state = store.state(project)
         let run = state.runs.first?.id
         let busiest = run.flatMap { state.runMetrics[$0]?.nodes.max { $0.active < $1.active }?.nodeId }
+        let bottleneck = run.flatMap { state.runMetrics[$0]?.bottlenecks.first { $0.severity != .info }?.nodeId }
+        let firstStep = state.runs.first.flatMap { state.version($0.workflowVersion, of: $0.workflowId)?.graph.nodes.first?.id }
         return [
             ("hub-01-overview", { navigator.route = .project(project, .overview) }),
             ("hub-02-workflow-proposal", { navigator.route = .project(project, .workflows) }),
             ("hub-03-run-live-map", { navigator.selectedRunId = run; navigator.route = .project(project, .runs) }),
-            ("hub-03b-run-node-selected", { navigator.selectedNodeId = busiest }),
+            // The map opens on the bottleneck; panning away and back uses "Show on map".
+            ("hub-03a-run-map-panned-away", { navigator.selectedNodeId = firstStep }),
+            ("hub-03b-run-show-on-map", { navigator.selectedNodeId = bottleneck ?? busiest }),
             ("hub-03c-run-window-1h", { Task { await store.setMetricsWindow(.hour) } }),
             ("hub-04-work", { navigator.route = .project(project, .work) }),
             ("hub-05-messages", { navigator.route = .project(project, .messages) }),

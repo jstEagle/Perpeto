@@ -157,7 +157,7 @@ struct OverviewScreen: View {
         for b in (state.metrics?.bottlenecks ?? []).sorted(by: { $0.severity.rank > $1.severity.rank }) where b.severity != .info {
             let label = graph?.node(b.nodeId)?.label ?? b.nodeId
             let draft = liveRun.flatMap { state.pendingDraft(of: $0.workflowId) }
-            result.append(Issue(id: b.id, title: "\(label) is \(b.reason.title.lowercased())",
+            result.append(Issue(id: b.id, title: b.reason.headline(label),
                                 detail: b.evidence + (result.isEmpty ? (draft.map { " Workflow v\($0.version) proposes a change." } ?? "") : ""),
                                 tone: .warning, draft: result.isEmpty ? draft : nil, nodeId: b.nodeId))
         }

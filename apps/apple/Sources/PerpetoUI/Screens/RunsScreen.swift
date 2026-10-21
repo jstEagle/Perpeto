@@ -132,6 +132,8 @@ struct RunDetail: View {
             .screenPadding()
         }
         .onChange(of: navigator.runSettingsRequest) { _, _ in if !readOnly { editingSettings = true } }
+        // "Show on map" from elsewhere (the overview) pans like the button here.
+        .onChange(of: navigator.selectedNodeId) { _, id in if let id { showOnMap(id) } }
         .sheet(isPresented: $editingSettings) {
             RunSettingsSheet(title: "Run settings", confirm: "Save settings", settings: run.settings) { settings in
                 Task { await store.updateRun(run, settings: settings) }
@@ -240,7 +242,7 @@ struct RunDetail: View {
             HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
                 StatusIcon(.warning, size: 20).padding(.top, 1)
                 VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
-                    Text("\(label) is \(top.reason.title.lowercased())").font(PerpetoType.text(PerpetoType.text16, weight: .medium)).foregroundStyle(PerpetoColor.ink)
+                    Text(top.reason.headline(label)).font(PerpetoType.text(PerpetoType.text16, weight: .medium)).foregroundStyle(PerpetoColor.ink)
                     Text(top.evidence).perpetoBody(PerpetoType.text14, color: PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: PerpetoLayout.readingMax, alignment: .leading)
                     if compact { actions.padding(.top, PerpetoSpacing.x(2)) }
@@ -255,7 +257,7 @@ struct RunDetail: View {
                     VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
                         ForEach(bottlenecks.dropFirst()) { b in
                             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
-                                Text("\(workflow?.graph.node(b.nodeId)?.label ?? b.nodeId) is \(b.reason.title.lowercased())")
+                                Text(b.reason.headline(workflow?.graph.node(b.nodeId)?.label ?? b.nodeId))
                                     .font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
                                 Text(b.evidence).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
                             }
