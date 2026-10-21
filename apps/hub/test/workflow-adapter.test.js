@@ -298,3 +298,28 @@ test('runs whose whole engine state predates the RunStore keep advancing from th
   assert.equal(Object.keys(stored.state.workItems).length, 1, 'the legacy run keeps its state in the hub');
   assert.equal(query(join(hub.directory, 'workflow.sqlite'), 'SELECT COUNT(*) AS count FROM runs WHERE id=?', legacyId)[0].count, 0);
 });
+
+test('merge rejection kind is passed through additively to workflow events', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'perpeto-rejection-'));
+  const path = join(directory, 'workflow.sqlite');
+  const adapter = createWorkflowAdapter(); adapter.open({ databasePath: path });
+  t.after(async () => { adapter.close(); await rm(directory, { recursive: true, force: true }); });
+  const { DatabaseSync } = await import('node:sqlite');
+  const value = { schema: 'perpeto.workflow/1', nodes: [
+    node('input', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build.' }),
+    node('merge', 'merge-queue', { strategy: 'serial', method: 'squash', requiredChecks: [] }), node('done', 'output'),
+  ], edges: [flow('input', 'builder'), flow('builder', 'merge'), flow('merge', 'done', 'pass'), flow('merge', 'done', 'fail')] };
+  const workflow = { id: 'wf_test', version: 1, graph: value };
+  for (const rejectionKind of ['conflict', 'ci_failure', 'other']) {
+    const run = { id: `run_${rejectionKind}`, projectId: 'prj_test', status: 'running' };
+    adapter.startRun({ run, workflow, input: { keepOpen: true, items: [{ title: 'Change' }] }, project: { repo: { url: '/tmp/unused', defaultBranch: 'main' } } });
+    const assignment = Object.values(adapter.runState(run.id).assignments)[0];
+    adapter.applyEvent({ run, workflow, event: { type: 'assignment.finished', assignmentId: assignment.id, value: assignment, data: { outcome: 'success', summary: 'Built.', branch: 'feature', prUrl: 'local:feature', headSha: 'a'.repeat(40) } } });
+    const merge = Object.values(adapter.runState(run.id).merges)[0];
+    adapter.applyEvent({ run, workflow, event: { type: 'merge.finished', mergeEntryId: merge.id, data: { status: 'rejected', reason: 'Rejected.', rejectionKind } } });
+  }
+  const db = new DatabaseSync(path);
+  t.after(() => db.close());
+  const rows = db.prepare("SELECT event FROM run_events WHERE type='merge.rejected' ORDER BY seq").all();
+  assert.deepEqual(rows.map(row => JSON.parse(row.event).data.rejectionKind), ['conflict', 'ci_failure', 'other']);
+});

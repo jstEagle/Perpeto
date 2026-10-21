@@ -233,3 +233,13 @@ test('the hub serves a job its source as a bundle of exactly its revision, only 
   assert.equal(await git(repo.bare, 'for-each-ref', 'refs/perpeto/bundles'), '', 'the temporary ref is gone');
   assert.equal((await fetch(`${h.url}/api/v1/jobs/job_missing/bundle?attempt=1`, { headers: { Authorization: `Bearer ${h.token}` } })).status, 404);
 });
+
+test('delivery rejection classification distinguishes conflicts, failed CI and other causes', async () => {
+  const { rejectionKind } = await import('../src/delivery/index.js');
+  assert.equal(rejectionKind({ reason: 'Merge conflict with the speculative base.' }, []), 'conflict');
+  assert.equal(rejectionKind({ jobId: 'job_ci', reason: 'Speculative CI failed.' }, [{ id: 'job_ci', status: 'failed' }]), 'ci_failure');
+  assert.equal(rejectionKind({ jobId: 'job_ci', reason: 'Speculative CI error.' }, [{ id: 'job_ci', status: 'error' }]), 'other');
+  assert.equal(rejectionKind({ reason: 'Required checks are missing or stale.' }, []), 'ci_failure');
+  assert.equal(rejectionKind({ reason: 'PR head changed; enqueue the new revision.' }, []), 'other');
+  assert.equal(rejectionKind({ rejectionKind: 'conflict', reason: 'Explicit structured kind.' }, []), 'conflict');
+});

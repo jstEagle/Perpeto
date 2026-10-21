@@ -35,6 +35,7 @@ export class HubStore {
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, type TEXT NOT NULL, project_id TEXT, run_id TEXT, subject TEXT NOT NULL, data TEXT NOT NULL) STRICT;
       CREATE INDEX IF NOT EXISTS events_project ON events(project_id,seq);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS usage_roles (assignment_id TEXT PRIMARY KEY, role TEXT NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS hub_keys (name TEXT PRIMARY KEY, fingerprint TEXT NOT NULL) STRICT;
     `);
     if (version < 2) this.#migrate();
@@ -96,6 +97,7 @@ export class HubStore {
     if (!statement) { statement = this.db.prepare(text); this.#statements.set(text, statement); }
     return statement;
   }
+  has(kind) { return Boolean(this.#sql('SELECT 1 FROM entities WHERE kind=? LIMIT 1').get(kind)); }
   get(kind, id) {
     const row = this.#sql('SELECT data FROM entities WHERE kind=? AND id=?').get(kind, id);
     return row ? JSON.parse(row.data) : null;
@@ -205,6 +207,7 @@ export class HubStore {
   endSession(hash) { this.#sql('DELETE FROM sessions WHERE hash=?').run(hash); }
   log(jobId, chunk, at, id) { this.#sql('INSERT INTO job_logs(id,job_id,chunk,at) VALUES(?,?,?,?)').run(id, jobId, chunk, at); }
   logs(jobId) { return this.#sql('SELECT id,job_id,chunk,at FROM job_logs WHERE job_id=? ORDER BY seq').all(jobId).map(row => ({ id: row.id, jobId: row.job_id, chunk: row.chunk, at: row.at })); }
+  usageRole(assignmentId, role) { if (role) this.#sql('INSERT OR IGNORE INTO usage_roles VALUES(?,?)').run(assignmentId, role); }
   usage(record) {
     this.#sql(`INSERT INTO usage VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(record.id, record.projectId, record.runId ?? null, record.assignmentId ?? null,
       record.machineId ?? null, record.accountId ?? null, record.provider, record.model, record.inputTokens, record.outputTokens,
@@ -233,9 +236,12 @@ export class HubStore {
   /** Grouped usage totals over raw and rolled-up usage. `group` is provider, model, machine or day. */
   usageGroups(filters, { from, to, group }) {
     const { sql, args } = this.#usageSql(filters, from, to);
-    const key = { provider: 'provider', model: 'model', machine: 'machine_id', day: 'substr(at,1,10)' }[group];
+    const key = { provider: 'provider', model: 'model', machine: 'machine_id', day: 'substr(at,1,10)', role: `COALESCE(
+      (SELECT role FROM usage_roles r WHERE r.assignment_id=u.assignment_id),
+      (SELECT COALESCE(json_extract(e.data,'$.role'),json_extract(e.data,'$.nodeId')) FROM entities e WHERE e.kind='assignment' AND e.id=u.assignment_id),
+      (SELECT COALESCE(json_extract(e.data,'$.role'),json_extract(e.data,'$.nodeId')) FROM archived_entities e WHERE e.kind='assignment' AND e.id=u.assignment_id), 'unknown')` }[group];
     return this.db.prepare(`SELECT ${key} AS key, ${TOKENS.map(name => `SUM(${name}) AS ${name}`).join(', ')}, SUM(cost_usd) AS cost_usd, SUM(records) AS records
-      FROM (${sql}) GROUP BY ${key} ORDER BY ${key}`).all(...args).map(row => ({ key: row.key,
+      FROM (${sql}) u GROUP BY ${key} ORDER BY ${key}`).all(...args).map(row => ({ key: row.key,
       inputTokens: row.input_tokens, outputTokens: row.output_tokens, cacheReadTokens: row.cache_read_tokens, cacheWriteTokens: row.cache_write_tokens,
       costUsd: row.cost_usd, records: row.records }));
   }

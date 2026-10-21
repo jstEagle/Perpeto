@@ -14,6 +14,15 @@ const sorted = value => Array.isArray(value) ? value.map(sorted)
   : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
 const digest = value => createHash('sha256').update(JSON.stringify(sorted(value))).digest('hex');
 
+/** Older delivery queues only expose a reason. Preserve structured kinds as they become available. */
+export function rejectionKind(entry, jobs = []) {
+  if (['conflict', 'ci_failure', 'other'].includes(entry.rejectionKind)) return entry.rejectionKind;
+  if (entry.reason === 'Merge conflict with the speculative base.') return 'conflict';
+  if (jobs.some(job => job.id === entry.jobId && job.status === 'failed') ||
+      entry.reason === 'Required checks are missing or stale.') return 'ci_failure';
+  return 'other';
+}
+
 class Unsupported extends Error {}
 
 /** Local repository paths used by the local adapter. GitHub uses a separate hub-owned mirror. */
@@ -224,7 +233,7 @@ export class HubDelivery {
     for (const entry of store.byStatus('merge-entry', ['queued', 'testing', 'merging'], value => value.deliveryRejected)) {
       const run = entry.runId && store.get('run', entry.runId);
       if (!run || !['running', 'paused'].includes(run.status)) continue;
-      await this.hub.engineEvent(run, { type: 'merge.finished', mergeEntryId: entry.id, data: { status: 'rejected', reason: `Merge queue refused the entry (${entry.deliveryError}).` } });
+      await this.hub.engineEvent(run, { type: 'merge.finished', mergeEntryId: entry.id, data: { status: 'rejected', rejectionKind: 'other', reason: `Merge queue refused the entry (${entry.deliveryError}).` } });
       changed = true;
     }
     for (const id of ids) {
@@ -261,7 +270,7 @@ export class HubDelivery {
         if (!hubEntry || (TERMINAL.has(hubEntry.status) && !this.unmirrored(entry, hubEntry))) continue;
         // deliveryError shows why an entry is stuck while its attempt keeps failing, and why the hub rejected it.
         const deliveryError = this.rejected.get(entry.id) ?? (failing && state.active.entryIds.includes(entry.id) ? failing : undefined);
-        const next = { status: entry.status, jobId: entry.jobId, reason: entry.reason, testedRevision: entry.testedRevision, mergedRevision: entry.mergedRevision, deliveryError };
+        const next = { ...(entry.status === 'rejected' ? { rejectionKind: rejectionKind(entry, state.jobs) } : {}), status: entry.status, jobId: entry.jobId, reason: entry.reason, testedRevision: entry.testedRevision, mergedRevision: entry.mergedRevision, deliveryError };
         if (TERMINAL.has(entry.status)) this.rejected.delete(entry.id);
         if (Object.entries(next).every(([key, value]) => hubEntry[key] === value)) continue;
         const value = { ...hubEntry, ...next };

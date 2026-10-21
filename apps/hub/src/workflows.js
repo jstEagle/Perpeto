@@ -64,9 +64,13 @@ export class Workflows {
     if (!errors.length) {
       if (result.outcome !== 'success') errors = ['Architect assignment did not succeed.'];
       else {
-        const validation = await this.hub.engine.validate(parsed?.graph);
-        if (!validation.valid) errors = validation.errors?.length ? validation.errors : ['Workflow graph is invalid.'];
-        else if (typeof parsed.rationale !== 'string' || !parsed.rationale.trim() || parsed.rationale.length > 65536) errors = ['Architect result must include a nonblank rationale of at most 65536 characters.'];
+        const proposals = [parsed, ...(parsed.additionalWorkflows ?? [])];
+        for (const [index, proposal] of proposals.entries()) {
+          const validation = await this.hub.engine.validate(proposal?.graph);
+          if (!validation.valid) errors.push(...(validation.errors?.length ? validation.errors : [{ message: 'Workflow graph is invalid.' }])
+            .map(error => ({ ...(typeof error === 'string' ? { message: error } : error), ...(index ? { workflowIndex: index } : {}) })));
+          if (typeof proposal.rationale !== 'string' || !proposal.rationale.trim() || proposal.rationale.length > 65536) errors.push({ message: 'Architect result must include a nonblank rationale of at most 65536 characters.', ...(index ? { workflowIndex: index } : {}) });
+        }
       }
     }
     if (errors.length) {
@@ -84,9 +88,15 @@ export class Workflows {
     // A drafted graph keeps the workflow's messaging settings; only the graph is the architect's.
     const workflow = this.save({ id: request.workflowId, projectId: request.projectId, name: base?.name ?? 'Proposed workflow', purpose: base?.purpose ?? 'custom', graph: parsed.graph,
       ...(base?.messagingPolicy ? { messagingPolicy: base.messagingPolicy } : {}), ...(base?.messageRateLimits ? { messageRateLimits: base.messageRateLimits } : {}),
-      authoredBy: { kind: 'agent', assignmentId: assignment.id, prompt: request.prompt }, rationale: parsed.rationale,
+      authoredBy: { kind: 'agent', assignmentId: assignment.id, prompt: request.prompt }, rationale: parsed.rationale, ...(parsed.templateId ? { templateId: parsed.templateId } : {}),
       ...(request.baseVersion ? { parentVersion: request.baseVersion } : {}) });
+    const additional = (parsed.additionalWorkflows ?? []).map(proposal => this.save({ id: id('wf'), projectId: request.projectId,
+      name: proposal.name, purpose: proposal.templateId ?? 'custom', graph: proposal.graph, rationale: proposal.rationale,
+      ...(proposal.templateId ? { templateId: proposal.templateId } : {}),
+      authoredBy: { kind: 'agent', assignmentId: assignment.id, prompt: request.prompt } }));
     request.status = 'completed'; request.version = workflow.version;
+    request.drafts = [workflow, ...additional].map(value => ({ workflowId: value.id, version: value.version }));
+    assignment.drafts = request.drafts;
     assignment.draftWorkflowId = workflow.id; assignment.draftVersion = workflow.version;
     this.store.put('architect-request', request); this.store.put('assignment', assignment);
   }
