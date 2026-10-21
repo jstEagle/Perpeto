@@ -124,7 +124,7 @@ struct RunDetail: View {
         HStack(alignment: .center, spacing: PerpetoSpacing.x(4)) {
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
                 HStack(spacing: PerpetoSpacing.x(2)) {
-                    Text(workflow?.name ?? "Run").font(PerpetoFont.display(PerpetoType.size24)).displayTracking(PerpetoType.size24).foregroundStyle(PerpetoColor.ink)
+                    Text(workflow?.name ?? "Run").font(PerpetoFont.display(PerpetoType.text24)).displayTracking(PerpetoType.text24).foregroundStyle(PerpetoColor.ink)
                     Text("version \(run.workflowVersion)").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
                     StatusLabel(run.status.label)
                 }
@@ -157,7 +157,7 @@ struct RunDetail: View {
     private func mini(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-            Text(value).font(PerpetoFont.figure(PerpetoType.size16)).foregroundStyle(PerpetoColor.ink)
+            Text(value).font(PerpetoFont.figure(PerpetoType.text16)).foregroundStyle(PerpetoColor.ink)
         }
     }
 

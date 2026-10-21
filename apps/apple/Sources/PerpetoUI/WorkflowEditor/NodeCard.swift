@@ -75,7 +75,7 @@ struct NodeCard: View {
                     .foregroundStyle(PerpetoColor.muted)
                     .frame(width: 14)
                 Text(node.label)
-                    .font(.system(size: PerpetoType.size14, weight: .semibold))
+                    .font(.system(size: PerpetoType.text14, weight: .semibold))
                     .foregroundStyle(PerpetoColor.ink)
                     .lineLimit(1)
                 Spacer(minLength: 0)

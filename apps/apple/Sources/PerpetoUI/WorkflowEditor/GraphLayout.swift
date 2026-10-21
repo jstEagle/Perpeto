@@ -5,7 +5,7 @@ import SwiftUI
 /// fixed node sizes, ports on card edges, right-angle edge routing.
 public struct GraphLayout {
     public static let nodeWidth: CGFloat = 168
-    public static let grid: CGFloat = 16
+    public static let grid: CGFloat = PerpetoEditor.gridMinor
     public static let margin: CGFloat = 48
 
     public var graph: WorkflowGraph

@@ -336,7 +336,7 @@ struct VersionPanel: View {
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
                 HStack(spacing: PerpetoSpacing.x(2)) {
                     Text(shown.status == .draft && shown.version > (active?.version ?? 0) ? "Version \(shown.version) proposal" : "Version \(shown.version)")
-                        .font(PerpetoFont.title(PerpetoType.size16)).foregroundStyle(PerpetoColor.ink)
+                        .font(PerpetoFont.title(PerpetoType.text16)).foregroundStyle(PerpetoColor.ink)
                     Spacer()
                     StatusLabel(statusLabel(shown))
                 }
@@ -446,7 +446,7 @@ struct VersionPanel: View {
             ForEach(versions.reversed(), id: \.version) { version in
                 Button { select(version.version) } label: {
                     HStack(alignment: .top, spacing: PerpetoSpacing.x(3)) {
-                        Text("v\(version.version)").font(PerpetoFont.mono(PerpetoType.size14)).foregroundStyle(PerpetoColor.ink).frame(width: 28, alignment: .leading)
+                        Text("v\(version.version)").font(PerpetoFont.mono(PerpetoType.text14)).foregroundStyle(PerpetoColor.ink).frame(width: 28, alignment: .leading)
                         VStack(alignment: .leading, spacing: 2) {
                             AuthorLine(workflow: version, compact: true)
                             if let date = version.createdAt {

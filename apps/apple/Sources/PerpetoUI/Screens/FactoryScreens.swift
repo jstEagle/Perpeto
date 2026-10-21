@@ -115,7 +115,7 @@ struct EnrollmentSheet: View {
             Text("Run this on the machine you want to add. The code works once\(code.expiresAt.map { " and expires " + Format.relative($0) } ?? "").")
                 .font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
             Text("perpeto enroll --code \(code.code)")
-                .font(PerpetoFont.mono(PerpetoType.size14))
+                .font(PerpetoFont.mono(PerpetoType.text14))
                 .foregroundStyle(PerpetoColor.ink)
                 .textSelection(.enabled)
                 .padding(PerpetoSpacing.x(3))

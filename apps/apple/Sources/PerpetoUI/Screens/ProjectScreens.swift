@@ -77,7 +77,7 @@ struct WorkItemDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
                 VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
-                    Text(item.title).font(PerpetoFont.title(PerpetoType.size16)).foregroundStyle(PerpetoColor.ink)
+                    Text(item.title).font(PerpetoFont.title(PerpetoType.text16)).foregroundStyle(PerpetoColor.ink)
                     HStack(spacing: PerpetoSpacing.x(2)) {
                         StatusLabel(item.status.label)
                         Text("at \(nodeLabel) · iteration \(item.iteration)").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)

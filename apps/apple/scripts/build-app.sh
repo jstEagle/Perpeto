@@ -15,8 +15,20 @@ BIN="$(swift build -c "$CONFIG" --show-bin-path)/Perpeto"
 rm -rf "$APP" "$OUT/AppIcon.iconset"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# The icon is drawn in code from the Spindle master geometry.
-"$BIN" --render-icon "$OUT/AppIcon.iconset"
+# Prefer the shared macOS icon from packages/design-tokens when it exists;
+# otherwise draw one in code from the Spindle master geometry.
+SHARED="$ROOT/../../packages/design-tokens/assets/app-icon/macos"
+if [ -f "$SHARED/perpeto-app-icon-macos-1024.png" ]; then
+  mkdir -p "$OUT/AppIcon.iconset"
+  for s in 16 32 128 256 512; do
+    d=$((s * 2))
+    sips -z "$s" "$s" "$SHARED/perpeto-app-icon-macos-1024.png" --out "$OUT/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
+    sips -z "$d" "$d" "$SHARED/perpeto-app-icon-macos-1024.png" --out "$OUT/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
+  done
+  echo "Using the shared app icon from packages/design-tokens" >&2
+else
+  "$BIN" --render-icon "$OUT/AppIcon.iconset"
+fi
 iconutil -c icns "$OUT/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 
 cp "$BIN" "$APP/Contents/MacOS/Perpeto"

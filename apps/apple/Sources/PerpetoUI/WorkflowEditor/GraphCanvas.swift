@@ -336,7 +336,7 @@ public struct RuledGrid: View {
                 var p = Path()
                 p.move(to: CGPoint(x: x + 0.5, y: 0))
                 p.addLine(to: CGPoint(x: x + 0.5, y: size.height))
-                if Int(x) % 64 == 0 { major.addPath(p) } else { minor.addPath(p) }
+                if Int(x) % Int(PerpetoEditor.gridMajor) == 0 { major.addPath(p) } else { minor.addPath(p) }
                 x += GraphLayout.grid
             }
             var y: CGFloat = 0
@@ -344,11 +344,11 @@ public struct RuledGrid: View {
                 var p = Path()
                 p.move(to: CGPoint(x: 0, y: y + 0.5))
                 p.addLine(to: CGPoint(x: size.width, y: y + 0.5))
-                if Int(y) % 64 == 0 { major.addPath(p) } else { minor.addPath(p) }
+                if Int(y) % Int(PerpetoEditor.gridMajor) == 0 { major.addPath(p) } else { minor.addPath(p) }
                 y += GraphLayout.grid
             }
-            context.stroke(minor, with: .color(PerpetoColor.border.opacity(0.4)), lineWidth: 0.5)
-            context.stroke(major, with: .color(PerpetoColor.border), lineWidth: 0.75)
+            context.stroke(minor, with: .color(PerpetoColor.gridMinor), lineWidth: 0.5)
+            context.stroke(major, with: .color(PerpetoColor.gridMajor), lineWidth: 0.75)
         }
         .background(PerpetoColor.surface)
     }

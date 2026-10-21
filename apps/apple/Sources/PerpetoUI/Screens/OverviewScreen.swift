@@ -81,7 +81,7 @@ struct OverviewScreen: View {
                     VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
                         HStack(spacing: PerpetoSpacing.x(2)) {
                             Text("\(label): \(top.reason.title.lowercased())")
-                                .font(PerpetoFont.title(PerpetoType.size16))
+                                .font(PerpetoFont.title(PerpetoType.text16))
                                 .foregroundStyle(PerpetoColor.ink)
                             StatusLabel(top.severity.title, tone: top.severity.tone)
                         }

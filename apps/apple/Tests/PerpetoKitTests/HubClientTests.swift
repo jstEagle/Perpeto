@@ -75,6 +75,22 @@ struct HubClientTests {
         #expect(body["idempotencyKey"] as? String == "key-1")
     }
 
+    @Test func patchProjectAndJobLog() async throws {
+        let stub = StubTransport { request in
+            request.url!.path().hasSuffix("/log")
+                ? (200, "step Test: ok\n")
+                : (200, #"{ "id": "prj_1", "name": "renamed", "repo": { "url": "u", "defaultBranch": "main" }, "docs": [], "goals": ["g"], "createdAt": "2026-10-21T09:00:00Z", "updatedAt": "2026-10-21T09:00:00Z" }"#)
+        }
+        let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)
+        let project = try await client.updateProject("prj_1", .init(goals: ["g"]))
+        #expect(project.goals == ["g"])
+        #expect(stub.requests[0].httpMethod == "PATCH")
+        let body = try JSONSerialization.jsonObject(with: stub.requests[0].httpBody!) as! [String: Any]
+        #expect(body["goals"] as? [String] == ["g"])
+        #expect(body["name"] == nil)
+        #expect(try await client.jobLog("job_1") == "step Test: ok\n")
+    }
+
     @Test func draftRequestBody() async throws {
         let stub = StubTransport { _ in (202, #"{"assignmentId":"asg_7"}"#) }
         let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)

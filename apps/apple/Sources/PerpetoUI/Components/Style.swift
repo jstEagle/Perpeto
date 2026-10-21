@@ -6,22 +6,22 @@ import SwiftUI
 
 public enum PerpetoFont {
     /// Display: bold, tightly spaced, sentence case.
-    public static func display(_ size: CGFloat = PerpetoType.size32) -> Font { .system(size: size, weight: .bold) }
-    public static func title(_ size: CGFloat = PerpetoType.size20) -> Font { .system(size: size, weight: .semibold) }
-    public static let heading = Font.system(size: PerpetoType.size16, weight: .semibold)
-    public static let body = Font.system(size: PerpetoType.size14)
-    public static let bodyMedium = Font.system(size: PerpetoType.size14, weight: .medium)
-    public static let caption = Font.system(size: PerpetoType.size12)
-    public static let captionMedium = Font.system(size: PerpetoType.size12, weight: .medium)
-    public static func mono(_ size: CGFloat = PerpetoType.size12) -> Font { .system(size: size, design: .monospaced) }
+    public static func display(_ size: CGFloat = PerpetoType.text32) -> Font { .system(size: size, weight: .bold) }
+    public static func title(_ size: CGFloat = PerpetoType.text20) -> Font { .system(size: size, weight: .semibold) }
+    public static let heading = Font.system(size: PerpetoType.text16, weight: .semibold)
+    public static let body = Font.system(size: PerpetoType.text14)
+    public static let bodyMedium = Font.system(size: PerpetoType.text14, weight: .medium)
+    public static let caption = Font.system(size: PerpetoType.text12)
+    public static let captionMedium = Font.system(size: PerpetoType.text12, weight: .medium)
+    public static func mono(_ size: CGFloat = PerpetoType.text12) -> Font { .system(size: size, design: .monospaced) }
     /// Numbers that update in place keep stable widths.
-    public static func figure(_ size: CGFloat = PerpetoType.size24) -> Font { .system(size: size, weight: .semibold).monospacedDigit() }
+    public static func figure(_ size: CGFloat = PerpetoType.text24) -> Font { .system(size: size, weight: .semibold).monospacedDigit() }
 }
 
 extension View {
     /// Tight display tracking, proportional to size.
-    public func displayTracking(_ size: CGFloat = PerpetoType.size32) -> some View {
-        tracking(-size * 0.022)
+    public func displayTracking(_ size: CGFloat = PerpetoType.text32) -> some View {
+        tracking(size * PerpetoType.displayTracking)
     }
 }
 
@@ -96,8 +96,8 @@ public struct ScreenHeader<Trailing: View>: View {
         HStack(alignment: .bottom, spacing: PerpetoSpacing.x(4)) {
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
                 Text(title)
-                    .font(PerpetoFont.display(PerpetoType.size24))
-                    .displayTracking(PerpetoType.size24)
+                    .font(PerpetoFont.display(PerpetoType.text24))
+                    .displayTracking(PerpetoType.text24)
                     .foregroundStyle(PerpetoColor.ink)
                 if let subtitle {
                     Text(subtitle).font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
@@ -120,8 +120,8 @@ public struct PrimaryButtonStyle: ButtonStyle {
             .font(PerpetoFont.bodyMedium)
             .foregroundStyle(PerpetoColor.onAction)
             .padding(.horizontal, PerpetoSpacing.x(3))
-            .frame(minHeight: PerpetoSpacing.x(7))
-            .background(PerpetoColor.action.opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1) : 0.4),
+            .frame(minHeight: PerpetoControl.heightSmall)
+            .background((configuration.isPressed ? PerpetoColor.actionPressed : PerpetoColor.action).opacity(isEnabled ? 1 : 0.4),
                         in: RoundedRectangle(cornerRadius: PerpetoRadius.control, style: .continuous))
             .contentShape(Rectangle())
     }
@@ -136,8 +136,8 @@ public struct SecondaryButtonStyle: ButtonStyle {
             .font(PerpetoFont.bodyMedium)
             .foregroundStyle(PerpetoColor.ink.opacity(isEnabled ? 1 : 0.4))
             .padding(.horizontal, PerpetoSpacing.x(3))
-            .frame(minHeight: PerpetoSpacing.x(7))
-            .background(configuration.isPressed ? PerpetoColor.canvas : PerpetoColor.surface,
+            .frame(minHeight: PerpetoControl.heightSmall)
+            .background(configuration.isPressed ? PerpetoColor.surfaceHover : PerpetoColor.surface,
                         in: RoundedRectangle(cornerRadius: PerpetoRadius.control, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: PerpetoRadius.control, style: .continuous).strokeBorder(PerpetoColor.controlBorder))
             .contentShape(Rectangle())
@@ -152,7 +152,7 @@ public struct GhostButtonStyle: ButtonStyle {
             .font(PerpetoFont.bodyMedium)
             .foregroundStyle(PerpetoColor.ink)
             .padding(.horizontal, PerpetoSpacing.x(2))
-            .frame(minHeight: PerpetoSpacing.x(7))
+            .frame(minHeight: PerpetoControl.heightSmall)
             .background(configuration.isPressed ? PerpetoColor.canvas : .clear,
                         in: RoundedRectangle(cornerRadius: PerpetoRadius.control, style: .continuous))
             .contentShape(Rectangle())

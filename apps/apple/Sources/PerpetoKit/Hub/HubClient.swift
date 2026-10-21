@@ -95,6 +95,23 @@ public final class HubClient: Sendable {
         try await send("POST", "/projects", body: project, idempotencyKey: idempotencyKey)
     }
 
+    public struct ProjectPatch: Encodable, Sendable {
+        public var name: String?
+        public var repo: Project.Repo?
+        public var docs: [DocRef]?
+        public var goals: [String]?
+        public init(name: String? = nil, repo: Project.Repo? = nil, docs: [DocRef]? = nil, goals: [String]? = nil) {
+            self.name = name
+            self.repo = repo
+            self.docs = docs
+            self.goals = goals
+        }
+    }
+
+    public func updateProject(_ id: String, _ patch: ProjectPatch, idempotencyKey: String = UUID().uuidString) async throws -> Project {
+        try await send("PATCH", "/projects/\(escape(id))", body: patch, idempotencyKey: idempotencyKey)
+    }
+
     // MARK: Workflows
 
     public func workflows(projectId: String) async throws -> [Workflow] { try await list("/projects/\(escape(projectId))/workflows") }
@@ -180,6 +197,13 @@ public final class HubClient: Sendable {
 
     public func jobs() async throws -> [Job] { try await list("/jobs") }
     public func job(_ id: String) async throws -> Job { try await get("/jobs/\(escape(id))") }
+
+    /// Raw CI log text for a job.
+    public func jobLog(_ id: String) async throws -> String {
+        var request = try makeRequest("GET", "/jobs/\(escape(id))/log")
+        request.setValue("text/plain, application/json", forHTTPHeaderField: "Accept")
+        return String(decoding: try await perform(request), as: UTF8.self)
+    }
     public func mergeQueue(projectId: String) async throws -> [MergeEntry] { try await list("/projects/\(escape(projectId))/merge-queue") }
 
     public func usage(projectId: String? = nil, runId: String? = nil, groupBy: UsageGrouping) async throws -> [UsageGroup] {

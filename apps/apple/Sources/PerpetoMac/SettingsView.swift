@@ -24,7 +24,7 @@ struct SettingsView: View {
             }
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
                 Text("Hub address").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
-                TextField("https://hub.example.com", text: $url).font(PerpetoFont.mono(PerpetoType.size14)).perpetoField()
+                TextField("https://hub.example.com", text: $url).font(PerpetoFont.mono(PerpetoType.text14)).perpetoField()
                 Text("HTTPS is required except for localhost.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
             }
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
