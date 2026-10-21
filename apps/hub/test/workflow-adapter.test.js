@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { createHub } from '../src/index.js';
+import { createWorkflowAdapter } from '../src/engine/workflow-adapter.js';
+import { step } from '@perpeto/workflow';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const harness = { provider: 'codex', model: 'test-model' };
@@ -95,11 +98,11 @@ const node = (id, type, config = {}) => ({ id, type, label: id, position: { x: 0
 const flow = (from, to, port) => ({ id: `${from}-${port ?? 'next'}-${to}`, kind: 'flow', from: { node: from, ...(port ? { port } : {}) }, to: { node: to } });
 
 /** A hub on the real engine adapter with one enrolled machine that leases agents and jobs. */
-async function engineHub(t) {
+async function engineHub(t, { engine = createWorkflowAdapter() } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'perpeto-hub-engine-'));
   const configPath = join(directory, 'hub.json');
   await writeFile(configPath, JSON.stringify({ port: 0, longPollMs: 0, maintenanceIntervalMs: 20, heartbeatIntervalMs: 60000 }));
-  const hub = await createHub({ configPath }); const url = await hub.listen();
+  let hub = await createHub({ configPath, engine }); let url = await hub.listen();
   t.after(async () => { await hub.close(); await rm(directory, { recursive: true, force: true }); });
   const owner = (await readFile(join(directory, 'owner.secret'), 'utf8')).trim();
   const request = async (method, path, body, token = owner) => {
@@ -111,7 +114,8 @@ async function engineHub(t) {
   await request('POST', '/nodes/heartbeat', { status: 'online', capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, providers: ['codex'] }, machine.token);
   const project = (await request('POST', '/projects', { name: 'Adapter', repo: { url: '/tmp/unused.git', defaultBranch: 'main' } })).body;
   return {
-    request, token: machine.token,
+    request, token: machine.token, directory,
+    async restart() { await hub.close(); hub = await createHub({ configPath, engine }); url = await hub.listen(); },
     async start(value, items = [{ title: 'Feature' }]) {
       const workflow = (await request('POST', `/projects/${project.id}/workflows`, { name: 'Flow', graph: value })).body;
       assert.equal((await request('POST', `/workflows/${workflow.id}/activate`, { version: 1 })).status, 200, JSON.stringify(workflow));
@@ -184,4 +188,113 @@ test('escalations are not logged as unplanned flow moves without endpoints (L4)'
   assert.deepEqual(events.filter(event => event.type === 'workitem.moved' && event.data.unplanned), []);
   const metrics = (await hub.request('GET', `/runs/${run.id}/metrics?window=1h`)).body;
   assert.deepEqual(metrics.edges.filter(edge => edge.unplanned), []);
+  assert.equal(metrics.nodes.find(value => value.nodeId === 'builder').escalations, 1, 'escalations are still counted, at their node');
+});
+
+const humanGates = { schema: 'perpeto.workflow/1', nodes: [
+  node('ideas', 'input', { source: 'manual' }), node('design', 'human', { prompt: 'Approve the design.' }),
+  node('release', 'human', { prompt: 'Approve the release.' }), node('done', 'output'),
+], edges: [flow('ideas', 'design'), flow('design', 'release', 'pass'), flow('design', 'done', 'fail'), flow('release', 'done', 'pass'), flow('release', 'done', 'fail')] };
+
+test('a human decision is bound to the gate it answers by decisionId, so a repeat cannot pass the next gate (M4)', async t => {
+  const hub = await engineHub(t);
+  const run = await hub.start(humanGates);
+  const item = (await hub.request('GET', `/runs/${run.id}/work-items`)).body.workItems[0];
+  assert.equal(item.status, 'blocked'); assert.equal(item.nodeId, 'design'); assert.match(item.decisionId, /^hd_/);
+  const requested = (await hub.request('GET', '/events?limit=1000')).body.events.filter(event => event.type === 'human.requested');
+  assert.equal(requested.length, 1); assert.equal(requested[0].data.decisionId, item.decisionId);
+  const decide = body => hub.request('POST', `/work-items/${item.id}/decision`, body);
+  assert.equal((await decide({ decision: 'pass', decisionId: item.decisionId })).status, 200);
+  const next = (await hub.request('GET', `/runs/${run.id}/work-items`)).body.workItems[0];
+  assert.equal(next.nodeId, 'release'); assert.notEqual(next.decisionId, item.decisionId);
+  // A client retry, or a second person answering the design gate, must not approve the release.
+  const stale = await decide({ decision: 'pass', decisionId: item.decisionId });
+  assert.equal(stale.status, 409); assert.equal(stale.body.error.code, 'STALE_DECISION');
+  assert.equal((await hub.request('GET', `/runs/${run.id}/work-items`)).body.workItems[0].nodeId, 'release');
+  assert.equal((await hub.request('POST', `/work-items/${item.id}/decision`, { decision: 'pass', decisionId: 7 })).status, 400);
+  assert.equal((await decide({ decision: 'pass', decisionId: next.decisionId })).status, 200);
+  assert.equal((await hub.request('GET', `/runs/${run.id}`)).body.status, 'completed');
+  const gates = (await hub.request('GET', '/events?limit=1000')).body.events.filter(event => event.type === 'gate.result' && event.data.source === 'human');
+  assert.deepEqual(gates.map(event => event.data.decisionId), [item.decisionId, next.decisionId]);
+});
+
+/** Read a hub-owned SQLite file while the hub runs. */
+function query(file, sql, ...args) {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try { return db.prepare(sql).all(...args); } finally { db.close(); }
+}
+
+test('run state lives in the workflow RunStore; the hub keeps only a sequence per run and work items read from it (M15)', async t => {
+  const hub = await engineHub(t);
+  const items = Array.from({ length: 60 }, (_, index) => ({ title: `Item ${index}`, body: 'x'.repeat(4096) }));
+  const run = await hub.start({ schema: 'perpeto.workflow/1', nodes: [
+    node('ideas', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build it.', concurrency: 1 }), node('done', 'output'),
+  ], edges: [flow('ideas', 'builder'), flow('builder', 'done')] }, items);
+  const hubState = query(join(hub.directory, 'hub.sqlite'), "SELECT data FROM entities WHERE kind='engine-state' AND id=?", run.id);
+  assert.equal(hubState.length, 1); assert.ok(hubState[0].data.length < 200, `hub engine-state is ${hubState[0].data.length} bytes`);
+  assert.deepEqual(Object.keys(JSON.parse(hubState[0].data)).sort(), ['id', 'seq']);
+  assert.equal(query(join(hub.directory, 'workflow.sqlite'), 'SELECT COUNT(*) AS count FROM work_items WHERE run_id=?', run.id)[0].count, 60);
+  for (const suffix of ['', '-wal']) assert.equal((await stat(join(hub.directory, `workflow.sqlite${suffix}`))).mode & 0o777, 0o600);
+  const listed = (await hub.request('GET', `/runs/${run.id}/work-items`)).body.workItems;
+  assert.equal(listed.length, 60); assert.equal(listed[0].projectId, run.projectId); assert.equal(listed[0].body.length, 4096);
+  const build = await hub.lease('assignment');
+  assert.equal((await hub.finish(build, { outcome: 'success', summary: 'Built.' })).status, 200);
+  await hub.restart();
+  assert.equal((await hub.request('GET', `/runs/${run.id}/work-items`)).body.workItems.filter(item => item.status === 'done').length, 1);
+  const second = await hub.lease('assignment'); assert.ok(second); assert.notEqual(second.id, build.id);
+  const seq = query(join(hub.directory, 'workflow.sqlite'), 'SELECT last_seq FROM runs WHERE id=?', run.id)[0].last_seq;
+  assert.equal(JSON.parse(query(join(hub.directory, 'hub.sqlite'), "SELECT data FROM entities WHERE kind='engine-state' AND id=?", run.id)[0].data).seq, seq);
+  const metrics = (await hub.request('GET', `/runs/${run.id}/metrics?window=1h`)).body;
+  assert.equal(metrics.nodes.find(value => value.nodeId === 'builder').done, 1);
+});
+
+test('effects the RunStore committed are applied after the hub transaction that carried them rolls back (M15)', async t => {
+  const engine = createWorkflowAdapter(); const applyEvent = engine.applyEvent.bind(engine); let fail = true;
+  engine.applyEvent = input => {
+    const result = applyEvent(input);
+    if (fail && input.event.type === 'input') { fail = false; throw new Error('Simulated hub failure after the engine committed.'); }
+    return result;
+  };
+  const hub = await engineHub(t, { engine });
+  const run = await hub.start({ schema: 'perpeto.workflow/1', nodes: [
+    node('ideas', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build it.', concurrency: 2 }), node('done', 'output'),
+  ], edges: [flow('ideas', 'builder'), flow('builder', 'done')] }, [{ title: 'First' }]);
+  assert.equal((await hub.request('POST', `/runs/${run.id}/inputs`, { items: [{ title: 'Second' }] })).status, 500);
+  // Maintenance applies the outbox effects the hub missed; nothing is applied twice.
+  const assignments = await (async () => {
+    for (let index = 0; index < 200; index++) {
+      const value = (await hub.request('GET', `/runs/${run.id}/assignments`)).body.assignments;
+      if (value.length === 2) return value;
+      await sleep(20);
+    }
+    assert.fail('missed effects were not applied');
+  })();
+  assert.equal(new Set(assignments.map(value => value.id)).size, 2);
+  assert.equal((await hub.request('GET', `/runs/${run.id}/work-items`)).body.workItems.length, 2);
+  await sleep(100);
+  assert.equal(query(join(hub.directory, 'workflow.sqlite'), 'SELECT COUNT(*) AS count FROM effects WHERE acked_at IS NULL')[0].count, 0, 'outbox drained');
+  assert.equal((await hub.request('GET', `/runs/${run.id}/assignments`)).body.assignments.length, 2);
+});
+
+test('runs whose whole engine state predates the RunStore keep advancing from the hub-held state (M15)', async t => {
+  const hub = await engineHub(t);
+  const started = await hub.start({ schema: 'perpeto.workflow/1', nodes: [
+    node('ideas', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build it.' }), node('done', 'output'),
+  ], edges: [flow('ideas', 'builder'), flow('builder', 'done')] }, [{ title: 'Current' }]);
+  const db = new DatabaseSync(join(hub.directory, 'hub.sqlite')); t.after(() => { if (db.isOpen) db.close(); });
+  const get = (kind, id) => JSON.parse(db.prepare('SELECT data FROM entities WHERE kind=? AND id=?').get(kind, id).data);
+  const put = (kind, value) => db.prepare('INSERT INTO entities VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data').run(kind, value.id, JSON.stringify(value));
+  const legacyId = 'run_legacy00000000000000000000001';
+  const run = { ...get('run', started.id), id: legacyId }; const workflow = get('run-workflow', started.id).workflow;
+  const { state } = step(null, { id: `run:${legacyId}`, at: new Date().toISOString(), type: 'run.started', data: { runId: legacyId, projectId: run.projectId,
+    workflowId: workflow.id, workflowVersion: workflow.version, graph: workflow.graph, repo: { url: '/tmp/unused.git', defaultBranch: 'main' } } });
+  put('run', run); put('run-workflow', { id: legacyId, workflow }); put('engine-state', { id: legacyId, state });
+  db.close();
+  assert.equal((await hub.request('POST', `/runs/${legacyId}/inputs`, { items: [{ title: 'Legacy' }] })).status, 202);
+  const items = (await hub.request('GET', `/runs/${legacyId}/work-items`)).body.workItems;
+  assert.deepEqual(items.map(item => item.title), ['Legacy']); assert.equal(items[0].projectId, run.projectId);
+  assert.equal((await hub.request('GET', `/runs/${legacyId}/assignments`)).body.assignments.length, 1);
+  const stored = JSON.parse(query(join(hub.directory, 'hub.sqlite'), "SELECT data FROM entities WHERE kind='engine-state' AND id=?", legacyId)[0].data);
+  assert.equal(Object.keys(stored.state.workItems).length, 1, 'the legacy run keeps its state in the hub');
+  assert.equal(query(join(hub.directory, 'workflow.sqlite'), 'SELECT COUNT(*) AS count FROM runs WHERE id=?', legacyId)[0].count, 0);
 });
