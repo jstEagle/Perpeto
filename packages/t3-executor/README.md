@@ -68,7 +68,7 @@ Live acceptance run 1 showed factory agents reading the operator's personal inst
 
 | Layer | Operator setup that stays out | What still loads |
 | --- | --- | --- |
-| Claude | `--setting-sources=project,local`: `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, user hooks, skills and plugins. The Claude Agent SDK loads every source when T3 passes none | The repository's `CLAUDE.md` and `.claude/` settings. The login, from the base instance's `homePath` |
+| Claude | `--setting-sources=project,local`: `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, user hooks, skills, plugins and user-scope MCP servers in `~/.claude.json`. The Claude Agent SDK loads every source when T3 passes none. `ENABLE_CLAUDEAI_MCP_SERVERS=false` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` turn off the account's claude.ai connectors and auto memory, which setting sources do not cover | The repository's `CLAUDE.md` and `.claude/` settings. The login, from the base instance's `homePath`. The account email in Claude's session context, and transcripts under `~/.claude/projects` |
 | Codex | A factory `CODEX_HOME` with a minimal `config.toml` and `auth.json` linked to the source home's: `~/.codex/AGENTS.md`, skills, memories, hooks, plugins, MCP servers, rollout history. The config also disables bundled skills and every skill in `~/.agents/skills` (`personalSkillDirs`), which Codex reads whatever `CODEX_HOME` is. `-c features.{memories,hooks,plugins,apps,multi_agent,multi_agent_v2}=false` disables account-level plugins and apps | The repository's `AGENTS.md` and skills. The one login: token refreshes write through the link. Pooled accounts keep their Perpeto-owned homes |
 | Git | `GIT_AUTHOR_*` and `GIT_COMMITTER_*` from `gitIdentity`, and `commit.gpgsign`, `tag.gpgsign` off through `GIT_CONFIG_*`, so the operator's identity and signing key never touch agent commits | The operator's other Git config, such as credential helpers |
 
@@ -88,7 +88,7 @@ Context before the agent does anything, from Codex rollouts (`gpt-6.1-sol`, low 
 
 The factory column is `node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low` on 21 October 2026. A fresh before/after pair used 15,256 and 13,562 first-call input tokens, a reduction of 1,694 (11.1%). Each was one builder turn in its own temporary runtime and repository, using the existing login; both committed as `Perpeto Agent <agents@perpeto.local>`. These are actual Codex rollout counts, including its own instructions and tools, rather than a characters-to-tokens estimate. The multi-agent notes come from the model catalog (`multi_agent_version: v2`) and remain.
 
-Not verified live: Claude isolation (configured and unit-tested only), and whether `--setting-sources` also hides user-scope MCP servers in `~/.claude.json`.
+Claude isolation was verified live in [live acceptance 2](../../docs/handoffs/live-acceptance-2.md#claude-side-isolation): ten Claude Sonnet turns carried no personal instructions, skills, plugins, hooks or `~/.claude.json` MCP servers, and committed as Perpeto Agent. First-call input was 19,496 to 20,352 tokens for planner, builder and senior reviewer.
 
 ### Local account-provider contract
 

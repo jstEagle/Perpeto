@@ -1,0 +1,225 @@
+06:15:00 assignment.updated assignment:asg_278051bf queued
+06:15:00 assignment.state assignment:asg_278051bf queued planner
+06:15:00 workitem.moved workItem:wi_278051bfb ideas-planner ideas planner
+06:15:00 run.started run:run_278051bf 
+06:15:00 assignment.leased assignment:asg_278051bf m
+06:15:00 assignment.state assignment:asg_278051bf leased planner m
+06:15:00 assignment.state assignment:asg_278051bf running planner m
+06:15:00 assignment.started assignment:asg_278051bf 
+06:15:17 assignment.usage assignment:asg_278051bf 
+06:15:19 assignment.state assignment:asg_278051bf succeeded planner m
+06:15:19 assignment.updated assignment:asg_278051bf queued
+06:15:19 assignment.state assignment:asg_278051bf queued builder
+06:15:19 assignment.updated assignment:asg_278051bf queued
+06:15:19 assignment.state assignment:asg_278051bf queued builder
+06:15:19 workitem.moved workItem:wi_278051bfb planner-delivery planner delivery-loop
+06:15:19 loop.iteration workItem:wi_278051bfb delivery-loop
+06:15:19 workitem.moved workItem:wi_278051bfb delivery-review delivery-loop review-loop
+06:15:19 loop.iteration workItem:wi_278051bfb review-loop
+06:15:19 workitem.moved workItem:wi_278051bfb review-builder review-loop builder
+06:15:19 workitem.moved workItem:wi_278051bfb planner-delivery planner delivery-loop
+06:15:19 loop.iteration workItem:wi_278051bfb delivery-loop
+06:15:19 workitem.moved workItem:wi_278051bfb delivery-review delivery-loop review-loop
+06:15:19 loop.iteration workItem:wi_278051bfb review-loop
+06:15:19 workitem.moved workItem:wi_278051bfb review-builder review-loop builder
+06:15:19 assignment.completed assignment:asg_278051bf 
+06:15:19 assignment.leased assignment:asg_278051bf m
+06:15:19 assignment.state assignment:asg_278051bf leased builder m
+06:15:19 assignment.state assignment:asg_278051bf running builder m
+06:15:19 assignment.started assignment:asg_278051bf 
+06:15:19 assignment.leased assignment:asg_278051bf m
+06:15:19 assignment.state assignment:asg_278051bf leased builder m
+06:15:19 assignment.state assignment:asg_278051bf running builder m
+06:15:19 assignment.started assignment:asg_278051bf 
+06:15:34 assignment.usage assignment:asg_278051bf 
+06:15:35 assignment.usage assignment:asg_278051bf 
+06:15:36 assignment.state assignment:asg_278051bf succeeded builder m
+06:15:36 assignment.updated assignment:asg_278051bf queued
+06:15:36 assignment.state assignment:asg_278051bf queued reviewer
+06:15:36 workitem.moved workItem:wi_278051bfb builder-reviewer builder reviewer
+06:15:36 assignment.completed assignment:asg_278051bf 
+06:15:36 assignment.leased assignment:asg_278051bf m
+06:15:36 assignment.state assignment:asg_278051bf leased reviewer m
+06:15:36 assignment.state assignment:asg_278051bf running reviewer m
+06:15:36 assignment.started assignment:asg_278051bf 
+06:15:37 assignment.state assignment:asg_278051bf succeeded builder m
+06:15:37 assignment.updated assignment:asg_278051bf queued
+06:15:37 assignment.state assignment:asg_278051bf queued reviewer
+06:15:37 workitem.moved workItem:wi_278051bfb builder-reviewer builder reviewer
+06:15:37 assignment.completed assignment:asg_278051bf 
+06:15:37 assignment.leased assignment:asg_278051bf m
+06:15:37 assignment.state assignment:asg_278051bf leased reviewer m
+06:15:37 assignment.state assignment:asg_278051bf running reviewer m
+06:15:37 assignment.started assignment:asg_278051bf 
+06:15:53 assignment.usage assignment:asg_278051bf 
+06:15:55 assignment.state assignment:asg_278051bf succeeded reviewer m
+06:15:55 gate.result assignment:asg_278051bf fail review reviewer m
+06:15:55 assignment.updated assignment:asg_278051bf queued
+06:15:55 assignment.state assignment:asg_278051bf queued builder
+06:15:55 workitem.moved workItem:wi_278051bfb reviewer-fail reviewer review-loop
+06:15:55 loop.iteration workItem:wi_278051bfb review-loop
+06:15:55 workitem.moved workItem:wi_278051bfb review-builder review-loop builder
+06:15:55 assignment.completed assignment:asg_278051bf fail
+06:15:55 assignment.leased assignment:asg_278051bf m
+06:15:55 assignment.state assignment:asg_278051bf leased builder m
+06:15:55 assignment.state assignment:asg_278051bf running builder m
+06:15:55 assignment.started assignment:asg_278051bf 
+06:15:56 assignment.usage assignment:asg_278051bf 
+06:15:58 assignment.state assignment:asg_278051bf succeeded reviewer m
+06:15:58 gate.result assignment:asg_278051bf pass review reviewer m
+06:15:58 job.updated job:job_278051bf queued
+06:15:58 workitem.moved workItem:wi_278051bfb reviewer-pass reviewer ci
+06:15:58 assignment.completed assignment:asg_278051bf pass
+06:15:58 job.leased job:job_278051bf m
+06:15:58 job.started job:job_278051bf 
+06:15:59 job.step job:job_278051bf passed
+06:15:59 job.step job:job_278051bf passed
+06:15:59 gate.result assignment:job_278051bf passed ci ci m
+06:15:59 merge-entry.updated merge-entry:mq_278051bfb queued
+06:15:59 workitem.moved workItem:wi_278051bfb ci-pass ci merge
+06:15:59 job.completed job:job_278051bf passed
+06:15:59 merge-entry.enqueued merge-entry:mq_278051bfb 
+06:15:59 job.updated job:job_mq_bd7e5 queued merge-queue
+06:15:59 merge-entry.updated merge-entry:mq_278051bfb testing
+06:15:59 job.leased job:job_mq_bd7e5 m
+06:15:59 job.started job:job_mq_bd7e5 
+06:16:00 job.step job:job_mq_bd7e5 passed
+06:16:00 job.step job:job_mq_bd7e5 passed
+06:16:00 gate.result assignment:job_mq_bd7e5 passed merge-queue merge m
+06:16:00 job.completed job:job_mq_bd7e5 passed
+06:16:00 merge-entry.updated merge-entry:mq_278051bfb merged
+06:16:00 gate.result workItem:wi_278051bfb pass merge-queue merge
+06:16:00 workitem.moved workItem:wi_278051bfb merge-pass merge shipped
+06:16:09 assignment.usage assignment:asg_278051bf 
+06:16:12 assignment.state assignment:asg_278051bf succeeded builder m
+06:16:12 assignment.updated assignment:asg_278051bf queued
+06:16:12 assignment.state assignment:asg_278051bf queued reviewer
+06:16:12 workitem.moved workItem:wi_278051bfb builder-reviewer builder reviewer
+06:16:12 assignment.completed assignment:asg_278051bf 
+06:16:12 assignment.leased assignment:asg_278051bf m
+06:16:12 assignment.state assignment:asg_278051bf leased reviewer m
+06:16:12 assignment.state assignment:asg_278051bf running reviewer m
+06:16:12 assignment.started assignment:asg_278051bf 
+06:16:18 assignment.usage assignment:asg_278051bf 
+06:16:20 assignment.state assignment:asg_278051bf succeeded reviewer m
+06:16:20 gate.result assignment:asg_278051bf fail review reviewer m
+06:16:20 assignment.updated assignment:asg_278051bf queued
+06:16:20 assignment.state assignment:asg_278051bf queued senior-reviewer
+06:16:20 workitem.moved workItem:wi_278051bfb reviewer-fail reviewer review-loop
+06:16:20 loop.iteration workItem:wi_278051bfb review-loop
+06:16:20 workitem.escalated workItem:wi_278051bfb senior-reviewer loop_limit
+06:16:20 assignment.completed assignment:asg_278051bf fail
+06:16:20 assignment.leased assignment:asg_278051bf m
+06:16:20 assignment.state assignment:asg_278051bf leased senior-reviewer m
+06:16:20 assignment.state assignment:asg_278051bf running senior-reviewer m
+06:16:20 assignment.started assignment:asg_278051bf 
+06:16:34 assignment.usage assignment:asg_278051bf 
+06:16:37 assignment.state assignment:asg_278051bf succeeded senior-reviewer m
+06:16:37 gate.result assignment:asg_278051bf fail review senior-reviewer m
+06:16:37 workitem.moved workItem:wi_278051bfb senior-fail senior-reviewer triage
+06:16:37 human.requested workItem:wi_278051bfb triage
+06:16:37 assignment.completed assignment:asg_278051bf fail
+06:17:07 job.updated job:job_278051bf queued
+06:17:07 workitem.moved workItem:wi_278051bfb triage-pass triage ci
+06:17:07 work-item.decision work-item:wi_278051bfb 
+06:17:07 gate.result assignment:wi_278051bfb human triage
+06:17:07 job.leased job:job_278051bf m
+06:17:07 job.started job:job_278051bf 
+06:17:07 job.step job:job_278051bf passed
+06:17:08 job.step job:job_278051bf passed
+06:17:08 gate.result assignment:job_278051bf passed ci ci m
+06:17:08 merge-entry.updated merge-entry:mq_278051bfb queued
+06:17:08 workitem.moved workItem:wi_278051bfb ci-pass ci merge
+06:17:08 job.completed job:job_278051bf passed
+06:17:08 merge-entry.enqueued merge-entry:mq_278051bfb 
+06:17:08 merge-entry.updated merge-entry:mq_278051bfb rejected Merge conflict with the speculative base.
+06:17:08 assignment.updated assignment:asg_278051bf queued
+06:17:08 assignment.state assignment:asg_278051bf queued builder
+06:17:08 gate.result workItem:wi_278051bfb fail merge-queue merge
+06:17:08 workitem.moved workItem:wi_278051bfb merge-fail merge delivery-loop
+06:17:08 loop.iteration workItem:wi_278051bfb delivery-loop
+06:17:08 workitem.moved workItem:wi_278051bfb delivery-review delivery-loop review-loop
+06:17:08 loop.iteration workItem:wi_278051bfb review-loop
+06:17:08 workitem.moved workItem:wi_278051bfb review-builder review-loop builder
+06:17:08 assignment.leased assignment:asg_278051bf m
+06:17:08 assignment.state assignment:asg_278051bf leased builder m
+06:17:08 assignment.state assignment:asg_278051bf running builder m
+06:17:08 assignment.started assignment:asg_278051bf 
+06:17:44 assignment.usage assignment:asg_278051bf 
+06:17:46 assignment.state assignment:asg_278051bf succeeded builder m
+06:17:46 assignment.updated assignment:asg_278051bf queued
+06:17:46 assignment.state assignment:asg_278051bf queued reviewer
+06:17:46 workitem.moved workItem:wi_278051bfb builder-reviewer builder reviewer
+06:17:46 assignment.completed assignment:asg_278051bf 
+06:17:46 assignment.leased assignment:asg_278051bf m
+06:17:46 assignment.state assignment:asg_278051bf leased reviewer m
+06:17:46 assignment.state assignment:asg_278051bf running reviewer m
+06:17:46 assignment.started assignment:asg_278051bf 
+06:17:52 assignment.usage assignment:asg_278051bf 
+06:17:55 assignment.state assignment:asg_278051bf succeeded reviewer m
+06:17:55 gate.result assignment:asg_278051bf fail review reviewer m
+06:17:55 assignment.updated assignment:asg_278051bf queued
+06:17:55 assignment.state assignment:asg_278051bf queued builder
+06:17:55 workitem.moved workItem:wi_278051bfb reviewer-fail reviewer review-loop
+06:17:55 loop.iteration workItem:wi_278051bfb review-loop
+06:17:55 workitem.moved workItem:wi_278051bfb review-builder review-loop builder
+06:17:55 assignment.completed assignment:asg_278051bf fail
+06:17:55 assignment.leased assignment:asg_278051bf m
+06:17:55 assignment.state assignment:asg_278051bf leased builder m
+06:17:55 assignment.state assignment:asg_278051bf running builder m
+06:17:55 assignment.started assignment:asg_278051bf 
+06:18:09 assignment.usage assignment:asg_278051bf 
+06:18:11 assignment.state assignment:asg_278051bf succeeded builder m
+06:18:11 assignment.updated assignment:asg_278051bf queued
+06:18:11 assignment.state assignment:asg_278051bf queued reviewer
+06:18:11 workitem.moved workItem:wi_278051bfb builder-reviewer builder reviewer
+06:18:11 assignment.completed assignment:asg_278051bf 
+06:18:11 assignment.leased assignment:asg_278051bf m
+06:18:11 assignment.state assignment:asg_278051bf leased reviewer m
+06:18:11 assignment.state assignment:asg_278051bf running reviewer m
+06:18:11 assignment.started assignment:asg_278051bf 
+06:18:19 assignment.usage assignment:asg_278051bf 
+06:18:21 assignment.state assignment:asg_278051bf succeeded reviewer m
+06:18:21 gate.result assignment:asg_278051bf fail review reviewer m
+06:18:21 assignment.updated assignment:asg_278051bf queued
+06:18:21 assignment.state assignment:asg_278051bf queued senior-reviewer
+06:18:21 workitem.moved workItem:wi_278051bfb reviewer-fail reviewer review-loop
+06:18:21 loop.iteration workItem:wi_278051bfb review-loop
+06:18:21 workitem.escalated workItem:wi_278051bfb senior-reviewer loop_limit
+06:18:21 assignment.completed assignment:asg_278051bf fail
+06:18:21 assignment.leased assignment:asg_278051bf m
+06:18:21 assignment.state assignment:asg_278051bf leased senior-reviewer m
+06:18:21 assignment.state assignment:asg_278051bf running senior-reviewer m
+06:18:21 assignment.started assignment:asg_278051bf 
+06:18:32 assignment.usage assignment:asg_278051bf 
+06:18:34 assignment.state assignment:asg_278051bf succeeded senior-reviewer m
+06:18:34 gate.result assignment:asg_278051bf fail review senior-reviewer m
+06:18:34 workitem.moved workItem:wi_278051bfb senior-fail senior-reviewer triage
+06:18:34 human.requested workItem:wi_278051bfb triage
+06:18:34 assignment.completed assignment:asg_278051bf fail
+06:18:42 job.updated job:job_278051bf queued
+06:18:42 workitem.moved workItem:wi_278051bfb triage-pass triage ci
+06:18:42 work-item.decision work-item:wi_278051bfb 
+06:18:42 gate.result assignment:wi_278051bfb human triage
+06:18:42 job.leased job:job_278051bf m
+06:18:42 job.started job:job_278051bf 
+06:18:42 job.step job:job_278051bf passed
+06:18:43 job.step job:job_278051bf passed
+06:18:43 gate.result assignment:job_278051bf passed ci ci m
+06:18:43 merge-entry.updated merge-entry:mq_278051bfb queued
+06:18:43 workitem.moved workItem:wi_278051bfb ci-pass ci merge
+06:18:43 job.completed job:job_278051bf passed
+06:18:43 merge-entry.enqueued merge-entry:mq_278051bfb 
+06:18:43 job.updated job:job_mq_43a5d queued merge-queue
+06:18:43 merge-entry.updated merge-entry:mq_278051bfb testing
+06:18:43 job.leased job:job_mq_43a5d m
+06:18:43 job.started job:job_mq_43a5d 
+06:18:43 job.step job:job_mq_43a5d passed
+06:18:43 job.step job:job_mq_43a5d passed
+06:18:43 gate.result assignment:job_mq_43a5d passed merge-queue merge m
+06:18:43 job.completed job:job_mq_43a5d passed
+06:18:44 merge-entry.updated merge-entry:mq_278051bfb merged
+06:18:44 gate.result workItem:wi_278051bfb pass merge-queue merge
+06:18:44 workitem.moved workItem:wi_278051bfb merge-pass merge shipped
+06:18:44 run.updated run:run_278051bf completed
+RUN completed

@@ -71,6 +71,19 @@ test('a Claude factory instance loads project settings only and keeps its login 
   assert.notEqual(other.instanceId, instanceId);
 });
 
+test('a Claude factory instance turns off claude.ai connectors and auto memory, whatever the base set', async () => {
+  const { mutation } = await factoryInstance({
+    instanceId: 'claudeAgent', driver: 'claudeAgent',
+    environment: [{ name: 'ENABLE_CLAUDEAI_MCP_SERVERS', value: 'true', sensitive: false }],
+  }, resolveIsolation({ agentHomesDir: '/unused' }));
+  const env = envOf(mutation);
+  assert.equal(env.ENABLE_CLAUDEAI_MCP_SERVERS, 'false');
+  assert.equal(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
+  assert.equal(mutation.instance.environment.filter(variable => variable.name === 'ENABLE_CLAUDEAI_MCP_SERVERS').length, 1);
+  const codex = await factoryInstance({ instanceId: 'codex', driver: 'codex' }, resolveIsolation({ agentHomesDir: '/tmp/unused-homes', codexHome: '/tmp/unused-codex' }), { pooled: true });
+  assert.equal(envOf(codex.mutation).CLAUDE_CODE_DISABLE_AUTO_MEMORY, undefined);
+});
+
 test('a Codex factory home holds only a minimal config and a link to the login', async t => {
   const dir = await temp(t, 'iso-codex-');
   const source = join(dir, 'operator-codex');
