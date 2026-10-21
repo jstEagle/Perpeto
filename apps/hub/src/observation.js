@@ -30,17 +30,16 @@ export class Observation {
   async metrics({ projectId, runId, window = '24h' }) {
     requireValue(Object.hasOwn(windows, window), 'window must be 1h, 24h or 7d.');
     if (runId) this.store.need('run', runId); else this.store.need('project', projectId);
-    const matches = value => (!projectId || value.projectId === projectId) && (!runId || value.runId === runId);
+    const scoped = kind => runId ? this.store.forRun(kind, runId) : this.store.forProject(kind, projectId);
     const runs = this.store.list('run', value => (!runId || value.id === runId) && (!projectId || value.projectId === projectId));
-    const assignments = this.store.list('assignment', matches);
+    const assignments = scoped('assignment');
     const machines = this.store.list('machine');
     const from = new Date(Date.now() - windows[window]).toISOString(); const at = new Date().toISOString();
-    const events = this.store.db.prepare('SELECT seq FROM events WHERE at>=? AND (? IS NULL OR project_id=?) AND (? IS NULL OR run_id=?) ORDER BY seq')
-      .all(from, projectId ?? null, projectId ?? null, runId ?? null, runId ?? null).flatMap(row => this.store.events(row.seq - 1, 1));
+    const events = this.store.eventsSince(from, { projectId, runId });
     const states = Object.fromEntries(runs.map(run => [run.id, this.store.get('engine-state', run.id)?.state ?? null]));
     const result = await this.hub.engine.computeRunMetrics({ projectId, runId, runs, states, workflows: runs.map(run => this.store.need('run-workflow', run.id).workflow),
-      assignments, jobs: this.store.list('job', matches), workItems: this.store.list('work-item', matches), machines,
-      usage: this.store.list('usage', value => matches(value) && value.at >= from && value.at <= at), events, window, windowMs: windows[window], from, at });
+      assignments, jobs: scoped('job'), workItems: scoped('work-item'), machines,
+      usage: this.store.usageRecords({ projectId, runId }, from, at), events, window, windowMs: windows[window], from, at });
     object(result, 'metrics result'); object(result.run, 'run metrics');
     for (const key of ['nodes', 'edges', 'bottlenecks']) requireValue(Array.isArray(result[key]), `Metrics ${key} must be an array.`);
     const running = assignments.filter(value => ['leased', 'running'].includes(value.status) && Date.parse(value.leaseExpiresAt) > Date.now());

@@ -56,11 +56,18 @@ function prepareDatabase(path) {
 export class Hub {
   constructor(config, engine) {
     this.config = config; this.engine = engine; this.listeners = new Set(); this.pending = Promise.resolve();
+    // Long-poll waiters by machine, and what committed changes could let a machine lease (see flush).
+    this.waiters = new Map(); this.full = new Map(); this.due = []; this.lastSweep = 0; this.wakes = 0;
+    this.signals = { work: [], machines: new Set(), events: false };
     // An engine that persists run state (the workflow adapter's RunStore) gets its own private database.
     const databases = [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, ...(engine.open ? [config.workflowDatabasePath] : [])];
     for (const path of [...databases, config.ownerTokenPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     for (const path of databases) prepareDatabase(path);
     this.store = new HubStore(config.databasePath);
+    this.store.onPut = (kind, value) => this.observe(kind, value);
+    this.store.onEvent = () => { this.signals.events = true; };
+    this.store.onCommit = () => this.flush();
+    this.store.onRollback = () => { this.signals = { work: [], machines: new Set(), events: false }; };
     this.workflows = new Workflows(this); this.observation = new Observation(this);
     try {
       try {
@@ -105,7 +112,55 @@ export class Hub {
     this.pending = result.catch(() => {});
     return result;
   }
+  /** Wake event streams. Long-poll leases are woken by flush, only when they could lease something. */
   notify() { for (const fn of this.listeners) fn(); }
+  /** The machine a bearer token belongs to, without side effects, so a long-poll can register before its first lease. */
+  machineOf(authorization) {
+    const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization ?? '');
+    return match ? this.store.db.prepare("SELECT machine_id FROM tokens WHERE hash=? AND kind='node'").get(hash(match[1]))?.machine_id ?? null : null;
+  }
+  /** Register a long-poll waiting for `kinds` on a machine. Returns a function that removes it. */
+  waiter(machineId, kinds, wake) {
+    const machine = this.store.get('machine', machineId);
+    const waiter = { kinds, wake, machine: machine && { os: machine.os, labels: machine.labels, providers: machine.providers } };
+    if (!this.waiters.has(machineId)) this.waiters.set(machineId, new Set());
+    this.waiters.get(machineId).add(waiter);
+    return () => { const set = this.waiters.get(machineId); set?.delete(waiter); if (!set?.size) this.waiters.delete(machineId); };
+  }
+  /** Note what a written assignment or job could unblock: new queued work, or a slot freed on its machine. */
+  observe(kind, value) {
+    if (kind !== 'assignment' && kind !== 'job') return;
+    if (value.status === 'queued') this.signals.work.push({ kind, at: value.notBefore, requirements: value.requirements ?? {}, provider: kind === 'assignment' ? value.harness?.provider : undefined });
+    else if (!active(value) && value.machineId) this.signals.machines.add(value.machineId);
+  }
+  signalMachine(machineId) { if (machineId) this.signals.machines.add(machineId); }
+  /**
+   * After a commit, wake only waiters that could now lease: every waiter of a machine whose capacity or profile
+   * changed, and, for new queued work, waiters of machines that meet its requirements and have a free slot of that
+   * kind. Work is bucketed by requirements, so a burst of similar items checks each machine once. Work with a future
+   * notBefore is held until it is due.
+   */
+  flush() {
+    const { work, machines, events } = this.signals;
+    this.signals = { work: [], machines: new Set(), events: false };
+    if (events) this.notify();
+    if (!this.waiters.size) return;
+    const time = Date.now(); const buckets = new Map();
+    for (const item of work) {
+      if (item.at && Date.parse(item.at) > time) { this.due.push(item); continue; }
+      const { os, labels = [], providers = [] } = item.requirements;
+      buckets.set(JSON.stringify([item.kind, os, [...labels].sort(), [...providers].sort(), item.provider]), item);
+    }
+    const fits = (machine, item) => machine && (!item.requirements.os || item.requirements.os === machine.os) &&
+      (item.requirements.labels ?? []).every(label => machine.labels.includes(label)) &&
+      (item.requirements.providers ?? []).every(provider => machine.providers.includes(provider)) && (!item.provider || machine.providers.includes(item.provider));
+    for (const [machineId, waiters] of this.waiters) {
+      const changed = machines.has(machineId); const full = this.full.get(machineId) ?? {};
+      for (const waiter of waiters) {
+        if (changed || [...buckets.values()].some(item => waiter.kinds.includes(item.kind) && !full[item.kind] && fits(waiter.machine, item))) { this.wakes++; waiter.wake(); }
+      }
+    }
+  }
   async request({ method, path, body = {}, authorization, key, finalLease = true }) {
     return this.serialize(async () => {
       // Authorization and routing read the same parsed path, so no later normalization can redirect a node token.
@@ -120,7 +175,7 @@ export class Hub {
       const fingerprint = hash(canonical({ method, path, body }));
       const perform = async () => {
         if (mutation && idempotencyKey) {
-          const previous = this.store.db.prepare('SELECT fingerprint,response FROM idempotency WHERE scope=? AND key=?').get(scope, idempotencyKey);
+          const previous = this.store.idempotent(scope, idempotencyKey);
           if (previous) {
             if (previous.fingerprint !== fingerprint) fail(409, 'CONFLICT', 'Idempotency key already identifies a different request.');
             return this.restoreResponse(JSON.parse(previous.response));
@@ -130,13 +185,13 @@ export class Hub {
         const result = await this.route(method, target, routeBody, auth);
         const emptyLease = target.url.pathname === '/nodes/lease' && !result.body.assignments.length && !result.body.jobs.length;
         if (mutation && idempotencyKey && (!emptyLease || finalLease)) {
-          this.store.db.prepare('INSERT INTO idempotency VALUES(?,?,?,?)').run(scope, idempotencyKey, fingerprint, JSON.stringify(this.persistResponse(result)));
+          this.store.remember(scope, idempotencyKey, fingerprint, JSON.stringify(this.persistResponse(result)));
         }
         return result;
       };
       try {
         const result = mutation ? await this.store.transaction(perform) : await perform();
-        if (mutation && (target.url.pathname !== '/nodes/lease' || result.body.assignments.length || result.body.jobs.length)) this.notify();
+        if (!mutation) this.flush();
         if (this.delivery.dirty) this.delivery.schedule();
         return result;
       } catch (error) {
@@ -173,31 +228,45 @@ export class Hub {
             machine.status = 'offline'; this.store.put('machine', machine); this.emit('machine.offline', 'machine', machine); changed = true;
           }
         }
-        for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, active)) {
-          if (Date.parse(value.leaseExpiresAt) <= time) {
-            const run = value.runId && !value.delivery && this.engine.retriesLostWork ? this.store.get('run', value.runId) : null;
-            if (run) {
-              // The engine owns retries for run work: close this attempt and let its retry policy create the next one.
-              const attempt = value.attempt;
-              value.status = kind === 'job' ? 'error' : 'failed'; delete value.leaseExpiresAt;
-              if (kind === 'assignment') value.result = { outcome: 'failure', summary: 'Lease expired before a result arrived.' };
-              this.store.put(kind, value); this.emit(`${kind}.expired`, kind, value, { attempt, machineId: value.machineId });
-              if (kind === 'assignment') this.observation.assignment(value);
-              if (['running', 'paused'].includes(run.status)) await this.engineEvent(run, { type: 'lease.expired', kind, entityId: value.id, attempt });
-              changed = true; continue;
-            }
-            value.status = 'queued'; value.attempt += 1;
-            delete value.machineId; delete value.leaseExpiresAt;
-            this.store.put(kind, value); this.emit(`${kind}.requeued`, kind, value, { attempt: value.attempt });
-            if (kind === 'assignment') this.observation.assignment(value); changed = true;
+        for (const kind of ['assignment', 'job']) for (const value of this.store.expired(kind, new Date(time).toISOString())) {
+          this.signalMachine(value.machineId);
+          const run = value.runId && !value.delivery && this.engine.retriesLostWork ? this.store.get('run', value.runId) : null;
+          if (run) {
+            // The engine owns retries for run work: close this attempt and let its retry policy create the next one.
+            const attempt = value.attempt;
+            value.status = kind === 'job' ? 'error' : 'failed'; delete value.leaseExpiresAt;
+            if (kind === 'assignment') value.result = { outcome: 'failure', summary: 'Lease expired before a result arrived.' };
+            this.store.put(kind, value); this.emit(`${kind}.expired`, kind, value, { attempt, machineId: value.machineId });
+            if (kind === 'assignment') this.observation.assignment(value);
+            if (['running', 'paused'].includes(run.status)) await this.engineEvent(run, { type: 'lease.expired', kind, entityId: value.id, attempt });
+            changed = true; continue;
           }
+          value.status = 'queued'; value.attempt += 1;
+          delete value.machineId; delete value.leaseExpiresAt;
+          this.store.put(kind, value); this.emit(`${kind}.requeued`, kind, value, { attempt: value.attempt });
+          if (kind === 'assignment') this.observation.assignment(value); changed = true;
         }
       });
       if (changed) this.notify();
+      // Retries waiting out a notBefore become leasable without any write; wake their machines when they are due.
+      const time = Date.now(); const ready = this.due.filter(item => Date.parse(item.at) <= time);
+      if (ready.length) {
+        this.due = this.due.filter(item => Date.parse(item.at) > time);
+        for (const item of ready) if (item.machineId) this.signalMachine(item.machineId); else this.signals.work.push({ ...item, at: undefined });
+        this.flush();
+      }
+      if (time - this.lastSweep >= this.config.retentionSweepIntervalMs) { this.lastSweep = time; await this.store.transaction(() => this.sweep(time)); }
     });
     await this.reconcileEngine();
     // Merge queue progress (Git preparation and publication) runs outside the request serializer between its two syncs.
     this.delivery.schedule();
+  }
+  /** Retention: archive (or delete) finished work and events, roll up usage, and expire idempotency records. */
+  sweep(time) {
+    const before = ms => new Date(time - ms).toISOString();
+    const counts = this.store.sweep({ finishedBefore: before(this.config.finishedWorkRetentionMs), eventsBefore: before(this.config.eventRetentionMs),
+      usageBefore: before(this.config.usageRetentionMs), idempotencyBefore: before(this.config.idempotencyRetentionMs), archive: this.config.archiveFinished });
+    return counts;
   }
   /**
    * The workflow RunStore commits separately from the hub's database. Apply outbox effects a rolled-back hub transaction
@@ -331,7 +400,7 @@ export class Hub {
     if (['stopped', 'completed', 'failed'].includes(run.status)) this.cancelRunWork(run);
   }
   cancelRunWork(run) {
-    for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, item => item.runId === run.id && (item.status === 'queued' || active(item)))) this.cancelWork(kind, value);
+    for (const kind of ['assignment', 'job']) for (const value of this.store.byStatus(kind, ['queued', 'leased', 'running'], item => item.runId === run.id)) this.cancelWork(kind, value);
   }
   requirements(value) {
     object(value, 'requirements');
@@ -345,31 +414,41 @@ export class Hub {
     const max = Math.min(integer(body.max ?? 1, 'max', 1), 1000);
     const result = { assignments: [], jobs: [] };
     if (machine.status !== 'online' || Date.now() - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) return result;
-    let remaining = max;
+    let remaining = max; const full = {}; const runs = new Map();
+    const runStatus = runId => { if (!runs.has(runId)) runs.set(runId, this.store.get('run', runId)?.status); return runs.get(runId); };
     for (const kind of [...new Set(kinds)]) {
-      const resource = kind === 'assignment' ? 'agents' : 'jobs';
       const capacity = machine.capacity[kind === 'assignment' ? 'maxAgents' : 'maxJobs'];
-      const held = this.store.list(kind, value => value.machineId === machine.id && active(value) && Date.parse(value.leaseExpiresAt) > Date.now()).length;
-      let available = Math.max(0, capacity - Math.max(held, machine.running[resource]));
-      for (const value of this.store.list(kind, item => item.status === 'queued')) {
-        if (!remaining || !available) break;
-        const requirements = value.requirements ?? {};
-        if (requirements.os && requirements.os !== machine.os) continue;
-        if (!(requirements.labels ?? []).every(label => machine.labels.includes(label))) continue;
-        if (!(requirements.providers ?? []).every(provider => machine.providers.includes(provider))) continue;
-        if (kind === 'assignment' && value.harness?.provider && !machine.providers.includes(value.harness.provider)) continue;
-        // Merge-queue jobs serve a queue shared by every run, so pausing one run must not hold the others' merges.
-        if (value.runId && !value.delivery && this.store.need('run', value.runId).status !== 'running') continue;
-        // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
-        if (value.notBefore && Date.parse(value.notBefore) > Date.now()) continue;
-        if (value.releasedBy?.machineId === machine.id && Date.parse(value.releasedBy.until) > Date.now()) continue;
-        value.status = 'leased'; value.machineId = machine.id; delete value.releasedBy;
-        value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
-        this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
-        if (kind === 'assignment') this.observation.assignment(value);
-        result[kind === 'assignment' ? 'assignments' : 'jobs'].push(value); remaining--; available--;
+      // Free capacity counts the leases the hub holds for this machine. The heartbeat's running count can arrive after a
+      // completion it predates and hold a free slot shut for a whole heartbeat; the node sizes `max` from its own count.
+      const held = this.store.held(kind, machine.id).filter(value => Date.parse(value.leaseExpiresAt) > Date.now()).length;
+      let available = Math.max(0, capacity - held);
+      full[kind] = available === 0;
+      // Queued work in pages, oldest first, stopping as soon as this lease is served.
+      for (let after = 0, page; remaining && available && (page = this.store.queuedPage(kind, after, 200)).length;) {
+        for (const { rowid, value } of page) {
+          after = rowid;
+          if (!remaining || !available) break;
+          const requirements = value.requirements ?? {};
+          if (requirements.os && requirements.os !== machine.os) continue;
+          if (!(requirements.labels ?? []).every(label => machine.labels.includes(label))) continue;
+          if (!(requirements.providers ?? []).every(provider => machine.providers.includes(provider))) continue;
+          if (kind === 'assignment' && value.harness?.provider && !machine.providers.includes(value.harness.provider)) continue;
+          // Merge-queue jobs serve a queue shared by every run, so pausing one run must not hold the others' merges.
+          if (value.runId && !value.delivery && runStatus(value.runId) !== 'running') continue;
+          // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
+          if (value.notBefore && Date.parse(value.notBefore) > Date.now()) continue;
+          if (value.releasedBy?.machineId === machine.id && Date.parse(value.releasedBy.until) > Date.now()) continue;
+          value.status = 'leased'; value.machineId = machine.id; delete value.releasedBy;
+          value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
+          this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
+          if (kind === 'assignment') this.observation.assignment(value);
+          result[kind === 'assignment' ? 'assignments' : 'jobs'].push(value); remaining--; available--;
+        }
+        if (page.length < 200) break;
       }
+      full[kind] = full[kind] || available === 0;
     }
+    this.full.set(machine.id, full);
     return result;
   }
   async route(method, { url, segments }, body, auth) {
@@ -425,7 +504,7 @@ export class Hub {
         const workflow = this.workflows.save({ id: id('wf'), projectId: entityId, name: body.name, purpose: body.purpose ?? 'custom', graph: body.graph, authoredBy: { kind: 'user' }, ...(body.rationale ? { rationale: body.rationale } : {}) });
         this.emit('workflow.created', 'workflow', workflow); return reply(workflow, 201);
       }
-      if (action === 'merge-queue' && method === 'GET') return reply({ entries: this.store.list('merge-entry', value => value.projectId === entityId) });
+      if (action === 'merge-queue' && method === 'GET') return reply({ entries: this.store.forProject('merge-entry', entityId) });
     }
     if (collection === 'workflows' && entityId && segments.length <= 3) {
       const workflow = this.store.need('workflow', entityId);
@@ -456,11 +535,13 @@ export class Hub {
       if (!action && method === 'GET') return reply(run);
       if (action === 'metrics' && method === 'GET') return reply(await this.observation.metrics({ runId: run.id, window: query.get('window') ?? '24h' }));
       if (action === 'work-items' && method === 'GET') return reply({ workItems: this.workItems(run.id) });
-      if (action === 'assignments' && method === 'GET') return reply({ assignments: this.store.list('assignment', item => item.runId === run.id) });
+      if (action === 'assignments' && method === 'GET') return reply({ assignments: this.store.forRun('assignment', run.id) });
       if (method === 'POST' && ['pause', 'resume', 'stop'].includes(action)) {
         const target = { pause: 'paused', resume: 'running', stop: 'stopped' }[action];
         requireValue(!['stopped', 'completed', 'failed'].includes(run.status), 'Run is already terminal.');
         run.status = target; if (action === 'stop') { run.stoppedAt = now(); this.cancelRunWork(run); }
+        // A resumed run's queued work becomes leasable without being written again.
+        if (action === 'resume') for (const kind of ['assignment', 'job']) for (const value of this.store.byStatus(kind, ['queued'], item => item.runId === run.id)) this.observe(kind, value);
         this.store.put('run', run); this.emit(`run.${action}`, 'run', { ...run, runId: run.id });
         // The engine closes its own items/merges; the hub already revoked leases above.
         if (this.store.get('engine-state', run.id)) await this.engineEvent(run, { type: { pause: 'run.paused', resume: 'run.resumed', stop: 'run.stopped' }[action], data: body.reason ? { reason: body.reason } : {} });
@@ -504,7 +585,7 @@ export class Hub {
       if (!machine.revokedAt) {
         machine.revokedAt = now(); machine.status = 'offline'; this.store.put('machine', machine);
         // Its leases expire at once: maintenance hands run work to the engine's retry policy and requeues the rest.
-        for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, item => item.machineId === machine.id && active(item))) {
+        for (const kind of ['assignment', 'job']) for (const value of this.store.held(kind, machine.id)) {
           value.leaseExpiresAt = now(); this.store.put(kind, value);
         }
         this.emit('machine.revoked', 'machine', machine, body.reason ? { reason: body.reason } : {});
@@ -537,6 +618,7 @@ export class Hub {
       const machine = this.store.need('machine', auth.machineId);
       if (path === '/nodes/lease') return reply(this.lease(machine, body));
       object(body.capacity, 'capacity'); object(body.running, 'running');
+      const profile = () => JSON.stringify([machine.capacity, machine.running, machine.status, machine.labels, machine.providers]); const before = profile();
       for (const key of ['maxAgents', 'maxJobs']) integer(body.capacity[key], key, 0, 100000);
       for (const key of ['agents', 'jobs']) integer(body.running[key], key, 0, 100000);
       if (body.providers !== undefined) strings(body.providers, 'providers');
@@ -560,17 +642,26 @@ export class Hub {
         for (const account of this.store.list('account', value => value.machineId === machine.id)) this.store.remove('account', account.id);
         for (const account of accounts) this.store.put('account', account);
       }
-      this.store.put('machine', machine); this.emit('machine.heartbeat', 'machine', machine); const cancelled = this.store.list('cancellation', value => value.machineId === machine.id && Date.parse(value.leaseExpiresAt) > Date.now());
+      // Heartbeats write no event (they would dominate the global log) and wake only this machine's polls, when its
+      // capacity, load or profile changed.
+      this.store.put('machine', machine); if (profile() !== before) this.signalMachine(machine.id); const cancelled = this.store.list('cancellation', value => value.machineId === machine.id && Date.parse(value.leaseExpiresAt) > Date.now());
       return reply({ status: machine.status, cancel: { assignments: cancelled.filter(value => value.kind === 'assignment').map(value => value.entityId), jobs: cancelled.filter(value => value.kind === 'job').map(value => value.entityId) } });
     }
     if (path === '/accounts' && method === 'GET') return reply({ accounts: this.store.list('account') });
-    if (path === '/jobs' && method === 'GET') return reply({ jobs: this.store.list('job', value => (!query.get('projectId') || value.projectId === query.get('projectId')) && (!query.get('runId') || value.runId === query.get('runId'))) });
+    if (path === '/jobs' && method === 'GET') {
+      const runId = query.get('runId'); const projectId = query.get('projectId');
+      const jobs = runId ? this.store.forRun('job', runId).filter(value => !projectId || value.projectId === projectId) : projectId ? this.store.forProject('job', projectId) : this.store.list('job');
+      return reply({ jobs });
+    }
     if (['assignments', 'jobs'].includes(collection) && entityId && segments.length <= 3) {
       const kind = collection === 'assignments' ? 'assignment' : 'job';
-      if (!action && method === 'GET') return reply(auth.kind === 'node' ? this.fenced(kind, entityId, auth, body, true) : this.store.need(kind, entityId));
+      if (!action && method === 'GET') {
+        if (auth.kind === 'node') return reply(this.fenced(kind, entityId, auth, body, true));
+        const value = this.store.find(kind, entityId); if (!value) fail(404, 'NOT_FOUND', `${kind} not found.`); return reply(value);
+      }
       if (kind === 'job' && action === 'log' && method === 'GET') {
-        if (auth.kind === 'node') this.fenced(kind, entityId, auth, body, true); else this.store.need(kind, entityId);
-        return reply({ jobId: entityId, chunks: this.store.list('job-log', value => value.jobId === entityId) });
+        if (auth.kind === 'node') this.fenced(kind, entityId, auth, body, true); else if (!this.store.find(kind, entityId)) fail(404, 'NOT_FOUND', `${kind} not found.`);
+        return reply({ jobId: entityId, chunks: this.store.logs(entityId) });
       }
       if (action === 'cancel' && kind === 'job' && method === 'POST') {
         const value = this.store.need(kind, entityId);
@@ -591,7 +682,8 @@ export class Hub {
         // releasing machine is not offered this attempt again for one lease duration, which also keeps a late request
         // from the released lease (the HTTP request timeout is 30 s) from matching a new lease of the same attempt.
         const machineId = value.machineId;
-        value.status = 'queued'; delete value.machineId; delete value.leaseExpiresAt;
+        value.status = 'queued'; delete value.machineId; delete value.leaseExpiresAt; this.signalMachine(machineId);
+        this.due.push({ machineId, at: new Date(Date.now() + this.config.leaseDurationMs).toISOString() });
         value.releasedBy = { machineId, until: new Date(Date.now() + this.config.leaseDurationMs).toISOString() };
         this.store.put(kind, value);
         this.emit(`${kind}.released`, kind, value, { machineId, attempt: value.attempt, ...(body.reason ? { reason: body.reason } : {}) });
@@ -600,7 +692,8 @@ export class Hub {
       }
       if (action === 'renew' && method === 'POST') {
         const value = this.fenced(kind, entityId, auth, body); value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
-        this.store.put(kind, value); this.emit(`${kind}.renewed`, kind, value); return reply({ leaseExpiresAt: value.leaseExpiresAt });
+        // Renewals write no event and wake nobody: they change neither the queue nor free capacity.
+        this.store.put(kind, value); return reply({ leaseExpiresAt: value.leaseExpiresAt });
       }
       if (action === 'events' && method === 'POST') {
         const acknowledgement = this.cancellationAck(kind, entityId, auth, body);
@@ -628,7 +721,7 @@ export class Hub {
         if (kind === 'job' && body.type === 'log') {
           // Blank lines are ordinary CI output; NUL is replaced rather than failing the step.
           requireValue(typeof data.chunk === 'string' && data.chunk.length > 0 && data.chunk.length <= this.config.requestMaxBytes, 'Invalid log chunk.');
-          this.store.put('job-log', { id: id('log'), jobId: value.id, chunk: data.chunk.replaceAll('\0', '\uFFFD'), at: now() }); value.logRef = `/api/v1/jobs/${value.id}/log`;
+          this.store.log(value.id, data.chunk.replaceAll('\0', '\uFFFD'), now(), id('log')); value.logRef = `/api/v1/jobs/${value.id}/log`;
         }
         const final = ['completed', 'failed'].includes(body.type);
         if (final) {
@@ -688,10 +781,10 @@ export class Hub {
     }
     if (path === '/usage' && method === 'GET') return reply(this.usage(query));
     if (path === '/overview' && method === 'GET') {
-      const projectId = query.get('projectId'); const matches = value => !projectId || value.projectId === projectId;
-      const assignments = this.store.list('assignment', matches); const jobs = this.store.list('job', matches);
-      const tokensToday = this.store.list('usage', value => matches(value) && value.at.slice(0, 10) === now().slice(0, 10)).reduce((total, value) => total + value.inputTokens + value.outputTokens + value.cacheReadTokens + value.cacheWriteTokens, 0);
-      return reply({ activeAgents: assignments.filter(active).length, queuedWork: assignments.filter(value => value.status === 'queued').length + jobs.filter(value => value.status === 'queued').length, tokensToday,
+      const projectId = query.get('projectId') ?? undefined;
+      return reply({ activeAgents: this.store.count('assignment', ['leased', 'running'], projectId),
+        queuedWork: this.store.count('assignment', ['queued'], projectId) + this.store.count('job', ['queued'], projectId),
+        tokensToday: this.store.tokensSince(`${now().slice(0, 10)}T00:00:00.000Z`, projectId),
         machinesOnline: this.store.list('machine', value => value.status === 'online' && Date.now() - Date.parse(value.lastHeartbeatAt) < this.config.heartbeatIntervalMs * 3).length });
     }
     fail(404, 'NOT_FOUND', 'Route not found.');
@@ -699,7 +792,7 @@ export class Hub {
   /** Work items of runs whose engine keeps run state come from the engine; other runs keep the hub's copies. */
   workItems(runId) {
     const fromEngine = this.engine.listWorkItems && this.store.get('engine-state', runId)?.seq !== undefined;
-    return (fromEngine ? this.engine.listWorkItems(runId) : this.store.list('work-item', item => item.runId === runId)).map(item => this.workItemView(item));
+    return (fromEngine ? this.engine.listWorkItems(runId) : this.store.forRun('work-item', runId, false)).map(item => this.workItemView(item));
   }
   workItem(id) {
     const item = this.store.get('work-item', id) ?? this.engine.getWorkItem?.(id);
@@ -726,27 +819,23 @@ export class Hub {
     }
     if (data.costUsd !== undefined) { requireValue(Number.isFinite(data.costUsd) && data.costUsd >= 0, 'Invalid costUsd.'); usage.costUsd = data.costUsd; }
     if (data.at !== undefined) { requireValue(typeof data.at === 'string' && Number.isFinite(Date.parse(data.at)), 'Invalid usage timestamp.'); usage.at = new Date(data.at).toISOString(); }
-    this.store.put('usage', usage);
+    this.store.usage(usage);
   }
   usage(query) {
     const groupBy = query.get('groupBy') ?? 'provider'; requireValue(['provider', 'model', 'machine', 'day'].includes(groupBy), 'Invalid usage groupBy.');
     for (const field of ['from', 'to']) if (query.has(field)) requireValue(Number.isFinite(Date.parse(query.get(field))), `Invalid ${field} timestamp.`);
-    const records = this.store.list('usage', value => ['projectId', 'runId', 'machineId', 'provider', 'model', 'accountId'].every(key => !query.get(key) || value[key] === query.get(key)) &&
-      (!query.get('from') || Date.parse(value.at) >= Date.parse(query.get('from'))) && (!query.get('to') || Date.parse(value.at) <= Date.parse(query.get('to'))));
-    const groups = new Map();
+    const time = field => query.has(field) ? new Date(query.get(field)).toISOString() : undefined;
+    const filters = Object.fromEntries(['projectId', 'runId', 'machineId', 'provider', 'model', 'accountId'].map(key => [key, query.get(key) || undefined]));
+    // Raw usage and the hourly rollups of usage past its retention, grouped in SQL.
+    const groups = this.store.usageGroups(filters, { from: time('from'), to: time('to'), group: groupBy });
     const totals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, records: 0 };
-    for (const value of records) {
-      const key = groupBy === 'day' ? value.at.slice(0, 10) : value[groupBy === 'machine' ? 'machineId' : groupBy];
-      const group = groups.get(key) ?? { key, ...Object.fromEntries(Object.keys(totals).map(name => [name, 0])) };
-      for (const name of Object.keys(totals)) { const amount = name === 'records' ? 1 : value[name] ?? 0; totals[name] += amount; group[name] += amount; }
-      groups.set(key, group);
-    }
-    return { groupBy, groups: [...groups.values()].sort((a, b) => a.key.localeCompare(b.key)), totals };
+    for (const group of groups) for (const name of Object.keys(totals)) totals[name] += group[name];
+    return { groupBy, groups, totals };
   }
   messageInteraction(runId, message) {
-    if (this.store.db.prepare("SELECT 1 FROM events WHERE type='agent.messaged' AND json_extract(data,'$.messageId')=?").get(message.id)) return;
+    if (!this.store.messageOnce(message.id)) return;
     const run = this.store.need('run', runId);
-    const assignments = this.store.list('assignment', value => value.runId === runId);
+    const assignments = this.store.forRun('assignment', runId, false);
     const source = assignments.find(value => value.role === message.senderRoleId);
     const target = assignments.find(value => value.role === message.recipientRoleId);
     this.observation.interaction('agent.messaged', { id: message.id, projectId: run.projectId, runId, nodeId: source?.nodeId ?? message.senderRoleId, role: message.senderRoleId },

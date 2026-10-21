@@ -59,6 +59,19 @@ Several findings were found independently by more than one reviewer and are merg
 
 - **Failure:** at 100 machines and 1,000 agents, renewals and heartbeats arrive at tens per second and each one triggers a scan per waiting poll. Renewals then exceed the node's `requestMs`, leases expire fleet-wide, and the resulting engine retries add more load. Finished work never leaves the hot table, so this gets worse as the factory runs.
 - **Fix:** query queued work in SQL on an indexed status column, and keep held counts per machine. Wake polls only when leasable work is added or capacity frees, and coalesce wakes. Skip the scan when a machine has no free capacity. Move finished entities out of the scanned set.
+- **Fixed in `c52ea73`.** Long-polls wake only for work their machine could lease or a change to their own machine; heartbeats and renewals write no events and wake nobody else. Leasing, expiry and counts use indexes over open work, and leasing pages queued work and stops when served. Finished work moves to archive tables. Measured with `apps/hub/test/load.js` (hub in a child process, real engine; 100 machines, half able to run 1,000 queued assignments; 10 s heartbeats, long-polls, 10 s renewals; 60 s; macOS, loopback, Node 24.22):
+
+| | Before (`938a453`) | After |
+| --- | --- | --- |
+| Hub CPU over 60 s | 57.8 s | 4.1 s |
+| Heartbeats answered | 144 | 677 |
+| Heartbeat p50 / p99 | 1,419 / 55,295 ms | 1.5 / 6.7 ms |
+| Lease that returned work p50 / p99 | 687 / 21,846 ms | 3.0 / 8.5 ms |
+| Renew p50 / p99 | 1,041 / 1,947 ms | 1.6 / 6.1 ms |
+| Connection resets and broken pipes | 111 | 0 |
+| Assignments completed | 12 | 212 |
+
+  This is one machine over loopback, not 100 real hosts or 1,000 concurrently running agents. Machines whose work does not match still re-read the queued rows they cannot run when their own poll times out (every 25 s).
 
 ### Cancelling a run's CI job strands the work item and the run (H4)
 
@@ -161,7 +174,7 @@ Every select, release and observe adds a permanent receipt (`factory-accounts/sr
 
 - **Growth:** every node POST carries a fresh idempotency key (`factory-node/src/hub.js:18`, `25`), so the hub stores a row per heartbeat, renewal, event and non-empty lease, including full assignment prompts in lease responses (`factory-hub/src/hub.js:98`). Every heartbeat and renewal also writes an event (`hub.js:435`, `454`), about 864,000 heartbeat events a day at 100 machines before any renewals. `job-log` and `usage` rows are kept forever. Nothing is pruned.
 - **Scans:** `GET /jobs/:id/log` parses every log chunk of every job (`hub.js:445`). `/overview` parses every usage record ever written (`hub.js:524`). `messageInteraction` full-scans `events` with `json_extract` on each message (`hub.js:563`; the query plan is `SCAN events`). Metrics run one extra query per event row with no index on `at` or `run_id`, and load job log chunks through `job.log` event data (`observation.js:38-43`, `store.js:17-18`).
-- **Fix:** add retention for idempotency rows and events, stop emitting heartbeat and renew events (or keep them out of the global log), index `job-log` and `usage` by their keys, and index event lookups.
+- **Fix:** add retention for idempotency rows and events, stop emitting heartbeat and renew events (or keep them out of the global log), index `job-log` and `usage` by their keys, and index event lookups. **Fixed in `c52ea73`.** Heartbeat and renew events are gone. Job logs, usage and message de-duplication have indexed tables, and metrics read their window's events in one indexed query. A bounded sweep archives (or deletes) finished work after `finishedWorkRetentionMs` and events after `eventRetentionMs` (at least 7 days), folds usage older than `usageRetentionMs` into hourly rollups that keep `/usage`, `/overview` and metrics totals exact, and expires idempotency rows after `idempotencyRetentionMs`. Schema 1 hub databases migrate on open.
 
 ### The whole run state is rewritten on every engine event (M15)
 

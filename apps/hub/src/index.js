@@ -42,18 +42,22 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
   };
   async function lease(request, response, args) {
     const deadline = Date.now() + config.longPollMs;
+    // The poll registers as its machine's waiter before each attempt, so a wake during the attempt is not lost. The hub
+    // wakes it only for work this machine could lease or a change to its own capacity (Hub.flush).
+    const machineId = hub.machineOf(args.authorization);
+    const kinds = Array.isArray(args.body.kinds) ? args.body.kinds : ['assignment', 'job'];
     while (!closing && !response.destroyed) {
       let wake;
       const notified = new Promise(resolve => { wake = resolve; });
-      hub.listeners.add(wake); polls.add(wake);
+      const unregister = machineId ? hub.waiter(machineId, kinds, wake) : () => {}; polls.add(wake);
       const timer = setTimeout(wake, Math.max(0, deadline - Date.now()));
       const abort = () => wake(); response.once('close', abort);
       try {
-        const finalLease = Date.now() >= deadline;
+        const finalLease = Date.now() >= deadline || !machineId;
         const result = await hub.request({ ...args, finalLease });
         if (result.body.assignments.length || result.body.jobs.length || finalLease) return json(response, result.status, result.body);
         await notified;
-      } finally { clearTimeout(timer); hub.listeners.delete(wake); polls.delete(wake); response.off('close', abort); }
+      } finally { clearTimeout(timer); unregister(); polls.delete(wake); response.off('close', abort); }
     }
     if (!response.destroyed) json(response, 503, { error: { code: 'SHUTTING_DOWN', message: 'Hub is shutting down.' } });
   }
@@ -126,7 +130,7 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
   }, config.maintenanceIntervalMs); timer.unref();
   await hub.maintenance();
   return {
-    server, config,
+    server, config, hub,
     async listen() {
       await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, config.host, () => { server.off('error', reject); resolve(); }); });
       const address = server.address(); return `http://${config.host.includes(':') ? `[${config.host}]` : config.host}:${address.port}`;

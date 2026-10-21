@@ -99,7 +99,7 @@ export class HubDelivery {
   /** Enqueue newly created hub merge entries and return the queues with open work. */
   admit() {
     const { store } = this.hub;
-    for (const entry of store.list('merge-entry', value => value.status === 'queued' && !value.queueId && !value.deliveryRejected)) {
+    for (const entry of store.byStatus('merge-entry', ['queued'], value => !value.queueId && !value.deliveryRejected)) {
       // Entries are admitted one by one, so one project's unusable repository never halts admission for the others.
       // A blocked entry stays queued and is retried, for example after the project's repo is corrected.
       let record;
@@ -205,7 +205,7 @@ export class HubDelivery {
   /** Mirror queue state into hub jobs and merge entries, and report finished entries to their runs. */
   async sync(ids) {
     const { store } = this.hub; let changed = false;
-    for (const entry of store.list('merge-entry', value => value.deliveryRejected && !TERMINAL.has(value.status))) {
+    for (const entry of store.byStatus('merge-entry', ['queued', 'testing', 'merging'], value => value.deliveryRejected)) {
       const run = entry.runId && store.get('run', entry.runId);
       if (!run || !['running', 'paused'].includes(run.status)) continue;
       await this.hub.engineEvent(run, { type: 'merge.finished', mergeEntryId: entry.id, data: { status: 'rejected', reason: `Merge queue refused the entry (${entry.deliveryError}).` } });
