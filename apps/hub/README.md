@@ -33,6 +33,10 @@ Routes live under `/api/v1`. `/health` and `/api/v1/health` are public. `/api/v1
 
 Owner tokens can use the owner API. Node tokens can heartbeat, lease, and access their own currently leased assignments/jobs. They cannot read projects, accounts, global events, metrics, usage or owner messaging routes. Authorization is checked on the same parsed path the router dispatches on, and every route outside the machine protocol requires an owner token. Request paths that URL parsing would rewrite (dot segments, including percent-encoded ones, backslashes, encoded slashes or empty segments) are refused with `400 INVALID_PATH`. Agent messages travel through their assignment's `message` event, checked against `policy.canMessage` and bound to its run channel and sender role.
 
+**Session cookie.** Browsers can trade the owner token for an HttpOnly cookie so the token never stays in page scripts. `POST /session` with the owner bearer (idempotency key allowed) returns `201 {expiresAt}` and `Set-Cookie: perpeto_session=<opaque>; HttpOnly; SameSite=Strict; Path=/api/v1; Max-Age=<ttl>`, with `Secure` unless the request comes from a loopback `http` origin. `GET /session` returns `{kind: 'owner', expiresAt}` (`null` for a bearer) or 401, and `DELETE /session` with the cookie returns 204, clears the cookie and deletes the session. The cookie authenticates like the owner bearer on every owner route and the event stream; a bearer header wins when both are sent. Sessions last `sessionTtlMs` (12 h) and slide with use (the refreshed cookie comes back on the response). Only hashes are stored; a retried `POST` re-sends the same cookie. A change made with the cookie needs an `Origin` from `corsOrigins`, and a `POST` needs a JSON body, otherwise `403 CSRF_REJECTED`. CORS answers configured origins only, never `*`, with `Access-Control-Allow-Credentials: true` and `DELETE` allowed. `SameSite=Strict` needs the app and hub on the same site.
+
+`GET /events` pages forward with `after` (default 0) and returns `{events, nextCursor, hasMore}`. With `latest=true` it returns the newest page, and with `before=<seq>` the page before that event, both as `{events, previousCursor, nextCursor, hasMore}`. Pages are always oldest first, `after`, `before` and `latest` are mutually exclusive, and `runId` limits any of them, and the stream, to one run.
+
 All mutations accept `idempotencyKey` in the JSON body or `Idempotency-Key` in a header. Supply a fresh key per logical mutation and preserve it on retries. Matching bodies return the original status/body, even across restart. Changed bodies return `409 CONFLICT`. Object-key ordering does not change a fingerprint. Keys are scoped to authenticated identity, HTTP method and route. Without a key, a retry is a new request. The existing MessagingStore additionally enforces project-wide message keys. Enrollment-code and node-token retries reconstruct credentials from the owner secret and public entity IDs; the DB contains hashes and response metadata, never their plaintext.
 
 Errors are `{ "error": { "code": "INVALID_INPUT", "message": "..." } }`. Lease rejection specifically uses `409` and `error.code: "lease_lost"`, matching the node wire format. Raw SQL and stacks are never returned.
@@ -54,7 +58,8 @@ Errors are `{ "error": { "code": "INVALID_INPUT", "message": "..." } }`. Lease r
 | Delivery | `GET /projects/:id/merge-queue` |
 | Usage | `GET /usage?groupBy=provider|model|machine|day` |
 | Overview | `GET /overview`, optionally `?projectId=...` |
-| Events | `GET /events?after=0&limit=100`, or SSE with `Accept: text/event-stream` |
+| Events | `GET /events?after=0&limit=100`, `?latest=true` or `?before=<seq>`, each optionally `&runId=`; or SSE with `Accept: text/event-stream` (also `runId`) |
+| Session | `GET`, `POST`, `DELETE /session` (owner session cookie, below) |
 | Nodes | `POST /nodes/enroll`, `/nodes/heartbeat`, `/nodes/lease`, `/nodes/token` |
 | Lease reports | `POST /assignments/:id/renew`, `/events`, `/release`, and the corresponding `/jobs/:id/...` |
 
@@ -88,7 +93,7 @@ Stopping a run or cancelling a job revokes its leases immediately and persists a
 
 Event pages return `{events,nextCursor}`. SSE emits standard `id`, `event` and JSON `data` fields. Resume with `Last-Event-ID` or `after`; explicit `after` wins. Replay and live delivery use the same committed global sequence. Slow readers are disconnected when response buffering fills and can resume from their last consumed ID. No event-retention pruning is implemented.
 
-Interaction events identify the run, roles and source/target nodes. Matching edges receive `edgeId`; unexpected interactions are retained with `unplanned:true`. Message edges permit traffic both ways. Hub assignment lifecycle transitions emit `assignment.state`; jobs, review results and human decisions emit `gate.result`. Engines may also emit explicit interaction effects or work-item moves. Observed interactions are telemetry, never authority to spawn work.
+Interaction events identify the run, roles and source/target nodes (`sourceNodeId`/`targetNodeId`, also as `from`/`to`, which metrics read so unplanned edges keep their endpoints). Matching edges receive `edgeId`; unexpected interactions are retained with `unplanned:true`. Message edges permit traffic both ways. Hub assignment lifecycle transitions emit `assignment.state`; jobs, review results and human decisions emit `gate.result`. Engines may also emit explicit interaction effects or work-item moves. Observed interactions are telemetry, never authority to spawn work.
 
 The existing MessagingStore is mounted at:
 

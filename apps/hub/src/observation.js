@@ -16,7 +16,9 @@ export class Observation {
     const edge = kind && graph.edges.find(edge => edge.kind === kind && (!data.edgeId || edge.id === data.edgeId) &&
       ((edge.from.node === sourceNodeId && edge.to.node === targetNodeId) ||
        (kind === 'messages' && edge.to.node === sourceNodeId && edge.from.node === targetNodeId)));
+    // Metrics read edge endpoints as from/to; clients read sourceNodeId/targetNodeId. Record both.
     const event = { ...data, nodeId: data.nodeId ?? value.nodeId, sourceNodeId, ...(targetNodeId ? { targetNodeId } : {}),
+      ...(kind ? { from: sourceNodeId, ...(targetNodeId ? { to: targetNodeId } : {}) } : {}),
       role: data.role ?? value.role, ...(value.machineId ? { machineId: value.machineId } : {}),
       ...(kind ? { unplanned: !edge, ...(edge ? { edgeId: edge.id, kind } : {}) } : {}) };
     return this.hub.emit(type, subjectKind, value, event);

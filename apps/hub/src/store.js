@@ -32,6 +32,7 @@ export class HubStore {
       CREATE TABLE IF NOT EXISTS idempotency (scope TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT NOT NULL, PRIMARY KEY(scope,key)) STRICT;
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, type TEXT NOT NULL, project_id TEXT, run_id TEXT, subject TEXT NOT NULL, data TEXT NOT NULL) STRICT;
       CREATE INDEX IF NOT EXISTS events_project ON events(project_id,seq);
+      CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at TEXT NOT NULL) STRICT;
     `);
     if (version < 2) this.#migrate();
   }
@@ -155,6 +156,18 @@ export class HubStore {
       ...(row.run_id ? { runId: row.run_id } : {}), subject: JSON.parse(row.subject), data: JSON.parse(row.data) };
   }
   events(after = 0, limit = 100) { return this.#sql('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?').all(after, limit).map(row => this.#event(row)); }
+  /**
+   * One page of events, oldest first within the page: forward after a cursor, or backward before one (or from the
+   * newest when `before` is null), optionally for one run. `hasMore` says whether the page stopped short.
+   */
+  eventPage({ after, before, backward, runId, limit }) {
+    const run = runId ? ' AND run_id=?' : ''; const args = runId ? [runId] : [];
+    const rows = backward
+      ? this.#sql(`SELECT * FROM events WHERE ${before ? 'seq<?' : '1'}${run} ORDER BY seq DESC LIMIT ?`).all(...(before ? [before] : []), ...args, limit + 1)
+      : this.#sql(`SELECT * FROM events WHERE seq>?${run} ORDER BY seq LIMIT ?`).all(after, ...args, limit + 1);
+    const page = rows.slice(0, limit).map(row => this.#event(row));
+    return { events: backward ? page.reverse() : page, hasMore: rows.length > limit };
+  }
   /** Events since `from` for one run or project, in one indexed query. */
   eventsSince(from, { projectId, runId } = {}) {
     const rows = runId ? this.#sql('SELECT * FROM events WHERE run_id=? AND at>=? ORDER BY seq').all(runId, from)
@@ -170,6 +183,10 @@ export class HubStore {
   messageOnce(messageId) {
     return this.#sql('INSERT INTO message_interactions VALUES(?,?) ON CONFLICT(message_id) DO NOTHING').run(messageId, new Date().toISOString()).changes === 1;
   }
+  createSession(hash, id, expiresAt) { this.#sql('INSERT INTO sessions VALUES(?,?,?)').run(hash, id, expiresAt); }
+  session(hash) { return this.#sql('SELECT id, expires_at FROM sessions WHERE hash=?').get(hash) ?? null; }
+  extendSession(hash, expiresAt) { this.#sql('UPDATE sessions SET expires_at=? WHERE hash=?').run(expiresAt, hash); }
+  endSession(hash) { this.#sql('DELETE FROM sessions WHERE hash=?').run(hash); }
   log(jobId, chunk, at, id) { this.#sql('INSERT INTO job_logs(id,job_id,chunk,at) VALUES(?,?,?,?)').run(id, jobId, chunk, at); }
   logs(jobId) { return this.#sql('SELECT id,job_id,chunk,at FROM job_logs WHERE job_id=? ORDER BY seq').all(jobId).map(row => ({ id: row.id, jobId: row.job_id, chunk: row.chunk, at: row.at })); }
   usage(record) {
@@ -222,7 +239,7 @@ export class HubStore {
    * and events older than their cutoffs move to archive tables (or are deleted when `archive` is false), raw usage
    * older than its cutoff folds into hourly rollups, and idempotency and message records expire. Returns counts.
    */
-  sweep({ finishedBefore, eventsBefore, usageBefore, idempotencyBefore, archive, batch = 500 }) {
+  sweep({ finishedBefore, eventsBefore, usageBefore, idempotencyBefore, sessionsBefore, archive, batch = 500 }) {
     const counts = { assignments: 0, jobs: 0, events: 0, usage: 0, idempotency: 0 };
     const archivedAt = new Date().toISOString();
     for (const kind of ['assignment', 'job']) {
@@ -247,6 +264,7 @@ export class HubStore {
     counts.usage = Number(this.#sql('DELETE FROM usage WHERE at<?').run(usageBefore).changes);
     counts.idempotency = Number(this.#sql('DELETE FROM idempotency WHERE created_at<?').run(idempotencyBefore).changes);
     this.#sql('DELETE FROM message_interactions WHERE at<?').run(idempotencyBefore);
+    if (sessionsBefore) this.#sql('DELETE FROM sessions WHERE expires_at<?').run(sessionsBefore);
     return counts;
   }
   async transaction(fn) {

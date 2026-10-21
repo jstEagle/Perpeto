@@ -11,7 +11,7 @@ export function loadConfig(filename) {
     heartbeatIntervalMs: 10000, leaseDurationMs: 60000, longPollMs: 25000,
     maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
     finishedWorkRetentionMs: 604800000, eventRetentionMs: 2592000000, usageRetentionMs: 2592000000, idempotencyRetentionMs: 86400000,
-    archiveFinished: true, retentionSweepIntervalMs: 60000, architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' },
+    archiveFinished: true, retentionSweepIntervalMs: 60000, sessionTtlMs: 43200000, architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' },
   };
   requireValue(Object.keys(input).every(key => Object.hasOwn(defaults, key)), 'Unknown hub configuration field.');
   const config = { ...defaults, ...input };
@@ -24,6 +24,7 @@ export function loadConfig(filename) {
   integer(config.eventRetentionMs, 'eventRetentionMs', 604800000);
   for (const key of ['finishedWorkRetentionMs', 'usageRetentionMs', 'idempotencyRetentionMs']) integer(config[key], key, 60000);
   integer(config.retentionSweepIntervalMs, 'retentionSweepIntervalMs', 1000, 86400000);
+  integer(config.sessionTtlMs, 'sessionTtlMs', 1000, 2592000000);
   requireValue(typeof config.archiveFinished === 'boolean', 'archiveFinished must be a boolean.');
   integer(config.deliveryMaxStepFailures, 'deliveryMaxStepFailures', 1, 1000); integer(config.deliveryRetryBackoffMs, 'deliveryRetryBackoffMs', 1, 3600000);
   requireValue(Array.isArray(config.corsOrigins), 'corsOrigins must be an array.');

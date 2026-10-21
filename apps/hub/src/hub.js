@@ -94,7 +94,21 @@ export class Hub {
   secret(kind, entityId) { return createHmac('sha256', this.ownerToken).update(`${kind}:${entityId}`).digest('base64url'); }
   /** Node tokens derive from the machine and its token generation, so idempotent replays can return them without storing them. */
   nodeToken(machineId, generation = 0) { return this.secret('node', generation ? `${machineId}:${generation}` : machineId); }
-  authenticate(header) {
+  /**
+   * A bearer token, or else an owner session cookie. Sessions slide: activity extends them, written at most once per
+   * tenth of their lifetime.
+   */
+  authenticate(header, cookie) {
+    const value = !header && /(?:^|;\s*)perpeto_session=([A-Za-z0-9_-]+)(?:;|$)/.exec(cookie ?? '')?.[1];
+    if (value) {
+      const key = hash(value); const row = this.store.session(key);
+      if (!row || Date.parse(row.expires_at) <= Date.now()) fail(401, 'UNAUTHORIZED', 'The session has expired or ended.');
+      let expiresAt = row.expires_at; let refreshed = false;
+      if (Date.parse(expiresAt) - Date.now() < this.config.sessionTtlMs * 0.9) {
+        expiresAt = new Date(Date.now() + this.config.sessionTtlMs).toISOString(); this.store.extendSession(key, expiresAt); refreshed = true;
+      }
+      return { kind: 'owner', via: 'cookie', scope: key, session: { hash: key, value, expiresAt, refreshed } };
+    }
     const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(header ?? '');
     const token = match && this.store.db.prepare('SELECT kind,machine_id FROM tokens WHERE hash=?').get(hash(match[1]));
     if (!token) fail(401, 'UNAUTHORIZED', 'A valid bearer token is required.');
@@ -161,13 +175,25 @@ export class Hub {
       }
     }
   }
-  async request({ method, path, body = {}, authorization, key, finalLease = true }) {
+  /**
+   * SameSite=Strict keeps the session cookie off cross-site requests. A cookie-authenticated change must also come from
+   * an allowed Origin, and a POST must carry JSON, so a same-site page on another origin or a simple form post that
+   * skips the CORS preflight cannot use the owner's session.
+   */
+  requireSameOrigin(method, origin, contentType) {
+    const json = /^application\/json(?:\s*;|$)/i.test(contentType ?? '');
+    if (!origin || !this.config.corsOrigins.includes(origin) || (method === 'POST' && !json)) {
+      fail(403, 'CSRF_REJECTED', 'Changes with a session cookie need an allowed Origin, and POSTs need a JSON body.');
+    }
+  }
+  async request({ method, path, body = {}, authorization, cookie, origin, contentType, key, finalLease = true }) {
     return this.serialize(async () => {
       // Authorization and routing read the same parsed path, so no later normalization can redirect a node token.
       const target = canonicalUrl(path);
       const enroll = method === 'POST' && target.url.pathname === '/nodes/enroll';
-      const auth = enroll ? { kind: 'enroll', scope: hash(String(body.code ?? '')) } : this.authenticate(authorization);
+      const auth = enroll ? { kind: 'enroll', scope: hash(String(body.code ?? '')) } : this.authenticate(authorization, cookie);
       const mutation = !['GET', 'HEAD'].includes(method);
+      if (auth.via === 'cookie' && mutation) this.requireSameOrigin(method, origin, contentType);
       const idempotencyKey = key ?? body.idempotencyKey;
       if (key && body.idempotencyKey && key !== body.idempotencyKey) fail(400, 'INVALID_INPUT', 'Idempotency keys disagree.');
       if (idempotencyKey !== undefined) nonblank(idempotencyKey, 'idempotencyKey', 200);
@@ -190,8 +216,12 @@ export class Hub {
         return result;
       };
       try {
-        const result = mutation ? await this.store.transaction(perform) : await perform();
+        let result = mutation ? await this.store.transaction(perform) : await perform();
         if (!mutation) this.flush();
+        // The session cookie to set: a new session (re-derived on an idempotent replay), a logout, or a slid expiry.
+        const session = result.session ? { value: this.secret('session', result.session.id), expiresAt: result.session.expiresAt }
+          : result.endSession ? { clear: true } : auth.session?.refreshed ? { value: auth.session.value, expiresAt: auth.session.expiresAt } : null;
+        if (session) result = { ...result, cookie: session };
         if (this.delivery.dirty) this.delivery.schedule();
         return result;
       } catch (error) {
@@ -265,7 +295,7 @@ export class Hub {
   sweep(time) {
     const before = ms => new Date(time - ms).toISOString();
     const counts = this.store.sweep({ finishedBefore: before(this.config.finishedWorkRetentionMs), eventsBefore: before(this.config.eventRetentionMs),
-      usageBefore: before(this.config.usageRetentionMs), idempotencyBefore: before(this.config.idempotencyRetentionMs), archive: this.config.archiveFinished });
+      usageBefore: before(this.config.usageRetentionMs), idempotencyBefore: before(this.config.idempotencyRetentionMs), sessionsBefore: before(0), archive: this.config.archiveFinished });
     return counts;
   }
   /**
@@ -775,9 +805,35 @@ export class Hub {
         this.emit(`${kind}.${body.type}`, kind, value, data); return reply({ accepted: true, status: value.status, ...(refused ? { reason: refused } : {}) });
       }
     }
+    if (path === '/session') {
+      if (method === 'GET') return reply({ kind: 'owner', expiresAt: auth.session?.expiresAt ?? null });
+      if (method === 'POST') {
+        if (auth.via === 'cookie') fail(403, 'FORBIDDEN', 'Sessions are created with the owner token.');
+        // Session tokens derive from a random id, so an idempotent retry re-sends the same cookie; only hashes are stored.
+        const sessionId = id('ses'); const expiresAt = new Date(Date.now() + this.config.sessionTtlMs).toISOString();
+        this.store.createSession(hash(this.secret('session', sessionId)), sessionId, expiresAt);
+        return { status: 201, body: { expiresAt }, session: { id: sessionId, expiresAt } };
+      }
+      if (method === 'DELETE') {
+        if (auth.via !== 'cookie') fail(400, 'INVALID_INPUT', 'Only a session cookie can be ended.');
+        this.store.endSession(auth.session.hash);
+        return { status: 204, body: null, endSession: true };
+      }
+    }
     if (path === '/events' && method === 'GET') {
-      const after = integer(Number(query.get('after') ?? 0), 'after'); const limit = integer(Number(query.get('limit') ?? 100), 'limit', 1, 1000);
-      const events = this.store.events(after, limit); return reply({ events, nextCursor: events.at(-1)?.seq ?? after });
+      const limit = integer(Number(query.get('limit') ?? 100), 'limit', 1, 1000);
+      const runId = query.get('runId') ?? undefined; if (runId !== undefined) nonblank(runId, 'runId', 200);
+      const latest = query.get('latest'); requireValue(latest === null || ['true', 'false'].includes(latest), 'latest must be true or false.');
+      requireValue(Number(query.has('after')) + Number(query.has('before')) + Number(latest === 'true') <= 1, 'after, before and latest are mutually exclusive.');
+      if (latest === 'true' || query.has('before')) {
+        // Newest first page (or the page before a cursor), returned oldest first, as messaging pages.
+        const before = query.has('before') ? integer(Number(query.get('before')), 'before', 1) : null;
+        const { events, hasMore } = this.store.eventPage({ before, backward: true, runId, limit });
+        return reply({ events, previousCursor: events[0]?.seq ?? before ?? 0, nextCursor: events.at(-1)?.seq ?? before ?? 0, hasMore });
+      }
+      const after = integer(Number(query.get('after') ?? 0), 'after');
+      const { events, hasMore } = this.store.eventPage({ after, runId, limit });
+      return reply({ events, nextCursor: events.at(-1)?.seq ?? after, hasMore });
     }
     if (path === '/usage' && method === 'GET') return reply(this.usage(query));
     if (path === '/overview' && method === 'GET') {
