@@ -1,0 +1,132 @@
+import { execFile } from 'node:child_process';
+import { realpath, stat, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+
+const GIT_ENV = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' };
+
+/** Run git without a shell; resolves stdout or rejects with a redacted error. */
+export function git(cwd, args, { signal, timeoutMs = 120000 } = {}) {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, signal, timeout: timeoutMs, encoding: 'utf8', maxBuffer: 1024 * 1024, env: { ...process.env, ...GIT_ENV } },
+      (error, stdout) => error ? reject(Object.assign(new Error(`git ${args[0]} failed.`), { code: 'GIT_FAILED' })) : resolve(stdout.trim()));
+  });
+}
+
+async function isDirectory(path) {
+  try { return (await stat(path)).isDirectory(); } catch { return false; }
+}
+
+export function branchName(value) {
+  const name = String(value).replace(/[^A-Za-z0-9._/-]+/g, '-').replace(/\/{2,}/g, '/').replace(/^[-/.]+|[-/.]+$/g, '').replace(/\.\.+/g, '.');
+  return name.slice(0, 200) || 'perpeto-work';
+}
+
+function repositoryUrl(url) {
+  const parsed = (() => { try { return new URL(url); } catch { return null; } })();
+  if (parsed) {
+    if (!['https:', 'ssh:', 'file:', 'git:'].includes(parsed.protocol)) throw new Error('Unsupported repository URL scheme.');
+    if (parsed.password || parsed.search || parsed.hash || (parsed.username && parsed.protocol !== 'ssh:')) throw new Error('Repository credentials must use local credential helpers.');
+    return url;
+  }
+  if (/^[\w.-]+@[\w.-]+:[\w./-]+$/.test(url)) return url; // scp-like SSH
+  if (url.startsWith('/') && !url.includes('\0')) return url; // local repository path
+  throw new Error('Unsupported repository URL.');
+}
+
+async function hasBranch(root, branch, signal) {
+  try { await git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { signal }); return true; }
+  catch { return false; }
+}
+
+async function worktreeFor(root, branch, signal) {
+  const listing = await git(root, ['worktree', 'list', '--porcelain'], { signal });
+  let path = null;
+  for (const line of listing.split('\n')) {
+    if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
+    else if (line === `branch refs/heads/${branch}` && path && path !== root) return realpath(path).catch(() => null);
+  }
+  return null;
+}
+
+async function isWorkingTree(path, signal) {
+  try { return (await git(path, ['rev-parse', '--is-bare-repository'], { signal })) === 'false'; }
+  catch { return false; }
+}
+
+/**
+ * Choose where the T3 thread works:
+ * - a local working checkout (`repo.localPath`): a T3-managed worktree on the work
+ *   branch, reused when it already exists;
+ * - otherwise a clone of `repo.url` (or of a bare `localPath`) inside the node's
+ *   assignment workspace, on the work branch, starting from the remote branch when
+ *   an earlier attempt published it;
+ * - with no repository, the node's assignment workspace itself.
+ * `startHead` is the commit the agent starts from, used to detect new work.
+ */
+export async function prepareWorkspace({ repo, workspace, branch, signal }) {
+  const localPath = repo?.localPath && await isDirectory(repo.localPath) ? await realpath(repo.localPath) : null;
+  if (localPath && await isWorkingTree(localPath, signal)) {
+    // T3 refuses to create an existing branch, so reuse its worktree or check it out in the node's workspace.
+    const existing = await worktreeFor(localPath, branch, signal);
+    if (existing) return { workspaceRoot: localPath, workspaceStrategy: { type: 'existing_worktree', worktreePath: existing, branch }, mode: 'existing_worktree', startHead: await git(existing, ['rev-parse', 'HEAD'], { signal }) };
+    if (await hasBranch(localPath, branch, signal)) {
+      if (typeof workspace !== 'string' || !workspace) throw new Error('The node did not provide an assignment workspace.');
+      const path = join(await realpath(workspace), 'worktree');
+      await git(localPath, ['worktree', 'add', path, branch], { signal });
+      const worktreePath = await realpath(path);
+      return { workspaceRoot: localPath, workspaceStrategy: { type: 'existing_worktree', worktreePath, branch }, mode: 'existing_worktree', startHead: await git(worktreePath, ['rev-parse', 'HEAD'], { signal }) };
+    }
+    const baseRef = repo.defaultBranch ?? (await git(localPath, ['rev-parse', '--abbrev-ref', 'HEAD'], { signal }));
+    return { workspaceRoot: localPath, workspaceStrategy: { type: 'worktree', baseRef, branch, startFromOrigin: false }, mode: 'worktree', startHead: await git(localPath, ['rev-parse', `${baseRef}^{commit}`], { signal }) };
+  }
+  if (typeof workspace !== 'string' || !workspace) throw new Error('The node did not provide an assignment workspace.');
+  const root = await realpath(workspace);
+  const source = repo?.url ? repositoryUrl(repo.url) : localPath;
+  if (source) {
+    const checkout = join(root, 'repo');
+    if (await isDirectory(join(checkout, '.git'))) await git(checkout, ['fetch', '--quiet', 'origin'], { signal, timeoutMs: 600000 });
+    else {
+      if ((await readdir(root)).includes('repo')) throw new Error('Assignment workspace already has a non-repository "repo" entry.');
+      await git(root, ['clone', '--quiet', '--no-recurse-submodules', '--', source, checkout], { signal, timeoutMs: 600000 });
+    }
+    const published = await git(checkout, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { signal }).then(() => true, () => false);
+    const base = published ? `origin/${branch}` : repo.defaultBranch ? `origin/${repo.defaultBranch}` : 'origin/HEAD';
+    await git(checkout, ['checkout', '--quiet', '-B', branch, base], { signal });
+    return { workspaceRoot: await realpath(checkout), workspaceStrategy: { type: 'root' }, mode: 'clone', startHead: await git(checkout, ['rev-parse', 'HEAD'], { signal }) };
+  }
+  return { workspaceRoot: root, workspaceStrategy: { type: 'root' }, mode: 'workspace', startHead: null };
+}
+
+/** Push the work branch to `origin` without force, so CI and delivery can fetch the exact head. */
+export async function publishBranch(checkout, branch, { signal } = {}) {
+  try { await git(checkout, ['remote', 'get-url', 'origin'], { signal }); }
+  catch { return { published: false, reason: 'The checkout has no origin remote.' }; }
+  try { await git(checkout, ['push', '--quiet', 'origin', `HEAD:refs/heads/${branch}`], { signal, timeoutMs: 600000 }); }
+  catch { return { published: false, failed: true, reason: `Pushing ${branch} to origin failed.` }; }
+  return { published: true };
+}
+
+/** True when the checkout has uncommitted changes. */
+export async function isDirty(checkout, { signal } = {}) {
+  try { return (await git(checkout, ['status', '--porcelain'], { signal })).length > 0; } catch { return false; }
+}
+
+/** Branch and head commit of a checkout, when it is a Git repository. */
+export async function revisionOf(path, { signal } = {}) {
+  if (!path || !await isDirectory(path)) return {};
+  try {
+    const [branch, headSha] = await Promise.all([
+      git(path, ['rev-parse', '--abbrev-ref', 'HEAD'], { signal, timeoutMs: 15000 }),
+      git(path, ['rev-parse', 'HEAD'], { signal, timeoutMs: 15000 }),
+    ]);
+    return { ...(branch && branch !== 'HEAD' ? { branch } : {}), ...(/^[0-9a-f]{40,64}$/.test(headSha) ? { headSha } : {}) };
+  } catch { return {}; }
+}
+
+const PR_PATTERN = /https:\/\/[\w.-]+\/[\w.-]+\/[\w.-]+\/(?:pull|pulls|merge_requests|-\/merge_requests)\/\d+/g;
+
+/** Last pull/merge request URL mentioned by the agent, if any. */
+export function pullRequestUrl(text) {
+  const matches = typeof text === 'string' ? text.match(PR_PATTERN) : null;
+  return matches?.at(-1);
+}

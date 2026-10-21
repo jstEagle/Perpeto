@@ -89,6 +89,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as PerpetoAgentPolicy from "../perpeto/AgentPolicy.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -1975,6 +1976,16 @@ const make = Effect.gen(function* () {
           parent.thread.interactionMode,
           input.interactionMode,
         );
+        // Perpeto: refuse delegations beyond the governing AgentPolicy.
+        const policyRequest: PerpetoAgentPolicy.CreationRequest = {
+          requestKey: commandId,
+          callerThreadId: scope.thread.threadId,
+          rootThreadId: parent.thread.lineage?.rootThreadId ?? null,
+          kind: "delegated_task",
+          providerInstanceId: target.modelSelection.instanceId,
+          model: target.modelSelection.model,
+          providers,
+        };
         let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
         if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
           const project = yield* requireProject(parent.thread.projectId);
@@ -1990,6 +2001,7 @@ const make = Effect.gen(function* () {
             );
           workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
         }
+        yield* PerpetoAgentPolicy.authorize(policyRequest);
         // ThreadManagementService.dispatch is the chokepoint for this command
         // type's own enablement check, using the same command id and its
         // receipt-replay exemption, so no separate assert runs here.
@@ -2014,6 +2026,7 @@ const make = Effect.gen(function* () {
             completionWake: input.mode === "wait" ? "settled_only" : "always",
           })
           .pipe(
+            Effect.tapError(() => PerpetoAgentPolicy.release(policyRequest)),
             Effect.mapError((error) =>
               error._tag === "ThreadManagementProviderInstanceDisabledError"
                 ? threadManagementFailure(error)
@@ -2035,6 +2048,7 @@ const make = Effect.gen(function* () {
         }
         const taskId = taskEvent.event.payload.id;
         const childThreadId = taskEvent.event.payload.childThreadId;
+        yield* PerpetoAgentPolicy.recordCreated(policyRequest, { childThreadId, childRef: taskId });
         const childRunEvent = result.storedEvents.find(
           (stored) =>
             stored.event.type === "run.created" && stored.event.threadId === childThreadId,
@@ -2289,6 +2303,17 @@ const make = Effect.gen(function* () {
                 stableCommandId({ scope, requestKey: key, operation: "create-thread", index }),
                 target,
               );
+              // Perpeto: agent-created threads draw from the same AgentPolicy budget.
+              const policyRequest: PerpetoAgentPolicy.CreationRequest = {
+                requestKey: stableCommandId({ scope, requestKey: key, operation: "create-thread", index }),
+                callerThreadId: scope.thread.threadId,
+                rootThreadId: parent.thread.lineage?.rootThreadId ?? null,
+                kind: "thread",
+                providerInstanceId: target.modelSelection.instanceId,
+                model: target.modelSelection.model,
+                providers,
+              };
+              yield* PerpetoAgentPolicy.authorize(policyRequest);
               const title = threadTitle({
                 parentTitle: parent.thread.title,
                 prompt: request.prompt,
@@ -2316,6 +2341,7 @@ const make = Effect.gen(function* () {
                   worktreePath: parent.thread.worktreePath,
                 })
                 .pipe(
+                  Effect.tapError(() => PerpetoAgentPolicy.release(policyRequest)),
                   Effect.mapError((error) =>
                     failure(
                       "orchestration_error",
@@ -2323,6 +2349,7 @@ const make = Effect.gen(function* () {
                     ),
                   ),
                 );
+              yield* PerpetoAgentPolicy.recordCreated(policyRequest, { childThreadId: threadId });
               if (request.prompt !== undefined) {
                 yield* threadManagement
                   .dispatch({
