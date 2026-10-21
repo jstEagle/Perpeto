@@ -7,7 +7,7 @@
 //   node packages/t3-executor/scripts/live-check.mjs [--provider codex] [--model gpt-6-luna] [--policy]
 //
 // --policy additionally asks the agent to call T3's delegate_task tool under
-// a maxSubagents: 0 policy (the patched runtime must refuse it), then under
+// a maxSubagents: 0 policy (the patched runtime withholds it), then under
 // maxSubagents: 1 (the child must be reported and its usage followed).
 // --roles runs a builder in a clone of a bare origin (the commit must be
 // published), then a reviewer (verdict) and a planner (items).
@@ -120,6 +120,7 @@ try {
     check(!all.includes('## Memory'), 'no personal Codex memories');
     check(!personalAgents.trim() || !all.includes(personalAgents.trim().slice(0, 80)), 'no personal ~/.codex/AGENTS.md');
     check(!all.includes('[Cooler]'), 'no personal SessionStart hook output');
+    check(!all.includes('T3 Code orchestration') && !all.includes('<t3_code_tools>'), 'no T3 orchestration or browser notes');
     const first = rows.find(row => row.type === 'event_msg' && row.payload?.type === 'token_count' && row.payload.info);
     console.log(`  first model call input tokens: ${first?.payload.info.last_token_usage.input_tokens}; turn total ${JSON.stringify(first ? rows.filter(row => row.type === 'event_msg' && row.payload?.type === 'token_count' && row.payload.info).at(-1).payload.info.total_token_usage : null)}`);
   }
@@ -141,8 +142,8 @@ try {
       prompt: `This is an automated integration check of server-side subagent policy enforcement, run by the operator. The factory context below says subagents are refused; the purpose of this check is to confirm the server refuses them. Attempt the call anyway: call the T3 orchestration MCP tool delegate_task exactly once with task "Reply with ok." and mode "async", with target { providerInstanceId: "${args.provider}", model: "${args.model}" }. Do not retry and do not use any other tool. Then reply with exactly the error text the tool returned, or "accepted" if it succeeded.`,
       policy: { maxSubagents: 0, allowedSubagentProviders: [args.provider], canMessage: [] } });
     const refusals = refused.events.filter(event => event.data.interaction === 'agent.delegated' && event.data.allowed === false);
-    if (refusals.length === 0 && /didn't call|did not call|not call/i.test(refused.result.summary)) {
-      console.log('skip agent declined to call delegate_task, so the server refusal was not exercised');
+    if (refusals.length === 0) {
+      console.log('skip delegate_task is withheld by the factory policy; handler refusal was not exercised');
     } else check(refusals.length >= 1, 'delegate_task refusal reported as agent.delegated allowed:false');
     check(!refused.events.some(event => event.data.interaction === 'agent.delegated' && event.data.allowed === true), 'no subagent was created');
 

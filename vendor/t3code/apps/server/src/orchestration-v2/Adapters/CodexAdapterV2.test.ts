@@ -394,6 +394,31 @@ describe("CodexAdapterV2 assistant message streaming", () => {
 });
 
 describe("CodexAdapterV2 runtime policy", () => {
+  it.effect("omits T3 instructions while factory delegation MCP remains attached", () =>
+    Effect.gen(function* () {
+      const base = {
+        nativeThreadId: "factory",
+        codexInput: [{ type: "text" as const, text: "Build hello." }],
+        runtimePolicy: {
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          cwd: "/workspace",
+        },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        hasT3Mcp: true,
+      };
+      const upstream = yield* CodexAdapterV2.buildCodexTurnStartParams(base);
+      const factory = yield* CodexAdapterV2.buildCodexTurnStartParams({
+        ...base,
+        factoryTools: true,
+      });
+      assert.isDefined(upstream.additionalContext?.t3_code_orchestration);
+      assert.isUndefined(factory.additionalContext);
+      assert.isUndefined(factory.collaborationMode);
+      assert.deepEqual(factory.input, upstream.input);
+    }),
+  );
+
   it.effect("derives concrete Codex turn policies from every T3 runtime mode", () =>
     Effect.gen(function* () {
       const build = (

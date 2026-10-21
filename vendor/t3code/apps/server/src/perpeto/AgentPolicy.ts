@@ -53,6 +53,15 @@ export const setStoreForTesting = (store: AgentPolicyStore | undefined) => {
   active = store;
 };
 
+/** Factory sessions carry only policy-allowed delegation tools. */
+export const FACTORY_MCP_PATH = "/mcp/perpeto";
+export const factoryPolicy = (threadId: string, rootThreadId?: string | null) => {
+  const policy = active?.getPolicy(threadId, rootThreadId);
+  return policy?.t3Tools === "policy" ? policy : undefined;
+};
+export const isFactoryMcpSession = (session: { readonly endpoint: string } | undefined) =>
+  session?.endpoint.endsWith(FACTORY_MCP_PATH) === true;
+
 interface ProviderLike {
   readonly instanceId: string;
   readonly driver?: string;
@@ -173,6 +182,7 @@ export const route = <E, R>(input: {
       return run(() =>
         store.setPolicy({
           threadId,
+          t3Tools: body.t3Tools,
           maxSubagents: body.maxSubagents,
           allowedSubagentProviders: body.allowedSubagentProviders,
         }),

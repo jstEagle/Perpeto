@@ -16,6 +16,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { OrchestratorMcpFailure, PreviewAutomationError } from "@t3tools/contracts";
 
 import packageJson from "../../package.json" with { type: "json" };
+import * as PerpetoAgentPolicy from "../perpeto/AgentPolicy.ts";
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
@@ -38,7 +39,7 @@ import * as ThreadMetadataMcpService from "./ThreadMetadataMcpService.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
-import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import { FactoryToolkit, OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
   PreviewSnapshotTool,
@@ -163,6 +164,11 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         presentedToken: token.length > 0,
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
+    }
+    // Factory credentials cannot use the full catalog, even by changing URL.
+    const factoryEndpoint = request.url.split("?")[0] === PerpetoAgentPolicy.FACTORY_MCP_PATH;
+    if ((invocation.factoryTools === true) !== factoryEndpoint) {
+      return HttpServerResponse.jsonUnsafe({ error: "capability_denied" }, { status: 403 });
     }
     return yield* httpEffect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
@@ -832,7 +838,26 @@ export const layerMcpTransport = McpServer.layerHttp({
   allowSessionTermination: true,
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
-export const layer = Layer.mergeAll(
+export const layerFactoryToolkit = toolkitRegistration(
+  FactoryToolkit,
+  OrchestratorHandlers.layerFactory,
+).pipe(Layer.provide(OrchestratorMcpService.layer), Layer.provide(ThreadMetadataMcpService.layer));
+
+// A distinct server owns this catalog: list and call both see only these tools.
+export const layerFactoryMcpTransport = McpServer.layerHttp({
+  name: "Perpeto delegation",
+  version: packageJson.version,
+  path: PerpetoAgentPolicy.FACTORY_MCP_PATH,
+  protocols: [McpProtocol.v2025_06_18],
+  allowSessionTermination: true,
+}).pipe(Layer.provide(layerMcpAuthMiddleware));
+
+export const layerFactoryMcp = layerFactoryToolkit.pipe(
+  Layer.provide(layerFactoryMcpTransport),
+  Layer.fresh,
+);
+
+const layerFullMcp = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
@@ -845,3 +870,5 @@ export const layer = Layer.mergeAll(
   layerDeviceToolkit,
   layerHtmlToolkit,
 ).pipe(Layer.provideMerge(layerMcpTransport));
+
+export const layer = Layer.merge(layerFullMcp, layerFactoryMcp);
