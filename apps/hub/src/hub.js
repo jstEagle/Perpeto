@@ -11,7 +11,7 @@ import { publicOrigin } from './config.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
-import { HubError, fail, requireValue, nonblank, object, integer, strings } from './errors.js';
+import { HubError, fail, requireValue, nonblank, object, integer, strings, gitIdentity } from './errors.js';
 
 const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -445,7 +445,12 @@ export class Hub {
       // Merge entries also carry hub delivery fields (queue, job, merged revision) that engine snapshots do not know.
       const value = { ...(kind === 'merge-entry' ? previous : {}), ...effect.value, projectId: run.projectId, runId: run.id };
       if (kind === 'merge-entry' && value.status === 'queued' && !value.queueId) this.delivery.dirty = true;
-      if (kind === 'assignment') value.repo = previous?.repo ?? structuredClone(this.store.need('project', run.projectId).repo);
+      if (kind === 'assignment') {
+        // Repository and commit identity are fixed when the assignment is first created; the engine cannot set either.
+        const source = previous ?? this.store.need('project', run.projectId);
+        value.repo = structuredClone(source.repo);
+        if (source.gitIdentity) value.gitIdentity = structuredClone(source.gitIdentity); else delete value.gitIdentity;
+      }
       if (kind === 'assignment' || kind === 'job') {
         requireValue(!previous || previous.status === 'queued', 'Engine cannot overwrite leased or finished work.');
         value.status = 'queued'; value.attempt = previous?.attempt ?? value.attempt ?? 1; value.requirements ??= {};
@@ -531,7 +536,8 @@ export class Hub {
       if (method === 'POST') {
         nonblank(body.name, 'name', 200); object(body.repo, 'repo'); nonblank(body.repo.url, 'repo.url', 4096); nonblank(body.repo.defaultBranch, 'repo.defaultBranch', 200);
         if (body.docs !== undefined) requireValue(Array.isArray(body.docs), 'docs must be an array.');
-        const value = { id: id('prj'), name: body.name, repo: body.repo, docs: body.docs ?? [], goals: writeGoals(body.goals ?? []), createdAt: now(), updatedAt: now() };
+        const value = { id: id('prj'), name: body.name, repo: body.repo, docs: body.docs ?? [], goals: writeGoals(body.goals ?? []),
+          ...(body.gitIdentity != null ? { gitIdentity: gitIdentity(body.gitIdentity) } : {}), createdAt: now(), updatedAt: now() };
         this.store.put('project', value); this.messaging.createProject({ id: value.id, name: value.name }); this.emit('project.created', 'project', { ...value, projectId: value.id });
         return reply(this.projectView(value), 201);
       }
@@ -552,6 +558,8 @@ export class Hub {
           if (key === 'docs') requireValue(Array.isArray(body.docs), 'docs must be an array.');
           project[key] = key === 'goals' ? writeGoals(body.goals) : body[key];
         }
+        // Applies to assignments created afterwards; null clears it, leaving each node's runtime.t3.gitIdentity.
+        if (Object.hasOwn(body, 'gitIdentity')) { if (body.gitIdentity === null) delete project.gitIdentity; else project.gitIdentity = gitIdentity(body.gitIdentity); }
         project.updatedAt = now(); this.store.put('project', project); this.emit('project.updated', 'project', { ...project, projectId: project.id }); return reply(this.projectView(project));
       }
       if (action === 'runs' && method === 'GET') {
