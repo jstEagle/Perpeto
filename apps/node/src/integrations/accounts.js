@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { readSecret } from '../config.js';
 import { isAbsolute, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AccountPoolError, createAccountPool } from '@perpeto/accounts';
@@ -19,6 +21,7 @@ export function createAccountProvider({ config = {}, configRoot = process.cwd(),
   const root = nodeDataDir ? resolve(configRoot, nodeDataDir) : dataDir;
   if (!root || !isAbsolute(root)) throw new Error('Account pool needs the node data directory.');
   let pool; let machineId;
+  const ownedReservations = new Map();
   const open = () => {
     if (!pool) throw new Error('Account pool is not bound to an enrolled machine.');
     return pool;
@@ -33,22 +36,64 @@ export function createAccountProvider({ config = {}, configRoot = process.cwd(),
     }
   }
   const reservation = ({ assignmentId, attempt = 1 }) => `${assignmentId}-${attempt}`;
-  return {
+  const adapter = {
     kind: 'factory-accounts',
     bind({ machineId: id }) {
       if (machineId && machineId !== id) throw new Error('Account pool is already bound to another machine.');
       machineId = id;
       pool ??= createAccountPool({ ...options, nodeDataDir: root, machineId });
     },
+    /** Called only by the daemon while its exclusive data-directory lock is held. */
+    async prepare({ machineId: id, reEnroll = false, settledReservations = {} }) {
+      let previousId = id;
+      if (reEnroll) {
+        try {
+          previousId = JSON.parse(await readSecret(resolve(root, 'accounts', 'registry.json'))).machineId;
+          if (typeof previousId !== 'string') throw new Error('Invalid local account identity.');
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      adapter.bind({ machineId: previousId });
+      const held = await locked(value => value.reservations());
+      // The acceptance journal alone does not prove a crashed harness stopped.
+      // Only exact tokens durably recorded after executor settlement can be freed.
+      // Bulk complement-based reconciliation can delete a token created after this snapshot.
+      // Fenced releases affect only the exact stopped tokens we can prove are ours.
+      const reconciliationKey = `startup:${randomUUID()}`;
+      for (const heldReservation of held) {
+        if (!Object.hasOwn(settledReservations, heldReservation.assignmentId) || settledReservations[heldReservation.assignmentId] !== heldReservation.id) continue;
+        try {
+          await locked(value => value.release({ assignmentId: heldReservation.assignmentId,
+            reservationId: heldReservation.id, idempotencyKey: `${reconciliationKey}:${heldReservation.id}` }));
+        } catch (error) {
+          if (!(error instanceof AccountPoolError) || error.code !== 'RESERVATION_ENDED') throw error;
+        }
+      }
+      if (previousId !== id) {
+        const rebindKey = `rebind:${randomUUID()}`;
+        await locked(value => value.rebindMachine({ machineId: id, idempotencyKey: rebindKey }));
+        machineId = id;
+      }
+    },
+    /** After executor settlement, report only a still-held token acquired by this handle. */
+    async settledReservation({ assignmentId, attempt = 1 }) {
+      const id = reservation({ assignmentId, attempt });
+      const token = ownedReservations.get(id);
+      if (!token) return undefined;
+      return locked(value => value.reservations().some(held => held.assignmentId === id && held.id === token) ? token : undefined);
+    },
     /** Public Account[] for heartbeats. */
     async list() { return pool ? locked(value => value.snapshot()) : []; },
     /**
-     * Reserve an account for one assignment attempt. Returns `{ account, binding }`, or null when this provider has no
-     * pool support or no eligible account, so the executor can fall back to the provider's default login.
+     * Reserve an account for one assignment attempt. Returns `{ account, binding, reservation }`, or null only when this provider has no
+     * enrolled accounts/pool support. ACCOUNT_POOL_EXHAUSTED propagates; never fall back on exhaustion.
      */
     async acquire({ provider, assignmentId, attempt = 1 }) {
       const id = reservation({ assignmentId, attempt });
-      try { return await locked(value => value.select({ provider, assignmentId: id, idempotencyKey: `select:${id}` })); }
+      try {
+        const selected = await locked(value => value.select({ provider, assignmentId: id, idempotencyKey: `select:${id}` }));
+        ownedReservations.set(id, selected.reservation.id);
+        return selected;
+      }
       catch (error) { if (error instanceof AccountPoolError && UNAVAILABLE.has(error.code)) return null; throw error; }
     },
     async renewReservation({ assignmentId, attempt = 1, reservationId, idempotencyKey }) {
@@ -58,9 +103,11 @@ export function createAccountProvider({ config = {}, configRoot = process.cwd(),
     },
     async release(selection, { assignmentId, attempt = 1, reservationId = selection?.reservation?.id, result }) {
       const id = reservation({ assignmentId, attempt });
-      return locked(value => value.release({ assignmentId: id,
+      const released = await locked(value => value.release({ assignmentId: id,
         ...(reservationId ? { reservationId } : {}), ...(result !== undefined ? { result } : {}),
         idempotencyKey: `release:${id}${reservationId ? `:${reservationId}` : ''}` }));
+      if (ownedReservations.get(id) === reservationId) ownedReservations.delete(id);
+      return released;
     },
     /** Feed a provider error or usage update so limits cool the account and auth failures mark it invalid. */
     async observe({ accountId, message, reservationId, idempotencyKey }) {
@@ -71,4 +118,5 @@ export function createAccountProvider({ config = {}, configRoot = process.cwd(),
     get pool() { return pool; },
     async close() {},
   };
+  return adapter;
 }

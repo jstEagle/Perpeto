@@ -24,6 +24,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   const polling = new AbortController();
   const active = new Map();
   let seen = {};
+  let settledReservations = {};
+  let settlementWrites = Promise.resolve();
+  let freshEnrollment = false;
   let journalWrites = Promise.resolve();
   let lastAccounts;
   let namespaceAllAccounts = false;
@@ -103,7 +106,8 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     catch (error) { if (error.code !== 'ENOENT') throw new Error('Invalid machine credential file.'); }
     if (credentials?.token && credentials?.machineId) {
       if (typeof credentials.token !== 'string' || /[\r\n]/.test(credentials.token) || typeof credentials.machineId !== 'string') throw new Error('Invalid machine credential file.');
-      machineId = credentials.machineId; token = credentials.token; hub.setToken(token); return;
+      machineId = credentials.machineId; token = credentials.token; hub.setToken(token);
+      freshEnrollment = credentials.pendingAccountRebind === true; return;
     }
     if (!config.enrollmentCodeFile) throw new Error('Enrollment requires an owner-only enrollmentCodeFile.');
     const code = (await readSecret(config.enrollmentCodeFile)).trim();
@@ -113,8 +117,8 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     const result = await hub.retry('/nodes/enroll', { code, name: machine.name, os: machine.os, arch: machine.arch,
       labels: machine.labels, providers: machine.providers, version: VERSION }, { signal: service.signal, key: enrollmentKey });
     if (!result?.machineId || typeof result.machineId !== 'string' || !result.token || typeof result.token !== 'string' || /[\r\n]/.test(result.token)) throw new Error('Invalid enrollment response.');
-    await writePrivate(config.credentialFile, { machineId: result.machineId, token: result.token });
-    machineId = result.machineId; token = result.token; hub.setToken(token);
+    await writePrivate(config.credentialFile, { machineId: result.machineId, token: result.token, pendingAccountRebind: true });
+    machineId = result.machineId; token = result.token; hub.setToken(token); freshEnrollment = true;
   }
   function persistSeen(item) {
     seen[item.key] = Math.max(seen[item.key] ?? -1, item.attempt);
@@ -247,7 +251,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         await report(record, { type: 'started', data: {} });
         const executor = registry.find(record.item, machine);
         if (!executor) result = { outcome: 'failure', summary: 'No compatible executor is installed.' };
-        else result = await executor.run(record.item, ctx);
+        else { record.executed = true; result = await executor.run(record.item, ctx); }
         if (!['success', 'failure', 'blocked'].includes(result?.outcome) || typeof result.summary !== 'string') throw new Error('Invalid executor result.');
       }
       record.work.signal.throwIfAborted();
@@ -263,6 +267,16 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       record.lease.abort();
       clearTimeout(record.expiryTimer);
       await renewal;
+      let pendingReservation;
+      try { if (record.executed) pendingReservation = await accountProvider.settledReservation?.({ assignmentId: record.item.id, attempt: record.attempt }); }
+      catch { /* Uncertain reservations keep their finite lease. */ }
+      if (pendingReservation) {
+        settledReservations[`${record.item.id}-${record.attempt}`] = pendingReservation;
+        const write = settlementWrites.then(() => writePrivate(resolve(config.dataDir, 'settled-reservations.json'), settledReservations));
+        // Persistence failure keeps recovery conservative; the reservation can still expire.
+        settlementWrites = write.catch(() => {});
+        await settlementWrites;
+      }
       if (record.kind === 'assignment') await rm(workspace, { recursive: true, force: true }).catch(() => {});
       active.delete(record.key);
       notify();
@@ -358,6 +372,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         try { seen = JSON.parse(await readFile(resolve(config.dataDir, 'leases.json'), 'utf8')); }
         catch (error) { if (error.code !== 'ENOENT') throw new Error('Invalid lease journal.'); }
         if (!seen || typeof seen !== 'object' || Array.isArray(seen) || Object.values(seen).some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('Invalid lease journal.');
+        try { settledReservations = JSON.parse(await readSecret(resolve(config.dataDir, 'settled-reservations.json'))); }
+        catch (error) { if (error.code !== 'ENOENT') throw new Error('Invalid settled-reservation journal.'); }
+        if (!settledReservations || typeof settledReservations !== 'object' || Array.isArray(settledReservations) || Object.values(settledReservations).some(value => typeof value !== 'string' || !/^res_[a-zA-Z0-9_-]+$/.test(value))) throw new Error('Invalid settled-reservation journal.');
         const detected = await detectProviders();
         machine = { name: config.name ?? hostname(), os: process.platform === 'win32' ? 'windows' : process.platform,
           arch: process.arch, labels: config.labels, providers: config.providers ? detected.filter(provider => config.providers.includes(provider)) : detected,
@@ -370,7 +387,13 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         machine.providers = machine.providers.filter(provider => registry.find({ harness: { provider, model: 'discovery' }, requirements: {}, policy: {} }, machine));
         await enroll();
         // Machine-scoped integrations (the account pool) can only open once the machine ID is known.
-        await accountProvider.bind?.({ machineId });
+        if (typeof accountProvider.prepare === 'function') {
+          await accountProvider.prepare({ machineId, reEnroll: freshEnrollment, settledReservations });
+          // Successful reconciliation consumed these proofs; keep only future pending settlements.
+          if (Object.keys(settledReservations).length) await writePrivate(resolve(config.dataDir, 'settled-reservations.json'), {});
+          settledReservations = {};
+        } else await accountProvider.bind?.({ machineId });
+        if (freshEnrollment) await writePrivate(config.credentialFile, { machineId, token });
         // Initial heartbeat may reconnect too, but no work is accepted until capacity is announced.
         await heartbeat(true);
         service.signal.throwIfAborted();
