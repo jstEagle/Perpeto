@@ -293,15 +293,17 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   async function relinquish(item, kind) {
     if (!['assignment', 'job'].includes(kind) || typeof item?.id !== 'string' || !Number.isSafeInteger(item.attempt)) return;
     // Never finalise a duplicate response for an attempt that is still executing locally.
-    if (active.has(`${kind}:${item.id}`) || (seen[`${kind}:${item.id}`] ?? -1) >= item.attempt) return;
-    const data = kind === 'assignment'
-      ? { outcome: 'failure', summary: 'Node cannot accept this lease; retry on a compatible machine.' }
-      : { status: 'error', revision: item.revision, configHash: item.configHash, steps: [], artifacts: [] };
-    // There is no release route yet. A fenced terminal event frees the slot immediately,
-    // including when only the node clock considers the lease expired.
-    await hub.retry(`/${kind === 'assignment' ? 'assignments' : 'jobs'}/${encodeURIComponent(item.id)}/events`,
-      { type: kind === 'assignment' ? 'failed' : 'completed', attempt: item.attempt, data }, { signal: service.signal }).catch(() => {});
+    if (active.has(`${kind}:${item.id}`)) return;
+    try {
+      await hub.retry(`/${kind === 'assignment' ? 'assignments' : 'jobs'}/${encodeURIComponent(item.id)}/release`,
+        { attempt: item.attempt, reason: 'Node cannot run this lease with its current capacity or requirements.' }, { signal: service.signal });
+    } catch (error) {
+      // A stale/started lease cannot be released. Never turn a rejection into a terminal result.
+      if (error instanceof HubError && error.status === 409) return;
+      throw error;
+    }
   }
+
   async function pollLoop(kind) {
     const limit = kind === 'job' ? config.capacity.maxJobs : config.capacity.maxAgents;
     let wait = config.timing.backoffMinMs;
