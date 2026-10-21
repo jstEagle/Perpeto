@@ -1,0 +1,9 @@
+{
+  "name": "@perpeto/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": { "perpeto": "bin/perpeto.js" },
+  "engines": { "node": ">=24.13.1 <25" },
+  "scripts": { "test": "node --test test/*.test.js" }
+}
