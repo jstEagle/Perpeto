@@ -4,7 +4,10 @@ import { mkdtemp, writeFile, readFile, stat, chmod, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { request as httpRequest } from 'node:http';
 import { createHub } from '../src/index.js';
+import { Hub } from '../src/hub.js';
+import { loadConfig } from '../src/config.js';
 import { createStubEngine } from '../src/engine/stub-engine.js';
 
 const graph = { schema: 'perpeto.workflow/1', nodes: [], edges: [] };
@@ -502,4 +505,76 @@ test('project runs are scoped, newest first, filterable by status, and durable',
   assert.equal((await f.request('GET', '/projects/missing/runs')).status, 404);
   const node = await f.enroll();
   assert.equal((await f.request('GET', path, undefined, node.token)).status, 403);
+});
+
+/** Send a request target exactly as written; fetch() would normalize it first. */
+function rawRequest(baseUrl, path, token, method = 'GET') {
+  const { hostname, port } = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({ host: hostname, port, path, method, headers: { Authorization: `Bearer ${token}` } }, response => {
+      let body = ''; response.setEncoding('utf8'); response.on('data', chunk => { body += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, body }));
+    });
+    request.on('error', reject); request.end();
+  });
+}
+const traversals = ['/jobs/%2e%2e/events', '/jobs/x/%2e%2e/%2e%2e/events', '/jobs/x/%2E%2E/%2e./events', '/jobs/.%2e/events', '/assignments/%2e%2e/events',
+  '/jobs/x\\..\\..\\events', '/jobs/x/..%2f..%2fevents', '/jobs/x/..%5c..%5cevents'];
+
+test('node tokens cannot reach owner routes through encoded, dot, backslash or double-slash paths', async t => {
+  const f = await fixture(t); await f.run(); const node = await f.enroll();
+  const owner = await rawRequest(f.baseUrl, '/api/v1/events', f.owner); assert.equal(owner.status, 200);
+  for (const path of [...traversals.map(value => `/api/v1${value}`), '/api/v1//events', '//api/v1/events', '/api/v1/jobs/x//events', '/api/v1/jobs//events']) {
+    const result = await rawRequest(f.baseUrl, path, node.token);
+    assert.ok([400, 403, 404].includes(result.status), `${path} returned ${result.status}`);
+    assert.equal(result.body.includes('"events"'), false, `${path} leaked the event log`);
+  }
+  // The same forms sent straight to the hub, as an embedding caller would, are refused before routing.
+  const directory = await mkdtemp(join(tmpdir(), 'perpeto-hub-direct-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'hub.json'); await writeFile(configPath, JSON.stringify({}));
+  const hub = new Hub(loadConfig(configPath), createStubEngine()); t.after(() => hub.close());
+  const ownerToken = (await readFile(join(directory, 'owner.secret'), 'utf8')).trim();
+  const code = (await hub.request({ method: 'POST', path: '/machines/enrollment-codes', authorization: `Bearer ${ownerToken}` })).body.code;
+  const machine = (await hub.request({ method: 'POST', path: '/nodes/enroll', body: { code, name: 'm', os: 'linux', arch: 'x64', version: 't' } })).body;
+  assert.equal((await hub.request({ method: 'GET', path: '/events', authorization: `Bearer ${ownerToken}` })).status, 200);
+  for (const path of [...traversals, '//events', '/jobs/x//events', '/jobs/x/events/..']) {
+    await assert.rejects(hub.request({ method: 'GET', path, authorization: `Bearer ${machine.token}` }), error => [400, 403, 404].includes(error.status), path);
+  }
+  await assert.rejects(hub.request({ method: 'POST', path: '/jobs/%2e%2e/projects', body: { name: 'x', repo: { url: '/r', defaultBranch: 'main' } }, authorization: `Bearer ${machine.token}` }), error => [400, 403, 404].includes(error.status));
+  assert.equal((await hub.request({ method: 'GET', path: '/projects', authorization: `Bearer ${ownerToken}` })).body.projects.length, 0);
+});
+
+test('blank, whitespace-only and NUL CI log lines are stored instead of failing the job', async t => {
+  const f = await fixture(t); const { run } = await f.run(); const node = await f.enroll();
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_logs', revision: 'e'.repeat(40), configHash: 'hash', repo: '/tmp/repo', steps: [] }] });
+  const job = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0];
+  const log = chunk => f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'log', data: { step: 'test', stream: 'stdout', chunk } }, node.token);
+  for (const chunk of ['\n', 'a\n', '\n', '   \n', '\t\r\n', 'nul\0byte\n']) assert.equal((await log(chunk)).status, 200, JSON.stringify(chunk));
+  assert.equal((await log('')).status, 400);
+  const chunks = (await f.request('GET', `/jobs/${job.id}/log`)).body.chunks.map(value => value.chunk);
+  assert.deepEqual(chunks, ['\n', 'a\n', '\n', '   \n', '\t\r\n', 'nul�byte\n']);
+  const done = await f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'completed', data: { status: 'passed', revision: job.revision, configHash: 'hash' } }, node.token);
+  assert.equal(done.status, 200); assert.equal((await f.request('GET', `/jobs/${job.id}`)).body.status, 'passed');
+});
+
+test('lease max is clamped, a finished lease frees its slot before the next heartbeat, and job results bind configHash (L6, L7, L17)', async t => {
+  const f = await fixture(t); const { run } = await f.run(); await f.seed(run.id, 2); const node = await f.enroll();
+  const first = await f.request('POST', '/nodes/lease', { kinds: ['assignment'], max: 5000 }, node.token);
+  assert.equal(first.status, 200); assert.equal(first.body.assignments.length, 1);
+  const work = first.body.assignments[0];
+  // The node's heartbeat still counts the work as running when its final result arrives.
+  await f.request('POST', '/nodes/heartbeat', { ...heartbeat, running: { agents: 1, jobs: 0 } }, node.token);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type: 'completed', data: { outcome: 'success', summary: 'Done' } }, node.token)).status, 200);
+  assert.equal((await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, node.token)).body.assignments.length, 1, 'the finished slot is free at once');
+
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_hash', revision: 'f'.repeat(40), configHash: 'config-v1', repo: '/tmp/repo', steps: [] }] });
+  const job = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0];
+  const result = data => f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'completed', data: { status: 'passed', revision: job.revision, ...data } }, node.token);
+  assert.equal((await result({})).status, 400, 'a final job result without configHash is refused');
+  assert.equal((await result({ configHash: 'config-v1' })).status, 200);
+
+  const code = (await f.request('POST', '/machines/enrollment-codes', {})).body.code;
+  const windows = await f.request('POST', '/nodes/enroll', { code, name: 'windows', os: 'win32', arch: 'x64', version: 'test' }, null);
+  assert.equal(windows.status, 201);
+  assert.equal((await f.request('GET', '/machines')).body.machines.find(machine => machine.id === windows.body.machineId).os, 'windows');
 });
