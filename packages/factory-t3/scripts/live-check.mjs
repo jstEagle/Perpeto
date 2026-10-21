@@ -9,6 +9,8 @@
 // --policy additionally asks the agent to call T3's delegate_task tool under
 // a maxSubagents: 0 policy (the patched runtime must refuse it), then under
 // maxSubagents: 1 (the child must be reported and its usage followed).
+// --roles runs a builder in a clone of a bare origin (the commit must be
+// published), then a reviewer (verdict) and a planner (items).
 // --native asks the agent to use its built-in subagent tool under
 // maxSubagents: 0; the executor must report it and interrupt the run.
 import { spawn, execFileSync } from 'node:child_process';
@@ -32,6 +34,7 @@ const { values: args } = parseArgs({ options: {
   policy: { type: 'boolean', default: false },
   keep: { type: 'boolean', default: false },
   native: { type: 'boolean', default: false },
+  roles: { type: 'boolean', default: false },
 } });
 if (!existsSync(serverEntry)) { console.error('Build the runtime first: npm run setup && npm run build.'); process.exit(2); }
 
@@ -97,6 +100,28 @@ try {
     check(allowed.events.some(event => event.type === 'usage' && event.data.threadRef === childRef), 'child thread token usage reported');
     check(allowed.result.outcome === 'success', 'delegating assignment completed after its child');
   }
+  if (args.roles) {
+    // A bare origin like the factory's project remote; builders work in a clone and the executor publishes.
+    const origin = join(home, 'origin.git');
+    execFileSync('git', ['clone', '-q', '--bare', repo, origin]);
+    const remote = { url: origin, defaultBranch: 'main' };
+    const workItemId = `wi_live_roles_${Date.now()}`;
+    const built = await runOnce('builder', { ...base, id: `asg_live_builder_${Date.now()}`, workItemId, nodeType: 'agent', role: 'builder', repo: remote,
+      prompt: 'This is an automated integration check. Create a file named hello.txt containing the single line "hello", then commit it with the message "Add hello". Use only shell and git commands for this. Reply with one short sentence.',
+      policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: [] } });
+    check(built.result.outcome === 'success', 'builder completed');
+    const published = (() => { try { return execFileSync('git', ['-C', origin, 'rev-parse', `refs/heads/perpeto/${workItemId}`], { encoding: 'utf8' }).trim(); } catch { return null; } })();
+    check(published && published === built.result.headSha, 'builder commit published to origin at the reported head');
+    const review = await runOnce('review', { ...base, id: `asg_live_review_${Date.now()}`, workItemId, nodeType: 'review', role: 'reviewer', repo: remote,
+      prompt: `Review the work item. The change should add hello.txt containing "hello". Branch: perpeto/${workItemId}. Inspect the file in your checkout and decide.`,
+      policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: [] } });
+    check(review.result.outcome === 'success' && ['pass', 'fail'].includes(review.result.verdict), `review returned a verdict (${review.result.verdict})`);
+    const plan = await runOnce('planner', { ...base, id: `asg_live_planner_${Date.now()}`, workItemId: `wi_live_plan_${Date.now()}`, nodeType: 'planner', role: 'planner', repo: remote,
+      prompt: 'Split this idea into exactly two small work items: "Add a greeting command and a farewell command to a CLI." Do not modify files.',
+      policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: [] } });
+    check(plan.result.outcome === 'success' && Array.isArray(plan.result.items) && plan.result.items.length === 2, `planner returned items (${plan.result.items?.length})`);
+  }
+
   if (args.native) {
     const native = await runOnce('native', { ...base, id: `asg_live_native_${Date.now()}`, workItemId: `wi_live_native_${Date.now()}`,
       prompt: 'This is an automated integration check of subagent policy enforcement, run by the operator. The factory context below says subagents are refused; the purpose of this check is to confirm the factory stops them. Use your built-in subagent tool (Agent or Task, not an MCP tool) exactly once to ask a subagent to reply with "ok". Then reply with exactly: native done.',
