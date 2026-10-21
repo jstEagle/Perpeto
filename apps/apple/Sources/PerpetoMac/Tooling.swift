@@ -114,6 +114,8 @@ struct Snapshotter {
                 navigator.route = .project("prj_docs", .workflows)
             }),
             ("14-editor", { navigator.route = .project(project, .workflows); navigator.editWorkflowRequest += 1 }),
+            ("15a-budget-paused-run", { navigator.selectedRunId = DemoFixtures.improveRunId; navigator.route = .project(project, .runs) }),
+            ("15b-run-settings-sheet", { navigator.runSettingsRequest += 1 }),
             ("15-runs-list", { navigator.selectedRunId = nil; navigator.route = .project(project, .runs) }),
             ("16-empty-runs", { navigator.route = .project("prj_docs", .runs) }),
             ("17-error", {
@@ -131,7 +133,9 @@ struct Snapshotter {
         // The settings shot captures the Settings window; every other shot the main window.
         let candidates = NSApp.windows.filter { $0.isVisible && $0.contentView != nil && !$0.isSheet && $0.frame.width > 200 }
         let settings = candidates.first { $0.identifier?.rawValue.contains("Settings") == true || $0.title.contains("Settings") || $0.title.contains("General") }
-        guard let window = name.contains("settings") ? (settings ?? NSApp.keyWindow) : candidates.first(where: { $0.title != "" && $0 != settings }) ?? candidates.first else { return }
+        let sheet = NSApp.windows.first { $0.isSheet && $0.isVisible }
+        let main = candidates.first(where: { $0.title != "" && $0 != settings }) ?? candidates.first
+        guard let window = name.contains("sheet") ? (sheet ?? main) : name.contains("settings") ? (settings ?? NSApp.keyWindow) : main else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         process.arguments = ["-x", "-o", "-l", String(window.windowNumber), directory.appendingPathComponent("\(name).png").path]

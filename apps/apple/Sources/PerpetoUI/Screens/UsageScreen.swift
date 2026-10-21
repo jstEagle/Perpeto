@@ -153,20 +153,28 @@ struct UsageScreen: View {
                         .frame(height: 220)
                 }
                 .card()
-                let breakdowns = Group {
-                    BreakdownPanel(title: "By provider", groups: usage.byProvider, name: Format.provider)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: PerpetoGap.cards, alignment: .top), count: compact ? 1 : 2),
+                          alignment: .leading, spacing: PerpetoGap.cards) {
+                    BreakdownPanel(title: "By role", groups: usage.byRole, name: roleName)
                     BreakdownPanel(title: "By model", groups: usage.byModel, name: Format.model)
+                    BreakdownPanel(title: "By provider", groups: usage.byProvider, name: Format.provider)
                     BreakdownPanel(title: "By machine", groups: usage.byMachine, name: { id in store.machine(id)?.name ?? id })
-                }
-                if compact {
-                    VStack(alignment: .leading, spacing: PerpetoGap.cards) { breakdowns }
-                } else {
-                    HStack(alignment: .top, spacing: PerpetoGap.cards) { breakdowns }
                 }
                 projectList
             }
             .screenPadding()
         }
+    }
+
+    /// Role ids read as their step names where a workflow defines them.
+    private func roleName(_ role: String) -> String {
+        if role == "unknown" { return "Not recorded" }
+        for project in store.factory.projects {
+            for workflow in store.state(project.id).workflows {
+                if let node = workflow.graph.nodes.first(where: { ($0.config["role"]?.stringValue ?? $0.id) == role }) { return node.label }
+            }
+        }
+        return role.prefix(1).uppercased() + role.dropFirst()
     }
 
     private var projectList: some View {

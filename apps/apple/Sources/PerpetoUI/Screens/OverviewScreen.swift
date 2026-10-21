@@ -101,6 +101,13 @@ struct OverviewScreen: View {
                     FigureStrip(headline).frame(maxWidth: 560)
                 }
             }
+            if let run = liveRun, !(run.settings.budget?.isEmpty ?? true) {
+                VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
+                    Text("Budget today").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
+                    BudgetLine(run: run)
+                }
+                .frame(maxWidth: compact ? .infinity : 560, alignment: .leading)
+            }
             Disclosure("More metrics", isExpanded: $moreMetrics) {
                 FigureStrip(more)
             }
@@ -141,6 +148,7 @@ struct OverviewScreen: View {
         var draft: Workflow?
         var nodeId: String?
         var workItem: WorkItem?
+        var runId: String?
     }
 
     private var issues: [Issue] {
@@ -152,6 +160,10 @@ struct OverviewScreen: View {
             result.append(Issue(id: b.id, title: "\(label) is \(b.reason.title.lowercased())",
                                 detail: b.evidence + (result.isEmpty ? (draft.map { " Workflow v\($0.version) proposes a change." } ?? "") : ""),
                                 tone: .warning, draft: result.isEmpty ? draft : nil, nodeId: b.nodeId))
+        }
+        for run in state.runs where run.isBudgetHeld {
+            let name = state.workflows.first { $0.id == run.workflowId }?.name ?? "Workflow"
+            result.append(Issue(id: "budget-\(run.id)", title: "\(name) run: \(BudgetHold.title(run).lowercased())", detail: BudgetHold.detail(run), tone: .paused, runId: run.id))
         }
         for item in state.workItems where item.status == .blocked && item.decisionId != nil {
             result.append(Issue(id: item.id, title: "Approval needed: \(item.title)", detail: "A person decides before this work continues.", tone: .approval, workItem: item))
@@ -203,6 +215,9 @@ struct OverviewScreen: View {
                             navigator.route = .project(project.id, .workflows)
                         }
                         .buttonStyle(.perpetoSecondary)
+                    }
+                    if let runId = issue.runId, let run = state.runs.first(where: { $0.id == runId }) {
+                        Button("Open run") { openRun(run) }.buttonStyle(.perpetoSecondary)
                     }
                     if issue.workItem != nil {
                         Button("Open work") { navigator.route = .project(project.id, .work) }.buttonStyle(.perpetoSecondary)
@@ -330,9 +345,16 @@ struct RunMeta: View {
     var body: some View {
         HStack(spacing: 5) {
             Mono(run.id, color: PerpetoColor.muted)
-            Text("· Workflow v\(run.workflowVersion) · Started \(Format.relative(run.startedAt))")
+            Text("· Workflow v\(run.workflowVersion) · \(Self.times(run))")
                 .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).lineLimit(1)
         }
+    }
+
+    /// "Started 3 days ago", "Completed 2 h ago" or "Stopped 5 d ago".
+    static func times(_ run: Run) -> String {
+        if let done = run.completedAt { return "Completed \(Format.relative(done)), took \(Format.duration(done.timeIntervalSince(run.startedAt)))" }
+        if let stopped = run.stoppedAt { return "\(run.status == .failed ? "Failed" : "Stopped") \(Format.relative(stopped))" }
+        return "Started \(Format.relative(run.startedAt))"
     }
 }
 

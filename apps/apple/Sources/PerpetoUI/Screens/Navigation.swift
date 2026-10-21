@@ -91,6 +91,8 @@ public final class Navigator {
     public var editWorkflowRequest = 0
     /// Node to select on the run map, for deep links.
     public var selectedNodeId: String?
+    /// Opens the run settings sheet on the run screen.
+    public var runSettingsRequest = 0
     /// Sidebar visibility of the main split view.
     public var columnVisibility: NavigationSplitViewVisibility = .automatic
 

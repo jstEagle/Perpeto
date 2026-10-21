@@ -36,12 +36,13 @@ struct GraphViewport: View {
             let room = CGSize(width: proxy.size.width, height: proxy.size.height - 56)
             let full = GraphCanvas.layout(graph: graph, mode: mode, include: probe.isVisible)
             let fullFit = min(room.width / full.contentSize.width, room.height / full.contentSize.height)
-            // Fit all steps by default: switch to compact cards when the full
-            // drawing would need shrinking, and allow them smaller.
+            // Fit all steps when it stays readable: compact cards between 75%
+            // and 100%. Below that the map scrolls sideways, opening on the
+            // first bottleneck.
             let compact = fitWithCompactCards && fullFit < 0.85
             let layout = compact ? GraphCanvas.layout(graph: graph, mode: mode, compact: true, include: probe.isVisible) : full
             let content = layout.contentSize
-            let fit = min(1, max(compact ? 0.45 : 0.6, min(room.width / content.width, room.height / content.height)))
+            let fit = min(1, max(compact ? Self.compactMinScale : 0.6, min(room.width / content.width, room.height / content.height)))
             let scale = zoom ?? fit
             let canvas = GraphCanvas(graph: graph, mode: mode, selection: $selection, zoom: scale,
                                      minSize: CGSize(width: proxy.size.width / scale, height: proxy.size.height / scale),
@@ -79,6 +80,9 @@ struct GraphViewport: View {
         .perpetoElevation(.card, cornerRadius: PerpetoRadius.panel)
     }
 
+    /// Smallest scale for compact cards; below it the map scrolls instead.
+    static let compactMinScale: CGFloat = 0.75
+
     /// The card height that shows the fitted drawing without empty space,
     /// for a map of the given width. Mirrors the fitting in `body`.
     static func idealHeight(graph: WorkflowGraph, mode: GraphMode, width: CGFloat, compactCards: Bool, minHeight: CGFloat = 320, maxHeight: CGFloat = 720) -> CGFloat {
@@ -86,7 +90,7 @@ struct GraphViewport: View {
         let full = GraphCanvas.layout(graph: graph, mode: mode, include: hideRoles).contentSize
         let compact = compactCards && width / full.width < 0.85
         let content = compact ? GraphCanvas.layout(graph: graph, mode: mode, compact: true, include: hideRoles).contentSize : full
-        let scale = min(1, max(compact ? 0.45 : 0.6, width / content.width))
+        let scale = min(1, max(compact ? compactMinScale : 0.6, width / content.width))
         return min(maxHeight, max(minHeight, content.height * scale + 56))
     }
 
