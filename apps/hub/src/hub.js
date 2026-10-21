@@ -649,6 +649,7 @@ export class Hub {
       if (path === '/nodes/lease') return reply(this.lease(machine, body));
       object(body.capacity, 'capacity'); object(body.running, 'running');
       const profile = () => JSON.stringify([machine.capacity, machine.running, machine.status, machine.labels, machine.providers]); const before = profile();
+      const wasOffline = machine.status === 'offline';
       for (const key of ['maxAgents', 'maxJobs']) integer(body.capacity[key], key, 0, 100000);
       for (const key of ['agents', 'jobs']) integer(body.running[key], key, 0, 100000);
       if (body.providers !== undefined) strings(body.providers, 'providers');
@@ -674,7 +675,10 @@ export class Hub {
       }
       // Heartbeats write no event (they would dominate the global log) and wake only this machine's polls, when its
       // capacity, load or profile changed.
-      this.store.put('machine', machine); if (profile() !== before) this.signalMachine(machine.id); const cancelled = this.store.list('cancellation', value => value.machineId === machine.id && Date.parse(value.leaseExpiresAt) > Date.now());
+      this.store.put('machine', machine); if (profile() !== before) this.signalMachine(machine.id);
+      // Liveness lives in machine state; the log records only transitions (machine.offline comes from maintenance).
+      if (wasOffline) this.emit('machine.online', 'machine', machine, { status: machine.status });
+      const cancelled = this.store.list('cancellation', value => value.machineId === machine.id && Date.parse(value.leaseExpiresAt) > Date.now());
       return reply({ status: machine.status, cancel: { assignments: cancelled.filter(value => value.kind === 'assignment').map(value => value.entityId), jobs: cancelled.filter(value => value.kind === 'job').map(value => value.entityId) } });
     }
     if (path === '/accounts' && method === 'GET') return reply({ accounts: this.store.list('account') });
@@ -802,7 +806,9 @@ export class Hub {
         if (final && kind === 'job' && value.delivery) this.delivery.record(value, data);
         else if (outcome) this.applyEffects(this.store.need('run', value.runId), outcome);
         else if (final && value.runId) await this.engineEvent(this.store.need('run', value.runId), { type: `${kind}.finished`, [kind === 'assignment' ? 'assignmentId' : 'jobId']: value.id, data, value });
-        this.emit(`${kind}.${body.type}`, kind, value, data); return reply({ accepted: true, status: value.status, ...(refused ? { reason: refused } : {}) });
+        // CI output stays with its job (GET /jobs/:id/log); one event per line would flood the global log.
+        if (body.type !== 'log') this.emit(`${kind}.${body.type}`, kind, value, data);
+        return reply({ accepted: true, status: value.status, ...(refused ? { reason: refused } : {}) });
       }
     }
     if (path === '/session') {
@@ -823,16 +829,20 @@ export class Hub {
     if (path === '/events' && method === 'GET') {
       const limit = integer(Number(query.get('limit') ?? 100), 'limit', 1, 1000);
       const runId = query.get('runId') ?? undefined; if (runId !== undefined) nonblank(runId, 'runId', 200);
+      const projectId = query.get('projectId') ?? undefined; if (projectId !== undefined) nonblank(projectId, 'projectId', 200);
+      // Comma-separated type lists. `exclude` defaults to legacy liveness noise; `exclude=` shows everything.
+      const list = name => { const value = query.get(name); if (value === null) return undefined; const types = value ? value.split(',') : []; strings(types, name); return types; };
+      const types = list('types'); const exclude = list('exclude'); const filters = { runId, projectId, types, ...(exclude ? { exclude } : {}) };
       const latest = query.get('latest'); requireValue(latest === null || ['true', 'false'].includes(latest), 'latest must be true or false.');
       requireValue(Number(query.has('after')) + Number(query.has('before')) + Number(latest === 'true') <= 1, 'after, before and latest are mutually exclusive.');
       if (latest === 'true' || query.has('before')) {
         // Newest first page (or the page before a cursor), returned oldest first, as messaging pages.
         const before = query.has('before') ? integer(Number(query.get('before')), 'before', 1) : null;
-        const { events, hasMore } = this.store.eventPage({ before, backward: true, runId, limit });
+        const { events, hasMore } = this.store.eventPage({ before, backward: true, ...filters, limit });
         return reply({ events, previousCursor: events[0]?.seq ?? before ?? 0, nextCursor: events.at(-1)?.seq ?? before ?? 0, hasMore });
       }
       const after = integer(Number(query.get('after') ?? 0), 'after');
-      const { events, hasMore } = this.store.eventPage({ after, runId, limit });
+      const { events, hasMore } = this.store.eventPage({ after, ...filters, limit });
       return reply({ events, nextCursor: events.at(-1)?.seq ?? after, hasMore });
     }
     if (path === '/usage' && method === 'GET') return reply(this.usage(query));

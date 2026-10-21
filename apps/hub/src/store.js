@@ -10,6 +10,8 @@ const camel = { project_id: 'projectId', run_id: 'runId', assignment_id: 'assign
 const json = field => `json_extract(data,'$.${field}')`;
 const hour = value => `${value.slice(0, 13)}:00:00.000Z`;
 const marks = values => values.map(() => '?').join(',');
+/** Liveness and per-line output older hubs wrote into the event log. The log hides them unless asked. */
+export const NOISE_EVENTS = Object.freeze(['machine.heartbeat', 'assignment.renewed', 'job.renewed', 'job.log']);
 
 /**
  * Hub-owned data. Entities are JSON rows; hot reads go through expression indexes on status, machine, run, project,
@@ -160,19 +162,24 @@ export class HubStore {
    * One page of events, oldest first within the page: forward after a cursor, or backward before one (or from the
    * newest when `before` is null), optionally for one run. `hasMore` says whether the page stopped short.
    */
-  eventPage({ after, before, backward, runId, limit }) {
-    const run = runId ? ' AND run_id=?' : ''; const args = runId ? [runId] : [];
-    const rows = backward
-      ? this.#sql(`SELECT * FROM events WHERE ${before ? 'seq<?' : '1'}${run} ORDER BY seq DESC LIMIT ?`).all(...(before ? [before] : []), ...args, limit + 1)
-      : this.#sql(`SELECT * FROM events WHERE seq>?${run} ORDER BY seq LIMIT ?`).all(after, ...args, limit + 1);
+  eventPage({ after, before, backward, runId, projectId, types, exclude = NOISE_EVENTS, limit }) {
+    const where = []; const args = [];
+    if (backward && before) { where.push('seq<?'); args.push(before); }
+    if (!backward) { where.push('seq>?'); args.push(after); }
+    if (runId) { where.push('run_id=?'); args.push(runId); }
+    if (projectId) { where.push('project_id=?'); args.push(projectId); }
+    if (types?.length) { where.push('type IN (SELECT value FROM json_each(?))'); args.push(JSON.stringify(types)); }
+    if (exclude.length) { where.push('type NOT IN (SELECT value FROM json_each(?))'); args.push(JSON.stringify(exclude)); }
+    const rows = this.#sql(`SELECT * FROM events WHERE ${where.join(' AND ') || '1'} ORDER BY seq ${backward ? 'DESC' : 'ASC'} LIMIT ?`).all(...args, limit + 1);
     const page = rows.slice(0, limit).map(row => this.#event(row));
     return { events: backward ? page.reverse() : page, hasMore: rows.length > limit };
   }
   /** Events since `from` for one run or project, in one indexed query. */
   eventsSince(from, { projectId, runId } = {}) {
-    const rows = runId ? this.#sql('SELECT * FROM events WHERE run_id=? AND at>=? ORDER BY seq').all(runId, from)
-      : projectId ? this.#sql('SELECT * FROM events WHERE project_id=? AND at>=? ORDER BY seq').all(projectId, from)
-        : this.#sql('SELECT * FROM events WHERE at>=? ORDER BY seq').all(from);
+    const noise = JSON.stringify(NOISE_EVENTS); const quiet = 'AND type NOT IN (SELECT value FROM json_each(?))';
+    const rows = runId ? this.#sql(`SELECT * FROM events WHERE run_id=? AND at>=? ${quiet} ORDER BY seq`).all(runId, from, noise)
+      : projectId ? this.#sql(`SELECT * FROM events WHERE project_id=? AND at>=? ${quiet} ORDER BY seq`).all(projectId, from, noise)
+        : this.#sql(`SELECT * FROM events WHERE at>=? ${quiet} ORDER BY seq`).all(from, noise);
     return rows.map(row => this.#event(row));
   }
   idempotent(scope, key) { return this.#sql('SELECT fingerprint,response FROM idempotency WHERE scope=? AND key=?').get(scope, key); }
