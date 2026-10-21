@@ -58,6 +58,16 @@ export function reduceQueue(previous, action) {
     }
     return state;
   }
+  if (action.type === 'withdraw') {
+    // Only waiting entries can leave without a queue worker; an entry under test finishes or fails its attempt.
+    const entry = state.entries.find(item => item.id === action.entryId);
+    requireValue(entry, 'Merge entry not found.', 'NOT_FOUND');
+    requireValue(entry.status === 'queued' && !state.active?.entryIds.includes(entry.id), 'Only a waiting entry can be withdrawn.', 'CONFLICT');
+    string(action.reason, 'reason');
+    entry.status = 'rejected'; entry.reason = action.reason; delete entry.jobId;
+    state.groups = state.groups.map(ids => ids.filter(id => id !== entry.id)).filter(ids => ids.length);
+    return state;
+  }
   const active = state.active;
   requireValue(active && active.id === action.attemptId, 'Queue attempt is no longer current.', 'STALE_ATTEMPT');
   const entries = state.entries.filter(entry => active.entryIds.includes(entry.id));

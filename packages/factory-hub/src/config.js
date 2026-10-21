@@ -6,7 +6,7 @@ export function loadConfig(filename) {
   const path = resolve(filename);
   const input = object(JSON.parse(readFileSync(path, 'utf8')), 'configuration');
   const defaults = {
-    host: '127.0.0.1', port: 4320, databasePath: './hub.sqlite', messagingDatabasePath: './messaging.sqlite',
+    host: '127.0.0.1', port: 4320, databasePath: './hub.sqlite', messagingDatabasePath: './messaging.sqlite', deliveryDatabasePath: './delivery.sqlite',
     ownerTokenPath: './owner.secret', corsOrigins: [], requestMaxBytes: 1048576,
     heartbeatIntervalMs: 10000, leaseDurationMs: 60000, longPollMs: 25000,
     maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000, architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' },
@@ -24,7 +24,7 @@ export function loadConfig(filename) {
     const url = new URL(origin);
     requireValue(['http:', 'https:'].includes(url.protocol) && url.origin === origin, 'CORS origins must be exact HTTP(S) origins.');
   });
-  for (const key of ['databasePath', 'messagingDatabasePath', 'ownerTokenPath']) config[key] = resolve(dirname(path), nonblank(config[key], key, 4096));
-  requireValue(new Set([config.databasePath, config.messagingDatabasePath, config.ownerTokenPath]).size === 3, 'Hub files must have distinct paths.');
+  for (const key of ['databasePath', 'messagingDatabasePath', 'deliveryDatabasePath', 'ownerTokenPath']) config[key] = resolve(dirname(path), nonblank(config[key], key, 4096));
+  requireValue(new Set([config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, config.ownerTokenPath]).size === 4, 'Hub files must have distinct paths.');
   return config;
 }

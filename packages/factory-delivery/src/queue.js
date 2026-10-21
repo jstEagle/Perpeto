@@ -21,6 +21,10 @@ export class MergeQueue {
   enqueue(entry, { idempotencyKey }) {
     return this.store.dispatch(this.queueId, { type: 'enqueue', entry }, { idempotencyKey });
   }
+  /** Remove a waiting entry, for example when its run stopped. Entries under test cannot be withdrawn. */
+  withdraw({ entryId, reason }, { idempotencyKey }) {
+    return this.store.dispatch(this.queueId, { type: 'withdraw', entryId, reason }, { idempotencyKey });
+  }
   recordJobResult(result, { idempotencyKey }) {
     // Receipt lookup precedes active-attempt lookup so a retry still works after merge.
     // The persisted action includes the attempt; historical jobs let retries reconstruct it.

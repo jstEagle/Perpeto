@@ -5,7 +5,8 @@ const interactions = ['workitem.moved', 'agent.delegated', 'agent.messaged', 'as
 
 export class Observation {
   constructor(hub) { this.hub = hub; this.store = hub.store; }
-  interaction(type, value, data) {
+  isInteraction(type) { return interactions.includes(type); }
+  interaction(type, value, data, subjectKind = 'assignment') {
     requireValue(interactions.includes(type), 'Invalid interaction type.'); object(data, 'interaction data');
     const run = this.store.need('run', value.runId);
     const graph = this.store.need('run-workflow', run.id).workflow.graph;
@@ -18,7 +19,7 @@ export class Observation {
     const event = { ...data, nodeId: data.nodeId ?? value.nodeId, sourceNodeId, ...(targetNodeId ? { targetNodeId } : {}),
       role: data.role ?? value.role, ...(value.machineId ? { machineId: value.machineId } : {}),
       ...(kind ? { unplanned: !edge, ...(edge ? { edgeId: edge.id, kind } : {}) } : {}) };
-    return this.hub.emit(type, 'assignment', value, event);
+    return this.hub.emit(type, subjectKind, value, event);
   }
   assignment(value) {
     const data = { state: value.status, nodeId: value.nodeId, role: value.role, attempt: value.attempt,
@@ -36,7 +37,8 @@ export class Observation {
     const from = new Date(Date.now() - windows[window]).toISOString(); const at = new Date().toISOString();
     const events = this.store.db.prepare('SELECT seq FROM events WHERE at>=? AND (? IS NULL OR project_id=?) AND (? IS NULL OR run_id=?) ORDER BY seq')
       .all(from, projectId ?? null, projectId ?? null, runId ?? null, runId ?? null).flatMap(row => this.store.events(row.seq - 1, 1));
-    const result = await this.hub.engine.computeRunMetrics({ projectId, runId, runs, workflows: runs.map(run => this.store.need('run-workflow', run.id).workflow),
+    const states = Object.fromEntries(runs.map(run => [run.id, this.store.get('engine-state', run.id)?.state ?? null]));
+    const result = await this.hub.engine.computeRunMetrics({ projectId, runId, runs, states, workflows: runs.map(run => this.store.need('run-workflow', run.id).workflow),
       assignments, jobs: this.store.list('job', matches), workItems: this.store.list('work-item', matches), machines,
       usage: this.store.list('usage', value => matches(value) && value.at >= from && value.at <= at), events, window, windowMs: windows[window], from, at });
     object(result, 'metrics result'); object(result.run, 'run metrics');
