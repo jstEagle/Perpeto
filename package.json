@@ -14,6 +14,7 @@
     "test:upstream": "node scripts/runtime.mjs test",
     "verify:upstream": "node scripts/check-upstream.mjs",
     "runtime:help": "node scripts/runtime.mjs help",
-    "smoke:messaging": "node scripts/smoke-messaging.mjs"
+    "smoke:messaging": "node scripts/smoke-messaging.mjs",
+    "test:e2e": "node --test packages/factory-e2e/test/build-run.test.js packages/factory-e2e/test/architect.test.js"
   }
 }

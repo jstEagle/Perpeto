@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perpeto design tokens and components</title>
+<style>
+/* @tokens.css */
+
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-14);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+body { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: var(--text-12); }
+p { margin: 0; }
+h1, h2, h3 { margin: 0; font-weight: var(--weight-bold); }
+svg { display: block; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.page { max-width: 1280px; margin: 0 auto; padding: var(--space-10) var(--space-10) var(--space-16); }
+
+/* Masthead */
+.masthead { padding-bottom: var(--space-12); border-bottom: var(--stroke-hairline) solid var(--ink); }
+.masthead-bar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-6); }
+.masthead-bar .lockup svg { height: 36px; width: auto; }
+.masthead-bar .meta { color: var(--muted); font-size: var(--text-12); }
+.masthead h1 {
+  margin-top: var(--space-16);
+  font-size: var(--display-72);
+  line-height: var(--leading-display);
+  letter-spacing: var(--tracking-display);
+  max-width: 13ch;
+}
+.signal { color: var(--accent); }
+.masthead .lede { margin-top: var(--space-6); max-width: 60ch; font-size: var(--text-16); color: var(--muted); }
+
+/* Sections: title column and work column, separated by a single rule */
+.section { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--space-10); padding: var(--space-12) 0; border-bottom: var(--stroke-hairline) solid var(--border); }
+.section > header h2 { font-size: var(--text-24); line-height: var(--leading-heading); letter-spacing: var(--tracking-heading); }
+.section > header p { margin-top: var(--space-2); color: var(--muted); }
+.stack { display: grid; gap: var(--space-6); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+.caption { font-size: var(--text-12); color: var(--muted); }
+h3 { font-size: var(--text-16); line-height: var(--leading-heading); font-weight: var(--weight-medium); }
+
+/* Colour */
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--space-4); }
+.swatch { background: var(--surface); border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-panel); overflow: hidden; }
+.swatch .chip { height: 72px; border-bottom: var(--stroke-hairline) solid var(--border); }
+.swatch .info { padding: var(--space-3); display: grid; gap: 2px; }
+.swatch .name { font-weight: var(--weight-medium); }
+.swatch .role { font-size: var(--text-12); color: var(--muted); line-height: var(--leading-compact); margin-top: var(--space-1); }
+
+/* Tables */
+.table-wrap { overflow-x: auto; background: var(--surface); border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-panel); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-size: var(--text-12); font-weight: var(--weight-medium); color: var(--muted); padding: var(--space-2) var(--space-4); border-bottom: var(--stroke-hairline) solid var(--border); white-space: nowrap; }
+td { padding: var(--space-3) var(--space-4); border-bottom: var(--stroke-hairline) solid var(--border); vertical-align: middle; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--surface-hover); }
+tbody tr[aria-selected="true"] { background: var(--accent-wash); }
+tbody tr[aria-selected="true"] td:first-child { box-shadow: inset var(--stroke-selection) 0 0 var(--accent); }
+td.num, th.num { text-align: right; }
+.pair { display: inline-grid; place-items: center; width: 40px; height: 28px; border-radius: var(--radius-control); border: var(--stroke-hairline) solid var(--border); font-weight: var(--weight-bold); }
+.runs { min-width: 760px; }
+.runs .id { color: var(--muted); }
+.runs a { color: var(--ink); font-weight: var(--weight-medium); text-decoration: none; }
+.runs a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* Type */
+.type-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: baseline; gap: var(--space-4); padding: var(--space-3) 0; border-bottom: var(--stroke-hairline) solid var(--border); }
+.type-row:last-child { border-bottom: 0; }
+.type-row .spec { font-family: var(--font-mono); font-size: var(--text-12); color: var(--muted); }
+.display { font-weight: var(--weight-bold); letter-spacing: var(--tracking-display); line-height: var(--leading-display); }
+.type-roles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }
+.type-role { background: var(--surface); border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-panel); padding: var(--space-5); display: grid; gap: var(--space-2); }
+.type-role .sample { font-size: var(--text-32); line-height: var(--leading-heading); }
+
+/* Space and radius */
+.ruler { display: grid; gap: var(--space-2); }
+.ruler-row { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: var(--space-4); }
+.ruler-row .bar { height: var(--space-3); background: var(--ink); border-radius: 1px; }
+.radii { display: flex; gap: var(--space-6); }
+.radius-demo { width: 120px; height: 80px; background: var(--surface); border: var(--stroke-hairline) solid var(--control-border); }
+
+/* Marks */
+.marks { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: var(--space-4); }
+.mark-tile { border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-panel); min-height: 200px; display: grid; place-items: center; padding: var(--space-6); }
+.mark-tile.paper { background: var(--canvas); color: var(--ink); }
+.mark-tile.white { background: var(--surface); color: var(--ink); }
+.mark-tile.ink { background: var(--ink); color: var(--canvas); border-color: var(--ink); }
+.mark-tile.orange { color: var(--accent); background: var(--surface); }
+.mark-tile .lockup svg { width: 100%; max-width: 360px; height: auto; }
+.mark-tile .symbol svg { width: 96px; height: 96px; }
+.mark-tile .app-icon svg { width: 128px; height: 128px; }
+.small-sizes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.size-panel { background: var(--surface); border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-panel); padding: var(--space-5); display: grid; gap: var(--space-4); }
+.size-row { display: flex; align-items: end; gap: var(--space-6); }
+.size-row figure { margin: 0; display: grid; justify-items: center; gap: var(--space-2); }
+.size-row svg { color: var(--ink); width: 100%; height: 100%; }
+.size-row .on-ink { background: var(--ink); color: var(--canvas); padding: var(--space-2); border-radius: var(--radius-control); }
+.size-row .on-ink svg { color: var(--canvas); }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  height: var(--control-height-md); padding: 0 var(--space-3);
+  font: inherit; font-weight: var(--weight-medium); line-height: 1;
+  border: var(--stroke-hairline) solid transparent; border-radius: var(--radius-control);
+  cursor: pointer; white-space: nowrap;
+  transition: background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard);
+}
+.btn svg { width: 16px; height: 16px; flex: none; }
+.btn-primary { background: var(--action); color: var(--on-action); }
+.btn-primary:hover, .btn-primary.is-hover { background: var(--action-hover); }
+.btn-primary:active { background: var(--action-pressed); }
+.btn-secondary { background: var(--surface); color: var(--ink); border-color: var(--control-border); }
+.btn-secondary:hover, .btn-secondary.is-hover { background: var(--surface-hover); }
+.btn-ghost { background: transparent; color: var(--ink); }
+.btn-ghost:hover, .btn-ghost.is-hover { background: var(--canvas-strong); }
+.btn-danger { background: var(--surface); color: var(--error); border-color: var(--control-border); }
+.btn-danger:hover { background: var(--error-wash); }
+.btn:disabled { background: var(--canvas-strong); color: var(--muted); border-color: transparent; cursor: not-allowed; }
+.btn-sm { height: var(--control-height-sm); padding: 0 var(--space-2); font-size: var(--text-12); }
+.btn-lg { height: var(--control-height-lg); padding: 0 var(--space-4); font-size: var(--text-16); }
+.btn-icon { width: var(--control-height-md); padding: 0; }
+.btn:focus-visible, .is-focus { outline: var(--focus-width) solid var(--focus); outline-offset: var(--focus-offset); }
+
+/* Inputs */
+.form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5) var(--space-6); max-width: 720px; }
+.field { display: grid; gap: var(--space-1); align-content: start; }
+.field label { font-weight: var(--weight-medium); }
+.input {
+  height: var(--control-height-md); width: 100%; padding: 0 var(--space-3);
+  font: inherit; color: var(--ink); background: var(--surface);
+  border: var(--stroke-hairline) solid var(--control-border); border-radius: var(--radius-control);
+}
+.input::placeholder { color: var(--muted); }
+.input:focus-visible, .input.is-focus { outline: var(--focus-width) solid var(--focus); outline-offset: var(--focus-offset); }
+.input[aria-invalid="true"] { border-color: var(--error); }
+.input.mono { font-family: var(--font-mono); font-size: var(--text-12); }
+textarea.input { height: auto; min-height: 88px; padding: var(--space-2) var(--space-3); resize: vertical; line-height: var(--leading-body); }
+select.input { appearance: none; padding-right: var(--space-8); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23202521' stroke-width='1.5'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right var(--space-2) center; }
+.help { font-size: var(--text-12); color: var(--muted); }
+.field-error { display: flex; gap: var(--space-1); align-items: center; font-size: var(--text-12); color: var(--error); }
+.field-error svg { width: 14px; height: 14px; flex: none; }
+
+/* Status */
+.status { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--ink); white-space: nowrap; }
+.status svg { width: 16px; height: 16px; flex: none; }
+.status.planned svg { color: var(--muted); }
+.status.running svg { color: var(--accent); }
+.status.blocked svg, .status.approval svg { color: var(--warning); }
+.status.failed svg { color: var(--error); }
+.status.verified svg { color: var(--success); }
+.badge { height: var(--space-6); padding: 0 var(--space-2); border-radius: var(--radius-control); font-size: var(--text-12); font-weight: var(--weight-medium); }
+.badge svg { width: 14px; height: 14px; }
+.badge.planned { background: var(--canvas-strong); color: var(--ink); }
+.badge.running { background: var(--accent-wash); color: var(--action); }
+.badge.blocked, .badge.approval { background: var(--warning-wash); color: var(--warning); }
+.badge.failed { background: var(--error-wash); color: var(--error); }
+.badge.verified { background: var(--success-wash); color: var(--success); }
+.badge.running svg { color: var(--action); }
+.status-grid { display: grid; grid-template-columns: repeat(3, max-content); gap: var(--space-3) var(--space-8); align-items: center; }
+.status-grid .caption { margin-left: var(--space-2); }
+.status-grid .badge { justify-self: start; }
+
+/* Shell and navigation */
+.shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); background: var(--surface); border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-panel); overflow: hidden; min-height: 460px; }
+.sidebar { background: var(--canvas); border-right: var(--stroke-hairline) solid var(--border); padding: var(--space-4) var(--space-3); display: grid; align-content: start; gap: var(--space-5); }
+.sidebar .brand svg { height: 20px; width: auto; color: var(--ink); }
+.sidebar .brand { padding: 0 var(--space-2); }
+.nav { display: grid; gap: 2px; }
+.nav-title { font-size: var(--text-12); color: var(--muted); padding: 0 var(--space-2) var(--space-1); }
+.nav a { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); height: var(--control-height-md); padding: 0 var(--space-2); border-radius: var(--radius-control); color: var(--ink); text-decoration: none; }
+.nav a:hover { background: var(--canvas-strong); }
+.nav a[aria-current="page"] { background: var(--surface); box-shadow: inset 0 0 0 var(--stroke-hairline) var(--border); font-weight: var(--weight-medium); }
+.nav a .count { font-family: var(--font-mono); font-size: var(--text-12); color: var(--muted); font-weight: var(--weight-regular); }
+.nav .project { font-weight: var(--weight-medium); }
+.nav .sub { padding-left: var(--space-5); }
+.main { display: grid; grid-template-rows: auto 1fr; }
+.project-bar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-6); border-bottom: var(--stroke-hairline) solid var(--border); }
+.project-bar h3 { font-size: var(--text-20); font-weight: var(--weight-bold); letter-spacing: var(--tracking-heading); }
+.counters { display: flex; gap: var(--space-6); align-items: center; }
+.counter { display: grid; gap: 2px; }
+.counter .label { font-size: var(--text-12); color: var(--muted); }
+.counter .value { font-weight: var(--weight-medium); font-variant-numeric: tabular-nums; }
+.meter { width: 120px; height: var(--space-1); background: var(--canvas-strong); border-radius: 2px; overflow: hidden; }
+.meter span { display: block; height: 100%; background: var(--ink); }
+.main-body { padding: var(--space-6); display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: var(--space-6); align-content: start; background: var(--canvas); }
+.panel { background: var(--surface); border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-panel); }
+.panel-head { display: flex; justify-content: space-between; align-items: center; padding: var(--space-3) var(--space-4); border-bottom: var(--stroke-hairline) solid var(--border); }
+.panel-head h4 { margin: 0; font-size: var(--text-14); font-weight: var(--weight-medium); }
+.panel-body { padding: var(--space-4); }
+.list { list-style: none; margin: 0; padding: 0; }
+.list li { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: var(--stroke-hairline) solid var(--border); }
+.list li:last-child { border-bottom: 0; }
+.events li { display: grid; grid-template-columns: 64px 1fr; gap: var(--space-2); padding: var(--space-2) var(--space-4); font-size: var(--text-12); align-items: baseline; }
+.events time { font-family: var(--font-mono); color: var(--muted); }
+
+/* Empty and error states */
+.states { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.empty { padding: var(--space-12) var(--space-8); display: grid; justify-items: start; align-content: center; gap: var(--space-2); }
+.empty h4, .error-state h4 { margin: 0; font-size: var(--text-16); font-weight: var(--weight-medium); }
+.empty p { color: var(--muted); }
+.empty .btn { margin-top: var(--space-2); }
+.error-state { padding: var(--space-6); display: grid; gap: var(--space-3); }
+.error-state .title { display: flex; gap: var(--space-2); align-items: center; }
+.error-state .title svg { color: var(--error); width: 20px; height: 20px; }
+.log { margin: 0; padding: var(--space-3); background: var(--canvas); border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-control); font-family: var(--font-mono); font-size: var(--text-12); line-height: var(--leading-body); overflow-x: auto; color: var(--ink); }
+.log .err { color: var(--error); }
+
+/* Workflow editor */
+.editor { position: relative; height: 448px; background: var(--canvas); border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-panel); overflow: hidden; }
+.editor > svg.ground { position: absolute; inset: 0; width: 100%; min-width: 912px; height: 100%; }
+.editor .toolbar { position: absolute; left: var(--space-4); bottom: var(--space-4); display: flex; gap: var(--space-1); padding: var(--space-1); background: var(--surface); border: var(--stroke-hairline) solid var(--border); border-radius: var(--radius-control); box-shadow: var(--shadow-overlay); align-items: center; }
+.editor .toolbar .zoom { font-family: var(--font-mono); font-size: var(--text-12); color: var(--muted); padding: 0 var(--space-2); }
+.node { position: absolute; width: var(--editor-node-width); background: var(--surface); border: var(--stroke-hairline) solid var(--control-border); border-radius: var(--radius-control); }
+.node header { display: flex; align-items: center; gap: var(--space-2); height: 40px; padding: 0 var(--space-3); border-bottom: var(--stroke-hairline) solid var(--border); }
+.node header svg { width: 16px; height: 16px; color: var(--ink); flex: none; }
+.node header strong { font-weight: var(--weight-medium); flex: 1; }
+.node header .kind { font-family: var(--font-mono); font-size: var(--text-12); color: var(--muted); }
+.node .body { padding: var(--space-2) var(--space-3) var(--space-3); display: grid; gap: var(--space-2); font-size: var(--text-12); }
+.node .body .meta { color: var(--muted); display: flex; justify-content: space-between; }
+.node .body .meta code { color: var(--ink); }
+.node.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.node.is-focus { outline: var(--focus-width) solid var(--focus); outline-offset: var(--focus-offset); }
+.port { position: absolute; top: 28px; width: var(--editor-port); height: var(--editor-port); background: var(--surface); border: var(--stroke-edge) solid var(--control-border); }
+.port.in { left: calc(var(--editor-port) / -2 - 1px); }
+.port.out { right: calc(var(--editor-port) / -2 - 1px); }
+.port.connected { background: var(--ink); border-color: var(--ink); }
+.port.target { background: var(--accent); border-color: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-6); font-size: var(--text-12); color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: var(--space-2); }
+.legend i { display: inline-block; flex: none; }
+.legend .p { width: 8px; height: 8px; border: var(--stroke-edge) solid var(--control-border); background: var(--surface); }
+.legend .p.c { background: var(--ink); border-color: var(--ink); }
+.legend .p.t { background: var(--accent); border-color: var(--accent); }
+.legend .e { width: 24px; height: 0; border-top: var(--stroke-edge) solid var(--ink); }
+.legend .e.pending { border-top-color: var(--control-border); border-top-style: dashed; }
+.legend .e.sel { border-top: var(--stroke-selection) solid var(--accent); }
+.legend .sel-box { width: 16px; height: 12px; border: var(--stroke-selection) solid var(--accent); border-radius: 3px; }
+.legend .focus-box { width: 16px; height: 12px; outline: var(--focus-width) solid var(--focus); outline-offset: 2px; border-radius: 3px; border: var(--stroke-hairline) solid var(--control-border); }
+
+@media (max-width: 960px) {
+  .page { padding: var(--space-6) var(--space-4) var(--space-12); }
+  .section { grid-template-columns: 1fr; gap: var(--space-5); }
+  .masthead h1 { font-size: var(--display-48); }
+  .marks, .small-sizes, .states, .type-roles, .form { grid-template-columns: 1fr; }
+  .shell { grid-template-columns: 1fr; }
+  .sidebar { border-right: 0; border-bottom: var(--stroke-hairline) solid var(--border); }
+  .main-body { grid-template-columns: 1fr; }
+  .editor { overflow-x: auto; }
+  .status-grid { grid-template-columns: max-content max-content; }
+  .status-grid .caption { display: none; }
+  .project-bar, .counters { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-planned" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.25"/></symbol>
+    <symbol id="i-running" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.25"/><path d="M8 2.75a5.25 5.25 0 0 1 0 10.5z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-blocked" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.25"/><path d="M4.5 11.5l7-7"/></symbol>
+    <symbol id="i-approval" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 2.5 14 13H2z"/><path d="M8 6.5v3"/><circle cx="8" cy="11.25" r=".5" fill="currentColor"/></symbol>
+    <symbol id="i-failed" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.25"/><path d="m6 6 4 4m0-4-4 4"/></symbol>
+    <symbol id="i-verified" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"><circle cx="8" cy="8" r="5.25"/><path d="m5.75 8.25 1.5 1.5 3-3.25"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h9.5M9 4.5 12.5 8 9 11.5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="12.5" cy="8" r="1.25"/></symbol>
+    <symbol id="i-step-plan" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M3 8h7M3 12h4"/></symbol>
+    <symbol id="i-step-build" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.75 2.75h4.5v4.5h-4.5zM8.75 8.75h4.5v4.5h-4.5zM7.25 5h3.75v3.75"/></symbol>
+    <symbol id="i-step-test" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.75 2.75h10.5v10.5H2.75z"/><path d="m5.5 8.25 1.75 1.75L10.5 6.5"/></symbol>
+    <symbol id="i-step-review" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.75 2.75h10.5v7.5h-5L5 13v-2.75H2.75z"/></symbol>
+  </defs>
+</svg>
+
+<main class="page">
+  <header class="masthead">
+    <div class="masthead-bar">
+      <span class="lockup" role="img" aria-label="perpeto"><!-- @lockup --></span>
+      <span class="meta">Workshop system, proposed. Generated from <code>brand/tokens.css</code>.</span>
+    </div>
+    <h1>Intent into working software<span class="signal">.</span></h1>
+    <p class="lede">Tokens and components for the Perpeto web and Apple clients. Warm paper for the canvas, white for editable work, ink for text, and signal orange for the brand and primary actions.</p>
+  </header>
+
+  <section class="section">
+    <header><h2>Colour roles</h2><p>Brand roles are fixed by <code>brand/tokens.css</code>. Derived tokens are mixes of those roles, never new hues.</p></header>
+    <div class="stack">
+      <div class="swatches">
+        <div class="swatch"><div class="chip" style="background:var(--canvas)"></div><div class="info"><span class="name">Canvas</span><code>--canvas</code><span class="role">Default background, warm paper.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--surface)"></div><div class="info"><span class="name">Surface</span><code>--surface</code><span class="role">Panels, tables and editable work.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--ink)"></div><div class="info"><span class="name">Ink</span><code>--ink</code><span class="role">Primary text and marks.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--muted)"></div><div class="info"><span class="name">Muted</span><code>--muted</code><span class="role">Secondary text and metadata.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--border)"></div><div class="info"><span class="name">Border</span><code>--border</code><span class="role">Nonessential separators.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--control-border)"></div><div class="info"><span class="name">Control border</span><code>--control-border</code><span class="role">Interactive boundaries.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--accent)"></div><div class="info"><span class="name">Signal</span><code>--accent</code><span class="role">Brand, selection, running. Never text on white.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--action)"></div><div class="info"><span class="name">Action</span><code>--action</code><span class="role">Filled primary buttons with white text.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--focus)"></div><div class="info"><span class="name">Focus</span><code>--focus</code><span class="role">Keyboard focus outline, with offset.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--success)"></div><div class="info"><span class="name">Success</span><code>--success</code><span class="role">Verified by named checks.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--warning)"></div><div class="info"><span class="name">Warning</span><code>--warning</code><span class="role">Blocked, approval needed.</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--error)"></div><div class="info"><span class="name">Error</span><code>--error</code><span class="role">Failed operations.</span></div></div>
+      </div>
+      <h3>Derived states</h3>
+      <div class="swatches">
+        <div class="swatch"><div class="chip" style="background:var(--action-hover)"></div><div class="info"><span class="name">Action hover</span><code>--action-hover</code></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--action-pressed)"></div><div class="info"><span class="name">Action pressed</span><code>--action-pressed</code></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--surface-hover)"></div><div class="info"><span class="name">Surface hover</span><code>--surface-hover</code></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--canvas-strong)"></div><div class="info"><span class="name">Canvas strong</span><code>--canvas-strong</code></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--accent-wash)"></div><div class="info"><span class="name">Signal wash</span><code>--accent-wash</code></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--success-wash)"></div><div class="info"><span class="name">Success wash</span><code>--success-wash</code></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--warning-wash)"></div><div class="info"><span class="name">Warning wash</span><code>--warning-wash</code></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--error-wash)"></div><div class="info"><span class="name">Error wash</span><code>--error-wash</code></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--grid-minor)"></div><div class="info"><span class="name">Grid minor</span><code>--grid-minor</code></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--grid-major)"></div><div class="info"><span class="name">Grid major</span><code>--grid-major</code></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Contrast checks</h2><p>WCAG 2 ratios computed by the build. Text needs 4.5:1, icons and control boundaries need 3:1.</p></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Sample</th><th>Pair</th><th>Use</th><th class="num">Ratio</th><th>Result</th></tr></thead>
+        <tbody>
+<!-- @contrast -->
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Type</h2><p>System sans for interface and display, system mono only for identifiers, paths, timestamps and logs. Sentence case throughout.</p></header>
+    <div class="stack">
+      <div class="type-roles">
+        <div class="type-role"><span class="sample" style="font-weight:var(--weight-bold);letter-spacing:var(--tracking-display)">Aa Bb Cc</span><span>Display, bold</span><span class="caption">40 to 72, leading 1.05, tracking −0.03em</span></div>
+        <div class="type-role"><span class="sample">Aa Bb Cc</span><span>Interface, regular and medium</span><span class="caption">12 to 32, body leading 1.55</span></div>
+        <div class="type-role"><span class="sample mono" style="font-size:var(--text-32)">Aa Bb Cc</span><span>Logs, monospace</span><span class="caption">Identifiers, paths, timestamps, logs</span></div>
+      </div>
+      <div>
+        <div class="type-row"><span class="spec">display-72</span><span class="display" style="font-size:var(--display-72)">Built to keep building.</span></div>
+        <div class="type-row"><span class="spec">display-56</span><span class="display" style="font-size:var(--display-56)">Intent into working software.</span></div>
+        <div class="type-row"><span class="spec">display-40</span><span class="display" style="font-size:var(--display-40)">Coordinate agents across machines.</span></div>
+        <div class="type-row"><span class="spec">text-32</span><span style="font-size:var(--text-32);font-weight:var(--weight-bold);line-height:var(--leading-heading);letter-spacing:var(--tracking-heading)">Merge queue</span></div>
+        <div class="type-row"><span class="spec">text-24</span><span style="font-size:var(--text-24);font-weight:var(--weight-bold);line-height:var(--leading-heading)">Runs this week</span></div>
+        <div class="type-row"><span class="spec">text-20</span><span style="font-size:var(--text-20);font-weight:var(--weight-medium);line-height:var(--leading-heading)">Build workflow</span></div>
+        <div class="type-row"><span class="spec">text-16</span><span style="font-size:var(--text-16)">Add a goal to start planning work. Each goal is broken into requirements that agents can pick up.</span></div>
+        <div class="type-row"><span class="spec">text-14</span><span>Worker disconnected. Its last reported progress is saved.</span></div>
+        <div class="type-row"><span class="spec">text-12</span><span style="font-size:var(--text-12);color:var(--muted)">Started by builder on studio-02 · <code>run_8f2c41</code> · <code>2026-10-21 14:02</code></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Space and radii</h2><p>A 4 px base. Controls use 6 px corners, panels 12 px.</p></header>
+    <div class="stack">
+      <div class="ruler">
+        <div class="ruler-row"><code>space-1 · 4</code><span class="bar" style="width:var(--space-1)"></span></div>
+        <div class="ruler-row"><code>space-2 · 8</code><span class="bar" style="width:var(--space-2)"></span></div>
+        <div class="ruler-row"><code>space-3 · 12</code><span class="bar" style="width:var(--space-3)"></span></div>
+        <div class="ruler-row"><code>space-4 · 16</code><span class="bar" style="width:var(--space-4)"></span></div>
+        <div class="ruler-row"><code>space-6 · 24</code><span class="bar" style="width:var(--space-6)"></span></div>
+        <div class="ruler-row"><code>space-8 · 32</code><span class="bar" style="width:var(--space-8)"></span></div>
+        <div class="ruler-row"><code>space-12 · 48</code><span class="bar" style="width:var(--space-12)"></span></div>
+        <div class="ruler-row"><code>space-16 · 64</code><span class="bar" style="width:var(--space-16)"></span></div>
+      </div>
+      <div class="radii">
+        <div class="stack" style="gap:var(--space-2)"><div class="radius-demo" style="border-radius:var(--radius-control)"></div><code>radius-control · 6</code></div>
+        <div class="stack" style="gap:var(--space-2)"><div class="radius-demo" style="border-radius:var(--radius-panel)"></div><code>radius-panel · 12</code></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Marks</h2><p>The eight-arm Spindle and lowercase wordmark, unchanged geometry. Clearspace is at least one arm width on every side.</p></header>
+    <div class="stack">
+      <div class="marks">
+        <div class="mark-tile paper"><span class="lockup" role="img" aria-label="perpeto lockup"><!-- @lockup --></span></div>
+        <div class="mark-tile white"><span class="symbol" role="img" aria-label="Spindle in ink"><!-- @symbol --></span></div>
+        <div class="mark-tile ink"><span class="symbol" role="img" aria-label="Spindle in paper on ink"><!-- @symbol --></span></div>
+        <div class="mark-tile paper"><span class="app-icon" role="img" aria-label="App icon"><!-- @app-icon --></span></div>
+      </div>
+      <div class="small-sizes">
+        <div class="size-panel">
+          <h3>Master at 16, 24 and 32 px</h3>
+          <div class="size-row">
+            <figure><span style="width:16px;height:16px;display:block"><!-- @symbol --></span><figcaption class="caption">16</figcaption></figure>
+            <figure><span style="width:24px;height:24px;display:block"><!-- @symbol --></span><figcaption class="caption">24</figcaption></figure>
+            <figure><span style="width:32px;height:32px;display:block"><!-- @symbol --></span><figcaption class="caption">32</figcaption></figure>
+            <figure><span class="on-ink" style="display:block"><span style="width:16px;height:16px;display:block"><!-- @symbol --></span></span><figcaption class="caption">16 reversed</figcaption></figure>
+          </div>
+          <p class="caption">Clear from 24 px. At 16 px the arms merge into a ring.</p>
+        </div>
+        <div class="size-panel">
+          <h3>Simplified small variant, proposed</h3>
+          <div class="size-row">
+            <figure><span style="width:16px;height:16px;display:block"><!-- @symbol-small --></span><figcaption class="caption">16</figcaption></figure>
+            <figure><span style="width:24px;height:24px;display:block"><!-- @symbol-small --></span><figcaption class="caption">24</figcaption></figure>
+            <figure><span style="width:32px;height:32px;display:block"><!-- @symbol-small --></span><figcaption class="caption">32</figcaption></figure>
+            <figure><span class="on-ink" style="display:block"><span style="width:16px;height:16px;display:block"><!-- @symbol-small --></span></span><figcaption class="caption">16 reversed</figcaption></figure>
+          </div>
+          <p class="caption">Eight identical arms, larger void. Needs approval before it replaces the master below 24 px.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Buttons</h2><p>One primary action per view. Verb-first labels in sentence case.</p></header>
+    <div class="stack">
+      <div class="row">
+        <button class="btn btn-primary"><svg><use href="#i-plus"/></svg>Create project</button>
+        <button class="btn btn-secondary">Add requirement</button>
+        <button class="btn btn-ghost">Cancel</button>
+        <button class="btn btn-danger">Stop run</button>
+        <button class="btn btn-primary" disabled>Deploy</button>
+      </div>
+      <div class="row">
+        <button class="btn btn-primary is-hover">Hover</button>
+        <button class="btn btn-primary is-focus">Keyboard focus</button>
+        <button class="btn btn-secondary is-focus">Keyboard focus</button>
+        <button class="btn btn-secondary btn-icon" aria-label="More actions"><svg><use href="#i-more"/></svg></button>
+      </div>
+      <div class="row">
+        <button class="btn btn-primary btn-sm">Small, 28</button>
+        <button class="btn btn-primary">Default, 32</button>
+        <button class="btn btn-primary btn-lg">Large, 40<svg><use href="#i-arrow"/></svg></button>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Inputs</h2><p>Labels above fields, help below. Errors name the problem and the fix.</p></header>
+    <div class="form">
+      <div class="field"><label for="f-name">Project name</label><input id="f-name" class="input" value="perpeto"><span class="help">Shown in navigation and run history.</span></div>
+      <div class="field"><label for="f-repo">Repository</label><input id="f-repo" class="input mono is-focus" value="git@github.com:perpeto/perpeto.git"><span class="help">Keyboard focus shown.</span></div>
+      <div class="field"><label for="f-branch">Base branch</label><input id="f-branch" class="input mono" value="mian" aria-invalid="true" aria-describedby="f-branch-error"><span class="field-error" id="f-branch-error"><svg><use href="#i-failed"/></svg>Branch mian not found. Check the name or fetch the remote.</span></div>
+      <div class="field"><label for="f-workflow">Workflow</label><select id="f-workflow" class="input"><option>Build</option><option>Review</option></select></div>
+      <div class="field" style="grid-column:1/-1"><label for="f-goal">Goal</label><textarea id="f-goal" class="input" placeholder="Describe the outcome you want, in a sentence or two."></textarea></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Status labels</h2><p>Always an icon and a word. Colour reinforces, it never carries status alone.</p></header>
+    <div class="stack">
+      <div class="status-grid">
+        <span class="status planned"><svg><use href="#i-planned"/></svg>Planned</span><span class="status badge planned"><svg><use href="#i-planned"/></svg>Planned</span><span class="caption">Accepted, not started.</span>
+        <span class="status running"><svg><use href="#i-running"/></svg>Running</span><span class="status badge running"><svg><use href="#i-running"/></svg>Running</span><span class="caption">Static icon, no spinner in rows.</span>
+        <span class="status blocked"><svg><use href="#i-blocked"/></svg>Blocked</span><span class="status badge blocked"><svg><use href="#i-blocked"/></svg>Blocked</span><span class="caption">Waiting on another item.</span>
+        <span class="status approval"><svg><use href="#i-approval"/></svg>Approval needed</span><span class="status badge approval"><svg><use href="#i-approval"/></svg>Approval needed</span><span class="caption">A person must decide.</span>
+        <span class="status failed"><svg><use href="#i-failed"/></svg>Failed</span><span class="status badge failed"><svg><use href="#i-failed"/></svg>Failed</span><span class="caption">Say what failed and how to recover.</span>
+        <span class="status verified"><svg><use href="#i-verified"/></svg>Verified</span><span class="status badge verified"><svg><use href="#i-verified"/></svg>Verified</span><span class="caption">Only with named checks.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Tables</h2><p>Stable columns, tabular numbers, mono for identifiers. Narrow screens scroll the table, never squeeze it.</p></header>
+    <div class="table-wrap">
+      <table class="runs">
+        <thead><tr><th>Run</th><th>Workflow</th><th>Status</th><th>Agent</th><th>Machine</th><th>Started</th><th class="num">Duration</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+        <tbody>
+          <tr><td><a href="#">Add lease expiry</a> <code class="id">run_8f2c41</code></td><td>Build</td><td><span class="status running"><svg><use href="#i-running"/></svg>Running</span></td><td>builder</td><td><code>studio-02</code></td><td><code>14:02</code></td><td class="num"><code>6m 12s</code></td><td><button class="btn btn-ghost btn-sm btn-icon" aria-label="Actions"><svg><use href="#i-more"/></svg></button></td></tr>
+          <tr aria-selected="true"><td><a href="#">Bound channel history</a> <code class="id">run_7a10c9</code></td><td>Review</td><td><span class="status approval"><svg><use href="#i-approval"/></svg>Approval needed</span></td><td>reviewer</td><td><code>mini-01</code></td><td><code>13:48</code></td><td class="num"><code>11m 40s</code></td><td><button class="btn btn-ghost btn-sm btn-icon" aria-label="Actions"><svg><use href="#i-more"/></svg></button></td></tr>
+          <tr><td><a href="#">Messaging transport</a> <code class="id">run_6d03e2</code></td><td>Build</td><td><span class="status verified"><svg><use href="#i-verified"/></svg>Verified</span></td><td>builder</td><td><code>studio-02</code></td><td><code>12:15</code></td><td class="num"><code>24m 03s</code></td><td><button class="btn btn-ghost btn-sm btn-icon" aria-label="Actions"><svg><use href="#i-more"/></svg></button></td></tr>
+          <tr><td><a href="#">Hub restart test</a> <code class="id">run_5b77f0</code></td><td>Test</td><td><span class="status failed"><svg><use href="#i-failed"/></svg>Failed</span></td><td>tester</td><td><code>mini-01</code></td><td><code>11:30</code></td><td class="num"><code>3m 51s</code></td><td><button class="btn btn-ghost btn-sm btn-icon" aria-label="Actions"><svg><use href="#i-more"/></svg></button></td></tr>
+          <tr><td><a href="#">Merge queue view</a> <code class="id">run_4c21aa</code></td><td>Build</td><td><span class="status planned"><svg><use href="#i-planned"/></svg>Planned</span></td><td>unassigned</td><td></td><td class="caption">Not started</td><td class="num"></td><td><button class="btn btn-ghost btn-sm btn-icon" aria-label="Actions"><svg><use href="#i-more"/></svg></button></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Navigation and panels</h2><p>Navigation follows project work. Agent and usage counts stay visible at the project level.</p></header>
+    <div class="shell">
+      <nav class="sidebar" aria-label="Primary">
+        <div class="brand" role="img" aria-label="perpeto"><!-- @lockup --></div>
+        <div class="nav">
+          <div class="nav-title">Projects</div>
+          <a href="#" class="project">perpeto<span class="count">12 agents</span></a>
+          <a href="#" class="sub">Overview</a>
+          <a href="#" class="sub">Workflows</a>
+          <a href="#" class="sub" aria-current="page">Runs<span class="count">4</span></a>
+          <a href="#" class="sub">Work</a>
+          <a href="#" class="sub">Messages<span class="count">2</span></a>
+          <a href="#" class="sub">Merge queue<span class="count">1</span></a>
+          <a href="#">lumin-site<span class="count">3 agents</span></a>
+        </div>
+        <div class="nav">
+          <div class="nav-title">Factory</div>
+          <a href="#">Machines<span class="count">5</span></a>
+          <a href="#">Accounts</a>
+          <a href="#">Usage</a>
+        </div>
+      </nav>
+      <div class="main">
+        <div class="project-bar">
+          <h3>Runs</h3>
+          <div class="counters">
+            <div class="counter"><span class="label">Agents</span><span class="value">12 running</span></div>
+            <div class="counter"><span class="label">Usage this week</span><span class="value">41%</span><span class="meter" role="meter" aria-valuenow="41" aria-valuemin="0" aria-valuemax="100" aria-label="Usage this week"><span style="width:41%"></span></span></div>
+            <button class="btn btn-primary"><svg><use href="#i-plus"/></svg>Start run</button>
+          </div>
+        </div>
+        <div class="main-body">
+          <div class="panel">
+            <div class="panel-head"><h4>Active</h4><span class="caption">Updated 14:08</span></div>
+            <ul class="list">
+              <li><span>Add lease expiry</span><span class="status running"><svg><use href="#i-running"/></svg>Running</span></li>
+              <li><span>Bound channel history</span><span class="status approval"><svg><use href="#i-approval"/></svg>Approval needed</span></li>
+              <li><span>Hub restart test</span><span class="status failed"><svg><use href="#i-failed"/></svg>Failed</span></li>
+            </ul>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h4>Events</h4></div>
+            <ul class="list events">
+              <li><time>14:08</time><span>builder pushed 2 commits</span></li>
+              <li><time>14:05</time><span>reviewer requested approval</span></li>
+              <li><time>13:59</time><span>studio-02 joined the factory</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Empty and error states</h2><p>An empty state offers one useful next action. An error names the operation and the recovery path.</p></header>
+    <div class="states">
+      <div class="panel empty">
+        <h4>No goals yet</h4>
+        <p>Add a goal to start planning work.</p>
+        <button class="btn btn-primary"><svg><use href="#i-plus"/></svg>Add goal</button>
+      </div>
+      <div class="panel error-state" role="alert">
+        <div class="title"><svg><use href="#i-failed"/></svg><h4>Build failed</h4></div>
+        <p>The build step exited with code 1 on <code>studio-02</code>. Review the output before retrying.</p>
+<pre class="log">14:02:11  npm run build
+14:02:19  <span class="err">error TS2322: Type 'string' is not assignable to type 'number'.</span>
+14:02:19  src/lease.ts:42:7</pre>
+        <div class="row"><button class="btn btn-primary">Retry build</button><button class="btn btn-ghost">Open full output</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <header><h2>Workflow editor</h2><p>A precise ruled drawing. Square ports, orthogonal edges on the grid, orange for selection, blue for keyboard focus.</p></header>
+    <div class="stack">
+      <div class="editor" role="group" aria-label="Build workflow">
+        <svg class="ground" aria-hidden="true">
+          <defs>
+            <pattern id="grid-minor" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M16 0H0V16" fill="none" stroke="var(--grid-minor)" stroke-width="1"/></pattern>
+            <pattern id="grid-major" width="64" height="64" patternUnits="userSpaceOnUse"><rect width="64" height="64" fill="url(#grid-minor)"/><path d="M64 0H0V64" fill="none" stroke="var(--grid-major)" stroke-width="1"/></pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#grid-major)" transform="translate(0.5 0.5)"/>
+          <g fill="none" stroke-width="1.5">
+            <path d="M276 80H332" stroke="var(--ink)"/>
+            <path d="M276 80H298a6 6 0 0 1 6 6V266a6 6 0 0 0 6 6H332" stroke="var(--ink)"/>
+            <path d="M580 80H636" stroke="var(--control-border)" stroke-dasharray="4 4"/>
+            <path d="M580 272H602a6 6 0 0 0 6 -6V86a6 6 0 0 1 6 -6H636" stroke="var(--accent)" stroke-width="2"/>
+          </g>
+        </svg>
+
+        <div class="node" style="left:32px;top:48px">
+          <span class="port in"></span><span class="port out connected"></span>
+          <header><svg><use href="#i-step-plan"/></svg><strong>Plan</strong><span class="kind">plan</span></header>
+          <div class="body"><div class="meta"><span>Agent</span><code>planner</code></div><span class="status verified"><svg><use href="#i-verified"/></svg>Verified</span></div>
+        </div>
+        <div class="node is-selected" style="left:336px;top:48px">
+          <span class="port in connected"></span><span class="port out connected"></span>
+          <header><svg><use href="#i-step-build"/></svg><strong>Build</strong><span class="kind">build</span></header>
+          <div class="body"><div class="meta"><span>Agent</span><code>builder</code></div><span class="status running"><svg><use href="#i-running"/></svg>Running</span></div>
+        </div>
+        <div class="node is-focus" style="left:640px;top:48px">
+          <span class="port in connected"></span><span class="port out"></span>
+          <header><svg><use href="#i-step-review"/></svg><strong>Review</strong><span class="kind">review</span></header>
+          <div class="body"><div class="meta"><span>Agent</span><code>reviewer</code></div><span class="status planned"><svg><use href="#i-planned"/></svg>Planned</span></div>
+        </div>
+        <div class="node" style="left:336px;top:240px">
+          <span class="port in connected"></span><span class="port out target"></span>
+          <header><svg><use href="#i-step-test"/></svg><strong>Test</strong><span class="kind">test</span></header>
+          <div class="body"><div class="meta"><span>Agent</span><code>tester</code></div><span class="status failed"><svg><use href="#i-failed"/></svg>Failed</span></div>
+        </div>
+
+        <div class="toolbar">
+          <button class="btn btn-ghost btn-sm"><svg><use href="#i-plus"/></svg>Add step</button>
+          <span class="zoom">100%</span>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="p"></i>Open port</span>
+        <span><i class="p c"></i>Connected port</span>
+        <span><i class="p t"></i>Drop target</span>
+        <span><i class="e"></i>Edge</span>
+        <span><i class="e pending"></i>Not yet reached</span>
+        <span><i class="e sel"></i>Selected edge</span>
+        <span><i class="sel-box"></i>Selected step</span>
+        <span><i class="focus-box"></i>Keyboard focus</span>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,19 @@
+[Unit]
+Description=Perpeto {{role}}
+
+[Service]
+# PerpetoDataDirectory={{marker}}
+Type=simple
+WorkingDirectory={{repo}}
+Environment="PATH={{path}}"
+ExecStart={{node}} {{bin}} {{role}} run --dir {{dir}}
+StandardOutput=append:{{log}}
+StandardError=append:{{log}}
+Restart=on-failure
+RestartSec=5
+UMask=0077
+KillMode=mixed
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=default.target

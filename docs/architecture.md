@@ -49,7 +49,7 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 
 - Node 24 (`>=24.13.1 <25`), ESM JavaScript with JSDoc types, `node:sqlite`, `node:test`. Server packages stay dependency-free unless a dependency clearly pays for itself.
 - Non-secret configuration lives in JSON files under `config/` or a user config directory. Secrets live in owner-only files (mode 600) referenced by path, never in JSON config, CLI arguments, or logs.
-- IDs are strings: a short prefix plus a random suffix, for example `prj_…`, `wf_…`, `run_…`, `wi_…`, `asg_…`, `job_…`, `mch_…`, `acct_…`, `mq_…`.
+- IDs are strings: a short prefix plus a random suffix (engine-created IDs are deterministic, `wi_<runSuffix>_<n>`, so runs replay identically), for example `prj_…`, `wf_…`, `run_…`, `wi_…`, `asg_…`, `job_…`, `mch_…`, `acct_…`, `mq_…`.
 - Timestamps are ISO 8601 UTC strings.
 - Every mutating request accepts an `idempotencyKey`. A repeat with the same body returns the original result; a repeat with a different body returns `409 conflict`.
 - Errors are `{ "error": { "code": "SNAKE_CASE", "message": "…" } }` and never include raw SQL, stack traces, or secrets.
@@ -62,18 +62,22 @@ DocRef       { id, title, path?: string, url?: string, kind: 'requirements'|'vis
 Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
 Run          { id, projectId, workflowId, workflowVersion, status: 'running'|'paused'|'stopped'|'completed'|'failed', startedAt, stoppedAt? }
 WorkItem     { id, runId, title, body, nodeId, status: 'queued'|'active'|'blocked'|'done'|'failed', branch?, prUrl?, headSha?, iteration, parentId? }
-Assignment   { id, runId, workItemId, nodeId, role, prompt, harness: Harness, policy: AgentPolicy,
+Assignment   { id, projectId, repo: { url, defaultBranch, localPath? } /* copied from the project when created */, runId? /* absent for project-scoped work such as the workflow architect */, workItemId?, nodeId, role, prompt, harness: Harness, policy: AgentPolicy,
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'succeeded'|'failed'|'cancelled',
                machineId?, leaseExpiresAt?, attempt, result?: AssignmentResult }
 Harness      { provider: string, model: string, options?: Record<string, string|boolean> }   // provider = T3 driver kind, e.g. 'claudeAgent', 'codex'
 AgentPolicy  { maxSubagents: number, allowedSubagentProviders: string[], maxTurns?: number, maxTokens?: number, canMessage: string[] }
 MachineRequirements { os?: 'darwin'|'linux'|'windows', labels?: string[], providers?: string[] }
-AssignmentResult { outcome: 'success'|'failure'|'blocked', summary, branch?, prUrl?, headSha?, threadRef? }
+AssignmentResult { outcome: 'success'|'failure'|'blocked', summary, branch?, prUrl?, headSha?, threadRef?,
+                   verdict?: 'pass'|'fail' /* review gates; a review without a verdict is an error, not a rejection */,
+                   items?: { title, body? }[] /* planner output */, graph?, rationale? /* workflow architect */ }
 Job          { id, projectId, runId?, workItemId?, repo, revision /* full commit sha */, steps: JobStep[],
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'passed'|'failed'|'cancelled'|'error',
                machineId?, leaseExpiresAt?, attempt, logRef?, artifacts: ArtifactRef[], configHash }
 JobStep      { name, run: string /* shell command */, timeoutSec? }
-MergeEntry   { id, projectId, prUrl, headSha, baseBranch, status: 'queued'|'testing'|'merging'|'merged'|'rejected', jobId?, reason? }
+MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queued'|'testing'|'merging'|'merged'|'rejected', jobId?, reason?,
+               mergedRevision?, deliveryError? }
+// Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
                running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version }
 Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt? }
@@ -108,9 +112,55 @@ GraphEdge     { id, from: { node, port? }, to: { node, port? }, kind: 'flow'|'de
 
 Ports: gates have `pass` and `fail` output ports. `flow` edges move work items. `delegates` edges grant authority for the source agent to create subagents or assign to the target role, bounded by the target's `concurrency` and the source's `policy.maxSubagents`. `messages` edges permit the two roles to message each other; the engine derives each assignment's `policy.canMessage` from them.
 
+Node config may also set `concurrency`, `policy`, `requirements` and `role` on planner and review nodes, and `expectedIterations` on loops. An agent reached only by `delegates` edges is a helper role. A run completes when every work item finishes unless the run was started with `keepOpen`.
+
 The engine is deterministic: it reads the run's state plus incoming results (assignment finished, job finished, human decision) and emits new work items, assignments, jobs and merge entries. It never calls a harness. A loop counts iterations on the work item and fails it at `maxIterations`.
 
 Default templates live in `packages/factory-workflow/templates/`: `build` (input → planner → agent pool → review loop → CI → merge queue → output) and `improve` (goals → auditor → agent → review → CI → merge queue → output).
+
+## Agent-authored workflows
+
+Users should not have to build workflows by hand. The default path is a prompt: "Describe how this project should be built." The hub creates an assignment for a `workflow-architect` role, which runs through T3 like any other agent with the project's docs, goals, available machines, providers and existing workflows as context. Its `AssignmentResult` carries `{ graph, rationale }`.
+
+The hub validates the graph with the workflow package. Invalid graphs go back to the architect with the validation errors, up to three attempts. A valid graph is saved as a new **draft** version with `authoredBy: { kind: 'agent', assignmentId, prompt }` and the rationale. Nothing runs until a person activates it. Clients show the proposed graph, the rationale and a diff against the active version, and the user can activate it, ask for changes in another prompt, or edit by hand.
+
+Agents running in a workflow may propose changes, for example adding a reviewer where review is the bottleneck. A proposal follows the same draft path and never changes an active run silently.
+
+`Workflow` gains `authoredBy: { kind: 'agent'|'user', assignmentId?, prompt? }`, `rationale?` and `parentVersion?`. Versions are immutable once saved.
+
+## Observing runs
+
+The graph a user approved is also the live map of the run. Clients draw the same nodes and edges with live state on top, so people can see where work is, how agents interact, how fast work moves and what is holding it up.
+
+Interaction events are first-class. The executor and messaging layer report them, and the hub stores them in the event log with the run and node roles they connect:
+
+| Event type | Meaning |
+| --- | --- |
+| `workitem.moved` | A work item crossed a `flow` edge |
+| `agent.delegated` | An agent assigned work or spawned a subagent along a `delegates` edge |
+| `agent.messaged` | One role messaged another along a `messages` edge |
+| `assignment.state` | Assignment queued, leased, running, finished, with machine and account |
+| `gate.result` | Review, CI or human gate passed or failed |
+
+An interaction with no matching edge is recorded with `unplanned: true` and shown, rather than hidden.
+
+### Metrics
+
+`GET /runs/:id/metrics?window=1h|24h|7d` and `GET /projects/:id/metrics?window=` return:
+
+```ts
+NodeMetrics   { nodeId, queued, active, done, failed, concurrency, utilization /* active ÷ concurrency */,
+                waitSec: { avg, p90 }, serviceSec: { avg, p90 }, throughputPerHour, failureRate, tokens }
+EdgeMetrics   { edgeId, kind, count, unplanned }
+RunMetrics    { velocity: { itemsDonePerDay, trend: number[] }, cycleTimeSec: { avg, p90 }, wip,
+                tokensPerItem, activeAgents, machines: { machineId, activeAgents, nodes: string[] }[] }
+Bottleneck    { nodeId, reason: 'saturated'|'queue-growing'|'high-failure'|'waiting-on-human'|'no-capacity'|'rework-loop',
+                evidence: string, severity: 'info'|'warning'|'critical' }
+```
+
+Bottlenecks are computed from measured state, never guessed by a model. Examples: utilization at or above 0.9 with a growing queue is `saturated`; queued work whose requirements no online machine meets is `no-capacity`; loop iterations rising above the configured average is `rework-loop`. Each bottleneck carries the numbers behind it in `evidence`.
+
+The run view shows on each node its active agents, queue depth, wait time and throughput. Edges show recent traffic counts, and bottlenecks are marked with their reason. Beside the map, a velocity panel and a "where work is running" panel show machines with their active agents. Use explicit numbers and status labels; any motion is brief and respects reduced motion.
 
 ## Hub API v1
 
@@ -122,13 +172,18 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET/POST /projects`, `GET/PATCH /projects/:id` | Projects, repo, docs, goals |
 | `GET/POST /projects/:id/workflows`, `GET/PUT /workflows/:id` | Workflows; PUT validates and bumps `version` |
 | `POST /workflows/:id/validate` | Validation result without saving |
+| `POST /projects/:id/workflows/drafts` `{ prompt, baseWorkflowId? }` | Ask the workflow architect for a draft; returns the assignment to follow |
+| `GET /workflows/:id/versions`, `GET /workflows/:id/diff?from=&to=` | Version history and graph diff |
+| `POST /workflows/:id/activate` `{ version }` | Make a draft version active |
+| `GET /runs/:id/metrics`, `GET /projects/:id/metrics` | Live node, edge and run metrics with bottlenecks |
 | `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/{pause,resume,stop}` | Runs |
 | `POST /runs/:id/inputs` | Add ideas or input items to a running workflow |
 | `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |
 | `POST /work-items/:id/decision` | Answer a `human` gate |
 | `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain` | Machines |
 | `GET /accounts` | Subscription pool across machines |
-| `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log` | CI jobs |
+| `GET /assignments/:id` | One assignment, used to follow the workflow architect |
+| `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
 | `GET /projects/:id/merge-queue` | Merge queue |
 | `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
 | `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
@@ -146,7 +201,13 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `POST /assignments/:id/events` `{ type: 'started'|'progress'|'usage'|'message'|'completed'|'failed', data }` | Report progress, usage and the final `AssignmentResult` |
 | `POST /jobs/:id/events` `{ type: 'started'|'log'|'step'|'completed', data }` | Report log chunks and the final status bound to `revision` |
 
-An expired lease returns work to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
+Lease wire format, fixed after the node implementation:
+
+- `POST /nodes/lease` returns `{ assignments: Assignment[], jobs: Job[] }`. Every item includes `attempt` and `leaseExpiresAt`.
+- Renew and event bodies include `attempt` beside `idempotencyKey`. The hub checks machine ownership, attempt and expiry atomically, so an older attempt re-leased to the same machine is fenced off. Renew returns `{ leaseExpiresAt }`; a node that gets no confirmation abandons the work.
+- Heartbeat bodies include `status: 'online'|'draining'`. Heartbeat responses are `{ status, cancel: { assignments: string[], jobs: string[] } }`; the node aborts listed work and reports it `cancelled`. This is how stopping a run or cancelling a job reaches a machine.
+
+An expired lease on run work is reported to the engine as a failed attempt, and the engine's retry policy schedules the next attempt. Project-scoped work and merge-queue jobs return to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
 
 ## Node executors
 
@@ -160,7 +221,7 @@ The node ships a `fake` executor for tests and loads `@perpeto/factory-t3` for r
 
 `factory-t3` creates a T3 thread for each assignment on the configured provider and model, sends the prompt, follows the thread's events to completion, forwards token usage as `usage` events, and enforces `AgentPolicy`: subagent creation beyond `maxSubagents` or to a provider outside `allowedSubagentProviders` is refused.
 
-`factory-accounts` chooses which subscription account a T3 provider instance uses. When a harness reports a rate limit, the account cools down and the next eligible account takes over. It never copies credentials between machines.
+`factory-accounts` chooses which subscription account a T3 provider instance uses. When a harness reports a rate limit, the account cools down and new assignments and retries go to the next eligible account. A running conversation is not moved between accounts. It never copies credentials between machines.
 
 ## Clients and brand
 

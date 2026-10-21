@@ -1,0 +1,2 @@
+# Generated outputs are committed so the web and Apple clients can read them without a build step.
+!dist/
