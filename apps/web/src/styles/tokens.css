@@ -7,7 +7,7 @@
  * here as a stopgap. Everything else in the app uses var(--…) only: no
  * colour literals outside this file.
  */
-@import "../../../../brand/tokens.css";
+@import "../../../../packages/design-tokens/dist/tokens.css";
 
 :root {
   /* Interface type scale (brand.md: 12, 14, 16, 20, 24, 32). */
