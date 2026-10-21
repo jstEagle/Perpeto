@@ -54,7 +54,11 @@ public actor DemoDataSource: FactoryDataSource {
                         try await Task.sleep(for: stageDelay)
                     }
                     let draft = try await self.makeDraft(projectId: projectId, prompt: prompt, baseWorkflowId: baseWorkflowId, assignmentId: assignmentId)
-                    continuation.yield(DraftProgress(assignmentId: assignmentId, stage: .ready, draft: draft))
+                    var progress = DraftProgress(assignmentId: assignmentId, stage: .ready, draft: draft)
+                    if baseWorkflowId == nil {
+                        progress.alsoSuggested = [try await self.suggestDocs(projectId: projectId, prompt: prompt, assignmentId: assignmentId)]
+                    }
+                    continuation.yield(progress)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -106,6 +110,21 @@ public actor DemoDataSource: FactoryDataSource {
         if !state.workflows.contains(where: { $0.id == workflowId }) { state.workflows.append(draft) }
         projects[projectId] = state
         return draft
+    }
+
+    /// The architect may propose up to three more workflows; the demo proposes one.
+    private func suggestDocs(projectId: String, prompt: String, assignmentId: String) throws -> Workflow {
+        var state = try project(projectId)
+        let template = DemoFixtures.templates(now: now()).first { $0.id == "docs" }!
+        let workflow = Workflow(
+            id: "wf_docs_\(UUID().uuidString.prefix(4).lowercased())", projectId: projectId, name: "Docs", purpose: .docs, version: 1,
+            graph: template.graph!, status: .draft, authoredBy: Authorship(kind: .agent, assignmentId: assignmentId, prompt: prompt),
+            rationale: "The project's goals are mostly guides. A separate docs workflow reviews accuracy and links without waiting behind feature work.",
+            createdAt: now())
+        state.workflows.append(workflow)
+        state.versions[workflow.id] = [workflow]
+        projects[projectId] = state
+        return workflow
     }
 
     public func activate(workflowId: String, version: Int) async throws -> Workflow {
@@ -160,16 +179,57 @@ public actor DemoDataSource: FactoryDataSource {
         return state.runs[index]
     }
 
-    public func startRun(workflowId: String) async throws -> Run {
+    public func startRun(workflowId: String, settings: RunSettings) async throws -> Run {
         guard let projectId = projects.first(where: { $0.value.versions[workflowId] != nil })?.key,
               var state = projects[projectId],
               let active = state.activeVersion(of: workflowId) else {
             throw HubError.http(status: 409, code: "NOT_ACTIVE", message: "Activate a version of this workflow before starting a run.")
         }
-        let run = Run(id: "run_\(UUID().uuidString.prefix(5).lowercased())", projectId: projectId, workflowId: workflowId, workflowVersion: active.version, status: .running, startedAt: now())
+        let run = Run(id: "run_\(UUID().uuidString.prefix(5).lowercased())", projectId: projectId, workflowId: workflowId, workflowVersion: active.version, status: .running,
+                      startedAt: now(), settings: settings, intake: settings.budget == nil ? nil : RunIntake(paused: false),
+                      budgetUsage: settings.budget == nil ? nil : BudgetUsage(day: DemoFixtures.utcDay(now()), tokens: 0, items: 0))
         state.runs.insert(run, at: 0)
         projects[projectId] = state
         return run
+    }
+
+    public func updateRun(runId: String, settings: RunSettings) async throws -> Run {
+        guard let projectId = projects.first(where: { $0.value.runs.contains { $0.id == runId } })?.key,
+              var state = projects[projectId], let index = state.runs.firstIndex(where: { $0.id == runId }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "That run no longer exists.")
+        }
+        var run = state.runs[index]
+        guard run.status == .running || run.status == .paused else {
+            throw HubError.http(status: 409, code: "RUN_NOT_ACTIVE", message: "Only running or paused runs can change settings.")
+        }
+        run.settings = settings
+        // A raised limit releases a budget hold, as budget.available would.
+        if let reason = run.intake?.reason, let usage = run.budgetUsage {
+            let budget = settings.budget ?? RunBudget()
+            let still: Bool = switch reason.limit {
+            case .maxTokensPerDay: budget.maxTokensPerDay.map { usage.tokens >= $0 } ?? false
+            case .maxItemsPerDay: budget.maxItemsPerDay.map { usage.items >= $0 } ?? false
+            case .maxActiveItems: budget.maxActiveItems.map { reason.used >= $0 } ?? false
+            case .unknown: false
+            }
+            if !still { run.intake = RunIntake(paused: false) }
+        }
+        state.runs[index] = run
+        projects[projectId] = state
+        return run
+    }
+
+    public func templates() async throws -> [WorkflowTemplate] { DemoFixtures.templates(now: now()) }
+
+    public func createWorkflow(projectId: String, from template: WorkflowTemplate) async throws -> Workflow {
+        var state = try project(projectId)
+        let workflow = Workflow(id: "wf_\(template.id.replacingOccurrences(of: "-", with: "_"))_\(UUID().uuidString.prefix(4).lowercased())", projectId: projectId,
+                                name: template.name, purpose: template.purpose, version: 1, graph: template.graph ?? DemoFixtures.buildGraphV3(), status: .draft,
+                                authoredBy: Authorship(kind: .user), rationale: template.description, createdAt: now())
+        state.workflows.append(workflow)
+        state.versions[workflow.id] = [workflow]
+        projects[projectId] = state
+        return workflow
     }
 
     public func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws {

@@ -124,7 +124,10 @@ public struct DocRef: Codable, Hashable, Identifiable, Sendable {
 
 public struct Workflow: Codable, Hashable, Identifiable, Sendable {
     public enum Purpose: String, LenientEnum {
-        case build, improve, maintain, custom, unknown
+        case build, improve, maintain, custom, bugfix, docs
+        case securityAudit = "security-audit"
+        case dependencyUpgrade = "dependency-upgrade"
+        case unknown
         public static var unknownCase: Self { .unknown }
     }
 
@@ -201,9 +204,18 @@ public struct Run: Codable, Hashable, Identifiable, Sendable {
     public var workflowVersion: Int
     public var status: Status
     public var startedAt: Date
+    /// Any terminal end.
     public var stoppedAt: Date?
+    /// Successful completion only.
+    public var completedAt: Date?
+    /// Continuous intake settings; absent on older hubs and finite runs.
+    public var settings: RunSettings
+    /// Intake state, separate from the run's own pause: budget holds pause intake only.
+    public var intake: RunIntake?
+    public var budgetUsage: BudgetUsage?
 
-    public init(id: String, projectId: String, workflowId: String, workflowVersion: Int, status: Status, startedAt: Date, stoppedAt: Date? = nil) {
+    public init(id: String, projectId: String, workflowId: String, workflowVersion: Int, status: Status, startedAt: Date, stoppedAt: Date? = nil,
+                completedAt: Date? = nil, settings: RunSettings = RunSettings(), intake: RunIntake? = nil, budgetUsage: BudgetUsage? = nil) {
         self.id = id
         self.projectId = projectId
         self.workflowId = workflowId
@@ -211,7 +223,158 @@ public struct Run: Codable, Hashable, Identifiable, Sendable {
         self.status = status
         self.startedAt = startedAt
         self.stoppedAt = stoppedAt
+        self.completedAt = completedAt
+        self.settings = settings
+        self.intake = intake
+        self.budgetUsage = budgetUsage
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, projectId, workflowId, workflowVersion, status, startedAt, stoppedAt, completedAt, keepOpen, source, schedule, budget, intake, budgetUsage
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        projectId = try c.decode(String.self, forKey: .projectId)
+        workflowId = try c.decode(String.self, forKey: .workflowId)
+        workflowVersion = try c.decode(Int.self, forKey: .workflowVersion)
+        status = try c.decode(Status.self, forKey: .status)
+        startedAt = try c.decode(Date.self, forKey: .startedAt)
+        stoppedAt = try c.decodeIfPresent(Date.self, forKey: .stoppedAt)
+        completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
+        settings = RunSettings(
+            keepOpen: try c.decodeIfPresent(Bool.self, forKey: .keepOpen) ?? false,
+            source: try c.decodeIfPresent(RunSettings.Source.self, forKey: .source),
+            schedule: try c.decodeIfPresent(String.self, forKey: .schedule),
+            budget: try c.decodeIfPresent(RunBudget.self, forKey: .budget))
+        intake = try? c.decodeIfPresent(RunIntake.self, forKey: .intake)
+        budgetUsage = try? c.decodeIfPresent(BudgetUsage.self, forKey: .budgetUsage)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(projectId, forKey: .projectId)
+        try c.encode(workflowId, forKey: .workflowId)
+        try c.encode(workflowVersion, forKey: .workflowVersion)
+        try c.encode(status, forKey: .status)
+        try c.encode(startedAt, forKey: .startedAt)
+        try c.encodeIfPresent(stoppedAt, forKey: .stoppedAt)
+        try c.encodeIfPresent(completedAt, forKey: .completedAt)
+        try c.encode(settings.keepOpen, forKey: .keepOpen)
+        try c.encodeIfPresent(settings.source, forKey: .source)
+        try c.encodeIfPresent(settings.schedule, forKey: .schedule)
+        try c.encodeIfPresent(settings.budget, forKey: .budget)
+        try c.encodeIfPresent(intake, forKey: .intake)
+        try c.encodeIfPresent(budgetUsage, forKey: .budgetUsage)
+    }
+
+    /// Paused by a budget: intake waits while admitted work may finish.
+    public var isBudgetHeld: Bool { intake?.paused == true && intake?.reason != nil }
+}
+
+/// How a run takes in work and how much it may take each day.
+public struct RunSettings: Codable, Hashable, Sendable {
+    public enum Source: String, LenientEnum {
+        case goals, schedule, manual, unknown
+        public static var unknownCase: Self { .unknown }
+    }
+
+    /// Keep taking work after the first batch is done.
+    public var keepOpen: Bool
+    public var source: Source?
+    /// Five numeric UTC cron fields, for `source == .schedule`.
+    public var schedule: String?
+    public var budget: RunBudget?
+
+    public init(keepOpen: Bool = false, source: Source? = nil, schedule: String? = nil, budget: RunBudget? = nil) {
+        self.keepOpen = keepOpen
+        self.source = source
+        self.schedule = schedule
+        self.budget = budget
+    }
+}
+
+/// Intake limits. They pause new work, not work already admitted.
+public struct RunBudget: Codable, Hashable, Sendable {
+    public var maxTokensPerDay: Int?
+    public var maxItemsPerDay: Int?
+    public var maxActiveItems: Int?
+
+    public init(maxTokensPerDay: Int? = nil, maxItemsPerDay: Int? = nil, maxActiveItems: Int? = nil) {
+        self.maxTokensPerDay = maxTokensPerDay
+        self.maxItemsPerDay = maxItemsPerDay
+        self.maxActiveItems = maxActiveItems
+    }
+
+    public var isEmpty: Bool { maxTokensPerDay == nil && maxItemsPerDay == nil && maxActiveItems == nil }
+}
+
+/// Today's use against the budget, counted from UTC midnight. Tokens are input plus output.
+public struct BudgetUsage: Codable, Hashable, Sendable {
+    public var day: String
+    public var tokens: Int
+    public var items: Int
+    public init(day: String, tokens: Int, items: Int) {
+        self.day = day
+        self.tokens = tokens
+        self.items = items
+    }
+}
+
+public struct RunIntake: Codable, Hashable, Sendable {
+    /// Which limit stopped intake: `{limit, used, maximum, requested, day}`.
+    public struct Reason: Codable, Hashable, Sendable {
+        public enum Limit: String, LenientEnum {
+            case maxTokensPerDay, maxItemsPerDay, maxActiveItems, unknown
+            public static var unknownCase: Self { .unknown }
+        }
+        public var limit: Limit
+        public var used: Int
+        public var maximum: Int
+        public var day: String?
+        public init(limit: Limit, used: Int, maximum: Int, day: String? = nil) {
+            self.limit = limit
+            self.used = used
+            self.maximum = maximum
+            self.day = day
+        }
+    }
+    public var paused: Bool
+    public var reason: Reason?
+    public init(paused: Bool, reason: Reason? = nil) {
+        self.paused = paused
+        self.reason = reason
+    }
+
+    enum CodingKeys: String, CodingKey { case paused, reason }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        paused = try c.decodeIfPresent(Bool.self, forKey: .paused) ?? false
+        reason = try? c.decodeIfPresent(Reason.self, forKey: .reason)
+    }
+}
+
+/// A workflow from the template library: `GET /workflow-templates`.
+public struct WorkflowTemplate: Codable, Hashable, Identifiable, Sendable {
+    public var id: String
+    public var description: String
+    public var graph: WorkflowGraph?
+    public init(id: String, description: String, graph: WorkflowGraph? = nil) {
+        self.id = id
+        self.description = description
+        self.graph = graph
+    }
+
+    /// "security-audit" → "Security audit".
+    public var name: String {
+        let words = id.split(separator: "-").map(String.init)
+        return words.enumerated().map { $0.offset == 0 ? $0.element.prefix(1).uppercased() + $0.element.dropFirst() : $0.element }.joined(separator: " ")
+    }
+
+    public var purpose: Workflow.Purpose { Workflow.Purpose(rawValue: id) ?? .custom }
 }
 
 public struct WorkItem: Codable, Hashable, Identifiable, Sendable {
@@ -380,6 +543,8 @@ public struct Assignment: Codable, Hashable, Identifiable, Sendable {
     public var harness: Harness
     public var policy: AgentPolicy
     public var requirements: MachineRequirements
+    /// Workflow architect only: every draft saved together, primary first.
+    public var drafts: [DraftRef]?
     public var status: Status
     public var machineId: String?
     public var leaseExpiresAt: Date?
@@ -416,7 +581,12 @@ public struct Assignment: Codable, Hashable, Identifiable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, runId, workItemId, nodeId, role, prompt, harness, policy, requirements, status, machineId, leaseExpiresAt, attempt, result
-        case draftWorkflowId, draftVersion, retryAssignmentId, architectErrors, architectAttempt
+        case draftWorkflowId, draftVersion, retryAssignmentId, architectErrors, architectAttempt, drafts
+    }
+
+    public struct DraftRef: Codable, Hashable, Sendable {
+        public var workflowId: String
+        public var version: Int
     }
 
     public init(from decoder: Decoder) throws {
@@ -440,6 +610,7 @@ public struct Assignment: Codable, Hashable, Identifiable, Sendable {
         retryAssignmentId = try c.decodeIfPresent(String.self, forKey: .retryAssignmentId)
         architectErrors = (try? c.decodeIfPresent(Lossy<ValidationIssue>.self, forKey: .architectErrors))?.elements
         architectAttempt = try c.decodeIfPresent(Int.self, forKey: .architectAttempt)
+        drafts = try? c.decodeIfPresent([DraftRef].self, forKey: .drafts)
     }
 
     public var isWorking: Bool { status == .running || status == .leased }
@@ -677,12 +848,15 @@ public struct UsageRecord: Codable, Hashable, Identifiable, Sendable {
     public var cacheWriteTokens: Int
     public var costUsd: Double?
     public var at: Date
+    /// The assignment's role, for grouping by role.
+    public var role: String?
 
     public init(
         id: String, projectId: String, runId: String? = nil, assignmentId: String? = nil, machineId: String,
         accountId: String? = nil, provider: String, model: String, inputTokens: Int, outputTokens: Int,
-        cacheReadTokens: Int, cacheWriteTokens: Int, costUsd: Double? = nil, at: Date
+        cacheReadTokens: Int, cacheWriteTokens: Int, costUsd: Double? = nil, at: Date, role: String? = nil
     ) {
+        self.role = role
         self.id = id
         self.projectId = projectId
         self.runId = runId
