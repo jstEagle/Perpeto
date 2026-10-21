@@ -2,8 +2,8 @@ import PerpetoKit
 import SwiftUI
 
 extension Path {
-    /// Polyline with rounded corners matching the 6 pt control radius.
-    static func rounded(_ points: [CGPoint], radius: CGFloat = PerpetoRadius.control) -> Path {
+    /// Polyline with rounded corners: 12 pt on the map.
+    static func rounded(_ points: [CGPoint], radius: CGFloat = PerpetoEditor.edgeCorner) -> Path {
         var path = Path()
         guard let first = points.first else { return path }
         path.move(to: first)
@@ -21,26 +21,54 @@ extension Path {
     }
 }
 
-// MARK: Edge appearance
+/// How an edge is drawn. Thin grey lines, no arrowheads: flow runs left to
+/// right and top to bottom, and returns go back over the top.
+public enum EdgeLook: Hashable, CaseIterable {
+    /// A flow path.
+    case flow
+    /// Flow that carried work in the selected window.
+    case flowing
+    /// A flow path no work has reached yet.
+    case notReached
+    case delegates
+    case messages
+    /// An interaction no edge in the approved graph allows.
+    case unplanned
 
-/// One meaning per line style, consistent across editor, diff and live map.
+    var title: String {
+        switch self {
+        case .flow: "Flow"
+        case .flowing: "Flowing now"
+        case .notReached: "Not reached"
+        case .delegates: "Delegates"
+        case .messages: "Messages"
+        case .unplanned: "Unplanned"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .flow, .notReached: PerpetoColor.editorEdge
+        case .flowing: PerpetoColor.editorEdgeActive
+        case .delegates, .messages: PerpetoColor.grey300
+        case .unplanned: PerpetoColor.ink
+        }
+    }
+
+    var stroke: StrokeStyle {
+        switch self {
+        case .flow: StrokeStyle(lineWidth: PerpetoStroke.edge, lineCap: .round, lineJoin: .round)
+        case .flowing: StrokeStyle(lineWidth: PerpetoStroke.edgeActive, lineCap: .round, lineJoin: .round)
+        case .notReached: StrokeStyle(lineWidth: PerpetoStroke.edge, lineCap: .butt, lineJoin: .round, dash: [3, 5])
+        case .delegates: StrokeStyle(lineWidth: PerpetoStroke.edge, lineCap: .butt, lineJoin: .round, dash: [8, 5])
+        case .messages: StrokeStyle(lineWidth: PerpetoStroke.edgeActive, lineCap: .round, lineJoin: .round, dash: [0.5, 4])
+        case .unplanned: StrokeStyle(lineWidth: PerpetoStroke.edgeActive, lineCap: .round, lineJoin: .round, dash: [0.5, 4])
+        }
+    }
+}
+
+/// Words for edge kinds, used in lists and inspectors.
 public enum EdgeStyle {
-    public static func color(_ kind: GraphEdge.Kind) -> Color {
-        switch kind {
-        case .flow, .unknown: PerpetoColor.ink
-        case .delegates: PerpetoColor.controlBorder
-        case .messages: PerpetoColor.muted
-        }
-    }
-
-    public static func stroke(_ kind: GraphEdge.Kind, width: CGFloat = 1.5) -> StrokeStyle {
-        switch kind {
-        case .flow, .unknown: StrokeStyle(lineWidth: width, lineCap: .butt, lineJoin: .round)
-        case .delegates: StrokeStyle(lineWidth: width, lineCap: .butt, lineJoin: .round, dash: [7, 4])
-        case .messages: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: [0.5, 4.5])
-        }
-    }
-
     public static func title(_ kind: GraphEdge.Kind) -> String {
         switch kind {
         case .flow: "Flow"
@@ -58,56 +86,20 @@ public enum EdgeStyle {
         case .unknown: "Not recognised"
         }
     }
-
-    /// End markers: a filled arrow for flow, an open arrow for delegation,
-    /// round terminals at both ends for messaging.
-    static func drawMarkers(_ context: inout GraphicsContext, kind: GraphEdge.Kind, points: [CGPoint], color: Color) {
-        guard points.count >= 2 else { return }
-        let end = points[points.count - 1]
-        let before = points[points.count - 2]
-        let angle = atan2(end.y - before.y, end.x - before.x)
-        switch kind {
-        case .flow, .unknown:
-            context.fill(arrow(at: end, angle: angle, length: 7, width: 5), with: .color(color))
-        case .delegates:
-            context.stroke(openArrow(at: end, angle: angle, length: 7, width: 5), with: .color(color), lineWidth: 1.5)
-        case .messages:
-            for p in [points[0], end] {
-                context.fill(Path(ellipseIn: CGRect(x: p.x - 2.5, y: p.y - 2.5, width: 5, height: 5)), with: .color(color))
-            }
-        }
-    }
-
-    static func arrow(at tip: CGPoint, angle: CGFloat, length: CGFloat, width: CGFloat) -> Path {
-        var path = Path()
-        path.move(to: tip)
-        path.addLine(to: CGPoint(x: tip.x - length * cos(angle) + width * sin(angle), y: tip.y - length * sin(angle) - width * cos(angle)))
-        path.addLine(to: CGPoint(x: tip.x - length * cos(angle) - width * sin(angle), y: tip.y - length * sin(angle) + width * cos(angle)))
-        path.closeSubpath()
-        return path
-    }
-
-    static func openArrow(at tip: CGPoint, angle: CGFloat, length: CGFloat, width: CGFloat) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: tip.x - length * cos(angle) + width * sin(angle), y: tip.y - length * sin(angle) - width * cos(angle)))
-        path.addLine(to: tip)
-        path.addLine(to: CGPoint(x: tip.x - length * cos(angle) - width * sin(angle), y: tip.y - length * sin(angle) + width * cos(angle)))
-        return path
-    }
 }
 
 extension NodeType {
     public var systemImage: String {
         switch self {
-        case .input: "tray.and.arrow.down"
-        case .planner: "list.bullet.rectangle"
-        case .agent: "hammer"
-        case .review: "checkmark.seal"
-        case .ci: "checklist"
-        case .mergeQueue: "arrow.triangle.merge"
-        case .loop: "arrow.triangle.2.circlepath"
+        case .input: "tray"
+        case .planner: "list.bullet"
+        case .agent: "chevron.left.forwardslash.chevron.right"
+        case .review: "eye"
+        case .ci: "checkmark.square"
+        case .mergeQueue: "arrow.triangle.branch"
+        case .loop: "arrow.trianglehead.2.clockwise"
         case .human: "person"
-        case .output: "shippingbox"
+        case .output: "flag"
         case .unknown: "questionmark.square"
         }
     }

@@ -25,8 +25,8 @@ struct PerpetoApp: App {
                 .frame(minWidth: 1100, minHeight: 700)
                 .preferredColorScheme(.light)
         }
-        .defaultSize(width: 1600, height: 1000)
-        .windowToolbarStyle(.unified(showsTitle: true))
+        .defaultSize(width: 1440, height: 960)
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands { PerpetoCommands(store: store, navigator: navigator) }
 
         Settings {
