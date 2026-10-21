@@ -128,3 +128,31 @@ test('without an owner name the profile is empty', async t => {
   const f = await fixture(t);
   assert.deepEqual((await f.request('GET', '/session')).body.owner, { name: null, initials: null });
 });
+
+test('a project git identity is validated and copied onto every assignment, including architect assignments', async t => {
+  const f = await fixture(t);
+  const identity = { name: 'Perpeto Agents', email: 'agents@lumin.example' };
+  for (const gitIdentity of [{ name: 'A' }, { name: 'A\nB', email: 'a@b' }, { name: 'A <x>', email: 'a@b' }, { name: ' A', email: 'a@b' }, { name: 'A', email: 'nope' }, { name: 'A', email: 'a@b', extra: 1 }, 'A <a@b>']) {
+    assert.equal((await f.request('POST', '/projects', { name: 'Bad', repo: { url: '/tmp/bad.git', defaultBranch: 'main' }, gitIdentity })).status, 400, JSON.stringify(gitIdentity));
+  }
+  const project = (await f.request('POST', '/projects', { name: 'Identity', repo: { url: '/tmp/identity.git', defaultBranch: 'main' }, gitIdentity: identity })).body;
+  assert.deepEqual(project.gitIdentity, identity);
+  const graph = { schema: 'perpeto.workflow/1', nodes: [node('ideas', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build.', concurrency: 3 }), node('done', 'output')],
+    edges: [flow('ideas', 'builder'), flow('builder', 'done')] };
+  const run = (await start(f, project, graph, { items: [{ title: 'First' }] })).body;
+  const worker = await f.machine();
+  assert.deepEqual((await worker.lease()).gitIdentity, identity, 'run assignments carry the project identity');
+  const draft = (await f.request('POST', `/projects/${project.id}/workflows/drafts`, { prompt: 'Propose a workflow.' })).body;
+  assert.deepEqual(draft.gitIdentity, identity, 'architect assignments carry it too');
+  // Changes apply to assignments created afterwards; clearing it leaves the node's own identity to apply.
+  const renamed = { name: 'Release Bot', email: 'release@lumin.example' };
+  assert.deepEqual((await f.request('PATCH', `/projects/${project.id}`, { gitIdentity: renamed })).body.gitIdentity, renamed);
+  await f.request('POST', `/runs/${run.id}/inputs`, { items: [{ title: 'Second' }] });
+  const assignments = (await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments;
+  assert.deepEqual(assignments.map(value => value.gitIdentity), [identity, renamed]);
+  const cleared = (await f.request('PATCH', `/projects/${project.id}`, { gitIdentity: null })).body;
+  assert.equal(Object.hasOwn(cleared, 'gitIdentity'), false);
+  await f.request('POST', `/runs/${run.id}/inputs`, { items: [{ title: 'Third' }] });
+  assert.deepEqual((await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments.map(value => value.gitIdentity), [identity, renamed, undefined]);
+  assert.equal((await f.request('PATCH', `/projects/${project.id}`, { gitIdentity: { name: 'X' } })).status, 400);
+});

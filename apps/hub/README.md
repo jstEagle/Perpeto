@@ -77,6 +77,8 @@ Usage filters are `projectId`, `runId`, `machineId`, `accountId`, `provider`, `m
 
 **Goals.** Project goals are `{id, title, status}` (`active`, `done` or `dropped`); `POST`/`PATCH /projects` accept strings or `{id?, title, status?}`, and goals stored as strings read with ids derived from their titles. Input items may carry `goalId` (a goal of the run's project, else 400); the work items they create, and the items a planner splits them into, link to that goal. `GET /projects`, `GET /projects/:id` and `/overview` return each goal with `workItemIds`, `done` and `total`, counting leaf items (a planned item finishes through its children) and `done` by work-item status.
 
+**Commit identity.** `POST`/`PATCH /projects` accept an optional `gitIdentity: {name, email}` (a single-line name without `<` or `>` and an email address, else 400; `null` clears it on `PATCH`). The hub copies it onto each assignment it creates for the project, including workflow-architect assignments, as `assignment.gitIdentity`, so agents commit under that identity. Changes apply to assignments created afterwards. Without it, the node's `runtime.t3.gitIdentity` applies.
+
 **Owner.** `ownerName` in the hub config names the owner. `GET /owner` and `PATCH /owner {name?, initials?}` (1 to 3 letters or digits; `null` clears back to the config name or derived initials) manage it; `GET /session` and `/overview` include `owner: {name, initials}`, with initials from the first and last words of the name. Tokens include input, output and both cache counters. Jobs can be filtered by project/run. Job logs return `{jobId, chunks:[{id,jobId,chunk,at}]}`; artifact upload is not implemented.
 
 ## Node protocol

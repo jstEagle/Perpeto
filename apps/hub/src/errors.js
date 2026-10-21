@@ -22,3 +22,12 @@ export function strings(value, name) {
   value.forEach(item => nonblank(item, name, 200));
   return value;
 }
+// Mirrors the executor's check (t3-executor isolation.js), so a project identity the hub accepts is one agents can commit with.
+const IDENTITY_NAME = /^[^\0\r\n<>]{1,200}$/;
+const IDENTITY_EMAIL = /^[^\s@<>]{1,200}@[^\s@<>]{1,200}$/;
+export function gitIdentity(value) {
+  object(value, 'gitIdentity');
+  requireValue(Object.keys(value).every(key => key === 'name' || key === 'email') && typeof value.name === 'string' && IDENTITY_NAME.test(value.name) && value.name.trim() === value.name
+    && typeof value.email === 'string' && IDENTITY_EMAIL.test(value.email), 'gitIdentity must be { name, email } with a single-line name and an email address.');
+  return { name: value.name, email: value.email };
+}

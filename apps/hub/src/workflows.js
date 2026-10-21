@@ -49,7 +49,7 @@ export class Workflows {
     const assignment = { id: id('asg'), projectId: project.id, repo: structuredClone(project.repo), nodeId: 'workflow-architect', role: 'workflow-architect', prompt,
       harness: this.hub.config.architectHarness, policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: [] },
       requirements: { providers: [this.hub.config.architectHarness.provider] }, status: 'queued', attempt: 1,
-      architectRequestId: request.id, architectAttempt: request.attempt };
+      architectRequestId: request.id, architectAttempt: request.attempt, ...(project.gitIdentity ? { gitIdentity: structuredClone(project.gitIdentity) } : {}) };
     request.assignmentId = assignment.id;
     this.store.put('architect-request', request); this.store.put('assignment', assignment);
     this.hub.emit('assignment.state', 'assignment', assignment, { state: 'queued', nodeId: assignment.nodeId, role: assignment.role });
