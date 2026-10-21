@@ -95,11 +95,13 @@ export function chooseInstance(providers, provider, preferredInstanceId, { exclu
 
 /**
  * @param {{ config?: object, runtimeUrl?: string, accountProvider?: object,
- *           createClient?: (settings: object) => Promise<T3Client>|T3Client }} [options]
+ *           createClient?: (settings: object) => Promise<T3Client>|T3Client,
+ *           claudeKeychain?: { has(home: string): boolean|Promise<boolean>, read(configDir: string|null): Promise<object|null> } }} [options]
+ *   `claudeKeychain` replaces macOS keychain access for factory Claude homes; tests use it to stay off real logins.
  */
-export function createT3Executor({ config = {}, runtimeUrl, accountProvider, createClient } = {}) {
+export function createT3Executor({ config = {}, runtimeUrl, accountProvider, createClient, claudeKeychain } = {}) {
   const settings = resolveSettings(config, runtimeUrl);
-  const isolation = resolveIsolation(settings);
+  const isolation = { ...resolveIsolation(settings), ...(claudeKeychain ? { claudeKeychain } : {}) };
   /** Factory instances this executor registered, by id, with the mutation it sent. */
   const registered = new Map();
   let clientPromise = null;
@@ -169,13 +171,14 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       derived = await factoryInstance({ instanceId: base.instanceId, driver: base.driver, displayName: configured.displayName ?? base.displayName,
         config: configured.config, environment: configured.environment }, isolation, { identity });
     } catch (error) {
-      if (error?.code === 'ISOLATION_AUTH_DIVERGED') return { ok: false, summary: error.message };
+      if (['ISOLATION_AUTH_DIVERGED', 'ISOLATION_LOGIN_MISSING', 'ISOLATION_HOME_UNSAFE'].includes(error?.code)) return { ok: false, summary: error.message };
       throw error;
     }
     const ready = await ensureInstance(t3, derived.mutation, { signal, label: `Factory instance ${derived.instanceId}` });
     if (ready.ok) {
       await report({ type: 'progress', data: { interaction: 'isolation.bound', providerInstanceId: derived.instanceId, baseInstanceId: base.instanceId,
-        gitIdentity: identity, ...(derived.dropped.length ? { droppedEnvironment: derived.dropped } : {}) } });
+        gitIdentity: identity, ...(derived.dropped.length ? { droppedEnvironment: derived.dropped } : {}),
+        ...(derived.claudeLogin ? { claudeLogin: derived.claudeLogin } : {}) } });
     }
     return ready;
   }
