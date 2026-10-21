@@ -298,7 +298,7 @@
   display: inline-flex;
   align-items: center;
   height: 20px;
-  padding: 0 var(--space-2);
+  padding: 0 var(--space-1);
   border-radius: var(--radius-pill);
   background: var(--editor-canvas);
   color: var(--muted);
@@ -673,4 +673,62 @@
 }
 .map-legend-hint {
   color: var(--ink-soft);
+}
+
+/* ---------- Compact cards: the whole factory at a glance ---------- */
+.gnode-card.gnode-live {
+  height: 88px;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+.gnode-card .gnode-label {
+  padding-right: var(--space-3);
+}
+.gnode-card .gnode-dot {
+  top: var(--space-3);
+  right: var(--space-3);
+}
+.gnode-card .gnode-stat {
+  justify-content: flex-start;
+  overflow: hidden;
+}
+.gnode-card.has-attention .meter > span {
+  background: var(--ink);
+}
+.gnode-more {
+  position: absolute;
+  left: 0;
+  top: calc(100% + var(--space-2));
+  z-index: 10;
+  width: 232px;
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+  font-size: var(--text-12);
+  color: var(--ink-soft);
+  opacity: 0;
+  visibility: hidden;
+  translate: 0 -4px;
+  pointer-events: none;
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    translate var(--duration-fast) var(--ease-out),
+    visibility var(--duration-fast);
+}
+.gnode-card:hover .gnode-more,
+.gnode-card.is-selected .gnode-more {
+  opacity: 1;
+  visibility: visible;
+  translate: 0 0;
+}
+.react-flow__node:hover,
+.react-flow__node.selected {
+  z-index: 10 !important;
+}
+.gnode-more-figures {
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
 }

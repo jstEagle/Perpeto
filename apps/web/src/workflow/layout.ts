@@ -26,6 +26,9 @@ import type { GraphEdge, GraphNode } from '../api/types';
 export const NODE_W = 208;
 export const COL_GAP = 64;
 export const COL_PITCH = NODE_W + COL_GAP;
+/** Compact cards on the live map when full-size ones would not fit the canvas. */
+export const COMPACT_W = 128;
+export const COMPACT_GAP = 32;
 export const GRID = 8;
 /** Minimum space above a side lane; vertical role links run here. */
 export const SIDE_GAP = 72;
@@ -303,7 +306,8 @@ export function layer(nodes: GraphNode[], edges: GraphEdge[]): Layering {
  * last band is right-aligned so the wrap runs back under the end of the
  * band above, as one short connector.
  */
-export function autoLayout(nodes: GraphNode[], edges: GraphEdge[], size: (id: string) => Size, gaps: number[] = [], maxColumns = Infinity): Map<string, Point> {
+export function autoLayout(nodes: GraphNode[], edges: GraphEdge[], size: (id: string) => Size, gaps: number[] = [], maxColumns = Infinity, colGap = COL_GAP): Map<string, Point> {
+  const pitch = Math.max(0, ...nodes.map((n) => size(n.id).w)) + colGap;
   const { rank, row, mainRows } = layer(nodes, edges);
   const columns = Math.max(0, ...rank.values()) + 1;
   const bands = Math.max(1, Math.ceil(columns / Math.max(2, maxColumns)));
@@ -328,5 +332,5 @@ export function autoLayout(nodes: GraphNode[], edges: GraphEdge[], size: (id: st
     top.push(y);
     y += Math.max(0, ...nodes.filter((n) => bandOf(n.id) * 1000 + row.get(n.id)! === key).map((n) => size(n.id).h));
   });
-  return new Map(nodes.map((n) => [n.id, { x: column(n.id) * COL_PITCH, y: top[index.get(bandOf(n.id) * 1000 + row.get(n.id)!)!] }]));
+  return new Map(nodes.map((n) => [n.id, { x: column(n.id) * pitch, y: top[index.get(bandOf(n.id) * 1000 + row.get(n.id)!)!] }]));
 }

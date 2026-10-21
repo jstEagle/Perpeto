@@ -9,9 +9,10 @@ import type { RuledEdgeType } from './ruled-edge';
 import { changedKeys } from './diff';
 import { graphPort } from './registry';
 import { IconArrowRight, IconFit, IconMinus, IconPlus } from '../components/icons';
-import { autoLayout, backEdges, COL_GAP, COL_PITCH, GRID, hasUsablePositions, layer } from './layout';
+import { autoLayout, backEdges, COL_GAP, COL_PITCH, COMPACT_GAP, COMPACT_W, GRID, hasUsablePositions, layer } from './layout';
 import type { Size } from './layout';
 import { routeEdges } from './router';
+import { byUrgency } from '../run/issues';
 
 export type Selection = { kind: 'node' | 'edge'; id: string } | null;
 
@@ -29,6 +30,8 @@ export interface GraphCanvasProps {
   roleKind?: Exclude<EdgeKind, 'flow'>;
   /** Which delegates and messages to draw at first. Live maps default to the selected node's. */
   connections?: Connections;
+  /** Bring this node into view, for "Show on map". A new object each time it is asked for. */
+  focus?: { id: string };
   /** Palette drops in the editor. */
   onDropNode?(type: NodeType, position: { x: number; y: number }): void;
   /**
@@ -62,8 +65,12 @@ const EDIT_MIN_ZOOM = 0.6;
 const PANE_PAD = 16;
 /** Main lines up to this many steps stay on one row. */
 const SINGLE_ROW_COLUMNS = 10;
+/** The live map shrinks to fit down to this zoom, then scrolls sideways instead. */
+export const MIN_FIT = 0.75;
+/** Height of a compact card before it is measured. */
+const COMPACT_HEIGHT = 88;
 /** Height limits for view and live canvases, and the room kept for padding, legend and toolbar. */
-const MIN_HEIGHT = 360;
+const MIN_HEIGHT = 300;
 const MAX_HEIGHT = 900;
 const CANVAS_CHROME = 160;
 /** Space under the graph for the legend and toolbar when fitting. */
@@ -98,6 +105,8 @@ function sameNode(a: StepNodeType, b: StepNodeType): boolean {
   const keys = Object.keys(b.data) as (keyof StepData)[];
   return keys.length === Object.keys(a.data).length && keys.every((k) => a.data[k] === b.data[k]);
 }
+
+const reducedMotion = () => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 function CanvasInner(props: GraphCanvasProps) {
   const { graph, mode, diff, live, issuesByNode, selection, onSelect, onGraphChange, roleKind = 'delegates', label } = props;
@@ -203,26 +212,6 @@ function CanvasInner(props: GraphCanvasProps) {
     return () => clearTimeout(timer);
   }, [large, measuredKey]);
   const sizesKey = large ? settledKey : measuredKey;
-  const size = useMemo(() => {
-    const measured = new Map<string, Size>();
-    for (const part of sizesKey.split('|')) {
-      const [id, w, h] = part.split(':');
-      if (id && Number(w) > 0 && Number(h) > 0) measured.set(id, { w: Number(w), h: Number(h) });
-    }
-    return (id: string): Size => measured.get(id) ?? { w: NODE_WIDTH, h: ESTIMATED_HEIGHT[mode] };
-  }, [sizesKey, mode]);
-
-  // Automatic layout uses one row height for every node: the tallest seen
-  // for this graph. It only grows, so nodes measured late (offscreen ones on
-  // large graphs) or drawn compact never move the layout.
-  const nodeKey = useMemo(() => allNodes.map((n) => n.id).join('|'), [allNodes]);
-  const slot = useRef({ key: '', h: 0 });
-  const slotHeight = useMemo(() => {
-    const h = Math.max(ESTIMATED_HEIGHT[mode], ...allNodes.map((n) => size(n.id).h));
-    slot.current = slot.current.key === nodeKey ? { key: nodeKey, h: Math.max(slot.current.h, h) } : { key: nodeKey, h };
-    return slot.current.h;
-  }, [allNodes, size, mode, nodeKey]);
-
   // Lay out with every edge so toggling which links show never moves nodes.
   // Keyed on structure, so live traffic updates do not recompute it.
   const structureKey = allEdges.map((m) => `${m.edge.id}:${m.edge.kind}:${m.edge.from.node}:${m.edge.from.port ?? ''}:${m.edge.to.node}`).join('|');
@@ -248,8 +237,33 @@ function CanvasInner(props: GraphCanvasProps) {
   // Up to SINGLE_ROW_COLUMNS steps stay on one row that scrolls sideways at full size; longer lines wrap into bands.
   const rankCount = useMemo(() => Math.max(0, ...layer(allNodes, layoutEdges).rank.values()) + 1, [allNodes, layoutEdges]);
   const singleRow = mode !== 'edit' && !narrow && rankCount <= SINGLE_ROW_COLUMNS;
+  // The live map shows the whole factory: compact cards when full-size ones would not fit at the readable minimum zoom.
+  const cards = mode === 'live' && singleRow && paneWidth > 0 && (rankCount * COL_PITCH - COL_GAP) * MIN_FIT > paneWidth - 2 * PANE_PAD;
+  const nodeWidth = cards ? COMPACT_W : NODE_WIDTH;
+  const estimate = cards ? COMPACT_HEIGHT : ESTIMATED_HEIGHT[mode];
+  const size = useMemo(() => {
+    const measured = new Map<string, Size>();
+    for (const part of sizesKey.split('|')) {
+      const [id, w, h] = part.split(':');
+      if (id && Number(w) > 0 && Number(h) > 0) measured.set(id, { w: Number(w), h: Number(h) });
+    }
+    return (id: string): Size => measured.get(id) ?? { w: nodeWidth, h: estimate };
+  }, [sizesKey, nodeWidth, estimate]);
+
+  // Automatic layout uses one row height for every node: the tallest seen
+  // for this graph. It only grows, so nodes measured late (offscreen ones on
+  // large graphs) or drawn compact never move the layout.
+  const nodeKey = useMemo(() => allNodes.map((n) => n.id).join('|'), [allNodes]);
+  const slot = useRef({ key: '', h: 0 });
+  const slotHeight = useMemo(() => {
+    const h = Math.max(estimate, ...allNodes.map((n) => size(n.id).h));
+    const key = `${nodeKey}|${nodeWidth}`;
+    slot.current = slot.current.key === key ? { key, h: Math.max(slot.current.h, h) } : { key, h };
+    return slot.current.h;
+  }, [allNodes, size, estimate, nodeKey, nodeWidth]);
+
   const tidyPositions = useMemo(() => {
-    const layoutSize = (): Size => ({ w: NODE_WIDTH, h: slotHeight });
+    const layoutSize = (): Size => ({ w: nodeWidth, h: slotHeight });
     const toRoute = (pos: Map<string, { x: number; y: number }>) =>
       routeEdges(
         allNodes.map((n) => ({ id: n.id, ...pos.get(n.id)!, ...layoutSize() })),
@@ -258,14 +272,16 @@ function CanvasInner(props: GraphCanvasProps) {
       );
     // Twice: the first pass finds how many lanes each gap needs.
     const wrapAt = singleRow ? Infinity : columns;
-    const first = autoLayout(allNodes, layoutEdges, layoutSize, [], wrapAt);
-    return autoLayout(allNodes, layoutEdges, layoutSize, toRoute(first).gutterNeeds, wrapAt);
-  }, [allNodes, layoutEdges, slotHeight, columns, returns, singleRow]);
+    const gap = cards ? COMPACT_GAP : COL_GAP;
+    const first = autoLayout(allNodes, layoutEdges, layoutSize, [], wrapAt, gap);
+    return autoLayout(allNodes, layoutEdges, layoutSize, toRoute(first).gutterNeeds, wrapAt, gap);
+  }, [allNodes, layoutEdges, slotHeight, columns, returns, singleRow, cards, nodeWidth]);
 
   // Stored positions are kept when they fit at this node size. View and
   // live screens can show the tidy layout over them on request; the editor
   // writes it into the graph instead.
-  const usable = useMemo(() => hasUsablePositions(allNodes, size), [allNodes, size]);
+  // Judged at full card size: compact cards would let positions drawn for smaller nodes pass as a saved layout.
+  const usable = useMemo(() => hasUsablePositions(allNodes, (id) => ({ ...size(id), w: Math.max(size(id).w, NODE_WIDTH) })), [allNodes, size]);
   const [tidied, setTidied] = useState(false);
   const [usableAtMount] = useState(() => hasUsablePositions(graph.nodes, () => ({ w: NODE_WIDTH, h: ESTIMATED_HEIGHT[mode] })));
   // In the editor, the tidy layout shows only until the graph carries it;
@@ -333,6 +349,7 @@ function CanvasInner(props: GraphCanvasProps) {
           items: itemsByNode.get(n.id),
           dimmed: mode === 'live' && !!focusNodeIds && selection?.kind === 'edge' && !focusNodeIds.has(n.id),
           large,
+          card: cards ? 'compact' : undefined,
         },
       };
       const old = builtCache.current.get(n.id);
@@ -342,7 +359,7 @@ function CanvasInner(props: GraphCanvasProps) {
     });
     builtCache.current = next;
     return out;
-  }, [allNodes, positions, mode, diff, issuesByNode, metricsByNode, bottlenecks, itemsByNode, selection, focusNodeIds, large]);
+  }, [allNodes, positions, mode, diff, issuesByNode, metricsByNode, bottlenecks, itemsByNode, selection, focusNodeIds, large, cards]);
 
   const [nodes, setNodes] = useState<StepNodeType[]>(builtNodes);
   const lastBuilt = useRef(new Map(builtNodes.map((n) => [n.id, n])));
@@ -434,6 +451,9 @@ function CanvasInner(props: GraphCanvasProps) {
   // including the return channel and lanes outside the node boxes.
   const layoutKey = useMemo(() => [...positions.entries()].map(([id, p]) => `${id}:${p.x}:${p.y}`).join('|'), [positions]);
   const scrollRef = useRef(false);
+  const scaleRef = useRef(0);
+  const boundsRef = useRef<{ x1: number; y1: number; w: number; h: number } | null>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
   const routingRef = useRef(routing);
   routingRef.current = routing;
   const nodesRef = useRef(nodes);
@@ -471,10 +491,12 @@ function CanvasInner(props: GraphCanvasProps) {
         return;
       }
       if (!pane) return void flow.fitBounds({ x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, { padding: 0.06, duration });
-      // One row at full size; the canvas scrolls sideways instead of shrinking it.
-      if (scrollRef.current) {
+      // One row: fitted between MIN_FIT and 100 %, scrolling sideways from the left when it is still too wide.
+      if (scaleRef.current) {
+        const zoom = scaleRef.current;
         const room = pane.height - FIT_BOTTOM - PANE_PAD;
-        void flow.setViewport({ x: PANE_PAD - x1, y: PANE_PAD + Math.max(0, (room - (y2 - y1)) / 2) - y1, zoom: 1 }, { duration });
+        const x = scrollRef.current ? PANE_PAD - x1 * zoom : (pane.width - (x2 - x1) * zoom) / 2 - x1 * zoom;
+        void flow.setViewport({ x, y: PANE_PAD + Math.max(0, (room - (y2 - y1) * zoom) / 2) - y1 * zoom, zoom }, { duration });
         return;
       }
       // Never above 100 %: a small graph sits centred at full size. Room is kept below for the legend and toolbar.
@@ -496,6 +518,22 @@ function CanvasInner(props: GraphCanvasProps) {
     return () => clearTimeout(timer);
   }, [layoutKey, mode, narrow, fit]);
 
+  /** Bring a node into view: scroll the row to it, or pan to it. */
+  const reveal = useCallback(
+    (id: string, smooth: boolean) => {
+      const n = nodesRef.current.find((x) => x.id === id);
+      if (!n) return;
+      const { w, h } = sizeRef.current(n.id);
+      const el = scrollerRef.current;
+      if (scrollRef.current && el && boundsRef.current) {
+        const left = PANE_PAD + (n.position.x - boundsRef.current.x1) * scaleRef.current;
+        el.scrollTo({ left: left + (w * scaleRef.current) / 2 - el.clientWidth / 2, behavior: smooth && !reducedMotion() ? 'smooth' : 'auto' });
+        return;
+      }
+      if (!scaleRef.current) void flow.setCenter(n.position.x + w / 2, n.position.y + h / 2, { zoom: Math.max(flow.getZoom(), MIN_FIT), duration: smooth && !reducedMotion() ? 360 : 0 });
+    },
+    [flow],
+  );
   const onNodesChange = useCallback(
     (changes: NodeChange<StepNodeType>[]) => {
       setNodes((prev) => applyNodeChanges(changes, prev));
@@ -614,13 +652,35 @@ function CanvasInner(props: GraphCanvasProps) {
       y2 = Math.max(y2, n.position.y + size(n.id).h);
     }
     for (const r of routing.routes.values()) for (const [x, y] of r.points) ((x1 = Math.min(x1, x)), (x2 = Math.max(x2, x)), (y1 = Math.min(y1, y)), (y2 = Math.max(y2, y)));
-    return Number.isFinite(x1) ? { w: x2 - x1, h: y2 - y1 } : null;
+    return Number.isFinite(x1) ? { x1, y1, w: x2 - x1, h: y2 - y1 } : null;
   }, [nodes, routing, size]);
-  const height = mode === 'edit' || narrow || !bounds ? undefined : Math.round(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, bounds.h + CANVAS_CHROME)));
-  // In single-row mode the drawing is as wide as the graph and the canvas scrolls.
-  const scrollWidth = singleRow && bounds ? Math.round(bounds.w + 2 * PANE_PAD) : undefined;
+  // One row fits between MIN_FIT and 100 %; below that it stays at MIN_FIT and scrolls sideways.
+  const scale = singleRow && bounds && paneWidth ? Math.max(MIN_FIT, Math.min(1, (paneWidth - 2 * PANE_PAD) / bounds.w)) : 1;
+  scaleRef.current = singleRow ? scale : 0;
+  boundsRef.current = bounds;
+  const height = mode === 'edit' || narrow || !bounds ? undefined : Math.round(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, bounds.h * scale + CANVAS_CHROME)));
+  // When even MIN_FIT is too wide, the drawing is as wide as the graph and the canvas scrolls.
+  const scrollWidth = singleRow && bounds && bounds.w * scale + 2 * PANE_PAD > paneWidth + 1 ? Math.round(bounds.w * scale + 2 * PANE_PAD) : undefined;
   scrollRef.current = !!scrollWidth;
   const overflows = !!scrollWidth && scrollWidth > paneWidth + 1;
+  // What the alert is about stays in view: if the row scrolls, start at the first bottleneck.
+  const firstBottleneck = useMemo(() => byUrgency((live?.metrics.bottlenecks ?? []).filter((b) => b.severity !== 'info'))[0]?.nodeId, [live]);
+  const revealedFor = useRef('');
+  useEffect(() => {
+    const key = `${layoutKey}|${firstBottleneck}|${!!scrollWidth}`;
+    if (!firstBottleneck || !scrollWidth || revealedFor.current === key) return;
+    revealedFor.current = key;
+    const timer = setTimeout(() => reveal(firstBottleneck, false), 120);
+    return () => clearTimeout(timer);
+  }, [layoutKey, firstBottleneck, scrollWidth, reveal]);
+  // "Show on map": bring the node into view each time it is asked for.
+  const { focus } = props;
+  useEffect(() => {
+    if (!focus) return;
+    const timer = setTimeout(() => reveal(focus.id, true), 120);
+    return () => clearTimeout(timer);
+  }, [focus, reveal]);
+
   const showToggle = mode !== 'edit' && roleCount > 0;
   const legend = {
     flowing: mode === 'live' && edges.some((e) => e.data?.kind === 'flow' && (e.data.traffic ?? 0) > 0),
@@ -634,7 +694,7 @@ function CanvasInner(props: GraphCanvasProps) {
 
   return (
     <div ref={paneRef} className={`graph ${props.className ?? ''} graph-${mode} ${scrollWidth ? 'graph-scrolls' : ''}`} style={height ? { height } : undefined} role="group" aria-label={label}>
-      <div className="graph-scroll" tabIndex={scrollWidth ? 0 : undefined} aria-label={scrollWidth ? 'Scroll the map sideways' : undefined}>
+      <div ref={scrollerRef} className="graph-scroll" tabIndex={scrollWidth ? 0 : undefined} aria-label={scrollWidth ? 'Scroll the map sideways' : undefined}>
         <div className="graph-content" style={scrollWidth ? { width: `max(100%, ${scrollWidth}px)` } : undefined}>
           <ReactFlow<StepNodeType, RuledEdgeType>
             nodes={nodes}

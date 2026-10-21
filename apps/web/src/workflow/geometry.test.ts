@@ -1,15 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import buildGraph from '../../../../packages/workflow/templates/build.json';
 import type { WorkflowGraph } from '../api/types';
-import { autoLayout, backEdges } from './layout';
+import { autoLayout, backEdges, COL_GAP, COL_PITCH, COMPACT_GAP, COMPACT_W, layer } from './layout';
+import { MIN_FIT } from './graph-canvas';
 import { routeEdges } from './router';
 import type { Pt, Route, RouteNode } from './router';
-import { buildTemplate } from './templates';
+import { buildTemplate, TEMPLATES } from './templates';
 
-const size = () => ({ w: 208, h: 120 });
+const full = { w: 208, h: 120 };
+const compact = { w: COMPACT_W, h: 88 };
+
+/**
+ * The live map's canvas on a 1440 px screen: the window minus the 248 px
+ * sidebar and 48 px page padding on each side, capped at the 1120 px
+ * content width, minus the canvas's 16 px inner padding on each side.
+ */
+const ROOM_1440 = Math.min(1440 - 248 - 2 * 48, 1120) - 2 * 16;
+
+/** Full-size cards when they fit at MIN_FIT, compact ones otherwise, as the canvas chooses. */
+const cardsFor = (graph: WorkflowGraph) => {
+  const ranks = Math.max(...layer(graph.nodes, graph.edges).rank.values()) + 1;
+  return (ranks * COL_PITCH - COL_GAP) * MIN_FIT > ROOM_1440 ? { size: compact, gap: COMPACT_GAP } : { size: full, gap: COL_GAP };
+};
 
 /** The live map's flow lines for a graph laid out on one row, as the canvas draws them by default. */
-function flowLines(graph: WorkflowGraph) {
+function flowLines(graph: WorkflowGraph, cards = { size: full, gap: COL_GAP }) {
+  const size = () => cards.size;
   const back = backEdges(graph.nodes, graph.edges);
   const flow = graph.edges.filter((e) => e.kind === 'flow');
   const route = (pos: Map<string, { x: number; y: number }>) => {
@@ -17,8 +33,8 @@ function flowLines(graph: WorkflowGraph) {
     const edges = flow.map((e) => ({ id: e.id, kind: e.kind, from: e.from.node, to: e.to.node, port: e.from.port, back: back.has(e.id), label: '12' }));
     return { nodes, ...routeEdges(nodes, edges, { singleRow: true }) };
   };
-  const first = autoLayout(graph.nodes, graph.edges, size);
-  return route(autoLayout(graph.nodes, graph.edges, size, route(first).gutterNeeds));
+  const first = autoLayout(graph.nodes, graph.edges, size, [], Infinity, cards.gap);
+  return route(autoLayout(graph.nodes, graph.edges, size, route(first).gutterNeeds, Infinity, cards.gap));
 }
 
 type Seg = { id: string; a: Pt; b: Pt };
@@ -63,6 +79,29 @@ describe('live map geometry', () => {
       const back = backEdges(graph.nodes, graph.edges);
       const channel = new Set([...routes].filter(([id]) => back.has(id)).flatMap(([, r]) => r.points.filter(([, y]) => y < top).map(([, y]) => Math.round(y))));
       expect(channel.size).toBeLessThanOrEqual(1);
+    });
+  }
+
+  // Every template a project can start from, from the hub's package and the web's own copies.
+  const hubTemplates = Object.entries(import.meta.glob('../../../../packages/workflow/templates/*.json', { eager: true, import: 'default' })).map(
+    ([path, g]) => [path.split('/').at(-1)!, ((g as { graph?: WorkflowGraph }).graph ?? g) as WorkflowGraph] as const,
+  );
+  const webTemplates = TEMPLATES.map((t) => [`web ${t.name}`, t.graph()] as const);
+  const short = [...hubTemplates, ...webTemplates].filter(([, g]) => Math.max(...layer(g.nodes, g.edges).rank.values()) + 1 <= 10);
+
+  it('covers the templates that stay on one row', () => {
+    expect(short.length).toBeGreaterThanOrEqual(6);
+  });
+
+  for (const [name, graph] of short) {
+    it(`${name}: the whole factory fits a 1440 px screen at ${MIN_FIT * 100} % or more, without crossings`, () => {
+      const cards = cardsFor(graph);
+      const { nodes, routes } = flowLines(graph, cards);
+      const xs = [...nodes.flatMap((n) => [n.x, n.x + n.w]), ...[...routes.values()].flatMap((r) => r.points.map(([x]) => x))];
+      const width = Math.max(...xs) - Math.min(...xs);
+      expect(width * MIN_FIT).toBeLessThanOrEqual(ROOM_1440);
+      expect(crossings(routes)).toEqual([]);
+      for (const n of linesPerGap(nodes, routes)) expect(n).toBeLessThanOrEqual(1);
     });
   }
 });

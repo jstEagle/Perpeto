@@ -38,7 +38,13 @@ const workflow = createRoute({
 });
 const editor = createRoute({ getParentRoute: () => project, path: '/workflows/$workflowId/edit', component: EditorPage });
 const runs = createRoute({ getParentRoute: () => project, path: '/runs', component: RunsPage });
-const run = createRoute({ getParentRoute: () => project, path: '/runs/$runId', component: RunPage });
+const run = createRoute({
+  getParentRoute: () => project,
+  path: '/runs/$runId',
+  component: RunPage,
+  // `node` selects a step and brings it into view ("Show on map" from the overview).
+  validateSearch: (search: Record<string, unknown>): { node?: string } => ({ node: typeof search.node === 'string' ? search.node : undefined }),
+});
 const work = createRoute({ getParentRoute: () => project, path: '/work', component: WorkPage });
 const messages = createRoute({
   getParentRoute: () => project,
