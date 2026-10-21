@@ -15,6 +15,7 @@
     "verify:upstream": "node scripts/check-upstream.mjs",
     "runtime:help": "node scripts/runtime.mjs help",
     "smoke:messaging": "node scripts/smoke-messaging.mjs",
-    "smoke:factory": "node scripts/smoke-factory.mjs"
+    "smoke:factory": "node scripts/smoke-factory.mjs",
+    "smoke:harness": "node scripts/smoke-harness.mjs"
   }
 }

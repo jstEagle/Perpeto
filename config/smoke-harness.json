@@ -1,0 +1,13 @@
+{
+  "runtimeEntry": "vendor/t3code/apps/server/dist/bin.mjs",
+  "codexBinary": "codex",
+  "authSource": ".codex/auth.json",
+  "model": null,
+  "startupTimeoutMs": 30000,
+  "turnTimeoutMs": 120000,
+  "requestTimeoutMs": 15000,
+  "pollIntervalMs": 500,
+  "shutdownTimeoutMs": 8000,
+  "codexConfig": "cli_auth_credentials_store = \"file\"\nmcp_servers = {}\n",
+  "providerDrivers": ["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravity", "pi", "muse", "acpRegistry"]
+}

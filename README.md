@@ -36,6 +36,8 @@ npm run smoke:factory
 
 `npm test` runs Perpeto storage, client, factory definition, runner process and launcher tests. Upstream checks cover selected orchestration, provider registry, and machine-grouping behavior. `npm run runtime:help` shows the inherited CLI reference after a build. See [current verification and next work](docs/status.md).
 
+The optional `npm run smoke:harness` check uses an existing local Codex subscription to run one tool-free turn through the imported adapter in isolated state. It is excluded from CI. Settings and timeouts are in [config/smoke-harness.json](config/smoke-harness.json); see [the verified path and prerequisites](docs/handoffs/factory-execution-seams.md#optional-actual-imported-codex-proof).
+
 Use the [messaging guide](docs/messaging.md) to connect CLI or harness clients, and the [runner guide](packages/factory-runner/README.md) to execute revision-pinned CI on an owned machine. See the [architecture](docs/architecture.md) for current boundaries.
 
 ## Product and brand
