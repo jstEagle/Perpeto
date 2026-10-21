@@ -185,7 +185,7 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/{pause,resume,stop}` | Runs |
 | `POST /runs/:id/inputs` | Add ideas or input items to a running workflow |
 | `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |
-| `POST /work-items/:id/decision` | Answer a `human` gate |
+| `POST /work-items/:id/decision` `{ decision, note?, decisionId }` | Answer a `human` gate; `decisionId` (exposed on the work item and `human.requested`) binds the answer to one gate visit, and a stale one gets `409 STALE_DECISION` |
 | `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain`, `POST /machines/:id/revoke` | Machines; revoke permanently invalidates every token for the machine |
 | `GET /accounts` | Subscription pool across machines |
 | `GET /assignments/:id` | One assignment, used to follow the workflow architect |

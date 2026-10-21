@@ -4,6 +4,7 @@
   "databasePath": "../.perpeto/hub/hub.sqlite",
   "messagingDatabasePath": "../.perpeto/hub/messaging.sqlite",
   "deliveryDatabasePath": "../.perpeto/hub/delivery.sqlite",
+  "workflowDatabasePath": "../.perpeto/hub/workflow.sqlite",
   "deliveryMaxStepFailures": 5,
   "deliveryRetryBackoffMs": 2000,
   "deliveryRepositoriesPath": "../.perpeto/hub/repositories",
