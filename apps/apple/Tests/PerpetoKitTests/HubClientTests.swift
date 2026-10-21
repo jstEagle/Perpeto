@@ -83,7 +83,7 @@ struct HubClientTests {
         }
         let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)
         let project = try await client.updateProject("prj_1", .init(goals: ["g"]))
-        #expect(project.goals == ["g"])
+        #expect(project.goals.map(\.title) == ["g"])
         #expect(stub.requests[0].httpMethod == "PATCH")
         let body = try JSONSerialization.jsonObject(with: stub.requests[0].httpBody!) as! [String: Any]
         #expect(body["goals"] as? [String] == ["g"])

@@ -29,7 +29,8 @@ public enum DemoFixtures {
                 activeAgents: primary.activeAgents,
                 queuedWork: primary.queuedWork,
                 tokensToday: UsageBundle(records: records).today,
-                machinesOnline: machines.filter { $0.status == .online }.count),
+                machinesOnline: machines.filter { $0.status == .online }.count,
+                owner: OwnerProfile(name: "Justus", initials: "JH")),
             usage: UsageBundle(records: records))
     }
 
@@ -44,21 +45,21 @@ public enum DemoFixtures {
                     DocRef(id: "doc_dod", title: "Definition of done", path: "docs/product/definition-of-done.md", kind: .requirements),
                 ],
                 goals: [
-                    "Run a build workflow from input to merged output on two machines",
-                    "Every merge is backed by CI at the exact head commit",
-                    "Keep review latency under 30 minutes at p90",
+                    Goal(title: "Run a build workflow from input to merged output on two machines", done: 9, total: 14),
+                    Goal(title: "Every merge is backed by CI at the exact head commit", done: 3, total: 4),
+                    Goal(title: "Keep review latency under 30 minutes at p90", done: 1, total: 6),
                 ],
                 createdAt: now.addingTimeInterval(-86400 * 9), updatedAt: now.addingTimeInterval(-3600 * 2)),
             Project(
                 id: "prj_ledger", name: "ledger-service",
                 repo: .init(url: "https://github.com/example/ledger-service", defaultBranch: "main"),
                 docs: [DocRef(id: "doc_ledger_req", title: "Requirements", path: "docs/requirements.md", kind: .requirements)],
-                goals: ["Reduce p95 write latency", "Remove deprecated v1 endpoints"],
+                goals: [Goal(title: "Reduce p95 write latency"), Goal(title: "Remove deprecated v1 endpoints")],
                 createdAt: now.addingTimeInterval(-86400 * 30), updatedAt: now.addingTimeInterval(-86400)),
             Project(
                 id: "prj_docs", name: "docs-site",
                 repo: .init(url: "https://github.com/example/docs-site", defaultBranch: "main"),
-                docs: [], goals: ["Publish setup guides for machine enrollment"],
+                docs: [], goals: [Goal(title: "Publish setup guides for machine enrollment")],
                 createdAt: now.addingTimeInterval(-86400 * 2), updatedAt: now.addingTimeInterval(-86400 * 2)),
         ]
     }

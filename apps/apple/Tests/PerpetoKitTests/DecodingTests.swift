@@ -223,3 +223,31 @@ struct EnvelopeTests {
         #expect(overview.machinesOnline == 0)
     }
 }
+
+@Suite("Goals and owner")
+struct GoalOwnerDecodingTests {
+    @Test func goalsDecodeFromObjectsAndLegacyStrings() throws {
+        let project = try HubCoding.decoder().decode(Project.self, from: Data("""
+        { "id": "prj_1", "name": "n", "repo": { "url": "u", "defaultBranch": "main" }, "docs": [],
+          "goals": [ { "id": "g1", "title": "Ship the hub", "status": "active", "workItemIds": ["wi_1", "wi_2"], "done": 1, "total": 2 },
+                     "Legacy goal" ],
+          "createdAt": "2026-10-21T09:00:00Z", "updatedAt": "2026-10-21T09:00:00Z" }
+        """.utf8))
+        #expect(project.goals.count == 2)
+        #expect(project.goals[0].progress == 0.5)
+        #expect(project.goals[0].workItemIds == ["wi_1", "wi_2"])
+        #expect(project.goals[1].title == "Legacy goal")
+        #expect(project.goals[1].status == .active)
+        #expect(project.goals[1].progress == nil)
+        #expect(project.goals[1].id == "goal_legacy-goal")
+    }
+
+    @Test func overviewCarriesOwner() throws {
+        let overview = try HubCoding.decoder().decode(FactoryOverview.self, from: Data("""
+        { "owner": { "name": "Justus Huneke", "initials": "JH" }, "goals": [], "activeAgents": 2, "queuedWork": 1, "tokensToday": 9, "machinesOnline": 1 }
+        """.utf8))
+        #expect(overview.owner?.initials == "JH")
+        let older = try HubCoding.decoder().decode(FactoryOverview.self, from: Data(#"{"activeAgents":1}"#.utf8))
+        #expect(older.owner == nil)
+    }
+}
