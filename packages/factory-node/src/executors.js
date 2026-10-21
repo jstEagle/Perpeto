@@ -57,10 +57,11 @@ async function optionalPackage(name) {
 
 export async function loadIntegrations(config, { runtimeUrl, accountProvider, registry } = {}) {
   if (!accountProvider) {
-    // An `accounts` section without an explicit package uses the in-repo factory-accounts pool.
-    const mod = config.accountProviderPackage || config.accounts === undefined
-      ? await optionalPackage(config.accountProviderPackage ?? '@perpeto/factory-accounts')
-      : await import('./integrations/accounts.js');
+    // An explicit package wins; an `accounts` section uses the in-repo factory-accounts adapter;
+    // with neither, the node runs without a subscription pool.
+    const mod = config.accountProviderPackage
+      ? await optionalPackage(config.accountProviderPackage)
+      : config.accounts !== undefined ? await import('./integrations/accounts.js') : null;
     if (!mod && config.accountProviderPackage) throw new Error('Configured account provider package is unavailable.');
     if (mod) {
       if (typeof mod.createAccountProvider !== 'function') throw new Error('Account package must export createAccountProvider.');
