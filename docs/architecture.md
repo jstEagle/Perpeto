@@ -112,6 +112,50 @@ The engine is deterministic: it reads the run's state plus incoming results (ass
 
 Default templates live in `packages/factory-workflow/templates/`: `build` (input → planner → agent pool → review loop → CI → merge queue → output) and `improve` (goals → auditor → agent → review → CI → merge queue → output).
 
+## Agent-authored workflows
+
+Users should not have to build workflows by hand. The default path is a prompt: "Describe how this project should be built." The hub creates an assignment for a `workflow-architect` role, which runs through T3 like any other agent with the project's docs, goals, available machines, providers and existing workflows as context. Its `AssignmentResult` carries `{ graph, rationale }`.
+
+The hub validates the graph with the workflow package. Invalid graphs go back to the architect with the validation errors, up to three attempts. A valid graph is saved as a new **draft** version with `authoredBy: { kind: 'agent', assignmentId, prompt }` and the rationale. Nothing runs until a person activates it. Clients show the proposed graph, the rationale and a diff against the active version, and the user can activate it, ask for changes in another prompt, or edit by hand.
+
+Agents running in a workflow may propose changes, for example adding a reviewer where review is the bottleneck. A proposal follows the same draft path and never changes an active run silently.
+
+`Workflow` gains `authoredBy: { kind: 'agent'|'user', assignmentId?, prompt? }`, `rationale?` and `parentVersion?`. Versions are immutable once saved.
+
+## Observing runs
+
+The graph a user approved is also the live map of the run. Clients draw the same nodes and edges with live state on top, so people can see where work is, how agents interact, how fast work moves and what is holding it up.
+
+Interaction events are first-class. The executor and messaging layer report them, and the hub stores them in the event log with the run and node roles they connect:
+
+| Event type | Meaning |
+| --- | --- |
+| `workitem.moved` | A work item crossed a `flow` edge |
+| `agent.delegated` | An agent assigned work or spawned a subagent along a `delegates` edge |
+| `agent.messaged` | One role messaged another along a `messages` edge |
+| `assignment.state` | Assignment queued, leased, running, finished, with machine and account |
+| `gate.result` | Review, CI or human gate passed or failed |
+
+An interaction with no matching edge is recorded with `unplanned: true` and shown, rather than hidden.
+
+### Metrics
+
+`GET /runs/:id/metrics?window=1h|24h|7d` and `GET /projects/:id/metrics?window=` return:
+
+```ts
+NodeMetrics   { nodeId, queued, active, done, failed, concurrency, utilization /* active ÷ concurrency */,
+                waitSec: { avg, p90 }, serviceSec: { avg, p90 }, throughputPerHour, failureRate, tokens }
+EdgeMetrics   { edgeId, kind, count, unplanned }
+RunMetrics    { velocity: { itemsDonePerDay, trend: number[] }, cycleTimeSec: { avg, p90 }, wip,
+                tokensPerItem, activeAgents, machines: { machineId, activeAgents, nodes: string[] }[] }
+Bottleneck    { nodeId, reason: 'saturated'|'queue-growing'|'high-failure'|'waiting-on-human'|'no-capacity'|'rework-loop',
+                evidence: string, severity: 'info'|'warning'|'critical' }
+```
+
+Bottlenecks are computed from measured state, never guessed by a model. Examples: utilization at or above 0.9 with a growing queue is `saturated`; queued work whose requirements no online machine meets is `no-capacity`; loop iterations rising above the configured average is `rework-loop`. Each bottleneck carries the numbers behind it in `evidence`.
+
+The run view shows on each node its active agents, queue depth, wait time and throughput. Edges show recent traffic counts, and bottlenecks are marked with their reason. Beside the map, a velocity panel and a "where work is running" panel show machines with their active agents. Use explicit numbers and status labels; any motion is brief and respects reduced motion.
+
 ## Hub API v1
 
 All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owner tokens act for the user. Node tokens act for one machine and may only call `/nodes/*`, `/assignments/:id/*` and `/jobs/:id/*` for work leased to that machine.
@@ -122,6 +166,10 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET/POST /projects`, `GET/PATCH /projects/:id` | Projects, repo, docs, goals |
 | `GET/POST /projects/:id/workflows`, `GET/PUT /workflows/:id` | Workflows; PUT validates and bumps `version` |
 | `POST /workflows/:id/validate` | Validation result without saving |
+| `POST /projects/:id/workflows/drafts` `{ prompt, baseWorkflowId? }` | Ask the workflow architect for a draft; returns the assignment to follow |
+| `GET /workflows/:id/versions`, `GET /workflows/:id/diff?from=&to=` | Version history and graph diff |
+| `POST /workflows/:id/activate` `{ version }` | Make a draft version active |
+| `GET /runs/:id/metrics`, `GET /projects/:id/metrics` | Live node, edge and run metrics with bottlenecks |
 | `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/{pause,resume,stop}` | Runs |
 | `POST /runs/:id/inputs` | Add ideas or input items to a running workflow |
 | `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |

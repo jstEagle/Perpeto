@@ -134,6 +134,7 @@ Stated by Justus on 21 October 2026. These are requested capabilities, not decis
 - Better support for T3 agents on several machines, including limits on which subagents or threads an agent may create.
 - Subscription hot-swapping like CCswap, inside Perpeto.
 - One easy machine install that runs efficiently and scales to hundreds of machines and thousands of agents.
+- Users should not have to build workflows by hand: they prompt agents to design them, then see the result and how agents actually interact, where work happens, velocity and bottlenecks.
 - A web app and a native Swift app, both following the brand vision, design system, logo, colors and art direction strictly.
 
 Implementation of this direction started on 21 October 2026; shared interfaces are in [the architecture contract](architecture.md). Pi is disabled in the local T3 install, so DeepSeek through Pi was not used for the first build wave.
