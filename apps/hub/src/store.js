@@ -155,6 +155,18 @@ export class HubStore {
       ...(row.run_id ? { runId: row.run_id } : {}), subject: JSON.parse(row.subject), data: JSON.parse(row.data) };
   }
   events(after = 0, limit = 100) { return this.#sql('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?').all(after, limit).map(row => this.#event(row)); }
+  /**
+   * One page of events, oldest first within the page: forward after a cursor, or backward before one (or from the
+   * newest when `before` is null), optionally for one run. `hasMore` says whether the page stopped short.
+   */
+  eventPage({ after, before, backward, runId, limit }) {
+    const run = runId ? ' AND run_id=?' : ''; const args = runId ? [runId] : [];
+    const rows = backward
+      ? this.#sql(`SELECT * FROM events WHERE ${before ? 'seq<?' : '1'}${run} ORDER BY seq DESC LIMIT ?`).all(...(before ? [before] : []), ...args, limit + 1)
+      : this.#sql(`SELECT * FROM events WHERE seq>?${run} ORDER BY seq LIMIT ?`).all(after, ...args, limit + 1);
+    const page = rows.slice(0, limit).map(row => this.#event(row));
+    return { events: backward ? page.reverse() : page, hasMore: rows.length > limit };
+  }
   /** Events since `from` for one run or project, in one indexed query. */
   eventsSince(from, { projectId, runId } = {}) {
     const rows = runId ? this.#sql('SELECT * FROM events WHERE run_id=? AND at>=? ORDER BY seq').all(runId, from)

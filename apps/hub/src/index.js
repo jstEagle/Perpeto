@@ -63,7 +63,8 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
   }
   async function stream(request, response, args, url) {
     let cursor = integer(Number(url.searchParams.get('after') ?? request.headers['last-event-id'] ?? 0), 'after');
-    await hub.request({ ...args, method: 'GET', path: `/events?after=${cursor}&limit=1` });
+    const runId = url.searchParams.get('runId'); const run = runId ? `&runId=${encodeURIComponent(runId)}` : '';
+    await hub.request({ ...args, method: 'GET', path: `/events?after=${cursor}&limit=1${run}` });
     if (closing) fail(503, 'SHUTTING_DOWN', 'Hub is shutting down.');
     response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     response.flushHeaders(); response.write(': connected\n\n'); streams.add(response);
@@ -75,7 +76,7 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
       try {
         while (dirty && !response.destroyed && !closing) {
           dirty = false;
-          const result = await hub.request({ ...args, method: 'GET', path: `/events?after=${cursor}&limit=100` });
+          const result = await hub.request({ ...args, method: 'GET', path: `/events?after=${cursor}&limit=100${run}` });
           for (const event of result.body.events) {
             if (response.destroyed || closing) break;
             const writable = response.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);

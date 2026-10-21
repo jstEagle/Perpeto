@@ -776,8 +776,19 @@ export class Hub {
       }
     }
     if (path === '/events' && method === 'GET') {
-      const after = integer(Number(query.get('after') ?? 0), 'after'); const limit = integer(Number(query.get('limit') ?? 100), 'limit', 1, 1000);
-      const events = this.store.events(after, limit); return reply({ events, nextCursor: events.at(-1)?.seq ?? after });
+      const limit = integer(Number(query.get('limit') ?? 100), 'limit', 1, 1000);
+      const runId = query.get('runId') ?? undefined; if (runId !== undefined) nonblank(runId, 'runId', 200);
+      const latest = query.get('latest'); requireValue(latest === null || ['true', 'false'].includes(latest), 'latest must be true or false.');
+      requireValue(Number(query.has('after')) + Number(query.has('before')) + Number(latest === 'true') <= 1, 'after, before and latest are mutually exclusive.');
+      if (latest === 'true' || query.has('before')) {
+        // Newest first page (or the page before a cursor), returned oldest first, as messaging pages.
+        const before = query.has('before') ? integer(Number(query.get('before')), 'before', 1) : null;
+        const { events, hasMore } = this.store.eventPage({ before, backward: true, runId, limit });
+        return reply({ events, previousCursor: events[0]?.seq ?? before ?? 0, nextCursor: events.at(-1)?.seq ?? before ?? 0, hasMore });
+      }
+      const after = integer(Number(query.get('after') ?? 0), 'after');
+      const { events, hasMore } = this.store.eventPage({ after, runId, limit });
+      return reply({ events, nextCursor: events.at(-1)?.seq ?? after, hasMore });
     }
     if (path === '/usage' && method === 'GET') return reply(this.usage(query));
     if (path === '/overview' && method === 'GET') {

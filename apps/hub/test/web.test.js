@@ -48,7 +48,7 @@ test('unplanned interactions reach metrics with their endpoints, including event
   assert.equal((await f.request('POST', `/assignments/${build.id}/events`, { auth: machine.token, body: { attempt: build.attempt, type: 'agent.delegated', data: { sourceNodeId: 'builder', targetNodeId: 'reviewer' } } })).status, 200);
   const path = `/messaging/projects/${run.projectId}/channels/run-${run.id}/messages`;
   assert.equal((await f.request('POST', path, { body: { senderRoleId: 'builder', recipientRoleId: 'reviewer', body: 'Ready?', idempotencyKey: 'm1' } })).status, 200);
-  const recorded = (await f.request('GET', '/events?limit=1000')).body.events.filter(event => event.runId === run.id && ['agent.delegated', 'agent.messaged'].includes(event.type));
+  const recorded = (await f.request('GET', `/events?runId=${run.id}&limit=1000`)).body.events.filter(event => ['agent.delegated', 'agent.messaged'].includes(event.type));
   assert.equal(recorded.length, 2);
   for (const event of recorded) { assert.equal(event.data.from, 'builder'); assert.equal(event.data.to, 'reviewer'); assert.equal(event.data.sourceNodeId, 'builder'); assert.equal(event.data.unplanned, true); }
   // An interaction recorded before the hub wrote from/to still gets its endpoints.
@@ -62,5 +62,36 @@ test('unplanned interactions reach metrics with their endpoints, including event
     ['unplanned:messages:builder->reviewer', 'builder', 'reviewer', 1],
     ['unplanned:messages:reviewer->builder', 'reviewer', 'builder', 1],
   ]);
+});
+
+test('events filter by run and page from the newest, oldest first within each page, like messaging', async t => {
+  const f = await fixture(t);
+  const first = await start(f); const second = await start(f);
+  for (const run of [first, second]) for (const reason of ['a', 'b']) await f.request('POST', `/runs/${run.id}/pause`, { body: { reason } }).then(() => f.request('POST', `/runs/${run.id}/resume`, { body: {} }));
+  const all = (await f.request('GET', '/events?limit=1000')).body.events;
+  const mine = all.filter(event => event.runId === first.id);
+  const filtered = (await f.request('GET', `/events?runId=${first.id}&limit=1000`)).body;
+  assert.deepEqual(filtered.events.map(event => event.seq), mine.map(event => event.seq));
+  assert.equal(filtered.hasMore, false);
+  const latest = (await f.request('GET', '/events?latest=true&limit=3')).body;
+  assert.deepEqual(latest.events.map(event => event.seq), all.slice(-3).map(event => event.seq), 'newest page, oldest first');
+  assert.equal(latest.previousCursor, all.at(-3).seq); assert.equal(latest.nextCursor, all.at(-1).seq); assert.equal(latest.hasMore, true);
+  const older = (await f.request('GET', `/events?before=${latest.previousCursor}&limit=3`)).body;
+  assert.deepEqual(older.events.map(event => event.seq), all.slice(-6, -3).map(event => event.seq));
+  const runLatest = (await f.request('GET', `/events?runId=${first.id}&latest=true&limit=2`)).body;
+  assert.deepEqual(runLatest.events.map(event => event.seq), mine.slice(-2).map(event => event.seq));
+  assert.equal((await f.request('GET', `/events?after=${all.at(-2).seq}`)).body.events.length, 1, 'forward paging is unchanged');
+  for (const query of ['latest=true&after=1', 'before=5&after=1', 'latest=yes', 'before=0']) assert.equal((await f.request('GET', `/events?${query}`)).status, 400, query);
+  const empty = (await f.request('GET', '/events?runId=run_none&latest=true')).body;
+  assert.deepEqual(empty, { events: [], previousCursor: 0, nextCursor: 0, hasMore: false });
+  // The event stream honours runId too.
+  const abort = new AbortController(); t.after(() => abort.abort());
+  const response = await fetch(`${f.url}/api/v1/events?runId=${second.id}&after=${all.at(-1).seq}`, { headers: { Authorization: `Bearer ${f.owner}`, Accept: 'text/event-stream' }, signal: abort.signal });
+  await f.request('POST', `/runs/${first.id}/pause`, { body: {} }); await f.request('POST', `/runs/${second.id}/pause`, { body: {} });
+  const reader = response.body.getReader(); let text = '';
+  while (!text.includes('run.pause')) text += new TextDecoder().decode((await reader.read()).value);
+  const streamed = text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)));
+  assert.ok(streamed.length >= 1); assert.ok(streamed.every(event => event.runId === second.id));
+  abort.abort();
 });
 
