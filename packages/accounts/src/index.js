@@ -148,6 +148,14 @@ export class AccountPool {
     if (this.#status(record, now) !== 'active') fail('ACCOUNT_UNAVAILABLE');
     checkHome(this.#root, this.#home(record), record.provider);
   }
+  #healthy(record) {
+    try { checkHome(this.#root, this.#home(record), record.provider); return true; }
+    catch {
+      // Quarantine locally without persisting paths, credential content or OS errors.
+      record.invalid = true;
+      return false;
+    }
+  }
   #binding(record) {
     const providerInstanceId = `factory_${record.id}`;
     const homePath = this.#home(record);
@@ -222,10 +230,15 @@ export class AccountPool {
           && this.#status(account, now) === 'active'
           && counts.filter(id => id === account.id).length < this.#config.maxConcurrentPerAccount)
           .sort((a, b) => (this.#config.selection === 'headroom' ? headroom(b) - headroom(a) : 0)
-            || (a.lastUsedOrder ?? 0) - (b.lastUsedOrder ?? 0) || a.id.localeCompare(b.id))[0];
+            || (a.lastUsedOrder ?? 0) - (b.lastUsedOrder ?? 0) || a.id.localeCompare(b.id))
+          .find(account => this.#healthy(account));
       }
-      if (!record) fail(state.accounts.some(account => account.provider === provider)
-        ? 'ACCOUNT_POOL_EXHAUSTED' : 'NO_ELIGIBLE_ACCOUNT');
+      if (!record) {
+        // Preserve quarantines even when every candidate failed its home check.
+        this.#write(state);
+        fail(state.accounts.some(account => account.provider === provider)
+          ? 'ACCOUNT_POOL_EXHAUSTED' : 'NO_ELIGIBLE_ACCOUNT');
+      }
       this.#usable(record, now);
       const reservation = reserved ?? this.#reservation(assignmentId, record.id, now);
       Object.defineProperty(state.reservations, assignmentId, { value: reservation, enumerable: true, writable: true, configurable: true });

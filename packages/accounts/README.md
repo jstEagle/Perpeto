@@ -50,6 +50,8 @@ All methods are synchronous. Every mutation requires a stable `idempotencyKey`. 
 - `snapshot()`: detached `Account[]`, with expired cooldowns reflected as active. Returns future `cooldownUntil` even when disabled/invalid takes precedence.
 - `bindingFor(accountId, { reservationId? }?)`: eligibility/file-safety check (and a live, matching reservation check when supplied) and local-only T3 descriptor. Never include this descriptor in a heartbeat or send it to the hub.
 
+Selection checks candidate homes in policy order, flags unsafe, missing or malformed homes as `invalid`, and continues to healthy accounts. Quarantine persists even when no candidate succeeds. Repair the private home and explicitly call `markAuthenticated()` after confirming account authentication to restore eligibility.
+
 `selection: "lru"` is the default. A persisted sequence breaks same-millisecond ties. `"headroom"` first chooses the account with the greatest minimum remaining percentage across known windows, then LRU. Missing usage is treated as unknown/full headroom; no quota probe occurs. Expired usage windows stop reducing headroom. `maxConcurrentPerAccount` defaults to 1 and is independent of the node's overall agent capacity.
 
 ## Import design

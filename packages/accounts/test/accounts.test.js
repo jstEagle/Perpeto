@@ -181,7 +181,8 @@ test('permissions, symlinks, hardlinks, lock and foreign registry fail closed', 
   f.add('acct_ok', 'codex', { source });
   const home = f.pool.bindingFor('acct_ok').instance.config.homePath;
   fs.chmodSync(path.join(home, 'auth.json'), 0o644);
-  assert.throws(() => f.select('asg_bad'), code('UNSAFE_PERMISSIONS'));
+  assert.throws(() => f.select('asg_bad'), code('ACCOUNT_POOL_EXHAUSTED'));
+  assert.equal(f.pool.snapshot()[0].status, 'invalid');
   fs.chmodSync(path.join(home, 'auth.json'), 0o600);
   mkdir(path.join(f.nodeDataDir, 'accounts/.lock'));
   assert.throws(() => f.pool.disable({ accountId: 'acct_ok', idempotencyKey: f.next() }), code('ACCOUNT_POOL_BUSY'));
@@ -420,4 +421,33 @@ test('legacy reservations receive a finite lease once during migration', t => {
   f.advance(500);
   assert.deepEqual(reopen().reservations(), []);
   assert.equal(f.select('asg_recovered').account.id, 'acct_a');
+});
+
+test('unhealthy homes are quarantined without blocking healthy provider accounts', t => {
+  const f = fixture(t);
+  const source = f.source('claudeAgent');
+  const metadata = path.join(f.root, 'claude-identity.json');
+  write(metadata, JSON.stringify({ hasCompletedOnboarding: true }));
+  f.add('acct_bad', 'claudeAgent', { source: { ...source, accountConfigPath: metadata } });
+  f.add('acct_good', 'claudeAgent');
+  const home = f.pool.bindingFor('acct_bad').instance.config.homePath;
+  fs.chmodSync(path.join(home, '.claude.json'), 0o644);
+  assert.equal(f.select('asg_healthy', 'claudeAgent').account.id, 'acct_good');
+  assert.equal(f.pool.snapshot().find(account => account.id === 'acct_bad').status, 'invalid');
+  f.release('asg_healthy');
+  assert.equal(f.select('asg_healthy_again', 'claudeAgent').account.id, 'acct_good');
+  fs.chmodSync(path.join(home, '.claude.json'), 0o600);
+  f.pool.markAuthenticated({ accountId: 'acct_bad', idempotencyKey: f.next() });
+  assert.equal(f.select('asg_repaired', 'claudeAgent').account.id, 'acct_bad');
+});
+
+test('an entirely unhealthy pool persists quarantine and throws exhaustion, including missing homes', t => {
+  const f = fixture(t);
+  f.add('acct_missing');
+  const home = f.pool.bindingFor('acct_missing').instance.config.homePath;
+  fs.rmSync(home, { recursive: true });
+  assert.throws(() => f.select('asg_missing'), code('ACCOUNT_POOL_EXHAUSTED'));
+  const reopened = new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now });
+  assert.equal(reopened.snapshot()[0].status, 'invalid');
+  assert.deepEqual(reopened.reservations(), []);
 });
