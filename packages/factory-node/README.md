@@ -52,7 +52,9 @@ Register executors with `new ExecutorRegistry().register(executor)`; first match
 
 At startup the daemon imports `@perpeto/factory-t3` by package name if installed. It expects `createT3Executor({ config, runtimeUrl, accountProvider })`, or `createExecutor` with the same arguments, returning an executor. `executorPackages` explicitly overrides the package list. Explicitly configured missing packages and broken installed packages fail startup; absent optional defaults are allowed. Packages must be resolvable by Node from this package; no root workspace manifest or dependency installation was changed here.
 
-The optional `@perpeto/factory-accounts` package should export `createAccountProvider({ config, configRoot })`, returning:
+An `accounts` section in node JSON (without `accountProviderPackage`) uses the built-in [factory-accounts adapter](src/integrations/accounts.js). Its non-secret options are the pool's (`selection`, `defaultCooldownMs`, `maxConcurrentPerAccount`, optional `nodeDataDir`, default the node `dataDir`). The pool opens after enrollment via `bind({ machineId })`; `acquire({ provider, assignmentId, attempt })` reserves per attempt and returns `{ account, binding }` or `null`, and `release(selection, { assignmentId, attempt })` frees it. Bindings stay local; heartbeats carry only `snapshot()` metadata.
+
+A custom account package should export `createAccountProvider({ config, configRoot, dataDir })`, returning:
 
 ```js
 const accounts = {
