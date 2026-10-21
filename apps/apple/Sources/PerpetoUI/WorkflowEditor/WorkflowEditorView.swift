@@ -12,6 +12,9 @@ struct WorkflowEditorView: View {
     @State private var roleEdgeKind: GraphEdge.Kind = .messages
     @State private var hubValidation: ValidationResult?
     @State private var saving = false
+    @State private var history = GraphHistory()
+    /// Set while undo or redo replaces the graph, so it is not recorded.
+    @State private var restoring = false
 
     private var validation: ValidationResult { hubValidation ?? WorkflowValidator.validate(workflow.graph) }
 
@@ -41,7 +44,66 @@ struct WorkflowEditorView: View {
                     .background(PerpetoColor.surface)
             }
         }
-        .onChange(of: workflow.graph) { _, _ in hubValidation = nil }
+        .onChange(of: workflow.graph) { old, new in
+            hubValidation = nil
+            if restoring {
+                restoring = false
+            } else {
+                let change = Self.describe(from: old, to: new)
+                history.record(old, name: change.name, coalesceKey: change.key)
+            }
+        }
+        .focusedSceneValue(\.editorUndo, EditorUndo(undoName: history.undoName, redoName: history.redoName, undo: undo, redo: redo))
+    }
+
+    // MARK: Undo
+
+    private func undo() {
+        guard let graph = history.undo(from: workflow.graph) else { return }
+        restoring = true
+        workflow.graph = graph
+        if let id = selection?.nodeId, graph.node(id) == nil { selection = nil }
+    }
+
+    private func redo() {
+        guard let graph = history.redo(from: workflow.graph) else { return }
+        restoring = true
+        workflow.graph = graph
+        if let id = selection?.nodeId, graph.node(id) == nil { selection = nil }
+    }
+
+    /// Names a change for the Edit menu. Field edits on one node coalesce.
+    static func describe(from old: WorkflowGraph, to new: WorkflowGraph) -> (name: String, key: String?) {
+        if new.nodes.count > old.nodes.count { return ("Add node", nil) }
+        if new.nodes.count < old.nodes.count { return ("Delete node", nil) }
+        if new.edges.count > old.edges.count { return ("Connect", nil) }
+        if new.edges.count < old.edges.count { return ("Delete edge", nil) }
+        guard let changed = zip(old.nodes, new.nodes).first(where: { $0 != $1 }) else { return ("Edit graph", nil) }
+        var moved = changed.0
+        moved.position = changed.1.position
+        if moved == changed.1 { return ("Move \(changed.1.label)", nil) }
+        return ("Edit \(changed.0.label)", "edit:\(changed.1.id)")
+    }
+
+    private var undoButtons: some View {
+        HStack(spacing: 0) {
+            Button(action: undo) { Image(systemName: "arrow.uturn.backward").frame(width: 28, height: 28) }
+                .disabled(!history.canUndo)
+                .help(history.undoName.map { "Undo \($0.lowercased()) (⌘Z)" } ?? "Nothing to undo")
+                .accessibilityLabel(history.undoName.map { "Undo \($0.lowercased())" } ?? "Undo")
+                #if os(iOS)
+                .keyboardShortcut("z", modifiers: .command)
+                #endif
+            Button(action: redo) { Image(systemName: "arrow.uturn.forward").frame(width: 28, height: 28) }
+                .disabled(!history.canRedo)
+                .help(history.redoName.map { "Redo \($0.lowercased()) (⇧⌘Z)" } ?? "Nothing to redo")
+                .accessibilityLabel(history.redoName.map { "Redo \($0.lowercased())" } ?? "Redo")
+                #if os(iOS)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                #endif
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(PerpetoColor.ink)
     }
 
     private var toolbar: some View {
@@ -52,6 +114,7 @@ struct WorkflowEditorView: View {
                     .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
             }
             Spacer()
+            undoButtons
             Menu {
                 ForEach(NodeType.palette, id: \.self) { type in
                     Button { add(type) } label: { Label(type.title, systemImage: type.systemImage) }
@@ -172,4 +235,16 @@ struct WorkflowEditorView: View {
         }
         selection = nil
     }
+}
+
+/// Undo and redo for the focused editor, read by the Edit menu.
+public struct EditorUndo {
+    public var undoName: String?
+    public var redoName: String?
+    public var undo: () -> Void
+    public var redo: () -> Void
+}
+
+extension FocusedValues {
+    @Entry public var editorUndo: EditorUndo?
 }
