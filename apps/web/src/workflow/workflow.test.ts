@@ -3,6 +3,7 @@ import { validateGraph } from './validate';
 import { diffGraphs, diffIsEmpty } from './diff';
 import { buildTemplate, improveTemplate, blankTemplate } from './templates';
 import { createDemoState, DEMO_IDS } from '../api/fixtures';
+import { libraryTemplates } from '../api/library';
 
 const errors = (g: Parameters<typeof validateGraph>[0]) => validateGraph(g).filter((i) => i.severity === 'error');
 
@@ -40,6 +41,12 @@ describe('validateGraph', () => {
 
   it('keeps every demo workflow version valid', () => {
     for (const v of createDemoState(0).versions) expect(errors(v.graph), `${v.name} v${v.version}`).toEqual([]);
+  });
+
+  it('accepts every template in the workflow package, merge queue pass and fail ports included', () => {
+    const library = libraryTemplates();
+    expect(library).toHaveLength(6);
+    for (const t of library) expect(errors(t.graph), t.id).toEqual([]);
   });
 });
 

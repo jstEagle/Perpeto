@@ -5,7 +5,7 @@ import type { Resource } from '../app/hub-context';
 import type { Assignment, Machine, MetricsSnapshot, MetricsWindow, Run, WorkItem, WorkflowGraph } from '../api/types';
 import { Async, btn, Button, Dialog, Disclosure, Field, Menu, Mono, PageHeader, Panel, Segmented, Stat } from '../components/ui';
 import { AssignmentStatusLabel, runTone, StatusChip, StatusLabel, WorkStatusLabel } from '../components/status';
-import { IconAlert, IconPause, IconPlay, IconPlus, IconStop } from '../components/icons';
+import { IconAlert, IconPause, IconPlay, IconPlus, IconSettings, IconStop } from '../components/icons';
 import { GraphCanvas } from '../workflow/graph-canvas';
 import type { Selection } from '../workflow/graph-canvas';
 import { BOTTLENECK_LABEL } from '../workflow/step-node';
@@ -15,6 +15,8 @@ import { INTERACTION_TYPES, InteractionFeed, useRunEvents } from '../run/feed';
 import { VelocityPanel, WhereRunningPanel } from '../run/panels';
 import { bottleneckTitle, byUrgency } from '../run/issues';
 import { WorkBoard } from '../run/board';
+import { BudgetLine, IntakePaused, RunSettingsDialog } from '../run/intake';
+import { countActive, intakeSummary } from '../run/budget';
 import { duration, pct, plural, rate, relative, tokens } from '../lib/format';
 
 type Tab = 'map' | 'work' | 'timeline';
@@ -25,7 +27,7 @@ const METRICS_REFRESH = { debounceMs: 1000, maxWaitMs: 4000 };
 export function RunPage() {
   const { projectId, runId } = useParams({ from: '/projects/$projectId/runs/$runId' });
   const { node } = useSearch({ from: '/projects/$projectId/runs/$runId' });
-  const run = useResource((api) => api.getRun(runId), [runId], (e) => e.subject.kind === 'run' && e.subject.id === runId);
+  const run = useResource((api) => api.getRun(runId), [runId], (e) => (e.subject.kind === 'run' && e.subject.id === runId) || (e.runId === runId && e.type.startsWith('budget.')));
   return (
     <div className="page">
       <Async resource={run} what="run">
@@ -43,6 +45,7 @@ function RunView({ run, projectId, onChanged, initialNode }: { run: Run; project
   const [focus, setFocus] = useState<{ id: string } | undefined>(initialNode ? { id: initialNode } : undefined);
   const mapRef = useRef<HTMLDivElement>(null);
   const [adding, setAdding] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -74,6 +77,8 @@ function RunView({ run, projectId, onChanged, initialNode }: { run: Run; project
   }
 
   const live = run.status === 'running' || run.status === 'paused';
+  // Leaf work in progress, as the budget counts it: a parent waiting on its children is not active.
+  const activeItems = items.data && countActive(items.data);
   const issues = byUrgency(metrics.data?.bottlenecks.filter((b) => b.severity !== 'info') ?? []);
   const today = events?.filter((e) => INTERACTION_TYPES.has(e.type) && e.at.slice(0, 10) === new Date().toISOString().slice(0, 10)).length;
   // Select the step, bring the map on screen, and scroll or pan the map to the step.
@@ -97,7 +102,7 @@ function RunView({ run, projectId, onChanged, initialNode }: { run: Run; project
         meta={
           <>
             <Mono>{run.id}</Mono> · Workflow v{run.workflowVersion} · Started {relative(run.startedAt)}
-            {run.stoppedAt && ` · Ended ${relative(run.stoppedAt)}`}
+            {run.completedAt ? ` · Completed ${relative(run.completedAt)}` : run.stoppedAt ? ` · ${run.status === 'failed' ? 'Failed' : 'Stopped'} ${relative(run.stoppedAt)}` : ''}
           </>
         }
         actions={
@@ -115,7 +120,13 @@ function RunView({ run, projectId, onChanged, initialNode }: { run: Run; project
               <Button onClick={() => setStopping(true)}>
                 <IconStop /> Stop
               </Button>
-              <Menu label="More run actions" items={[{ label: 'Add input', icon: <IconPlus />, onSelect: () => setAdding(true) }]} />
+              <Menu
+                label="More run actions"
+                items={[
+                  { label: 'Add input', icon: <IconPlus />, onSelect: () => setAdding(true) },
+                  { label: 'Run settings', icon: <IconSettings />, onSelect: () => setSettingsOpen(true) },
+                ]}
+              />
             </>
           )
         }
@@ -125,6 +136,16 @@ function RunView({ run, projectId, onChanged, initialNode }: { run: Run; project
           {actionError}
         </p>
       )}
+      {live && (
+        <section className="run-intake" aria-label="Intake and budget">
+          <span className="run-intake-text">{intakeSummary(run)}</span>
+          <BudgetLine run={run} activeItems={activeItems} />
+          <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(true)}>
+            Settings
+          </Button>
+        </section>
+      )}
+      {live && <IntakePaused run={run} onChange={() => setSettingsOpen(true)} />}
       {run.status === 'paused' && (
         <div className="callout" role="status">
           <IconPause />
@@ -273,6 +294,17 @@ function RunView({ run, projectId, onChanged, initialNode }: { run: Run; project
       )}
 
       <AddInputDialog open={adding} onClose={() => setAdding(false)} runId={run.id} />
+      {live && (
+        <RunSettingsDialog
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          target={{ kind: 'edit', run }}
+          onDone={() => {
+            setSettingsOpen(false);
+            onChanged();
+          }}
+        />
+      )}
       <Dialog
         open={stopping}
         onClose={() => setStopping(false)}

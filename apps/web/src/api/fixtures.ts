@@ -21,6 +21,7 @@ import type {
   WorkflowGraph,
 } from './types';
 import { COL, ROW, buildTemplate, improveTemplate } from '../workflow/templates';
+import { libraryTemplates } from './library';
 
 /**
  * Demo factory used when no hub is configured. The story: the Perpeto build
@@ -89,6 +90,8 @@ export const DEMO_IDS = {
   coolerBuild: 'wf_c2build',
   run: 'run_7q4m2x',
   runOld: 'run_5d1h8a',
+  improveRun: 'run_8f2k4t',
+  bugfix: 'wf_b7bugfix',
   coolerRun: 'run_2v9k6p',
   studio: 'mch_studio',
   linux: 'mch_linux',
@@ -252,10 +255,60 @@ export function createDemoState(now = Date.now()): DemoState {
     },
   ];
 
+  // The architect's answer to the review bottleneck came with one more proposal, saved as its own draft.
+  const bugfixGraph = libraryTemplates().find((t) => t.id === 'bugfix')?.graph;
+  if (bugfixGraph)
+    versions.push({
+      id: DEMO_IDS.bugfix,
+      projectId: DEMO_IDS.perpeto,
+      name: 'Bugfix',
+      purpose: 'bugfix',
+      templateId: 'bugfix',
+      version: 1,
+      graph: bugfixGraph,
+      status: 'draft',
+      authoredBy: { kind: 'agent', assignmentId: 'asg_arch03', prompt: 'Review is the bottleneck. Propose a change that clears the queue without lowering review quality.' },
+      rationale: 'Three of the seven items waiting for review are bug reports. A separate Bugfix workflow reproduces each in a failing test first, so those reviews are short and leave the Build reviewer for features.',
+      createdAt: ago(40 * MIN),
+    });
+
   const runs: Run[] = [
-    { id: DEMO_IDS.run, projectId: DEMO_IDS.perpeto, workflowId: DEMO_IDS.build, workflowVersion: 3, status: 'running', startedAt: ago(3 * DAY) },
+    {
+      id: DEMO_IDS.run,
+      projectId: DEMO_IDS.perpeto,
+      workflowId: DEMO_IDS.build,
+      workflowVersion: 3,
+      status: 'running',
+      startedAt: ago(3 * DAY),
+      keepOpen: false,
+      source: 'manual',
+      budget: { maxTokensPerDay: 8_000_000, maxItemsPerDay: 24 },
+      budgetUsage: { day: '', tokens: 0, items: 9 },
+    },
+    // Improve keeps running from the goals and has used today's tokens: intake waits for midnight UTC.
+    {
+      id: DEMO_IDS.improveRun,
+      projectId: DEMO_IDS.perpeto,
+      workflowId: DEMO_IDS.improve,
+      workflowVersion: 1,
+      status: 'running',
+      startedAt: ago(2 * DAY + 4 * HOUR),
+      keepOpen: true,
+      source: 'goals',
+      budget: { maxTokensPerDay: 400_000, maxItemsPerDay: 6, maxActiveItems: 3 },
+      budgetUsage: { day: '', tokens: 0, items: 4 },
+    },
     { id: DEMO_IDS.runOld, projectId: DEMO_IDS.perpeto, workflowId: DEMO_IDS.build, workflowVersion: 2, status: 'stopped', startedAt: ago(6 * DAY), stoppedAt: ago(3 * DAY + 3 * HOUR) },
-    { id: 'run_3c8w1n', projectId: DEMO_IDS.perpeto, workflowId: DEMO_IDS.improve, workflowVersion: 1, status: 'completed', startedAt: ago(7 * DAY), stoppedAt: ago(6 * DAY + 5 * HOUR) },
+    {
+      id: 'run_3c8w1n',
+      projectId: DEMO_IDS.perpeto,
+      workflowId: DEMO_IDS.improve,
+      workflowVersion: 1,
+      status: 'completed',
+      startedAt: ago(7 * DAY),
+      completedAt: ago(6 * DAY + 5 * HOUR),
+      stoppedAt: ago(6 * DAY + 5 * HOUR),
+    },
     { id: DEMO_IDS.coolerRun, projectId: DEMO_IDS.cooler, workflowId: DEMO_IDS.coolerBuild, workflowVersion: 1, status: 'paused', startedAt: ago(2 * DAY) },
   ];
 
@@ -325,7 +378,26 @@ export function createDemoState(now = Date.now()): DemoState {
   link(0, 'goal_mono', ['Web: workflow inspector', 'Web: live run map', 'Web: settings screen']);
 
   // Assignments for the live run.
-  const assignments: Assignment[] = [];
+  const assignments: Assignment[] = [
+    {
+      id: 'asg_arch03',
+      projectId: DEMO_IDS.perpeto,
+      nodeId: 'workflow-architect',
+      role: 'workflow-architect',
+      prompt: 'Review is the bottleneck. Propose a change that clears the queue without lowering review quality.',
+      harness: { provider: 'claudeAgent', model: 'claude-opus-5-5' },
+      policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: [] },
+      requirements: {},
+      status: 'succeeded',
+      attempt: 1,
+      draftWorkflowId: DEMO_IDS.build,
+      draftVersion: 4,
+      drafts: [
+        { workflowId: DEMO_IDS.build, version: 4 },
+        { workflowId: DEMO_IDS.bugfix, version: 1 },
+      ],
+    },
+  ];
   let asgN = 0;
   const assign = (wi: WorkItem, nodeId: string, status: AssignmentStatus, machineId: string | undefined, provider: string, model: string, attempt = 1, result?: Assignment['result']) => {
     const node = perpetoBuildV3().nodes.find((n) => n.id === nodeId)!;
@@ -467,12 +539,12 @@ export function createDemoState(now = Date.now()): DemoState {
   // Usage: 14 days across providers, models and machines.
   const usage: UsageRecord[] = [];
   const mix = [
-    { provider: 'claudeAgent', model: 'claude-sonnet-5-5', weight: 1, machine: DEMO_IDS.linux, project: DEMO_IDS.perpeto },
-    { provider: 'claudeAgent', model: 'claude-sonnet-5-5', weight: 0.45, machine: DEMO_IDS.studio, project: DEMO_IDS.perpeto },
-    { provider: 'claudeAgent', model: 'claude-opus-5-5', weight: 0.22, machine: DEMO_IDS.studio, project: DEMO_IDS.perpeto },
-    { provider: 'codex', model: 'gpt-5.5-codex', weight: 0.5, machine: DEMO_IDS.studio, project: DEMO_IDS.perpeto },
-    { provider: 'claudeAgent', model: 'claude-sonnet-5-5', weight: 0.3, machine: DEMO_IDS.linux, project: DEMO_IDS.cooler },
-    { provider: 'codex', model: 'gpt-5.5-codex', weight: 0.12, machine: DEMO_IDS.linux, project: DEMO_IDS.cooler },
+    { provider: 'claudeAgent', model: 'claude-sonnet-5-5', weight: 1, machine: DEMO_IDS.linux, project: DEMO_IDS.perpeto, role: 'builder' },
+    { provider: 'claudeAgent', model: 'claude-sonnet-5-5', weight: 0.45, machine: DEMO_IDS.studio, project: DEMO_IDS.perpeto, role: 'builder' },
+    { provider: 'claudeAgent', model: 'claude-opus-5-5', weight: 0.22, machine: DEMO_IDS.studio, project: DEMO_IDS.perpeto, role: 'planner' },
+    { provider: 'codex', model: 'gpt-5.5-codex', weight: 0.5, machine: DEMO_IDS.studio, project: DEMO_IDS.perpeto, role: 'reviewer' },
+    { provider: 'claudeAgent', model: 'claude-sonnet-5-5', weight: 0.3, machine: DEMO_IDS.linux, project: DEMO_IDS.cooler, role: 'builder' },
+    { provider: 'codex', model: 'gpt-5.5-codex', weight: 0.12, machine: DEMO_IDS.linux, project: DEMO_IDS.cooler, role: 'reviewer' },
   ];
   let usageN = 0;
   for (let d = 13; d >= 0; d--) {
@@ -488,6 +560,7 @@ export function createDemoState(now = Date.now()): DemoState {
         projectId: m.project,
         runId: m.project === DEMO_IDS.perpeto && d <= 3 ? DEMO_IDS.run : undefined,
         machineId: m.machine,
+        role: m.role,
         provider: m.provider,
         model: m.model,
         inputTokens: Math.round(base * 0.62),
@@ -498,6 +571,38 @@ export function createDemoState(now = Date.now()): DemoState {
       });
     }
   }
+  // The Improve run has spent more than its 400k tokens today.
+  const todayStart = new Date(now);
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const improveAt = iso(Math.max(todayStart.getTime() + MIN, now - 2 * HOUR));
+  for (const [role, model, input, output] of [
+    ['auditor', 'claude-opus-5-5', 128_000, 34_000],
+    ['improver', 'gpt-5.5-codex', 198_000, 52_000],
+  ] as const) {
+    usage.push({
+      id: `use_${usageN++}`,
+      projectId: DEMO_IDS.perpeto,
+      runId: DEMO_IDS.improveRun,
+      machineId: DEMO_IDS.studio,
+      role,
+      provider: model.startsWith('gpt') ? 'codex' : 'claudeAgent',
+      model,
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadTokens: input * 2,
+      cacheWriteTokens: Math.round(input * 0.2),
+      at: improveAt,
+    });
+  }
+  const improveSeeds: Seed[] = [
+    ['Hub: drop unused event indexes', 'done', 'done', 1],
+    ['Web: lazy-load the workflow editor', 'done', 'done', 1],
+    ['Node: reuse the lease HTTP agent', 'improver', 'active', 1],
+    ['Docs: link the budget guide from the README', 'reviewer', 'queued', 1],
+  ];
+  improveSeeds.forEach(([title, nodeId, status, iteration], i) =>
+    workItems.push({ id: `wi_imp${i}`, runId: DEMO_IDS.improveRun, title, body: 'Proposed by the auditor against the project goals.', nodeId, status, iteration }),
+  );
 
   // Interaction history for the live run, newest last.
   const events: HubEvent[] = [];
@@ -654,6 +759,23 @@ export function createDemoState(now = Date.now()): DemoState {
     bottlenecks: [{ nodeId: 'builder', reason: 'waiting-on-human', severity: 'info', evidence: 'Run paused by owner 2 days ago. 4 items wait.' }],
   };
 
+  const improveMetrics: MetricsSnapshot = {
+    window: '24h',
+    nodes: [
+      nm({ nodeId: 'goals', done: 4 }),
+      nm({ nodeId: 'auditor', done: 1, concurrency: 1 }),
+      nm({ nodeId: 'loop' }),
+      nm({ nodeId: 'improver', active: 1, concurrency: 2, utilization: 0.5, done: 2 }),
+      nm({ nodeId: 'reviewer', queued: 1, concurrency: 1, done: 2 }),
+      nm({ nodeId: 'ci', done: 2 }),
+      nm({ nodeId: 'merge', done: 2 }),
+      nm({ nodeId: 'done', done: 2 }),
+    ],
+    edges: [],
+    run: { velocity: { itemsDonePerDay: 2, trend: Array.from({ length: 24 }, (_, i) => (i === 20 || i === 22 ? 1 : 0)) }, cycleTimeSec: { avg: 5_400, p90: 7_800 }, wip: 2, tokensPerItem: 206_000, activeAgents: 1, machines: [{ machineId: DEMO_IDS.studio, activeAgents: 1, nodes: ['improver'] }] },
+    bottlenecks: [],
+  };
+
   // Ensure every node in the graph appears in node metrics.
   for (const n of perpetoBuildV3().nodes) if (!runMetrics.nodes.some((m) => m.nodeId === n.id)) runMetrics.nodes.push(nm({ nodeId: n.id }));
 
@@ -673,7 +795,7 @@ export function createDemoState(now = Date.now()): DemoState {
     channels,
     readCursors,
     messages,
-    metrics: { [DEMO_IDS.run]: runMetrics, [DEMO_IDS.coolerRun]: coolerMetrics },
+    metrics: { [DEMO_IDS.run]: runMetrics, [DEMO_IDS.improveRun]: improveMetrics, [DEMO_IDS.coolerRun]: coolerMetrics },
     seq,
   };
 }

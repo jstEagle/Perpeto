@@ -39,6 +39,27 @@ describe('HttpHub', () => {
     expect(JSON.parse(String(init.body)).idempotencyKey).toMatch(/[0-9a-f-]{36}/);
   });
 
+  it('starts runs with settings and patches them later', async () => {
+    const fetch = vi.fn(async () => json({ id: 'run_1', status: 'running' }));
+    vi.stubGlobal('fetch', fetch);
+    await hub.startRun('wf_1', { keepOpen: true, source: 'schedule', schedule: '0 7 * * 1-5', budget: { maxTokensPerDay: 500_000 } });
+    await hub.updateRun('run_1', { budget: {} });
+    const [startUrl, start] = fetch.mock.calls[0] as unknown as [URL, RequestInit];
+    const [patchUrl, patch] = fetch.mock.calls[1] as unknown as [URL, RequestInit];
+    expect(String(startUrl)).toBe('http://localhost:4320/api/v1/workflows/wf_1/runs');
+    expect(JSON.parse(String(start.body))).toMatchObject({ keepOpen: true, source: 'schedule', schedule: '0 7 * * 1-5', budget: { maxTokensPerDay: 500_000 } });
+    expect(String(patchUrl)).toBe('http://localhost:4320/api/v1/runs/run_1');
+    expect(patch.method).toBe('PATCH');
+    expect(JSON.parse(String(patch.body))).toMatchObject({ budget: {} });
+  });
+
+  it('reads the template library, or the local templates from an older hub', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ templates: [{ id: 'docs', description: 'Write docs.', graph: { schema: 'perpeto.workflow/1', nodes: [], edges: [] } }] })));
+    expect((await hub.listTemplates()).map((t) => t.id)).toEqual(['docs']);
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: { code: 'NOT_FOUND', message: 'Route not found.' } }, 404)));
+    expect((await hub.listTemplates()).map((t) => t.id)).toEqual(['build', 'improve']);
+  });
+
   it('uses the session cookie instead of a token in cookie mode', async () => {
     const fetch = vi.fn(async () => json({ projects: [] }));
     vi.stubGlobal('fetch', fetch);

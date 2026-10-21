@@ -51,6 +51,7 @@ export function UsagePage() {
             { value: 'provider', label: 'Provider' },
             { value: 'model', label: 'Model' },
             { value: 'machine', label: 'Machine' },
+            { value: 'role', label: 'Role' },
           ]}
         />
         <span className="select">
@@ -104,14 +105,18 @@ function DayChart({ rows, today }: { rows: UsageRow[]; today: string }) {
   );
 }
 
+/** Hubs group usage from before role attribution as `unknown`. */
+const UNKNOWN_ROLE = 'unknown';
+const roleLabel = (key: string) => (key === UNKNOWN_ROLE ? 'No role recorded' : key.charAt(0).toUpperCase() + key.slice(1).replace(/[-_]+/g, ' '));
+
 function UsageTable({ summary }: { summary: UsageSummary }) {
   const [all, setAll] = useState(false);
   const ordered = summary.groupBy === 'day' ? [...summary.rows].reverse() : summary.rows;
   const rows = all ? ordered : ordered.slice(0, 7);
   const grand = summary.rows.reduce((s, r) => s + total(r), 0);
-  const label = (k: string) => (summary.groupBy === 'day' ? day(k) : summary.groupBy === 'provider' ? providerLabel(k) : k);
+  const label = (k: string) => (summary.groupBy === 'day' ? day(k) : summary.groupBy === 'provider' ? providerLabel(k) : summary.groupBy === 'role' ? roleLabel(k) : k);
   const mono = summary.groupBy === 'model';
-  const head = { day: 'Day (UTC)', provider: 'Provider', model: 'Model', machine: 'Machine' }[summary.groupBy];
+  const head = { day: 'Day (UTC)', provider: 'Provider', model: 'Model', machine: 'Machine', role: 'Role' }[summary.groupBy];
   return (
     <section className="card">
       <div className="table-wrap">
@@ -131,7 +136,7 @@ function UsageTable({ summary }: { summary: UsageSummary }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.key}>
-              <td>{mono ? <code className="mono">{r.key}</code> : label(r.key)}</td>
+              <td className={summary.groupBy === 'role' && r.key === UNKNOWN_ROLE ? 'muted' : undefined}>{mono ? <code className="mono">{r.key}</code> : label(r.key)}</td>
               <td className="num">{tokens(r.inputTokens)}</td>
               <td className="num">{tokens(r.outputTokens)}</td>
               <td className="num hide-sm muted">{tokens(r.cacheReadTokens)}</td>

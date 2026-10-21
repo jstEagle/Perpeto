@@ -7,7 +7,7 @@ import type { StepData, StepNodeType } from './step-node';
 import { RuledEdge } from './ruled-edge';
 import type { RuledEdgeType } from './ruled-edge';
 import { changedKeys } from './diff';
-import { graphPort } from './registry';
+import { graphPort, sourcePort } from './registry';
 import { IconArrowRight, IconFit, IconMinus, IconPlus } from '../components/icons';
 import { autoLayout, backEdges, COL_GAP, COL_PITCH, COMPACT_GAP, COMPACT_W, GRID, hasUsablePositions, layer } from './layout';
 import type { Size } from './layout';
@@ -416,6 +416,7 @@ function CanvasInner(props: GraphCanvasProps) {
     );
   }, [nodes, visible, size, selection, live, returns, returnLabels, singleRow]);
 
+  const typeOf = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n.type])), [graph.nodes]);
   // Like nodes, edges whose route and state did not change keep their object.
   const edgeCache = useRef(new Map<string, { key: string; edge: RuledEdgeType }>());
   const edges = useMemo<RuledEdgeType[]>(() => {
@@ -435,7 +436,7 @@ function CanvasInner(props: GraphCanvasProps) {
               id: e.id,
               type: 'ruled',
               source: e.from.node,
-              sourceHandle: flowEdge ? (e.from.port ?? 'out') : 'role-out',
+              sourceHandle: flowEdge ? sourcePort(typeOf.get(e.from.node), e.from.port) : 'role-out',
               target: e.to.node,
               targetHandle: flowEdge ? 'in' : 'role-in',
               selectable: !removed,
@@ -448,7 +449,7 @@ function CanvasInner(props: GraphCanvasProps) {
     });
     edgeCache.current = next;
     return out;
-  }, [visible, routing, selection, mode, focusNodeIds]);
+  }, [visible, routing, selection, mode, focusNodeIds, typeOf]);
 
   // Refit once the measured layout settles, so a re-laid graph is framed,
   // including the return channel and lanes outside the node boxes.

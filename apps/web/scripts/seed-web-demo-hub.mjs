@@ -18,7 +18,8 @@ if (!hubUrl || !secretPath) {
   process.exit(2);
 }
 const owner = (await readFile(secretPath, 'utf8')).trim();
-const template = JSON.parse(await readFile(new URL('../../../packages/workflow/templates/build.json', import.meta.url), 'utf8'));
+const library = async (id) => JSON.parse(await readFile(new URL(`../../../packages/workflow/templates/${id}.json`, import.meta.url), 'utf8'));
+const template = await library('build');
 
 async function call(token, method, path, body) {
   const response = await fetch(`${hubUrl}/api/v1${path}`, {
@@ -88,7 +89,7 @@ const report = (w, type, data) =>
 const release = (w) => (w.machine.held = w.machine.held.filter((x) => x !== w));
 
 /** Act as the workflow architect for one draft request. */
-async function architect(prompt, graph, rationale, { baseWorkflowId, invalidFirst } = {}) {
+async function architect(prompt, graph, rationale, { baseWorkflowId, invalidFirst, additionalWorkflows } = {}) {
   let assignment = await hub('POST', `/projects/${project.id}/workflows/drafts`, { prompt, ...(baseWorkflowId ? { baseWorkflowId } : {}) });
   for (let attempt = 1; ; attempt++) {
     const [w] = (await lease(machines[0], ['assignment'])).filter((x) => x.value.id === assignment.id);
@@ -96,7 +97,7 @@ async function architect(prompt, graph, rationale, { baseWorkflowId, invalidFirs
     await report(w, 'progress', { summary: 'Reading project docs, goals and machines' });
     const bad = invalidFirst && attempt === 1;
     const reply = bad ? { ...clone(graph), nodes: graph.nodes.filter((n) => n.type !== 'output') } : graph;
-    await report(w, 'completed', { outcome: 'success', summary: bad ? 'Drafted a graph.' : 'Drafted the workflow.', graph: reply, rationale });
+    await report(w, 'completed', { outcome: 'success', summary: bad ? 'Drafted a graph.' : 'Drafted the workflow.', graph: reply, rationale, ...(bad || !additionalWorkflows ? {} : { additionalWorkflows }) });
     release(w);
     assignment = await hub('GET', `/assignments/${assignment.id}`);
     if (assignment.draftWorkflowId) return assignment;
@@ -109,10 +110,26 @@ const v1 = await architect(
   'Plan from the goals, build in parallel, review every change with a second model, run CI, then merge.',
   template,
   'Builders run in parallel on Codex while Claude plans and reviews, so every change gets a second model family. A review loop sends feedback back to the builder at most three times before a senior reviewer decides. CI runs at the reviewed head, and a serial merge queue lands one change at a time.',
-  { invalidFirst: true },
+  {
+    invalidFirst: true,
+    additionalWorkflows: [
+      {
+        name: 'Improve',
+        templateId: 'improve',
+        graph: await library('improve'),
+        rationale: 'Between features, an auditor turns unfinished goals into small, measured improvements. Give it a daily token budget so it never competes with Build for capacity.',
+      },
+    ],
+  },
 );
 await hub('POST', `/workflows/${v1.draftWorkflowId}/activate`, { version: v1.draftVersion });
 console.log(`workflow ${v1.draftWorkflowId} v${v1.draftVersion} active`);
+// The architect's additional proposal is its own draft; hubs before additional workflows return no `drafts`.
+const improveDraft = v1.drafts?.find((d) => d.workflowId !== v1.draftWorkflowId);
+if (improveDraft) {
+  await hub('POST', `/workflows/${improveDraft.workflowId}/activate`, { version: improveDraft.version });
+  console.log(`workflow ${improveDraft.workflowId} (Improve) active`);
+}
 
 // A proposal: the architect answers the reviewer bottleneck with more review capacity.
 const proposed = clone(template);
@@ -123,9 +140,19 @@ const v2 = await architect(
   'Review is the bottleneck. Add review capacity without lowering quality.',
   proposed,
   'Reviewer utilization is at its limit while builders wait. This version doubles reviewer concurrency and moves builders to a smaller model, which kept review pass rates in earlier runs. The running workflow keeps version 1 until you activate this one.',
-  { baseWorkflowId: v1.draftWorkflowId },
+  {
+    baseWorkflowId: v1.draftWorkflowId,
+    additionalWorkflows: [
+      {
+        name: 'Bugfix',
+        templateId: 'bugfix',
+        graph: await library('bugfix'),
+        rationale: 'Bug reports wait behind features for the same reviewer. A Bugfix workflow reproduces each in a failing test first, so those reviews stay short.',
+      },
+    ],
+  },
 );
-console.log(`proposal v${v2.draftVersion} saved`);
+console.log(`proposal v${v2.draftVersion} saved${v2.drafts?.length > 1 ? ' with a Bugfix suggestion' : ''}`);
 
 // Run. Inputs name the goal they serve, so goal progress counts their work items (hubs that read goals as objects).
 const goalIds = ((await hub('GET', `/projects/${project.id}`)).goals ?? []).map((g) => (typeof g === 'string' ? undefined : g.id));
@@ -140,6 +167,13 @@ const run = await hub('POST', `/workflows/${v1.draftWorkflowId}/runs`, {
   },
 });
 console.log(`run ${run.id}`);
+// Improve keeps running beside Build, with a small daily token budget the rounds below use up.
+const improveRun = improveDraft
+  ? await hub('POST', `/workflows/${improveDraft.workflowId}/runs`, {
+      input: { items: [{ title: 'Audit the lease code against the goals', ...forGoal(1) }], keepOpen: true, source: 'manual', budget: { maxTokensPerDay: 150_000, maxItemsPerDay: 6, maxActiveItems: 4 } },
+    })
+  : null;
+if (improveRun) console.log(`run ${improveRun.id} (Improve, keep running, budget)`);
 
 const usage = (w, model, provider) =>
   report(w, 'usage', { provider, model, inputTokens: 40_000 + Math.floor(Math.random() * 60_000), outputTokens: 6_000 + Math.floor(Math.random() * 9_000), cacheReadTokens: 20_000 });
@@ -160,7 +194,11 @@ async function finish(w) {
     return release(w);
   }
   await usage(w, v.harness?.model ?? 'unknown', v.harness?.provider ?? 'codex');
-  if (v.nodeId === 'planner') {
+  if (v.nodeId === 'auditor') {
+    await report(w, 'completed', { outcome: 'success', summary: 'Two small improvements.', items: [{ title: 'Hub: reuse the lease query plan' }, { title: 'Docs: link the budget guide' }] });
+  } else if (v.nodeId === 'improver') {
+    await report(w, 'completed', { outcome: 'success', summary: 'Improved with a test.', branch: `perpeto/${v.workItemId}`, prUrl: `https://github.com/lumin-products/perpeto/pull/${600 + Math.floor(Math.random() * 99)}`, headSha: sha() });
+  } else if (v.nodeId === 'planner') {
     await report(w, 'agent.messaged', { sourceNodeId: 'planner', targetNodeId: 'builder', summary: 'Planner shared acceptance criteria with Builder' });
     await report(w, 'completed', {
       outcome: 'success',
@@ -215,6 +253,10 @@ for (let round = 0; round < 9; round++) {
   await sleep(150);
 }
 
+if (improveRun) {
+  const view = await hub('GET', `/runs/${improveRun.id}`);
+  console.log(`improve intake: ${view.intake?.paused ? `paused (${view.intake.reason?.limit})` : 'open'}, ${view.budgetUsage?.tokens ?? 0} tokens today`);
+}
 const metrics = await hub('GET', `/runs/${run.id}/metrics?window=24h`);
 console.log(`metrics: ${metrics.nodes.length} nodes, ${metrics.edges.filter((e) => e.count).length} edges with traffic, ${metrics.bottlenecks.length} bottlenecks`);
 console.log(`open work: ${machines.map((m) => `${m.name} ${m.held.length}`).join(', ')}`);

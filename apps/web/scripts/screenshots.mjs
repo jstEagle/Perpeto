@@ -18,12 +18,19 @@ const screens = [
   ['editor', `${P}/workflows/wf_k3build/edit`],
   ['runs', `${P}/runs`],
   ['run-live-map', `${P}/runs/run_7q4m2x`],
+  ['run-intake-paused', `${P}/runs/run_8f2k4t`],
+  ['run-settings', `${P}/runs/run_8f2k4t`, async (page) => {
+    await page.getByRole('region', { name: 'Intake and budget' }).getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('radio', { name: 'Schedule' }).click();
+  }],
+  ['template-picker', `${P}/workflows`, (page) => page.getByRole('button', { name: 'Start from a template' }).click()],
   ['work', `${P}/work`],
   ['messages', `${P}/messages`],
   ['merge-queue', `${P}/merge-queue`],
   ['machines', '/machines'],
   ['accounts', '/accounts'],
   ['usage', '/usage'],
+  ['usage-role', '/usage', (page) => page.getByRole('radio', { name: 'Role' }).click()],
   ['settings', '/settings'],
   ['empty-project', '/projects/prj_fieldnotes'],
   ['empty-workflows', '/projects/prj_fieldnotes/workflows'],
@@ -54,10 +61,14 @@ for (const [size, viewport] of sizes) {
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(`${size} ${page.url()}: ${e.message}`));
   page.on('console', (m) => m.type() === 'error' && errors.push(`${size} ${page.url()}: ${m.text()}`));
-  for (const [name, path] of screens) {
+  for (const [name, path, action] of screens) {
     if (only && !only.includes(name)) continue;
     await page.goto(base + path, { waitUntil: 'networkidle' });
     await page.waitForTimeout(900);
+    if (action) {
+      await action(page);
+      await page.waitForTimeout(600);
+    }
     await fullPage(page, `${out}${name}-${size}.png`);
     console.log(`${name}-${size}.png`);
   }

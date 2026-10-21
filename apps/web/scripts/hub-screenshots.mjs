@@ -19,16 +19,22 @@ const { projects } = await get('/projects');
 const project = projects.at(-1);
 const { runs } = await get(`/projects/${project.id}/runs`);
 const { workflows } = await get(`/projects/${project.id}/workflows`);
-const run = runs[0];
+// The first run started; a budgeted run, when the seed made one, shows intake and budget.
+const run = runs.at(-1);
+const budgeted = runs.find((r) => r.budget && Object.keys(r.budget).length);
 const workflow = workflows[0];
 const P = `/projects/${project.id}`;
 const screens = [
   ['hub-overview', P],
   ['hub-run-live-map', `${P}/runs/${run.id}`],
+  ...(budgeted ? [['hub-run-budget', `${P}/runs/${budgeted.id}`]] : []),
+  ['hub-workflows', `${P}/workflows`],
+  ['hub-runs', `${P}/runs`],
   ['hub-workflow-proposal', `${P}/workflows/${workflow.id}?version=${workflow.version}`],
   ['hub-messages', `${P}/messages?channel=run-${run.id}`],
   ['hub-machines', '/machines'],
   ['hub-usage', '/usage'],
+  ['hub-usage-role', '/usage', (page) => page.getByRole('radio', { name: 'Role' }).click()],
 ];
 
 /**
@@ -75,11 +81,15 @@ for (const [size, viewport] of [
     return status;
   };
   if ((await hubSession()) !== 200) errors.push('The session cookie does not authenticate.');
-  for (const [name, path] of screens) {
+  for (const [name, path, action] of screens) {
     // The live event stream keeps a request open, so wait for content rather than network idle.
     await page.goto(app + path, { waitUntil: 'load' });
     await page.locator('main h1').first().waitFor();
     await page.waitForTimeout(2500);
+    if (action) {
+      await action(page);
+      await page.waitForTimeout(1500);
+    }
     await fullPage(page, `${out}${name}-${size}.png`);
     console.log(`${name}-${size}.png`);
   }

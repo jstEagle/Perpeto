@@ -1,5 +1,5 @@
 import type { GraphNode, ValidationIssue, WorkflowGraph } from '../api/types';
-import { NODE_SPECS, isRole, readHarness, readPolicy } from './registry';
+import { NODE_SPECS, isRole, readHarness, readPolicy, sourcePort } from './registry';
 
 /**
  * Client-side checks for live feedback while editing. The hub's
@@ -33,7 +33,7 @@ export function validateGraph(graph: WorkflowGraph): ValidationIssue[] {
     if (edge.kind === 'flow') {
       if (to.type === 'input') err(`${name(to)} is an input and cannot receive work.`, { edgeId: edge.id });
       if (from.type === 'output') err(`${name(from)} is an output and cannot pass work on.`, { edgeId: edge.id });
-      const port = edge.from.port ?? 'out';
+      const port = sourcePort(from.type, edge.from.port);
       if (!NODE_SPECS[from.type].outputs.includes(port)) err(`${name(from)} has no "${port}" port.`, { edgeId: edge.id });
     } else if (edge.kind === 'delegates') {
       if (!isRole(from)) err(`${name(from)} is not an agent role and cannot delegate.`, { edgeId: edge.id });
@@ -53,11 +53,15 @@ export function validateGraph(graph: WorkflowGraph): ValidationIssue[] {
   const helper = (node: GraphNode) =>
     node.type === 'agent' && !flow.some((e) => e.to.node === node.id || e.from.node === node.id) && graph.edges.some((e) => e.kind === 'delegates' && e.to.node === node.id);
 
+  // Human gates that escalations reach may leave `fail` unwired: a fail decision then fails the item (@perpeto/workflow).
+  const escalationTargets = new Set(graph.nodes.flatMap((n) => ['onExhausted', 'onBlocked'].map((k) => n.config?.[k]).filter((v): v is string => typeof v === 'string')));
+  const optional = (node: GraphNode, port: string) => port === 'fail' && (node.type === 'merge-queue' || (node.type === 'human' && escalationTargets.has(node.id)));
+
   for (const node of graph.nodes) {
     const spec = NODE_SPECS[node.type];
     // Merge queues may leave `fail` unwired: a rejected merge then fails the item.
-    for (const port of helper(node) ? [] : spec.outputs.filter((p) => !(node.type === 'merge-queue' && p === 'fail'))) {
-      const connected = flow.some((e) => e.from.node === node.id && (e.from.port ?? 'out') === port);
+    for (const port of helper(node) ? [] : spec.outputs.filter((p) => !optional(node, p))) {
+      const connected = flow.some((e) => e.from.node === node.id && sourcePort(node.type, e.from.port) === port);
       if (!connected)
         err(port === 'out' ? `${name(node)} does not pass work anywhere.` : `${name(node)} "${port}" port is not connected.`, { nodeId: node.id }, 'open_port');
     }
@@ -71,11 +75,10 @@ export function validateGraph(graph: WorkflowGraph): ValidationIssue[] {
       if (!Number.isInteger(c) || c < 1) err(`${name(node)} concurrency must be a whole number of at least 1.`, { nodeId: node.id });
     }
     if (node.type === 'agent') {
+      // Policy is optional: the engine derives subagent limits from delegates edges and capacity.
       const p = readPolicy(node);
-      if (!p) err(`${name(node)} needs an agent policy.`, { nodeId: node.id });
-      else if (!Number.isInteger(p.maxSubagents) || p.maxSubagents < 0)
-        err(`${name(node)} max subagents must be 0 or more.`, { nodeId: node.id });
-      else if (p.maxSubagents > 0 && Array.isArray(p.allowedSubagentProviders) && p.allowedSubagentProviders.length === 0)
+      if (p && (!Number.isInteger(p.maxSubagents) || p.maxSubagents < 0)) err(`${name(node)} max subagents must be 0 or more.`, { nodeId: node.id });
+      else if (p && p.maxSubagents > 0 && Array.isArray(p.allowedSubagentProviders) && p.allowedSubagentProviders.length === 0)
         warn(`${name(node)} allows subagents but no providers for them.`, { nodeId: node.id });
     }
     if (node.type === 'planner') {

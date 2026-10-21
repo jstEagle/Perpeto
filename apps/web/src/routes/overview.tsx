@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { Link, useParams } from '@tanstack/react-router';
 import { useHub, useResource } from '../app/hub-context';
-import type { Goal, MergeEntry, MetricsSnapshot, Overview as OverviewData, Project, Run, Workflow } from '../api/types';
+import type { Bottleneck, Goal, MergeEntry, MetricsSnapshot, Overview as OverviewData, Project, Run, Workflow } from '../api/types';
 import { encodeGoals } from '../api/goals';
 import { Async, Button, btn, Dialog, Disclosure, Empty, Field, Meter, Mono, PageHeader, Panel, Stat } from '../components/ui';
 import { LiveDot, MergeStatusLabel, RunStatusLabel, StatusLabel } from '../components/status';
 import { IconAlert, IconArrowRight, IconChevronRight, IconDoc, IconWorkflow } from '../components/icons';
 import { bottleneckTitle, byUrgency } from '../run/issues';
+import { BudgetLine, RunIntakeState } from '../run/intake';
+import { intakeSummary } from '../run/budget';
 import { duration, plural, rate, relative, repoName, tokens } from '../lib/format';
 
 export function OverviewPage() {
@@ -23,7 +25,7 @@ export function OverviewPage() {
 
 function Overview({ project, onChanged }: { project: Project; onChanged(): void }) {
   const projectId = project.id;
-  const overview = useResource((api) => api.overview(projectId), [projectId], (e) => e.projectId === projectId && (e.type.startsWith('assignment') || e.type.startsWith('run')));
+  const overview = useResource((api) => api.overview(projectId), [projectId], (e) => e.projectId === projectId && (e.type.startsWith('assignment') || e.type.startsWith('run') || e.type.startsWith('budget.')));
   const week = useResource((api) => api.usage({ projectId, groupBy: 'day' }), [projectId], (e) => e.projectId === projectId && e.type === 'assignment.usage', { debounceMs: 2000, maxWaitMs: 10000 });
   const runs = useResource((api) => api.listRuns(projectId), [projectId], (e) => e.projectId === projectId && e.type.startsWith('run'));
   const workflows = useResource((api) => api.listWorkflows(projectId), [projectId], (e) => e.subject.kind === 'workflow');
@@ -33,9 +35,10 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
 
   const cutoff = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
   const tokens7d = week.data?.rows.filter((r) => r.key >= cutoff).reduce((s, r) => s + r.inputTokens + r.outputTokens, 0);
-  const activeRun = runs.data?.find((r) => r.status === 'running') ?? runs.data?.find((r) => r.status === 'paused');
+  // The overview's runs carry intake and budget use; older hubs only list runs.
+  const liveRuns = liveFirst(overview.data?.runs ?? runs.data?.filter((r) => r.status === 'running' || r.status === 'paused') ?? []);
+  const activeRun = liveRuns[0];
   const noWorkflows = workflows.data && workflows.data.length === 0;
-  const runWorkflow = workflows.data?.find((w) => w.id === activeRun?.workflowId);
 
   return (
     <>
@@ -79,12 +82,12 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
           </Empty>
         </Panel>
       ) : (
-        <LiveCard run={activeRun} workflow={runWorkflow} overview={overview.data} metrics={metrics.data} tokens7d={tokens7d} />
+        <LiveCard projectId={projectId} runs={liveRuns} workflows={workflows.data ?? []} overview={overview.data} metrics={metrics.data} tokens7d={tokens7d} />
       )}
 
       <div className="cols">
         <div className="stack">
-          {activeRun && metrics.data && <AttentionCard projectId={projectId} run={activeRun} metrics={metrics.data} workflows={workflows.data ?? []} />}
+          {activeRun && metrics.data && <AttentionCard projectId={projectId} runs={liveRuns} metrics={metrics.data} workflows={workflows.data ?? []} />}
           <GoalsCard project={project} onEdit={() => setEditingGoals(true)} />
         </div>
         <div className="stack">
@@ -97,7 +100,7 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
             }
           >
             <Async resource={runs} what="runs">
-              {(list) => (list.length === 0 ? <p className="muted">Activate a workflow, then start a run.</p> : <RunList runs={list.slice(0, 3)} projectId={projectId} />)}
+              {(list) => (list.length === 0 ? <p className="muted">Activate a workflow, then start a run.</p> : <RunList runs={list.slice(0, 3)} projectId={projectId} workflows={workflows.data ?? []} />)}
             </Async>
           </Panel>
           <Panel
@@ -120,24 +123,43 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
   );
 }
 
-/** What is live, three numbers, and the rest behind "More metrics". */
-function LiveCard({ run, workflow, overview, metrics, tokens7d }: { run?: Run; workflow?: Workflow; overview?: OverviewData; metrics?: MetricsSnapshot; tokens7d?: number }) {
-  const name = workflow?.name ?? 'Workflow';
+/** Running before paused, newest first. */
+function liveFirst(runs: Run[]): Run[] {
+  return [...runs].sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running') || b.startedAt.localeCompare(a.startedAt));
+}
+
+const workflowName = (workflows: Workflow[], id: string) => workflows.find((w) => w.id === id)?.name ?? 'Workflow';
+
+/** What is live, three numbers, each live run with its budget, and the rest behind "More metrics". */
+function LiveCard({ projectId, runs, workflows, overview, metrics, tokens7d }: { projectId: string; runs: Run[]; workflows: Workflow[]; overview?: OverviewData; metrics?: MetricsSnapshot; tokens7d?: number }) {
+  const run = runs[0];
+  const running = runs.filter((r) => r.status === 'running').length;
+  const names = runs.map((r) => workflowName(workflows, r.workflowId));
+  const title = !run
+    ? 'Nothing is running'
+    : runs.length === 1
+      ? `${names[0]} run is ${run.status === 'running' ? 'live' : 'paused'}`
+      : running === runs.length
+        ? `${runs.length} workflows are live`
+        : `${running} live, ${runs.length - running} paused`;
+  const showRuns = runs.length > 1 || runs.some((r) => r.intake?.paused || (r.budget && Object.keys(r.budget).length));
   return (
     <section className="card live-card" aria-label="Live state">
       <div className="live-card-top">
         <div className="live-card-text">
           <h2 className="live-title">
-            {run?.status === 'running' && <LiveDot />}
-            {run ? (run.status === 'running' ? `${name} run is live` : `${name} run is paused`) : 'Nothing is running'}
+            {running > 0 && <LiveDot />}
+            {title}
           </h2>
           <p className="row-meta">
-            {run ? (
+            {!run ? (
+              'Start a run from an active workflow.'
+            ) : runs.length === 1 ? (
               <>
                 <Mono>{run.id}</Mono> · Workflow v{run.workflowVersion} · Started {relative(run.startedAt)}
               </>
             ) : (
-              'Start a run from an active workflow.'
+              `${names.slice(0, -1).join(', ')} and ${names.at(-1)} run side by side`
             )}
           </p>
         </div>
@@ -147,6 +169,22 @@ function LiveCard({ run, workflow, overview, metrics, tokens7d }: { run?: Run; w
           <Stat label="Tokens today" value={overview ? tokens(overview.tokensToday) : '—'} />
         </dl>
       </div>
+      {showRuns && (
+        <ul className="live-runs" aria-label="Live runs">
+          {runs.map((r) => (
+            <li key={r.id}>
+              <span className="live-run-head">
+                <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: r.id }} className="row-title">
+                  {workflowName(workflows, r.workflowId)}
+                </Link>
+                <RunIntakeState run={r} />
+              </span>
+              <span className="row-meta">{intakeSummary(r)}</span>
+              <BudgetLine run={r} />
+            </li>
+          ))}
+        </ul>
+      )}
       <Disclosure summary="More metrics" className="live-more">
         <dl className="metrics metrics-small">
           <Stat label="Items done per day" value={metrics ? rate(metrics.run.velocity.itemsDonePerDay) : '—'} />
@@ -159,24 +197,30 @@ function LiveCard({ run, workflow, overview, metrics, tokens7d }: { run?: Run; w
   );
 }
 
-function AttentionCard({ projectId, run, metrics, workflows }: { projectId: string; run: Run; metrics: MetricsSnapshot; workflows: Workflow[] }) {
-  const graph = workflows.find((w) => w.id === run.workflowId)?.graph;
-  const draft = workflows.find((w) => w.status === 'draft');
+/** Project bottlenecks name their run; with several live runs each issue says which workflow it is in and links to that run. */
+function AttentionCard({ projectId, runs, metrics, workflows }: { projectId: string; runs: Run[]; metrics: MetricsSnapshot; workflows: Workflow[] }) {
   const issues = byUrgency(metrics.bottlenecks.filter((b) => b.severity !== 'info'));
+  const context = (b: Bottleneck) => {
+    const run = runs.find((r) => r.id === b.runId) ?? runs[0];
+    const workflow = workflows.find((w) => w.id === run.workflowId);
+    // A newer draft of this run's own workflow, not some other workflow's draft.
+    const draft = workflow && workflow.status === 'draft' && workflow.version > run.workflowVersion ? workflow : undefined;
+    return { run, graph: workflow?.graph, draft, where: runs.length > 1 ? workflow?.name : undefined };
+  };
+  const issue = (b: Bottleneck, i: number, withDraft: boolean) => {
+    const c = context(b);
+    return <Issue key={`${b.runId ?? ''}-${b.nodeId}-${b.reason}-${i}`} projectId={projectId} run={c.run} nodeId={b.nodeId} title={bottleneckTitle(b, c.graph)} where={c.where} text={b.evidence} draft={withDraft ? c.draft : undefined} />;
+  };
   return (
     <Panel title="Needs attention" actions={issues.length ? `${issues.length} open` : undefined}>
       {issues.length === 0 ? (
         <p className="muted">Nothing is holding work up.</p>
       ) : (
         <>
-          <Issue projectId={projectId} run={run} nodeId={issues[0].nodeId} title={bottleneckTitle(issues[0], graph)} text={issues[0].evidence} draft={draft} />
+          {issue(issues[0], 0, true)}
           {issues.length > 1 && (
             <div className="card-foot">
-              <Disclosure summary={issues.length === 2 ? '1 more issue' : `${issues.length - 1} more issues`}>
-                {issues.slice(1).map((b) => (
-                  <Issue key={b.nodeId + b.reason} projectId={projectId} run={run} nodeId={b.nodeId} title={bottleneckTitle(b, graph)} text={b.evidence} />
-                ))}
-              </Disclosure>
+              <Disclosure summary={issues.length === 2 ? '1 more issue' : `${issues.length - 1} more issues`}>{issues.slice(1).map((b, i) => issue(b, i + 1, false))}</Disclosure>
             </div>
           )}
         </>
@@ -185,7 +229,7 @@ function AttentionCard({ projectId, run, metrics, workflows }: { projectId: stri
   );
 }
 
-function Issue({ projectId, run, nodeId, title, text, draft }: { projectId: string; run: Run; nodeId: string; title: string; text: string; draft?: Workflow }) {
+function Issue({ projectId, run, nodeId, title, where, text, draft }: { projectId: string; run: Run; nodeId: string; title: string; where?: string; text: string; draft?: Workflow }) {
   return (
     <div className="issue">
       <span className="issue-icon">
@@ -194,6 +238,7 @@ function Issue({ projectId, run, nodeId, title, text, draft }: { projectId: stri
       <div className="issue-main">
         <h3 className="issue-title">{title}</h3>
         <p className="issue-text">
+          {where ? `${where}: ` : ''}
           {sentence(text)}
           {draft ? ` Workflow v${draft.version} proposes a change.` : ''}
         </p>
@@ -303,17 +348,17 @@ function GoalsCard({ project, onEdit }: { project: Project; onEdit(): void }) {
   );
 }
 
-function RunList({ runs, projectId }: { runs: Run[]; projectId: string }) {
+function RunList({ runs, projectId, workflows }: { runs: Run[]; projectId: string; workflows: Workflow[] }) {
   return (
     <ul className="rows">
       {runs.map((r) => (
         <li key={r.id}>
           <span className="row-main">
-            <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: r.id }} className="row-title mono">
-              {r.id}
+            <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: r.id }} className="row-title">
+              {workflowName(workflows, r.workflowId)} <span className="mono muted">{r.id}</span>
             </Link>
             <span className="row-meta">
-              v{r.workflowVersion} · {relative(r.startedAt)}
+              v{r.workflowVersion} · {r.completedAt ? `completed ${relative(r.completedAt)}` : r.stoppedAt ? `ended ${relative(r.stoppedAt)}` : `started ${relative(r.startedAt)}`}
             </span>
           </span>
           <span className="row-end">
