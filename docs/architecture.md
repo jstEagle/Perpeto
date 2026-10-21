@@ -176,6 +176,7 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /workflows/:id/versions`, `GET /workflows/:id/diff?from=&to=` | Version history and graph diff |
 | `POST /workflows/:id/activate` `{ version }` | Make a draft version active |
 | `GET /runs/:id/metrics`, `GET /projects/:id/metrics` | Live node, edge and run metrics with bottlenecks |
+| `GET /projects/:id/runs?status=` | Runs for a project, newest first |
 | `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/{pause,resume,stop}` | Runs |
 | `POST /runs/:id/inputs` | Add ideas or input items to a running workflow |
 | `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |
