@@ -43,7 +43,10 @@ function WorkflowDetail({ projectId, versions, requested, follow, reload }: { pr
   const [actionError, setActionError] = useState<string | null>(null);
 
   const diff: GraphDiff | undefined = useMemo(() => (base && base.version !== viewing.version ? diffGraphs(base.graph, viewing.graph) : undefined), [base, viewing]);
-  const issues = useMemo(() => validateGraph(viewing.graph), [viewing]);
+  // The hub's engine is the authority on validity; the local check covers the moment before it answers.
+  const local = useMemo(() => validateGraph(viewing.graph), [viewing]);
+  const checked = useResource((a) => a.validateWorkflow(viewing.id, viewing.graph), [viewing.id, viewing.version]);
+  const issues = checked.data?.issues ?? local;
   const errors = issues.filter((i) => i.severity === 'error');
 
   const goVersion = (version: number, followId?: string) =>

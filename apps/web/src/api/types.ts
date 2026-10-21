@@ -1,7 +1,7 @@
 /**
- * Hub API v1 entities, transcribed from docs/architecture/README.md.
- * Response envelopes the contract leaves open (overview, usage, list
- * wrappers) are marked "assumed" and normalised in client.ts.
+ * Hub API v1 entities as apps/hub serves them (docs/architecture/README.md
+ * plus the apps/hub README). Where the screens use a different shape than the
+ * wire (validation issues, graph diffs, version status), client.ts converts.
  */
 
 export type Id = string;
@@ -39,7 +39,9 @@ export interface Workflow {
   authoredBy?: AuthoredBy;
   rationale?: string;
   parentVersion?: number;
-  /** Assumed: when the version was saved. Not in the contract. */
+  /** On the workflow head: the version new runs use. */
+  activeVersion?: number;
+  /** Demo data only; hub version records carry no timestamp. */
   createdAt?: IsoTime;
 }
 
@@ -55,7 +57,7 @@ export interface DraftRequest {
   baseWorkflowId?: Id;
 }
 
-/** Assumed shape of GET /workflows/:id/diff. The app also computes it locally. */
+/** Ids added, removed or changed between two versions (client.ts converts the hub's diff). */
 export interface GraphDiff {
   nodes: { added: string[]; removed: string[]; changed: string[] };
   edges: { added: string[]; removed: string[]; changed: string[] };
@@ -103,7 +105,7 @@ export interface ValidationIssue {
   edgeId?: string;
 }
 
-/** Assumed shape of POST /workflows/:id/validate. */
+/** POST /workflows/:id/validate, with the hub's errors and warnings merged into one list. */
 export interface ValidationResult {
   valid: boolean;
   issues: ValidationIssue[];
@@ -164,14 +166,17 @@ export interface AssignmentResult {
   prUrl?: string;
   headSha?: string;
   threadRef?: string;
+  verdict?: 'pass' | 'fail';
 }
 
 export type AssignmentStatus = 'queued' | 'leased' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface Assignment {
   id: Id;
-  runId: Id;
-  workItemId: Id;
+  projectId?: Id;
+  /** Absent on workflow-architect assignments, which belong to a project before any run. */
+  runId?: Id;
+  workItemId?: Id;
   nodeId: string;
   role: string;
   prompt: string;
@@ -183,6 +188,13 @@ export interface Assignment {
   leaseExpiresAt?: IsoTime;
   attempt: number;
   result?: AssignmentResult;
+  /** Workflow architect: the draft this attempt produced. */
+  draftWorkflowId?: Id;
+  draftVersion?: number;
+  /** Workflow architect: validation errors and the follow-up attempt. */
+  architectErrors?: (string | { code?: string; message: string })[];
+  retryAssignmentId?: Id;
+  architectAttempt?: number;
 }
 
 export interface JobStep {
@@ -222,12 +234,15 @@ export type MergeStatus = 'queued' | 'testing' | 'merging' | 'merged' | 'rejecte
 export interface MergeEntry {
   id: Id;
   projectId: Id;
+  runId?: Id;
+  workItemId?: Id;
   prUrl: string;
   headSha: string;
   baseBranch: string;
   status: MergeStatus;
   jobId?: Id;
   reason?: string;
+  deliveryError?: string;
 }
 
 export type MachineStatus = 'online' | 'offline' | 'draining';
@@ -286,13 +301,13 @@ export interface UsageRow {
   costUsd?: number;
 }
 
-/** Assumed shape of GET /usage?groupBy=… */
+/** GET /usage?groupBy=…, whose `groups` the client exposes as rows. */
 export interface UsageSummary {
   groupBy: UsageGroupBy;
   rows: UsageRow[];
 }
 
-/** Assumed shape of GET /overview. */
+/** GET /overview. */
 export interface Overview {
   activeAgents: number;
   queuedWork: number;
@@ -316,11 +331,12 @@ export interface EventPage {
 }
 
 export interface Health {
-  ok: boolean;
+  status: string;
   version: string;
 }
 
 export interface EnrollmentCode {
+  id?: Id;
   code: string;
   expiresAt?: IsoTime;
 }
@@ -362,12 +378,13 @@ export interface NewWorkflow {
   graph: WorkflowGraph;
 }
 
+/** One item for POST /runs/:id/inputs, sent as `{ items: [input] }`. */
 export interface RunInput {
-  kind: 'idea' | 'input';
   title: string;
   body?: string;
 }
 
+/** The client sends approve as the engine's `pass` and return as `fail`. */
 export interface HumanDecision {
   decision: 'approve' | 'return';
   note?: string;
@@ -383,14 +400,24 @@ export interface NodeMetrics {
   active: number;
   done: number;
   failed: number;
-  concurrency: number;
+  errors?: number;
+  retries?: number;
+  escalations?: number;
+  /** Null for nodes without a concurrency limit (input, loop, output, CI). */
+  concurrency: number | null;
   /** active ÷ concurrency */
-  utilization: number;
-  waitSec: { avg: number; p90: number };
-  serviceSec: { avg: number; p90: number };
+  utilization: number | null;
+  waitSec: Stat;
+  serviceSec: Stat;
   throughputPerHour: number;
-  failureRate: number;
+  failureRate: number | null;
   tokens: number;
+}
+
+/** Null when nothing in the window was measured. */
+export interface Stat {
+  avg: number | null;
+  p90: number | null;
 }
 
 export interface EdgeMetrics {
@@ -402,9 +429,12 @@ export interface EdgeMetrics {
 
 export interface RunMetrics {
   velocity: { itemsDonePerDay: number; trend: number[] };
-  cycleTimeSec: { avg: number; p90: number };
+  cycleTimeSec: Stat;
   wip: number;
-  tokensPerItem: number;
+  tokensPerItem: number | null;
+  retries?: number;
+  escalations?: number;
+  waitingOnHuman?: number;
   activeAgents: number;
   machines: { machineId: Id; activeAgents: number; nodes: string[] }[];
 }
@@ -425,14 +455,15 @@ export interface Bottleneck {
 }
 
 /**
- * Assumed envelope of GET /runs/:id/metrics and /projects/:id/metrics. Edge
- * metrics with unplanned: true and no matching graph edge carry their
- * endpoints in `from`/`to` (assumed) so the map can draw them.
+ * GET /runs/:id/metrics and /projects/:id/metrics. Unplanned edges are named
+ * `unplanned:<kind>:<from>-><to>` and carry their endpoints in `from`/`to`,
+ * which may be node or role ids. `window` is the one the client asked for.
  */
 export interface MetricsSnapshot {
   window: MetricsWindow;
+  at?: IsoTime;
   nodes: NodeMetrics[];
-  edges: (EdgeMetrics & { from?: string; to?: string })[];
+  edges: (EdgeMetrics & { from?: string | null; to?: string | null })[];
   run: RunMetrics;
   bottlenecks: Bottleneck[];
 }
@@ -441,20 +472,32 @@ export interface MetricsSnapshot {
 export type InteractionType = 'workitem.moved' | 'agent.delegated' | 'agent.messaged' | 'assignment.state' | 'gate.result';
 
 /**
- * Assumed data carried by interaction events. The contract says events record
- * "the run and node roles they connect"; these names are the app's guess.
+ * Data on interaction events as the hub records them (apps/hub
+ * src/observation.js): source and target nodes, the matched edge, and
+ * `unplanned` when no edge of that kind connects them. `summary` is only set
+ * by the demo; the feed writes its own sentence otherwise.
  */
 export interface InteractionData {
-  fromNode?: string;
-  toNode?: string;
+  sourceNodeId?: string;
+  targetNodeId?: string;
   nodeId?: string;
-  edgeId?: string;
+  kind?: EdgeKind;
+  role?: string;
+  attempt?: number;
   workItemId?: string;
+  edgeId?: string;
   assignmentId?: string;
+  jobId?: string;
+  messageId?: string;
+  senderRoleId?: string;
+  recipientRoleId?: string;
+  source?: 'review' | 'ci' | 'merge-queue' | 'human';
+  decision?: string;
   machineId?: string;
   accountId?: string;
   state?: string;
-  result?: 'pass' | 'fail';
+  /** Gate outcome: pass/fail for reviews, a job status for CI and merges. */
+  result?: string;
   unplanned?: boolean;
   summary?: string;
 }

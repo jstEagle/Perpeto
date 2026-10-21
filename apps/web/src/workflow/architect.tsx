@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useHub } from '../app/hub-context';
-import type { HubEvent, Workflow } from '../api/types';
+import type { Assignment, HubEvent, Workflow } from '../api/types';
 import { Button } from '../components/ui';
 import { StatusLabel } from '../components/status';
 import { SpindleLoader } from '../brand/logo';
@@ -99,53 +99,109 @@ export function ArchitectPrompt({
 }
 
 interface Step {
-  seq: number;
-  at: string;
-  state: string;
-  summary: string;
+  key: string;
+  at?: string;
+  text: string;
+  failed?: boolean;
 }
 
+const STATE_TEXT: Record<string, string> = {
+  queued: 'Queued for a machine with the architect harness',
+  leased: 'Leased',
+  running: 'Drafting the graph',
+  succeeded: 'Draft saved',
+  failed: 'Attempt failed',
+  cancelled: 'Cancelled',
+};
+
+const issueText = (e: string | { message: string }) => (typeof e === 'string' ? e : e.message);
+
 /**
- * Follows the architect's assignment through its events. Calls onDone with
- * the drafted workflow once the hub reports success.
+ * Follows the architect through GET /assignments/:id, refreshed on its
+ * events. An invalid draft fails that attempt and names a retry
+ * assignment; the panel follows the chain until a draft is saved or the
+ * hub stops retrying. Calls onDone with the drafted workflow and version.
  */
-export function ArchitectProgress({ assignmentId, projectId, onDone, onDismiss }: { assignmentId: string; projectId: string; onDone(workflowId: string, version: number): void; onDismiss?(): void }) {
+export function ArchitectProgress({ assignmentId, onDone, onDismiss }: { assignmentId: string; projectId?: string; onDone(workflowId: string, version: number): void; onDismiss?(): void }) {
   const { api, onEvent } = useHub();
-  const [steps, setSteps] = useState<Step[]>([]);
-  const [harness, setHarness] = useState<{ provider?: string; model?: string; machineId?: string }>({});
+  const [chain, setChain] = useState<Assignment[]>([]);
+  const [events, setEvents] = useState<HubEvent[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const done = useRef(false);
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
 
   useEffect(() => {
     let cancelled = false;
+    let current = assignmentId;
+    const ids = new Set([assignmentId]);
+    const seen = new Set<number>();
     const take = (event: HubEvent) => {
-      if (event.subject.kind !== 'assignment' || event.subject.id !== assignmentId) return;
-      const data = event.data as Record<string, unknown>;
-      setSteps((prev) => (prev.some((s) => s.seq === event.seq) ? prev : [...prev, { seq: event.seq, at: event.at, state: String(data.state ?? ''), summary: String(data.summary ?? data.state ?? 'Update') }].sort((a, b) => a.seq - b.seq)));
-      setHarness((h) => ({ provider: (data.provider as string) ?? h.provider, model: (data.model as string) ?? h.model, machineId: (data.machineId as string) ?? h.machineId }));
-      if (data.state === 'succeeded' && !done.current) {
-        done.current = true;
-        if (typeof data.workflowId === 'string') onDoneRef.current(data.workflowId, Number(data.version ?? 1));
-        else
-          void api.listWorkflows(projectId).then((list) => {
-            const wf = list.find((w) => w.authoredBy?.assignmentId === assignmentId);
-            if (wf && !cancelled) onDoneRef.current(wf.id, wf.version);
-          });
+      if (event.subject.kind !== 'assignment' || !ids.has(event.subject.id) || seen.has(event.seq)) return false;
+      seen.add(event.seq);
+      setEvents((prev) => [...prev, event].sort((x, y) => x.seq - y.seq));
+      return true;
+    };
+    const refresh = async () => {
+      try {
+        const list: Assignment[] = [];
+        let next: string | undefined = assignmentId;
+        while (next && !cancelled) {
+          const a = await api.getAssignment(next);
+          list.push(a);
+          ids.add(a.id);
+          current = a.id;
+          next = a.status === 'failed' ? a.retryAssignmentId : undefined;
+        }
+        if (cancelled) return;
+        setChain(list);
+        setError(null);
+        const last = list.at(-1);
+        if (last?.status === 'succeeded' && last.draftWorkflowId && !done.current) {
+          done.current = true;
+          onDoneRef.current(last.draftWorkflowId, last.draftVersion ?? 1);
+        }
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message);
       }
     };
-    void api.events(0, 500).then((events) => !cancelled && events.forEach(take));
-    const off = onEvent(take);
+    void api.recentEvents(200, (e) => e.subject.kind === 'assignment' && e.subject.id === assignmentId).then((list) => !cancelled && list.forEach(take));
+    void refresh();
+    const off = onEvent((event) => {
+      if (take(event) || (event.subject.kind === 'assignment' && event.subject.id === current)) void refresh();
+    });
+    // Lease expiry and requeues are applied by hub maintenance; poll as a fallback while work is open.
+    const timer = setInterval(() => !done.current && void refresh(), 5000);
     return () => {
       cancelled = true;
       off();
+      clearInterval(timer);
     };
-  }, [api, onEvent, assignmentId, projectId]);
+  }, [api, onEvent, assignmentId]);
 
-  const last = steps.at(-1);
-  const failed = last?.state === 'failed';
-  const succeeded = last?.state === 'succeeded';
-  const machines = useMachineName(harness.machineId);
+  const last = chain.at(-1);
+  const succeeded = last?.status === 'succeeded';
+  const failed = !!last && (last.status === 'cancelled' || (last.status === 'failed' && !last.retryAssignmentId));
+  const machine = useMachineName(last?.machineId);
+
+  const steps: Step[] = [];
+  for (const [i, a] of chain.entries()) {
+    const mine = events.filter((e) => e.subject.id === a.id);
+    for (const e of mine) {
+      const d = e.data as { state?: string; summary?: string; errors?: (string | { message: string })[] };
+      if (e.type === 'workflow.architect.invalid') {
+        steps.push({ key: String(e.seq), at: e.at, failed: true, text: `Attempt ${i + 1} returned an invalid graph: ${(d.errors ?? []).slice(0, 2).map(issueText).join('; ')}` });
+        continue;
+      }
+      if (e.type !== 'assignment.state') continue;
+      if (d.state === 'failed' && a.architectErrors?.length) continue;
+      steps.push({ key: String(e.seq), at: e.at, failed: d.state === 'failed', text: d.summary ?? `${STATE_TEXT[String(d.state)] ?? d.state}${chain.length > 1 ? `, attempt ${i + 1}` : ''}` });
+    }
+    if (!mine.length) steps.push({ key: a.id, text: `${STATE_TEXT[a.status] ?? a.status}${chain.length > 1 ? `, attempt ${i + 1}` : ''}`, failed: a.status === 'failed' });
+    if (a.status === 'failed' && a.architectErrors?.length && !mine.some((e) => e.type === 'workflow.architect.invalid'))
+      steps.push({ key: `${a.id}:invalid`, failed: true, text: `Attempt ${i + 1} returned an invalid graph: ${a.architectErrors.slice(0, 2).map(issueText).join('; ')}` });
+  }
+  if (succeeded && last?.draftVersion) steps.push({ key: 'saved', text: `Saved as draft version ${last.draftVersion}. Nothing runs until you activate it.` });
 
   return (
     <section className="panel" aria-labelledby={`arch-${assignmentId}`} aria-live="polite">
@@ -162,12 +218,18 @@ export function ArchitectProgress({ assignmentId, projectId, onDone, onDismiss }
       </div>
       <div className="panel-body stack-sm">
         <p className="note">
-          {harness.provider ? `${providerLabel(harness.provider)} · ` : ''}
-          {harness.model && <code className="mono">{harness.model}</code>}
-          {machines ? ` · ${machines}` : ''} · <code className="mono">{assignmentId}</code>
+          {last ? (
+            <>
+              {providerLabel(last.harness.provider)} · <code className="mono">{last.harness.model}</code>
+              {machine ? ` · ${machine}` : ' · waiting for a machine'}
+              {chain.length > 1 ? ` · attempt ${chain.length} of 3` : ''} · <code className="mono">{last.id}</code>
+            </>
+          ) : (
+            <code className="mono">{assignmentId}</code>
+          )}
         </p>
         {steps.length === 0 ? (
-          <div className="row muted">
+          <div className="row muted" role="status">
             <SpindleLoader size={16} label="Waiting for the architect" /> Waiting for the first update
           </div>
         ) : (
@@ -175,15 +237,16 @@ export function ArchitectProgress({ assignmentId, projectId, onDone, onDismiss }
             {steps.map((s, i) => {
               const current = i === steps.length - 1 && !succeeded && !failed;
               return (
-                <li key={s.seq} className={current ? 'step-current' : s.state === 'failed' ? 'diff-removed' : 'step-done'}>
+                <li key={s.key} className={current ? 'step-current' : s.failed ? 'diff-removed' : 'step-done'}>
                   {current ? <SpindleLoader size={14} label="In progress" /> : <IconCheck />}
-                  <span>{s.summary}</span>
-                  <time dateTime={s.at}>{clock(s.at)}</time>
+                  <span>{s.text}</span>
+                  {s.at && <time dateTime={s.at}>{clock(s.at)}</time>}
                 </li>
               );
             })}
           </ol>
         )}
+        {error && <p className="form-error" role="alert">Progress could not be read. {error}</p>}
         {failed && <p className="form-error">The architect could not produce a valid workflow. Read its last update above, then ask again with more detail or start from a template.</p>}
       </div>
     </section>
