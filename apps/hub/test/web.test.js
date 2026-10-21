@@ -100,7 +100,7 @@ const session = response => ({ cookie: cookieOf(response).split(';')[0] });
 
 test('an owner session cookie is HttpOnly, SameSite=Strict, scoped to /api/v1, expires and logs out; bearer tokens keep working', async t => {
   const f = await fixture(t);
-  assert.deepEqual((await f.request('GET', '/session')).body, { kind: 'owner', expiresAt: null });
+  assert.deepEqual((await f.request('GET', '/session')).body, { kind: 'owner', expiresAt: null, owner: { name: null, initials: null } });
   assert.equal((await f.request('GET', '/session', { auth: null })).status, 401);
   const created = await f.request('POST', '/session', { body: { idempotencyKey: 'login-1' }, headers: { Origin: app } });
   assert.equal(created.status, 201); assert.ok(Date.parse(created.body.expiresAt) > Date.now());

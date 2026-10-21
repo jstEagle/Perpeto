@@ -1,6 +1,7 @@
 {
   "host": "127.0.0.1",
   "port": 4320,
+  "ownerName": null,
   "databasePath": "../.perpeto/hub/hub.sqlite",
   "messagingDatabasePath": "../.perpeto/hub/messaging.sqlite",
   "deliveryDatabasePath": "../.perpeto/hub/delivery.sqlite",

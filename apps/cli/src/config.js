@@ -30,7 +30,7 @@ export const isLoopback = host => ['127.0.0.1', '::1', '[::1]', 'localhost'].inc
 export function hubConfig(dir, { host = '127.0.0.1', port = 4320, tls = false } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Port must be 0–65535.');
   if (!tls && !isLoopback(host)) throw new Error('A hub reachable beyond this machine needs HTTPS: add --tls, or keep it on loopback and run perpeto hub expose --tailscale.');
-  return { host, port, tlsEnabled: Boolean(tls), tlsCertPath: './hub/tls/cert.pem', tlsKeyPath: './hub/tls/key.pem', allowInsecureRemote: false, publicUrl: null, databasePath: './hub/hub.sqlite', messagingDatabasePath: './hub/messaging.sqlite',
+  return { host, port, ownerName: null, tlsEnabled: Boolean(tls), tlsCertPath: './hub/tls/cert.pem', tlsKeyPath: './hub/tls/key.pem', allowInsecureRemote: false, publicUrl: null, databasePath: './hub/hub.sqlite', messagingDatabasePath: './hub/messaging.sqlite',
     deliveryDatabasePath: './hub/delivery.sqlite', workflowDatabasePath: './hub/workflow.sqlite',
     deliveryRepositoriesPath: './hub/repositories', deliveryLeaseDurationMs: 60000,
     deliveryMaxStepFailures: 5, deliveryRetryBackoffMs: 2000, ownerTokenPath: './hub/owner.secret', credentialKeyPath: './hub/credentials.key',
