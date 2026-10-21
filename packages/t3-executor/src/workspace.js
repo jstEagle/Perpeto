@@ -61,23 +61,26 @@ async function isWorkingTree(path, signal) {
  *   assignment workspace, on the work branch, starting from the remote branch when
  *   an earlier attempt published it;
  * - with no repository, the node's assignment workspace itself.
- * `startHead` is the commit the agent starts from, used to detect new work.
+ * `startHead` is the commit the agent starts from, used to detect new work. `publishedHead` is the
+ * remote work branch's head in a clone (null when it was never published), and `baseRef` the ref the
+ * default branch is read from, for rebase steps.
  */
 export async function prepareWorkspace({ repo, workspace, branch, signal }) {
   const localPath = repo?.localPath && await isDirectory(repo.localPath) ? await realpath(repo.localPath) : null;
   if (localPath && await isWorkingTree(localPath, signal)) {
     // T3 refuses to create an existing branch, so reuse its worktree or check it out in the node's workspace.
     const existing = await worktreeFor(localPath, branch, signal);
-    if (existing) return { workspaceRoot: localPath, workspaceStrategy: { type: 'existing_worktree', worktreePath: existing, branch }, mode: 'existing_worktree', startHead: await git(existing, ['rev-parse', 'HEAD'], { signal }) };
+    const baseRef = repo.defaultBranch ?? null;
+    if (existing) return { workspaceRoot: localPath, workspaceStrategy: { type: 'existing_worktree', worktreePath: existing, branch }, mode: 'existing_worktree', startHead: await git(existing, ['rev-parse', 'HEAD'], { signal }), baseRef };
     if (await hasBranch(localPath, branch, signal)) {
       if (typeof workspace !== 'string' || !workspace) throw new Error('The node did not provide an assignment workspace.');
       const path = join(await realpath(workspace), 'worktree');
       await git(localPath, ['worktree', 'add', path, branch], { signal });
       const worktreePath = await realpath(path);
-      return { workspaceRoot: localPath, workspaceStrategy: { type: 'existing_worktree', worktreePath, branch }, mode: 'existing_worktree', startHead: await git(worktreePath, ['rev-parse', 'HEAD'], { signal }) };
+      return { workspaceRoot: localPath, workspaceStrategy: { type: 'existing_worktree', worktreePath, branch }, mode: 'existing_worktree', startHead: await git(worktreePath, ['rev-parse', 'HEAD'], { signal }), baseRef };
     }
-    const baseRef = repo.defaultBranch ?? (await git(localPath, ['rev-parse', '--abbrev-ref', 'HEAD'], { signal }));
-    return { workspaceRoot: localPath, workspaceStrategy: { type: 'worktree', baseRef, branch, startFromOrigin: false }, mode: 'worktree', startHead: await git(localPath, ['rev-parse', `${baseRef}^{commit}`], { signal }) };
+    const defaultRef = baseRef ?? (await git(localPath, ['rev-parse', '--abbrev-ref', 'HEAD'], { signal }));
+    return { workspaceRoot: localPath, workspaceStrategy: { type: 'worktree', baseRef: defaultRef, branch, startFromOrigin: false }, mode: 'worktree', startHead: await git(localPath, ['rev-parse', `${defaultRef}^{commit}`], { signal }), baseRef: defaultRef };
   }
   if (typeof workspace !== 'string' || !workspace) throw new Error('The node did not provide an assignment workspace.');
   const root = await realpath(workspace);
@@ -89,20 +92,29 @@ export async function prepareWorkspace({ repo, workspace, branch, signal }) {
       if ((await readdir(root)).includes('repo')) throw new Error('Assignment workspace already has a non-repository "repo" entry.');
       await git(root, ['clone', '--quiet', '--no-recurse-submodules', '--', source, checkout], { signal, timeoutMs: 600000 });
     }
-    const published = await git(checkout, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { signal }).then(() => true, () => false);
-    const base = published ? `origin/${branch}` : repo.defaultBranch ? `origin/${repo.defaultBranch}` : 'origin/HEAD';
-    await git(checkout, ['checkout', '--quiet', '-B', branch, base], { signal });
-    return { workspaceRoot: await realpath(checkout), workspaceStrategy: { type: 'root' }, mode: 'clone', startHead: await git(checkout, ['rev-parse', 'HEAD'], { signal }) };
+    const publishedHead = await git(checkout, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { signal }).catch(() => null);
+    const baseRef = repo.defaultBranch ? `origin/${repo.defaultBranch}` : 'origin/HEAD';
+    await git(checkout, ['checkout', '--quiet', '-B', branch, publishedHead ? `origin/${branch}` : baseRef], { signal });
+    return { workspaceRoot: await realpath(checkout), workspaceStrategy: { type: 'root' }, mode: 'clone', startHead: await git(checkout, ['rev-parse', 'HEAD'], { signal }), publishedHead, baseRef };
   }
   return { workspaceRoot: root, workspaceStrategy: { type: 'root' }, mode: 'workspace', startHead: null };
 }
 
-/** Push the work branch to `origin` without force, so CI and delivery can fetch the exact head. */
-export async function publishBranch(checkout, branch, { signal } = {}) {
+/**
+ * Push the work branch to `origin`, so CI and delivery can fetch the exact head. Without `expectedHead`
+ * the push never forces. With it (a rebase rewrote the branch) the push replaces the remote branch only
+ * while it still points at exactly that commit, so work pushed meanwhile is never overwritten.
+ */
+export async function publishBranch(checkout, branch, { signal, expectedHead } = {}) {
   try { await git(checkout, ['remote', 'get-url', 'origin'], { signal }); }
   catch { return { published: false, reason: 'The checkout has no origin remote.' }; }
-  try { await git(checkout, ['push', '--quiet', 'origin', `HEAD:refs/heads/${branch}`], { signal, timeoutMs: 600000 }); }
-  catch { return { published: false, failed: true, reason: `Pushing ${branch} to origin failed.` }; }
+  const lease = expectedHead ? [`--force-with-lease=refs/heads/${branch}:${expectedHead}`] : [];
+  try { await git(checkout, ['push', '--quiet', ...lease, 'origin', `HEAD:refs/heads/${branch}`], { signal, timeoutMs: 600000 }); }
+  catch {
+    return { published: false, failed: true, reason: expectedHead
+      ? `Pushing ${branch} to origin failed: the remote branch moved from ${expectedHead}, or the push was refused.`
+      : `Pushing ${branch} to origin failed.` };
+  }
   return { published: true };
 }
 
