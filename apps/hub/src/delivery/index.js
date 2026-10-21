@@ -8,6 +8,7 @@ import { githubAdapter, githubRepository } from './github.js';
 const TERMINAL = new Set(['merged', 'rejected']);
 const ACTIVE_JOB = new Set(['queued', 'leased', 'running']);
 const MAX_STEPS = 8;
+const MAX_BACKOFF_MS = 60000;
 const now = () => new Date().toISOString();
 const sorted = value => Array.isArray(value) ? value.map(sorted)
   : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
@@ -41,6 +42,8 @@ export class HubDelivery {
   constructor(hub) {
     this.hub = hub; this.store = new MergeQueueStore(hub.config.deliveryDatabasePath);
     this.queues = new Map(); this.errors = new Map(); this.running = null; this.again = false; this.closed = false; this.dirty = false;
+    // Per queue: consecutive step failures of one attempt and when to retry. Per entry: why the hub rejected it.
+    this.failures = new Map(); this.rejected = new Map();
   }
   queue(record) {
     let queue = this.queues.get(record.id);
@@ -126,17 +129,57 @@ export class HubDelivery {
   async advance(id) {
     const queue = this.queues.get(id);
     for (let index = 0; index < MAX_STEPS && !this.closed; index++) {
+      if ((this.failures.get(id)?.retryAt ?? 0) > Date.now()) return;
       const before = JSON.stringify(queue.state);
       try { await queue.step({ idempotencyKey: `tick:${randomUUID()}` }); }
       catch (error) {
-        // BUSY means another worker holds the queue lease; anything else is retried on the next pump.
-        if (error?.code !== 'BUSY') this.errors.set(id, safe(error));
+        // BUSY means another worker holds the queue lease; anything else counts toward the attempt's retry bound.
+        if (error?.code !== 'BUSY') await this.failed(id, queue, error);
         return;
       }
-      this.errors.delete(id);
+      this.errors.delete(id); this.failures.delete(id);
       if (JSON.stringify(queue.state) === before) return;
     }
     this.dirty = true;
+  }
+  /**
+   * Bounded retries: a failing attempt backs off exponentially, and after `deliveryMaxStepFailures` consecutive failures
+   * its entries are rejected with the reason, which sync reports to their runs. A batch rejects only entries whose PR
+   * head cannot be read when that identifies them. Without an attempt no entry is at fault (for example a missing base
+   * branch), so the queue error stays visible instead.
+   */
+  async failed(id, queue, error) {
+    const message = safe(error); this.errors.set(id, message);
+    const active = queue.state.active;
+    const previous = this.failures.get(id);
+    const count = previous && previous.attemptId === (active?.id ?? null) ? previous.count + 1 : 1;
+    const { deliveryMaxStepFailures: limit, deliveryRetryBackoffMs: backoff } = this.hub.config;
+    this.failures.set(id, { attemptId: active?.id ?? null, count, retryAt: Date.now() + Math.min(backoff * 2 ** (count - 1), MAX_BACKOFF_MS) });
+    if (!active || count < limit) return;
+    // A merging attempt may already be published. Reject it only once the base is known not to contain the candidate.
+    if (active.phase === 'merging' && !(await this.unpublished(queue, active))) return;
+    const entries = active.entryIds.map(entryId => queue.state.entries.find(entry => entry.id === entryId));
+    const culprits = entries.length > 1 ? await this.unreadable(queue, entries) : entries;
+    const reason = `Merge queue gave up after ${count} failed attempts (${message}).`;
+    for (const entry of culprits.length ? culprits : entries) {
+      try { queue.rejectEntry({ entryId: entry.id, reason }, { idempotencyKey: `reject:${entry.id}:${active.id}` }); }
+      catch (rejection) { if (!(rejection instanceof DeliveryError)) throw rejection; return; }
+      this.rejected.set(entry.id, message);
+    }
+    this.failures.delete(id); this.errors.delete(id); this.dirty = true;
+  }
+  async unreadable(queue, entries) {
+    const found = [];
+    for (const entry of entries) {
+      try { if (await queue.adapter.getHead(entry) !== entry.headSha) found.push(entry); } catch { found.push(entry); }
+    }
+    return found;
+  }
+  async unpublished(queue, active) {
+    const { config } = queue.state;
+    if (config.publication === 'github-merge-queue' || typeof queue.adapter.isMerged !== 'function') return false;
+    try { return !(await queue.adapter.isMerged({ baseBranch: config.baseBranch, revision: active.revision, publication: config.publication })); }
+    catch { return false; }
   }
   /** Mirror queue state into hub jobs and merge entries, and report finished entries to their runs. */
   async sync(ids) {
@@ -161,6 +204,7 @@ export class HubDelivery {
         }
       }
       const state = queue.state;
+      const failing = state.active ? this.errors.get(id) : null;
       for (const job of state.jobs) {
         const hubJob = store.get('job', job.id);
         if (!hubJob) {
@@ -183,7 +227,10 @@ export class HubDelivery {
       for (const entry of state.entries) {
         const hubEntry = store.get('merge-entry', entry.id);
         if (!hubEntry || TERMINAL.has(hubEntry.status)) continue;
-        const next = { status: entry.status, jobId: entry.jobId, reason: entry.reason, testedRevision: entry.testedRevision, mergedRevision: entry.mergedRevision };
+        // deliveryError shows why an entry is stuck while its attempt keeps failing, and why the hub rejected it.
+        const deliveryError = this.rejected.get(entry.id) ?? (failing && state.active.entryIds.includes(entry.id) ? failing : undefined);
+        const next = { status: entry.status, jobId: entry.jobId, reason: entry.reason, testedRevision: entry.testedRevision, mergedRevision: entry.mergedRevision, deliveryError };
+        if (TERMINAL.has(entry.status)) this.rejected.delete(entry.id);
         if (Object.entries(next).every(([key, value]) => hubEntry[key] === value)) continue;
         const value = { ...hubEntry, ...next };
         for (const key of Object.keys(next)) if (value[key] === undefined) delete value[key];
