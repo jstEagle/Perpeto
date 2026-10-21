@@ -92,6 +92,8 @@ Batch jobs carry no `runId` (`factory-delivery/src/jobs.js:45`, `queue.js:99`), 
 
 `factory-hub/src/hub.js:381-385` and the engine (`engine.js:185-215`) only check that the item is `blocked`, not which gate the decision is for. The engine event id is random (`workflow-adapter.js:131`). A client retry without an idempotency key, or two people answering the same gate, applies the second `pass` to the next gate, so it passes without anyone seeing its prompt. Confirmed: two `pass` posts on a design gate followed by a release gate both returned 200, and the run completed. **Fix:** require the gate `nodeId` (or a visit token) and reject it if it doesn't match `item.waiting.nodeId`.
 
+Fixed in 634703b for the engine: every wait has a `decisionId`, and a decision naming another one throws `STALE_DECISION`. The hub adapter still has to send `decisionId` (and map `STALE_DECISION` to 409) before hub clients are protected.
+
 ### The node ignores heartbeat cancellations and never acknowledges them (M5)
 
 The hub returns `cancel: { assignments, jobs }` (`factory-hub/src/hub.js:435-436`), as the architecture requires, but `factory-node/src/node.js:118` only reads `status`. Work stops only when the next renew gets `409 lease_lost`, about 20 s with default timing, and no `cancellation-acknowledged` event is ever sent. Confirmed: about 23 heartbeats carried the cancel, the abort came 4.6 s later on a renew, and no acknowledgement followed. **Fix:** abort the listed records and report `cancelled` with the attempt.
@@ -116,6 +118,8 @@ The hub never updates machine `labels` after enrollment (`factory-hub/src/hub.js
 
 The node ID pattern (`factory-workflow/src/graph.js:21`) allows `Object.prototype` keys. These collide with inherited properties in plain-object maps: `open` (`engine.js:562-574`), `loopCounts` (`engine.js:396`, after the delete at `508`) and per-node metric counters (`metrics.js:87-94`). Confirmed: an agent node named `constructor` with concurrency 1 dispatched all three items at once, and a loop named `constructor` produced 666 assignments before the hop backstop, against 11 for a loop named `loop`. Workflows can be agent-authored, so this needs no malicious user. **Fix:** use `Map` or `Object.create(null)`, or reject reserved IDs in validation.
 
+Fixed in a94db54.
+
 ### Account registry receipts grow until the node can't start (M11, latent)
 
 Every select, release and observe adds a permanent receipt (`factory-accounts/src/index.js:119-120`), and the whole registry is rewritten with fsync each time. Reads fail above 4 MiB (`private-files.js:57`), after which `snapshot()` throws `FILE_TOO_LARGE`, the heartbeat goes fatal (M7), and restarts fail at `bind`, which is an endless restart loop under a service manager. Measured: 443 B to 267 KB after 200 assignments, so the cap arrives after roughly 2,700 assignments. Confirmed with a real node and a fake hub. **Fix:** expire or compact receipts, or move the registry to `node:sqlite`.
@@ -138,6 +142,8 @@ Every select, release and observe adds a permanent receipt (`factory-accounts/sr
 
 `factory-workflow/src/engine.js:58` clones the full state, `563-566` and `300` scan every assignment and item, `workflow-adapter.js:51-55` stringifies every item and merge twice, and `factory-hub/src/hub.js:199-206` parses and rewrites the state. Closed assignments keep their full prompt and result. Measured with 4 KB bodies: 100 finished items gave a 1.2 MB state and 1.1 ms per event, and 2,000 items gave 24.8 MB and 40-72 ms per event, before the SQLite write. Cost per run grows quadratically. **Fix:** store entities in their own rows, keep closed work out of the hot state, and diff from effects instead of whole-state comparisons.
 
+Fixed in 8eb08d0 for `factory-workflow` (now `packages/workflow`): `step` is copy-on-write, and `RunStore` writes only changed rows with a flat per-event cost. The hub-side costs (`workflow-adapter.js` diffing, `hub.js` parsing and rewriting the state) remain.
+
 ### Merge-queue receipts store the full state on every tick, and an unmirrored cancel keeps the queue ticking forever (M16)
 
 `factory-delivery/src/store.js:61-74` and `98-105` insert a receipt holding the entire queue state on every tick, including no-op ticks, and the hub ticks about once a second while a queue has open work (`delivery/index.js:114-118`). Measured: 7,066 bytes per tick with 30 entries. If a job is cancelled before the hub mirrors it, `admit` treats the queue as open forever (`delivery/index.js:117`, `161`). Confirmed: 20 pumps after everything merged added 20 receipts. **Fix:** skip receipts for no-op ticks, store a hash instead of the state, prune history, and only count `queued` delivery jobs as missing from the hub.
@@ -158,7 +164,7 @@ Every select, release and observe adds a permanent receipt (`factory-accounts/sr
 | L2 | `factory-hub/src/delivery/index.js:191-197` | `record()` commits to the delivery DB inside the hub transaction. After a hub rollback, a later result with a different body throws `IDEMPOTENCY_CONFLICT`, which isn't swallowed, so the job is re-leased indefinitely. Confirmed for the double-record throw; the rollback window is by trace. | Treat a conflict on a resolved job as ignored and cancel the hub job. |
 | L3 | `factory-node/src/node.js:189`, `307` | `stop({ drain: false })` reports run work as `blocked`, which the engine holds for a human instead of retrying. Trace. | Report `failure` for forced stops. |
 | L4 | `factory-hub/src/hub.js:208`, `246`; `engine.js:537-544` | Escalations are logged as unplanned `workitem.moved` events with no endpoints, and metrics show `unplanned:flow:?->?`. Confirmed. | Count escalated items as reported moves. |
-| L5 | `factory-workflow/src/architect.js:223` | The `FENCE` regex backtracks quadratically. A 64 KiB architect summary blocked the hub's serialized loop for 2.5 s per attempt. Confirmed. | Use a single whitespace class, or scan line by line. |
+| L5 | `factory-workflow/src/architect.js:223` | The `FENCE` regex backtracks quadratically. A 64 KiB architect summary blocked the hub's serialized loop for 2.5 s per attempt. Confirmed. | Use a single whitespace class, or scan line by line. Fixed in 5a595b8. |
 | L6 | `factory-node/src/config.js:46-48`, `factory-hub/src/hub.js:261` | Node capacity above 1,000 is accepted, but the lease `max` caps at 1,000, so leasing gets 400 and the node goes fatal. Confirmed. | Clamp `max`, or validate capacity against the hub limit. |
 | L7 | `factory-hub/src/hub.js:269` | `Math.max(held, machine.running)` keeps a finished slot idle until the next heartbeat, up to 10 s by default. Measured 1.6 s with a 3 s heartbeat. | Use held leases only, or refresh `running` on final events. |
 | L8 | `factory-node/src/hub.js:36-46`, `node.js:121-130`, `238-243` | Retries back off without jitter, so nodes retry in lockstep after a hub outage. Trace. | Add full jitter. |
@@ -169,7 +175,7 @@ Every select, release and observe adds a permanent receipt (`factory-accounts/sr
 | L13 | `perpeto-cli/src/api.js:49-50`, `config.js:44` | A join retry rebuilds `name` from `hostname()` and requires an exact match, so a retry after a macOS hostname change fails until `join.secret` is deleted by hand. Confirmed. | Reuse `pending.config` on retry. |
 | L14 | `perpeto-cli/src/process.js:20-23`, `factory-node/src/node.js:82-83` | Stale-lock checks are PID-only, so a reused PID (PID 1 in the repro) blocks startup after an unclean shutdown. Partly documented. | Store a boot or start-time identity with the PID. |
 | L15 | `perpeto-cli/src/config.js:30-31` | The CLI hub config omits `deliveryDatabasePath`, so the delivery DB lands outside `hub/`, and the backup in `docs/install.md` misses it. Trace. | Set `./hub/delivery.sqlite`. |
-| L16 | `factory-workflow/src/run-store.js:132` | `canonicalJson` sorts event keys, but warning order depends on key order (`graph.js:159`, `187-189`), so `verify()` reports a false mismatch. Confirmed. | Compare canonicalized warnings. |
+| L16 | `factory-workflow/src/run-store.js:132` | `canonicalJson` sorts event keys, but warning order depends on key order (`graph.js:159`, `187-189`), so `verify()` reports a false mismatch. Confirmed. | Compare canonicalized warnings. Fixed in 3de2e3d. |
 | L17 | `perpeto-cli/src/api.js:56`; `factory-hub/src/hub.js:399`, `496` | The CLI enrolls with `os: platform()`, so Windows sends `win32` and the hub rejects anything but `windows`. Separately, job results may omit `configHash` and still be accepted. Trace. | Map `win32` to `windows` as the node does (`node.js:279`). Require `configHash` on final job results. |
 
 ## Plausible but unconfirmed
