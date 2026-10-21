@@ -107,6 +107,11 @@ async function configurationChecks(dir, role, config) {
     const bounds = { port: [0, 65535], requestMaxBytes: [128, 16777216], longPollMs: [0, 25000],
       deliveryMaxStepFailures: [1, 1000], deliveryRetryBackoffMs: [1, 3600000] };
     for (const key of ['heartbeatIntervalMs', 'leaseDurationMs', 'deliveryLeaseDurationMs', 'maintenanceIntervalMs', 'enrollmentTtlMs']) bounds[key] = [1, 86400000];
+    // Mirrors apps/hub/src/config.js: event retention keeps at least 7 days so metric windows stay complete.
+    bounds.eventRetentionMs = [604800000, Number.MAX_SAFE_INTEGER];
+    for (const key of ['finishedWorkRetentionMs', 'usageRetentionMs', 'idempotencyRetentionMs']) bounds[key] = [60000, Number.MAX_SAFE_INTEGER];
+    bounds.retentionSweepIntervalMs = [1000, 86400000];
+    if (config.archiveFinished !== undefined && typeof config.archiveFinished !== 'boolean') problems.push('Set archiveFinished to true or false.');
     for (const [key, [min, max]] of Object.entries(bounds)) if (config[key] !== undefined && (!Number.isSafeInteger(config[key]) || config[key] < min || config[key] > max)) problems.push(`Set ${key} to an integer from ${min} through ${max}.`);
     if (config.host !== undefined && (typeof config.host !== 'string' || !config.host.trim())) problems.push('Set host to a non-empty address.');
     if (config.architectHarness !== undefined && (!config.architectHarness || ['provider', 'model'].some(key => typeof config.architectHarness[key] !== 'string' || !config.architectHarness[key].trim()))) problems.push('Set architectHarness.provider and architectHarness.model.');

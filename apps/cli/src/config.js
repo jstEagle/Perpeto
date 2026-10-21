@@ -34,6 +34,8 @@ export function hubConfig(dir, { host = '127.0.0.1', port = 4320 } = {}) {
     deliveryMaxStepFailures: 5, deliveryRetryBackoffMs: 2000, ownerTokenPath: './hub/owner.secret',
     corsOrigins: [], requestMaxBytes: 1048576, heartbeatIntervalMs: 10000, leaseDurationMs: 60000,
     longPollMs: 25000, maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
+    finishedWorkRetentionMs: 604800000, eventRetentionMs: 2592000000, usageRetentionMs: 2592000000,
+    idempotencyRetentionMs: 86400000, archiveFinished: true, retentionSweepIntervalMs: 60000,
     architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' } };
 }
 export function hubUrl(value) {
