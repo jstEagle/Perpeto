@@ -46,7 +46,7 @@ export function privatePath(root, target) {
   }
 }
 
-export function readPrivate(target) {
+export function readPrivate(target, maxBytes = 4 * 1024 * 1024) {
   assertPrivate(target);
   const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
@@ -54,12 +54,12 @@ export function readPrivate(target) {
     if (stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1) {
       fail('UNSAFE_PERMISSIONS');
     }
-    if (stat.size > 4 * 1024 * 1024) fail('FILE_TOO_LARGE');
+    if (stat.size > maxBytes) fail('FILE_TOO_LARGE');
     return fs.readFileSync(fd, 'utf8');
   } finally { fs.closeSync(fd); }
 }
 
-export function readJson(target) { return JSON.parse(readPrivate(target)); }
+export function readJson(target, maxBytes) { return JSON.parse(readPrivate(target, maxBytes)); }
 
 export function writePrivate(target, content) {
   const temporary = path.join(path.dirname(target), `.write-${randomUUID()}`);

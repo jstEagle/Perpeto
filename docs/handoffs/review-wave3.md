@@ -119,13 +119,19 @@ The node ID pattern (`factory-workflow/src/graph.js:21`) allows `Object.prototyp
 
 ### Account registry receipts grow until the node can't start (M11, latent)
 
+**Fixed in fedb1e1.**
+
 Every select, release and observe adds a permanent receipt (`factory-accounts/src/index.js:119-120`), and the whole registry is rewritten with fsync each time. Reads fail above 4 MiB (`private-files.js:57`), after which `snapshot()` throws `FILE_TOO_LARGE`, the heartbeat goes fatal (M7), and restarts fail at `bind`, which is an endless restart loop under a service manager. Measured: 443 B to 267 KB after 200 assignments, so the cap arrives after roughly 2,700 assignments. Confirmed with a real node and a fake hub. **Fix:** expire or compact receipts, or move the registry to `node:sqlite`.
 
 ### Crash-leaked reservations drain the pool, and exhaustion falls back to the operator's login (M12, latent)
 
+**Fixed in ee3b5ce.** Package leases and fail-closed exhaustion are implemented; node/executor renewal and startup reconciliation wiring remain with their owners. See [account integration requirements](../../packages/accounts/REVIEW-WAVE3.md).
+
 `factory-node/src/integrations/accounts.js:36-57` never reconciles reservations on `bind`, and the pool has no API to list them (handoff step 5 is unimplemented). After a crash mid-assignment, the retry and every other assignment get `null`, while heartbeats still report the account `active`. `acquire()` returns `null` both for "provider not pooled" and "pool exhausted" (`accounts.js:5`, `52`), and the documented contract tells executors to fall back to the default login on `null`. An exhausted pool therefore silently runs work on the operator's personal subscription. Confirmed by scratch test on a shared data dir. **Fix:** release all reservations on `bind`, and return `null` only when no account of that provider is enrolled.
 
 ### One unhealthy account home blocks selection for its provider (M13, latent)
+
+**Fixed in 4630fcf.**
 
 `factory-accounts/src/index.js:161-168` picks the least-recently-used candidate first and then checks its home. The check throws instead of skipping, and nothing is persisted, so the same account stays first forever. Confirmed: one `.claude.json` at mode 0644 made three selects in a row throw `UNSAFE_PERMISSIONS`, and the healthy account was never chosen. **Fix:** skip and flag unhealthy accounts.
 
@@ -165,9 +171,9 @@ Every select, release and observe adds a permanent receipt (`factory-accounts/sr
 | L6 | `factory-node/src/config.js:46-48`, `factory-hub/src/hub.js:261` | Node capacity above 1,000 is accepted, but the lease `max` caps at 1,000, so leasing gets 400 and the node goes fatal. Confirmed. | Clamp `max`, or validate capacity against the hub limit. |
 | L7 | `factory-hub/src/hub.js:269` | `Math.max(held, machine.running)` keeps a finished slot idle until the next heartbeat, up to 10 s by default. Measured 1.6 s with a 3 s heartbeat. | Use held leases only, or refresh `running` on final events. |
 | L8 | `factory-node/src/hub.js:36-46`, `node.js:121-130`, `238-243` | Retries back off without jitter, so nodes retry in lockstep after a hub outage. Trace. | Add full jitter. |
-| L9 | `factory-accounts/src/index.js:66` | Re-enrolling on the same data dir gives a new machine ID, and the pool then fails with `INVALID_REGISTRY` at startup. Confirmed. | Rebind or reset the pool explicitly on re-enrollment. |
+| L9 | `factory-accounts/src/index.js:66` | Re-enrolling on the same data dir gives a new machine ID, and the pool then fails with `INVALID_REGISTRY` at startup. Confirmed. | Rebind or reset the pool explicitly on re-enrollment. **Fixed in 3567b0e.** Explicit pool API; node re-enrollment must call it. |
 | L10 | `factory-node/src/node.js:166-169` | Assignment workspaces (random per attempt) are never removed, and the lease journal is rewritten in full on every lease. The journal limit is already noted in the handoff. | Prune finished workspaces and journal entries. |
-| L11 | `factory-accounts/src/signals.js:67-76`, `index.js:212-215` | Claude's permitted overage still cools the account on the next unrelated observation, about an hour in the repro, contradicting the comment and README. Confirmed. | Store an overage flag per window and exclude it from the exhausted check. |
+| L11 | `factory-accounts/src/signals.js:67-76`, `index.js:212-215` | Claude's permitted overage still cools the account on the next unrelated observation, about an hour in the repro, contradicting the comment and README. Confirmed. | Store an overage flag per window and exclude it from the exhausted check. **Fixed in c34e4ae.** |
 | L12 | `perpeto-cli/src/service.js:27`, `50` | The systemd ownership check is a prefix match, so the default `service uninstall` disabled and removed a `~/.perpeto-staging` unit. Confirmed with a stubbed `systemctl`. | Match the whole marker line. |
 | L13 | `perpeto-cli/src/api.js:49-50`, `config.js:44` | A join retry rebuilds `name` from `hostname()` and requires an exact match, so a retry after a macOS hostname change fails until `join.secret` is deleted by hand. Confirmed. | Reuse `pending.config` on retry. |
 | L14 | `perpeto-cli/src/process.js:20-23`, `factory-node/src/node.js:82-83` | Stale-lock checks are PID-only, so a reused PID (PID 1 in the repro) blocks startup after an unclean shutdown. Partly documented. | Store a boot or start-time identity with the PID. |

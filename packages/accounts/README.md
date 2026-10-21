@@ -25,26 +25,33 @@ const account = pool.importAccount({
   idempotencyKey: 'enroll-build-account',
 });
 
-const { account: selected, binding } = pool.select({
+const { account: selected, binding, reservation } = pool.select({
   provider: 'codex', assignmentId: 'asg_example', idempotencyKey: 'reserve-example',
 });
 // Local T3 integration registers binding.mutation and uses its instance ID.
-// It must recheck pool.bindingFor(selected.id) immediately before launch.
+// Recheck pool.bindingFor(selected.id, { reservationId: reservation.id }) before launch.
+// Renew the lease with a fresh key while work runs; cancel work if renewal fails.
 // ...execute through T3...
-pool.release({ assignmentId: 'asg_example', idempotencyKey: 'release-example' });
+pool.release({ assignmentId: 'asg_example', reservationId: reservation.id, idempotencyKey: 'release-example' });
 const heartbeatAccounts = pool.snapshot();
 ```
 
-All methods are synchronous. Every mutation requires a stable `idempotencyKey`. Same key and same request returns the recorded result; a changed request fails with `IDEMPOTENCY_CONFLICT`. Observation receipts retain only a digest of the request plus sanitized status, never the raw error/usage message. Selection retries additionally recheck the reservation and current account eligibility, so an old result cannot resurrect a released, disabled, invalid or cooling account.
+All methods are synchronous. Every mutation requires a stable `idempotencyKey`. Within receipt retention, the same key and same request returns the recorded result; a changed request fails with `IDEMPOTENCY_CONFLICT`. Observation receipts retain only a digest of the request plus sanitized status, never the raw error/usage message. Selection retries additionally recheck the reservation and current account eligibility, so an old result cannot resurrect a released, disabled, invalid or cooling account.
 
 - `importAccount({ provider, label, source, id?, idempotencyKey })`: fresh isolated home, generated `acct_…` ID unless supplied. Never overwrites an existing ID/home.
-- `select({ provider, assignmentId, idempotencyKey })`: returns `{ account, binding }`, or throws `NO_ELIGIBLE_ACCOUNT`. Reserves capacity atomically. Reusing an active assignment returns its existing account.
-- `release({ assignmentId, idempotencyKey })`: frees its reservation. Always release in the executor's `finally`, including failures/cancellations. A retry attempt after release needs a new selection key.
+- `select({ provider, assignmentId, idempotencyKey })`: returns `{ account, binding, reservation }`. Throws `NO_ELIGIBLE_ACCOUNT` only when this supported provider has no enrolled accounts; `UNSUPPORTED_PROVIDER` means the driver is not supported. With any enrolled accounts, exhausted, disabled, invalid or cooling capacity throws `ACCOUNT_POOL_EXHAUSTED`. **Never catch exhaustion and fall back to a default login.** Reusing a live assignment returns its existing reservation without extending its lease.
+- `release({ assignmentId, reservationId?, idempotencyKey })`: frees its reservation. Supply the selected reservation ID to fence a stale release from a newer reservation. The optional form remains for existing attempt-qualified callers. Always release in the executor's `finally`, including failures/cancellations. A retry attempt after release needs a new selection key.
+- `rebindMachine({ machineId, idempotencyKey })`: explicit re-enrollment, invoked on a pool opened with the old machine ID. Refuses live reservations with `ACTIVE_RESERVATIONS`; first establish that local work is stopped and reconcile or wait for lease expiry. Preserves private account homes, clears old enrollment receipts, updates this handle, and fences other old handles with `INVALID_REGISTRY`. The node enrollment flow must invoke this API before opening with its new identity.
+- `reservations()`: detached local-only `{ id, assignmentId, accountId, expiresAt }[]` after expiry cleanup. No home paths or credentials.
+- `renewReservation({ assignmentId, reservationId, idempotencyKey })`: extends a live reservation by `reservationLeaseMs` from now. A retry returns its original expiry without extending it. Expired/replaced reservations throw `RESERVATION_ENDED`. Use a new key for each renewal.
+- `reconcileReservations({ activeReservationIds, idempotencyKey })`: atomically releases reservations absent from the supplied live token set and returns `{ released: string[], reservations }`. Call only after validating local ownership against durable assignment leases; an empty list releases all.
 - `observe({ accountId, message, idempotencyKey })`: merges sparse usage windows, cools on observed limits, marks invalid on authentication failure. Raw messages are not retained. A limit never enables a disabled/invalid account.
 - `disable({ accountId, idempotencyKey })` / `enable(…)`: manual eligibility. Enabling retains authentication invalidity and any cooldown.
 - `markAuthenticated({ accountId, idempotencyKey })`: clear invalidity only after externally confirmed, account-specific reauthentication. This checks file safety, not the provider's acceptance of credentials; it never performs login.
 - `snapshot()`: detached `Account[]`, with expired cooldowns reflected as active. Returns future `cooldownUntil` even when disabled/invalid takes precedence.
-- `bindingFor(accountId)`: eligibility/file-safety check and local-only T3 descriptor. Never include this descriptor in a heartbeat or send it to the hub.
+- `bindingFor(accountId, { reservationId? }?)`: eligibility/file-safety check (and a live, matching reservation check when supplied) and local-only T3 descriptor. Never include this descriptor in a heartbeat or send it to the hub.
+
+Selection checks candidate homes in policy order, flags unsafe, missing or malformed homes as `invalid`, and continues to healthy accounts. Quarantine persists even when no candidate succeeds. Repair the private home and explicitly call `markAuthenticated()` after confirming account authentication to restore eligibility.
 
 `selection: "lru"` is the default. A persisted sequence breaks same-millisecond ties. `"headroom"` first chooses the account with the greatest minimum remaining percentage across known windows, then LRU. Missing usage is treated as unknown/full headroom; no quota probe occurs. Expired usage windows stop reducing headroom. `maxConcurrentPerAccount` defaults to 1 and is independent of the node's overall agent capacity.
 
@@ -113,7 +120,7 @@ Source references under [vendor/t3code](../../vendor/t3code):
 
 `detectClaudeSignal(message, { now? })`, `detectCodexSignal(…)`, and `detectProviderSignal(provider, …)` return `null`, `{ kind: "auth-failure" }`, or `{ kind: "rate-limit", cooldownUntil? }`. `now` is epoch milliseconds. Signal output never contains raw provider text.
 
-Claude handling follows `ClaudeAdapterV2.ts:2644`, `:2760`, `:6446`, `:6692` and `provider/claudeUsageLimits.ts:116`: `api_error_status/error_status: 429`, assistant `error: "rate_limit"`, blocked `rate_limit_event.rate_limit_info` and its epoch-second reset, plus the observed nested `rate_limit_error` / `(reset after …)` form. Allowed warnings/overage do not cool accounts, and overload status `529` alone does not count as a subscription limit.
+Claude handling follows `ClaudeAdapterV2.ts:2644`, `:2760`, `:6446`, `:6692` and `provider/claudeUsageLimits.ts:116`: `api_error_status/error_status: 429`, assistant `error: "rate_limit"`, blocked `rate_limit_event.rate_limit_info` and its epoch-second reset, plus the observed nested `rate_limit_error` / `(reset after …)` form. Allowed warnings/overage do not cool accounts, including on later unrelated observations: per-window overage permission persists through restart and is replaced by a subsequent window update. Overload status `529` alone does not count as a subscription limit.
 
 Codex handling follows `CodexAdapterV2.ts:1098`, `:4310`, `:4498`, `:6007` and `provider/codexUsageLimits.ts`: `usageLimitExceeded` / `rateLimitExceeded` codes, native `codexErrorInfo` unions, `account/rateLimits/updated` primary/secondary windows, and T3 normalized `failure.class: "usage_limit"` / `resetAt`. Model-specific `limitId` notifications such as Spark do not overwrite the main subscription windows. Sparse updates merge by window ID; the latest known exhausted-window reset wins.
 
@@ -123,7 +130,11 @@ Normalized T3 `{ windows: [{ id, usedPercent, resetsAt? }] }` updates are accept
 
 The private `registry.json` records metadata, sparse usage windows, reservation IDs and idempotency receipts. Writes use fsync plus an atomic rename. A private `.lock` directory serializes mutations and imports across handles/processes. There are no network calls, dependencies, shell executions or token logs.
 
-`ACCOUNT_POOL_BUSY` is retryable by the node. A crash can leave the lock directory or an unregistered credential home behind; recovery is deliberately manual and must first establish that no writer is active. Never remove a lock merely because it is old. Reservations survive restart, so the node must reconcile them against its durable assignment leases and release terminated work. No automatic timeout, stale-result fencing, account deletion, receipt compaction or distributed lock is supplied here. Use local filesystems with reliable atomic rename/permissions semantics.
+`ACCOUNT_POOL_BUSY` is retryable by the node. A crash can leave the lock directory or an unregistered credential home behind; recovery is deliberately manual and must first establish that no writer is active. Never remove a lock merely because it is old. Reservations survive restart until their ISO `expiresAt`, and expire before selection, renewal, reconciliation and lease-aware binding checks. `reservationLeaseMs` defaults to 300000 (5 minutes); legacy string reservations receive one finite lease during startup migration. Expiry does not stop a running harness. Callers must renew well before expiry and cancel work on renewal failure to prevent concurrent use after a lost lease. No account deletion or distributed lock is supplied here. Use local filesystems with reliable atomic rename/permissions semantics.
+
+Receipts are compacted on startup and mutation. Defaults are `receiptRetentionMs: 86400000` (24 hours), `maxReceipts: 512` (configurable from 1 to 1024), and a fixed 1 MiB receipt budget. The first age, count or byte limit ends the retry guarantee; callers must not retry old operation keys after that window. Legacy receipts without timestamps start their retention window at migration and remain subject to both size limits. Startup can recover legacy registries up to 64 MiB; credential-file reads remain capped at 4 MiB. Account metadata and current reservations are preserved during compaction.
+
+The current node/executor adapter still needs to retain `selection.reservation.id`, forward it on release and binding checks, renew during execution with a fresh idempotency key per tick, and cancel on renewal loss. On restart, use `reservations()` plus `reconcileReservations()` against durable attempt ownership before acquiring new work. The existing adapter already propagates `ACCOUNT_POOL_EXHAUSTED`; no fallback-path change is needed for that error. These caller changes are outside this package.
 
 Only fixture and local process tests are claimed. No real account enrollment, live authentication, T3 readiness, harness turn, end-to-end node/hub heartbeat, or provider-terms compliance has been verified.
 
