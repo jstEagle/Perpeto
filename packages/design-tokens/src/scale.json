@@ -1,0 +1,111 @@
+{
+  "text": [12, 14, 16, 20, 24, 32],
+  "display": [40, 48, 56, 64, 72],
+  "leading": {
+    "body": 1.55,
+    "heading": 1.15,
+    "display": 1.05,
+    "compact": 1.3
+  },
+  "weight": {
+    "regular": 400,
+    "medium": 500,
+    "bold": 700
+  },
+  "tracking": {
+    "heading": "-0.01em",
+    "display": "-0.03em"
+  },
+  "spaceSteps": 16,
+  "control": {
+    "sm": 28,
+    "md": 32,
+    "lg": 40
+  },
+  "stroke": {
+    "hairline": 1,
+    "edge": 1.5,
+    "selection": 2,
+    "focus": 2,
+    "focusOffset": 2
+  },
+  "editor": {
+    "gridMinor": 16,
+    "gridMajor": 64,
+    "port": 8,
+    "nodeWidth": 240
+  },
+  "motion": {
+    "fast": "120ms",
+    "base": "200ms",
+    "ease": "cubic-bezier(0.2, 0, 0, 1)"
+  },
+  "elevation": {
+    "overlay": "0 1px 2px rgb(32 37 33 / 0.06), 0 8px 24px rgb(32 37 33 / 0.10)"
+  },
+  "derivedColor": {
+    "action-hover": {
+      "mix": ["action", "ink", 0.2]
+    },
+    "action-pressed": {
+      "mix": ["action", "ink", 0.35]
+    },
+    "surface-hover": {
+      "mix": ["surface", "canvas", 0.6]
+    },
+    "canvas-strong": {
+      "mix": ["canvas", "border", 0.45]
+    },
+    "accent-wash": {
+      "mix": ["surface", "accent", 0.1]
+    },
+    "success-wash": {
+      "mix": ["surface", "success", 0.1]
+    },
+    "warning-wash": {
+      "mix": ["surface", "warning", 0.1]
+    },
+    "error-wash": {
+      "mix": ["surface", "error", 0.1]
+    },
+    "grid-minor": {
+      "mix": ["canvas", "border", 0.55]
+    },
+    "grid-major": {
+      "mix": ["canvas", "control-border", 0.3]
+    }
+  },
+  "contrast": {
+    "text": [
+      ["ink", "canvas"],
+      ["ink", "surface"],
+      ["ink", "canvas-strong"],
+      ["ink", "accent-wash"],
+      ["muted", "canvas"],
+      ["muted", "surface"],
+      ["muted", "surface-hover"],
+      ["muted", "canvas-strong"],
+      ["on-action", "action"],
+      ["on-action", "action-hover"],
+      ["on-action", "action-pressed"],
+      ["action", "surface"],
+      ["action", "canvas"],
+      ["action", "accent-wash"],
+      ["success", "surface"],
+      ["success", "success-wash"],
+      ["warning", "surface"],
+      ["warning", "warning-wash"],
+      ["error", "surface"],
+      ["error", "error-wash"],
+      ["focus", "surface"]
+    ],
+    "nonText": [
+      ["control-border", "surface"],
+      ["control-border", "canvas"],
+      ["focus", "canvas"],
+      ["focus", "surface"],
+      ["accent", "surface"],
+      ["accent", "canvas"]
+    ]
+  }
+}
