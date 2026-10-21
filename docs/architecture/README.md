@@ -217,6 +217,10 @@ Lease wire format, fixed after the node implementation:
 
 A run result the engine refuses is acknowledged with `200` plus a `reason` and recorded as a failed attempt, so a node never loops resending it.
 
+Heartbeats and renewals update machine and lease state only; they do not write events. Free capacity is computed from the leases the hub holds, not the heartbeat's `running` count.
+
+Finished assignments and jobs are archived after `finishedWorkRetentionMs` but remain readable by id and in per-run listings. Events, usage and idempotency records have their own retention keys; event retention is at least 7 days so metric windows stay complete, and usage past retention keeps hourly rollups.
+
 An expired lease on run work is reported to the engine as a failed attempt, and the engine's retry policy schedules the next attempt. Project-scoped work and merge-queue jobs return to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
 
 ## Node executors
