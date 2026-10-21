@@ -48,7 +48,7 @@ export async function fakeHub(t, options = {}) {
       if (req.url === '/api/v1/nodes/enroll') {
         if (body.code !== 'enroll-once') return send(401, { error: { code: 'INVALID_CODE' } });
         enrollments++;
-        result = { machineId: 'mch_test', token: 'private-machine-token' };
+        result = { machineId: options.machineId ?? 'mch_test', token: 'private-machine-token' };
       } else if (req.url === '/api/v1/nodes/heartbeat') {
         heartbeats.push(body);
         const response = await options.heartbeat?.(body);
