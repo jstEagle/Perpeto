@@ -33,10 +33,10 @@ async function readBody(request, limit) {
 }
 
 /** Create a hub without opening a port. All paths resolve relative to configPath.
- * @param {{configPath: string, engine?: import('./engine/workflow-adapter.js').WorkflowEngine}} options
+ * @param {{configPath: string, engine?: import('./engine/workflow-adapter.js').WorkflowEngine, clock?: () => number}} options
  */
-export async function createHub({ configPath, engine = createWorkflowAdapter() }) {
-  const config = loadConfig(configPath); const hub = new Hub(config, engine);
+export async function createHub({ configPath, engine = createWorkflowAdapter(), clock }) {
+  const config = loadConfig(configPath); const hub = new Hub(config, engine, { clock });
   const streams = new Set(); const polls = new Set(); let closing = false; let maintenanceBusy = false;
   const json = (response, status, body, headers = {}) => {
     if (response.destroyed) return;

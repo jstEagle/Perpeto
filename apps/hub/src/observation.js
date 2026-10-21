@@ -52,7 +52,7 @@ export class Observation {
     const runs = this.store.list('run', value => (!runId || value.id === runId) && (!projectId || value.projectId === projectId));
     const assignments = scoped('assignment');
     const machines = this.store.list('machine');
-    const from = new Date(Date.now() - windows[window]).toISOString(); const at = new Date().toISOString();
+    const from = new Date(this.hub.clock() - windows[window]).toISOString(); const at = this.hub.now();
     const events = this.store.eventsSince(from, { projectId, runId });
     const states = Object.fromEntries(runs.map(run => [run.id, this.store.get('engine-state', run.id)?.state ?? null]));
     const result = await this.hub.engine.computeRunMetrics({ projectId, runId, runs, states, workflows: runs.map(run => this.store.need('run-workflow', run.id).workflow),
@@ -60,7 +60,7 @@ export class Observation {
       usage: this.store.usageRecords({ projectId, runId }, from, at), events, window, windowMs: windows[window], from, at });
     object(result, 'metrics result'); object(result.run, 'run metrics');
     for (const key of ['nodes', 'edges', 'bottlenecks']) requireValue(Array.isArray(result[key]), `Metrics ${key} must be an array.`);
-    const running = assignments.filter(value => ['leased', 'running'].includes(value.status) && Date.parse(value.leaseExpiresAt) > Date.now());
+    const running = assignments.filter(value => ['leased', 'running'].includes(value.status) && Date.parse(value.leaseExpiresAt) > this.hub.clock());
     const byMachine = new Map();
     for (const assignment of running) {
       const group = byMachine.get(assignment.machineId) ?? { machineId: assignment.machineId, activeAgents: 0, nodes: [] };

@@ -46,7 +46,7 @@ export async function eventually(check, { timeoutMs = 45000, intervalMs = 50, me
  * `separateNode` gives the node its own temporary root, sharing no directory with the hub; `node` may then be a
  * function of `{ root }` (the hub's root) for settings that name hub paths.
  */
-export async function startFactory(t, { executor, hub: hubConfig = {}, node: nodeConfig = {}, subprocess = false, separateNode = false }) {
+export async function startFactory(t, { executor, hub: hubConfig = {}, node: nodeConfig = {}, subprocess = false, separateNode = false, clock }) {
   const root = await mkdtemp(join(tmpdir(), 'perpeto-e2e-'));
   await chmod(root, 0o700);
   const cleanups = [];
@@ -56,7 +56,7 @@ export async function startFactory(t, { executor, hub: hubConfig = {}, node: nod
   await writeFile(hubPath, JSON.stringify({ port: 0, databasePath: './hub/hub.sqlite', messagingDatabasePath: './hub/messaging.sqlite',
     deliveryDatabasePath: './hub/delivery.sqlite', ownerTokenPath: './hub/owner.secret', heartbeatIntervalMs: 1000, leaseDurationMs: 15000,
     longPollMs: 2000, maintenanceIntervalMs: 50, ...hubConfig }));
-  const hub = subprocess ? await processHub(hubPath, subprocess) : await createHub({ configPath: hubPath });
+  const hub = subprocess ? await processHub(hubPath, subprocess) : await createHub({ configPath: hubPath, clock });
   const url = subprocess ? hub.url : await hub.listen();
   cleanups.push(() => hub.close());
   const owner = (await readFile(join(root, 'hub/owner.secret'), 'utf8')).trim();

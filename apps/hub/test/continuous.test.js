@@ -12,11 +12,11 @@ const graph = { schema: 'perpeto.workflow/1', nodes: [
   { id: 'output', type: 'output', label: 'Output', position: { x: 2, y: 0 }, config: {} },
 ], edges: [ ['input', 'builder'], ['builder', 'output'] ].map(([from, to]) => ({ id: `${from}-${to}`, kind: 'flow', from: { node: from }, to: { node: to } })) };
 
-async function fixture(t) {
+async function fixture(t, { clock, config = {}, workflowGraph = graph } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'perpeto-intake-'));
   const configPath = join(dir, 'hub.json');
-  await writeFile(configPath, JSON.stringify({ port: 0, maintenanceIntervalMs: 86400000, heartbeatIntervalMs: 86400000, longPollMs: 0 }));
-  let app = await createHub({ configPath }); let url = await app.listen();
+  await writeFile(configPath, JSON.stringify({ port: 0, maintenanceIntervalMs: 86400000, heartbeatIntervalMs: 86400000, longPollMs: 0, ...config }));
+  let app = await createHub({ configPath, clock }); let url = await app.listen();
   const token = (await readFile(join(dir, 'owner.secret'), 'utf8')).trim();
   t.after(async () => { await app.close(); await rm(dir, { recursive: true, force: true }); });
   const request = async (method, path, body, auth = token) => {
@@ -25,7 +25,7 @@ async function fixture(t) {
   };
   const project = (await request('POST', '/projects', { name: 'Continuous', repo: { url: '/tmp/unused.git', defaultBranch: 'main' }, goals: ['Ship feature', 'Improve quality'] })).body;
   async function workflow(name = 'Build') {
-    const result = await request('POST', `/projects/${project.id}/workflows`, { name, purpose: name === 'Build' ? 'build' : 'improve', graph });
+    const result = await request('POST', `/projects/${project.id}/workflows`, { name, purpose: name === 'Build' ? 'build' : 'improve', graph: workflowGraph });
     assert.equal(result.status, 201);
     await request('POST', `/workflows/${result.body.id}/activate`, { version: 1 });
     return result.body;
@@ -35,7 +35,7 @@ async function fixture(t) {
   const items = async run => (await request('GET', `/runs/${run.id}/work-items`)).body.workItems;
   return { request, project, wf, workflow, start, items, get hub() { return app.hub; },
     tick: at => app.hub.maintenance(at),
-    async restart() { await app.close(); app = await createHub({ configPath }); url = await app.listen(); },
+    async restart() { await app.close(); app = await createHub({ configPath, clock }); url = await app.listen(); },
     async machine() {
       const code = (await request('POST', '/machines/enrollment-codes', {})).body.code;
       const node = (await request('POST', '/nodes/enroll', { code, name: 'Worker', os: 'linux', arch: 'x64', providers: ['codex'], version: 'test' })).body;
@@ -259,4 +259,108 @@ test('planner touches survive HTTP assignment results and serialize overlapping 
   const children = (await f.items(run)).filter(item => item.parentId);
   assert.deepEqual(children.map(item => item.touches), items.map(item => item.touches));
   assert.equal((await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments.filter(value => value.nodeId === 'builder').length, 1);
+});
+
+test('run budget usage is present from creation with UTC window bounds, even without intake state', async t => {
+  const f = await fixture(t);
+  for (const input of [{ keepOpen: true }, { keepOpen: true, budget: { maxTokensPerDay: 10 } }]) {
+    const run = await f.start(input);
+    const day = run.startedAt.slice(0, 10);
+    const expected = { day, tokens: 0, items: 0, windowStart: `${day}T00:00:00.000Z`,
+      windowEnd: new Date(Date.parse(`${day}T00:00:00.000Z`) + 86400000).toISOString() };
+    assert.deepEqual(run.budgetUsage, expected);
+    // Legacy engine snapshots can have counters before their first intake request.
+    const state = f.hub.intake.state(run);
+    delete state.intake;
+    state.budgetUsage.tokens = 7; expected.tokens = 7;
+    await f.hub.serialize(() => f.hub.store.transaction(() => f.hub.store.put('engine-state', { id: run.id, state })));
+    assert.deepEqual((await f.request('GET', `/runs/${run.id}`)).body.budgetUsage, expected);
+    assert.deepEqual((await f.request('GET', '/overview')).body.runs.find(value => value.id === run.id).budgetUsage, expected);
+    assert.deepEqual((await f.request('GET', `/projects/${f.project.id}/runs`)).body.runs.find(value => value.id === run.id).budgetUsage, expected);
+    for (const action of ['pause', 'resume', 'stop']) {
+      assert.deepEqual((await f.request('POST', `/runs/${run.id}/${action}`, {})).body.budgetUsage, expected);
+    }
+    delete state.budgetUsage;
+    await f.hub.serialize(() => f.hub.store.transaction(() => f.hub.store.put('engine-state', { id: run.id, state })));
+    assert.deepEqual((await f.request('GET', `/runs/${run.id}`)).body.budgetUsage, { ...expected, tokens: 0 });
+  }
+});
+
+test('maintenance and usage preserve freshly leased attempts through scheduling and config changes', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-21T12:00:00.000Z') });
+  const f = await fixture(t); const machine = await f.machine();
+  const run = await f.start({ keepOpen: true, items: [{ title: 'Leased work' }], budget: { maxTokensPerDay: 100 } });
+  const assignment = (await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, machine.token)).body.assignments[0];
+  for (const type of ['started', 'usage']) {
+    const result = await f.request('POST', `/assignments/${assignment.id}/events`, { attempt: assignment.attempt, type,
+      data: type === 'usage' ? { provider: 'codex', model: 'test', inputTokens: 5, outputTokens: 2 } : {} }, machine.token);
+    assert.equal(result.status, 200);
+    await f.tick();
+  }
+  await f.request('PATCH', `/runs/${run.id}`, { budget: { maxTokensPerDay: 200 } });
+  await f.tick();
+  const stored = (await f.request('GET', `/assignments/${assignment.id}`)).body;
+  assert.equal(stored.status, 'running'); assert.equal(stored.attempt, assignment.attempt);
+  assert.equal(stored.machineId, machine.machineId);
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/renew`, { attempt: assignment.attempt }, machine.token)).status, 200);
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/renew`, { attempt: assignment.attempt + 1 }, machine.token)).body.error.code, 'lease_lost');
+  const events = (await f.request('GET', `/events?runId=${run.id}&limit=1000`)).body.events;
+  assert.equal(events.some(event => ['assignment.requeued', 'assignment.expired'].includes(event.type)), false);
+  assert.equal((await f.request('GET', `/runs/${run.id}`)).body.budgetUsage.tokens, 7);
+});
+
+
+test('lease deadlines, maintenance expiry and retry notBefore use the injected hub clock', async t => {
+  let time = Date.parse('2026-10-21T12:00:00.000Z');
+  const workflowGraph = structuredClone(graph);
+  workflowGraph.nodes.find(node => node.id === 'builder').config.retry = { maxAttempts: 3, backoffSec: 10 };
+  const f = await fixture(t, { clock: () => time, config: { leaseDurationMs: 60000 }, workflowGraph });
+  const machine = await f.machine();
+  const run = await f.start({ keepOpen: true, items: [{ title: 'Hold through maintenance' }] });
+  const lease = async () => (await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, machine.token)).body.assignments[0];
+  const report = (work, type) => f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type }, machine.token);
+  const first = await lease();
+  assert.equal(first.leaseExpiresAt, '2026-10-21T12:01:00.000Z');
+  assert.equal((await report(first, 'started')).status, 200);
+  time = Date.parse(first.leaseExpiresAt) - 1;
+  await f.tick();
+  assert.equal((await f.request('GET', `/assignments/${first.id}`)).body.status, 'running');
+  time++;
+  assert.equal((await report(first, 'progress')).body.error.code, 'lease_lost', 'expiry fences even before maintenance');
+  await f.tick();
+  const attempts = (await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments;
+  const retry = attempts.find(value => value.retryOf === first.id);
+  assert.ok(retry); assert.equal(retry.attempt, first.attempt + 1);
+  assert.equal(retry.notBefore, '2026-10-21T12:01:10.000Z');
+  assert.equal((await f.request('GET', `/assignments/${first.id}`)).body.status, 'failed');
+  time = Date.parse(retry.notBefore) - 1;
+  await f.tick(); assert.equal(await lease(), undefined, 'backoff cannot be leased early');
+  time++;
+  await f.tick();
+  const second = await lease(); assert.equal(second.id, retry.id);
+  assert.equal((await report(first, 'started')).body.error.code, 'lease_lost');
+  assert.equal((await report(second, 'started')).status, 200);
+  assert.equal((await f.request('POST', `/assignments/${second.id}/renew`, { attempt: second.attempt }, machine.token)).status, 200);
+});
+
+test('a seed waiting on an empty lease poll can outlive its held lease, then gets fenced', async t => {
+  let time = Date.parse('2026-10-21T12:00:00.000Z');
+  const f = await fixture(t, { clock: () => time, config: { leaseDurationMs: 1000, longPollMs: 1000 } });
+  const machine = await f.machine();
+  const draft = (await f.request('POST', `/projects/${f.project.id}/workflows/drafts`, { prompt: 'Draft a workflow.' })).body;
+  const first = (await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, machine.token)).body.assignments[0];
+  assert.equal(first.id, draft.id);
+  const pending = f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, machine.token);
+  for (let tries = 0; !f.hub.waiters.size && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.hub.waiters.size, 1, 'empty poll is waiting while the seed holds its prior lease');
+  time = Date.parse(first.leaseExpiresAt) - 1;
+  await f.tick();
+  assert.equal((await f.request('GET', `/assignments/${first.id}`)).body.status, 'leased');
+  time++;
+  await f.tick();
+  const second = (await pending).body.assignments[0];
+  assert.equal(second.id, first.id); assert.equal(second.attempt, first.attempt + 1);
+  assert.equal((await f.request('POST', `/assignments/${first.id}/renew`, { attempt: first.attempt }, machine.token)).body.error.code, 'lease_lost');
+  const requeued = (await f.request('GET', '/events?limit=1000')).body.events.filter(event => event.type === 'assignment.requeued');
+  assert.equal(requeued.length, 1); assert.equal(requeued[0].at, first.leaseExpiresAt, 'requeue occurs at expiry, not at leasing');
 });
