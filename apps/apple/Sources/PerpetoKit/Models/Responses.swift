@@ -152,16 +152,66 @@ public struct Channel: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+/// Delivery evidence for an addressed message. States only move forward:
+/// stored, then delivered (in the first prompt, steered into a running turn,
+/// or read), then acknowledged. None proves a model understood or complied.
+public struct Receipt: Codable, Hashable, Sendable {
+    public enum State: String, LenientEnum {
+        case stored, delivered, acked, unknown
+        public static var unknownCase: Self { .unknown }
+    }
+
+    public enum Via: String, LenientEnum {
+        case prompt, steer, read, unknown
+        public static var unknownCase: Self { .unknown }
+    }
+
+    public var state: State
+    public var deliveredAt: Date?
+    public var deliveredVia: Via?
+    public var deliveredTo: String?
+    public var ackedAt: Date?
+    public var ackNote: String?
+
+    public init(state: State, deliveredAt: Date? = nil, deliveredVia: Via? = nil, deliveredTo: String? = nil, ackedAt: Date? = nil, ackNote: String? = nil) {
+        self.state = state
+        self.deliveredAt = deliveredAt
+        self.deliveredVia = deliveredVia
+        self.deliveredTo = deliveredTo
+        self.ackedAt = ackedAt
+        self.ackNote = ackNote
+    }
+}
+
 public struct Message: Codable, Hashable, Identifiable, Sendable {
+    public enum SenderKind: String, LenientEnum {
+        case owner, agent, unknown
+        public static var unknownCase: Self { .unknown }
+    }
+
     public var id: String
     public var projectId: String
     public var channelId: String
     public var senderRoleId: String
+    /// Nil addresses the whole channel.
     public var recipientRoleId: String?
     public var body: String
     public var createdAt: Date
+    /// The root message's id; a root is its own thread.
+    public var threadId: String
+    public var parentId: String?
+    public var senderKind: SenderKind?
+    public var senderAssignmentId: String?
+    /// An agent send outside the run's messages edges, stored under the flag policy.
+    public var unplanned: Bool
+    /// Addressed messages only.
+    public var receipt: Receipt?
 
-    public init(id: String, projectId: String, channelId: String, senderRoleId: String, recipientRoleId: String? = nil, body: String, createdAt: Date) {
+    public init(
+        id: String, projectId: String, channelId: String, senderRoleId: String, recipientRoleId: String? = nil, body: String, createdAt: Date,
+        threadId: String? = nil, parentId: String? = nil, senderKind: SenderKind? = nil, senderAssignmentId: String? = nil,
+        unplanned: Bool = false, receipt: Receipt? = nil
+    ) {
         self.id = id
         self.projectId = projectId
         self.channelId = channelId
@@ -169,7 +219,68 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
         self.recipientRoleId = recipientRoleId
         self.body = body
         self.createdAt = createdAt
+        self.threadId = threadId ?? id
+        self.parentId = parentId
+        self.senderKind = senderKind
+        self.senderAssignmentId = senderAssignmentId
+        self.unplanned = unplanned
+        self.receipt = receipt
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, projectId, channelId, senderRoleId, recipientRoleId, body, createdAt, threadId, parentId, senderKind, senderAssignmentId, unplanned, receipt
+    }
+
+    /// Hubs before messaging v2 send none of the thread or receipt fields.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try c.decode(String.self, forKey: .id)
+        self.init(
+            id: id, projectId: try c.decode(String.self, forKey: .projectId), channelId: try c.decode(String.self, forKey: .channelId),
+            senderRoleId: try c.decode(String.self, forKey: .senderRoleId), recipientRoleId: try c.decodeIfPresent(String.self, forKey: .recipientRoleId),
+            body: try c.decode(String.self, forKey: .body), createdAt: try c.decode(Date.self, forKey: .createdAt),
+            threadId: try c.decodeIfPresent(String.self, forKey: .threadId), parentId: try c.decodeIfPresent(String.self, forKey: .parentId),
+            senderKind: try c.decodeIfPresent(SenderKind.self, forKey: .senderKind),
+            senderAssignmentId: try c.decodeIfPresent(String.self, forKey: .senderAssignmentId),
+            unplanned: try c.decodeIfPresent(Bool.self, forKey: .unplanned) ?? false,
+            receipt: try? c.decodeIfPresent(Receipt.self, forKey: .receipt))
+    }
+
+    public var isRoot: Bool { parentId == nil }
+}
+
+/// `GET …/unread?roleId=`: messages addressed to the role or the channel,
+/// not sent by it, after its read cursor.
+public struct UnreadState: Codable, Hashable, Sendable {
+    public var roleId: String
+    public var messages: [Message]
+    public var unreadCount: Int
+    public var lastReadMessageId: String?
+
+    public init(roleId: String, messages: [Message] = [], unreadCount: Int, lastReadMessageId: String? = nil) {
+        self.roleId = roleId
+        self.messages = messages
+        self.unreadCount = unreadCount
+        self.lastReadMessageId = lastReadMessageId
+    }
+
+    enum CodingKeys: String, CodingKey { case roleId, messages, unreadCount, lastReadMessageId }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        roleId = try c.decode(String.self, forKey: .roleId)
+        messages = try c.decodeIfPresent([Message].self, forKey: .messages) ?? []
+        unreadCount = try c.decodeIfPresent(Int.self, forKey: .unreadCount) ?? messages.count
+        lastReadMessageId = try c.decodeIfPresent(String.self, forKey: .lastReadMessageId)
+    }
+}
+
+/// Who a message goes to. A reply with `.parentSender` answers whoever sent
+/// the parent; `.everyone` addresses the whole channel.
+public enum MessageRecipient: Hashable, Sendable {
+    case role(String)
+    case everyone
+    case parentSender
 }
 
 public struct MessagePage: Codable, Hashable, Sendable {

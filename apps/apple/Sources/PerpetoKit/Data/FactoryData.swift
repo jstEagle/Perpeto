@@ -59,6 +59,8 @@ public struct ProjectState: Sendable, Hashable {
     public var mergeQueue: [MergeEntry]
     public var channels: [Channel]
     public var messages: [String: [Message]]
+    /// The owner's unread count per channel, from the hub's read cursors.
+    public var unread: [String: Int] = [:]
     public var usage: UsageBundle
     public var metrics: MetricsSnapshot?
     public var runMetrics: [String: MetricsSnapshot]
@@ -67,8 +69,9 @@ public struct ProjectState: Sendable, Hashable {
     public init(
         workflows: [Workflow], versions: [String: [Workflow]], runs: [Run], workItems: [WorkItem], assignments: [Assignment],
         mergeQueue: [MergeEntry], channels: [Channel], messages: [String: [Message]], usage: UsageBundle,
-        metrics: MetricsSnapshot?, runMetrics: [String: MetricsSnapshot], events: [HubEvent]
+        metrics: MetricsSnapshot?, runMetrics: [String: MetricsSnapshot], events: [HubEvent], unread: [String: Int] = [:]
     ) {
+        self.unread = unread
         self.workflows = workflows
         self.versions = versions
         self.runs = runs
@@ -86,6 +89,7 @@ public struct ProjectState: Sendable, Hashable {
     public static let empty = ProjectState(workflows: [], versions: [:], runs: [], workItems: [], assignments: [], mergeQueue: [], channels: [], messages: [:], usage: .empty, metrics: nil, runMetrics: [:], events: [])
 
     public var activeAgents: Int { assignments.filter(\.isWorking).count }
+    public var unreadTotal: Int { unread.values.reduce(0, +) }
     public var messagesById: [String: Message] {
         Dictionary(messages.values.flatMap { $0 }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
     }
@@ -181,7 +185,12 @@ public protocol FactoryDataSource: Sendable {
     func control(runId: String, _ action: HubClient.RunControl) async throws -> Run
     func startRun(workflowId: String) async throws -> Run
     func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws
-    func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message
+    /// Sends as the owner. With `parentId` the message is a reply in that thread.
+    func sendMessage(projectId: String, channelId: String, body: String, to recipient: MessageRecipient, parentId: String?) async throws -> Message
+    /// Acknowledges a message addressed to the owner.
+    func ackMessage(projectId: String, channelId: String, messageId: String) async throws -> Message
+    /// Moves the owner's read cursor in a channel forward.
+    func markRead(projectId: String, channelId: String, messageId: String) async throws -> UnreadState
     func enrollmentCode() async throws -> EnrollmentCode
     func drain(machineId: String) async throws -> Machine
     func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error>

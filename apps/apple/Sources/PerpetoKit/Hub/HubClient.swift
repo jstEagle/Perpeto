@@ -337,16 +337,67 @@ public final class HubClient: Sendable {
     }
 
     public func sendMessage(projectId: String, channelId: String, senderRoleId: String, recipientRoleId: String?, body: String, idempotencyKey: String = UUID().uuidString) async throws -> Message {
+        try await sendMessage(projectId: projectId, channelId: channelId, senderRoleId: senderRoleId,
+                              to: recipientRoleId.map(MessageRecipient.role) ?? .everyone, parentId: nil, body: body, idempotencyKey: idempotencyKey)
+    }
+
+    /// Sends a message or, with `parentId`, a reply in that message's thread.
+    public func sendMessage(projectId: String, channelId: String, senderRoleId: String, to recipient: MessageRecipient, parentId: String?,
+                            body: String, idempotencyKey: String = UUID().uuidString) async throws -> Message {
         struct Body: Encodable {
             var senderRoleId: String
-            var recipientRoleId: String?
+            var recipient: MessageRecipient
+            var parentId: String?
             var body: String
+
+            enum Key: String, CodingKey { case senderRoleId, recipientRoleId, parentId, body }
+
+            // An explicit null addresses the channel; leaving the key out
+            // lets a reply answer the parent's sender.
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: Key.self)
+                try c.encode(senderRoleId, forKey: .senderRoleId)
+                try c.encode(body, forKey: .body)
+                try c.encodeIfPresent(parentId, forKey: .parentId)
+                switch recipient {
+                case .role(let role): try c.encode(role, forKey: .recipientRoleId)
+                case .everyone: try c.encodeNil(forKey: .recipientRoleId)
+                case .parentSender: break
+                }
+            }
         }
         let data = try await raw("POST", "/messaging/projects/\(escape(projectId))/channels/\(escape(channelId))/messages",
-                                 body: Body(senderRoleId: senderRoleId, recipientRoleId: recipientRoleId, body: body), idempotencyKey: idempotencyKey)
+                                 body: Body(senderRoleId: senderRoleId, recipient: recipient, parentId: parentId, body: body), idempotencyKey: idempotencyKey)
         struct Wrapped: Decodable { var message: Message }
         if let wrapped = try? HubCoding.decoder().decode(Wrapped.self, from: data) { return wrapped.message }
         return try decode(Message.self, from: data)
+    }
+
+    /// Acknowledges a message addressed to `roleId` (the owner's own role by default).
+    public func ackMessage(projectId: String, channelId: String, messageId: String, roleId: String? = nil, note: String? = nil,
+                           idempotencyKey: String = UUID().uuidString) async throws -> Message {
+        struct Body: Encodable {
+            var roleId: String?
+            var note: String?
+        }
+        struct Result: Decodable { var message: Message }
+        let result: Result = try await send("POST", "/messaging/projects/\(escape(projectId))/channels/\(escape(channelId))/messages/\(escape(messageId))/ack",
+                                            body: Body(roleId: roleId, note: note), idempotencyKey: idempotencyKey)
+        return result.message
+    }
+
+    public func unread(projectId: String, channelId: String, roleId: String, limit: Int = 100) async throws -> UnreadState {
+        try await get("/messaging/projects/\(escape(projectId))/channels/\(escape(channelId))/unread", query: ["roleId": roleId, "limit": String(limit)])
+    }
+
+    /// Moves the role's read cursor forward to `messageId`.
+    public func markRead(projectId: String, channelId: String, messageId: String, roleId: String, idempotencyKey: String = UUID().uuidString) async throws -> UnreadState {
+        struct Body: Encodable {
+            var messageId: String
+            var roleId: String
+        }
+        return try await send("POST", "/messaging/projects/\(escape(projectId))/channels/\(escape(channelId))/read-cursor",
+                              body: Body(messageId: messageId, roleId: roleId), idempotencyKey: idempotencyKey)
     }
 
     // MARK: Plumbing

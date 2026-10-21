@@ -433,15 +433,30 @@ public enum DemoFixtures {
         let versions = buildVersions(now: now)
         let improve = improveWorkflow(now: now)
         let channelId = "run-\(liveRunId)"
-        let messages: [Message] = [
-            ("planner", nil, "Split the roadmap into 25 items. Contract-sensitive ones are tagged in their bodies.", 182.0),
-            ("reviewer", "builder-1", "wi_11 passes. Please keep the overview keys exactly as the contract names them.", 95),
-            ("builder-3", "planner", "The metrics endpoint item is two PRs. Can it be split?", 31),
-            ("reviewer", nil, "Review queue is at 7. I've proposed a second review role as a draft; nothing changes until it's activated.", 29),
-            ("builder-2", "reviewer", "Pushed a fix for the cooldown race; ready for another look.", 1),
-        ].enumerated().map { index, row in
-            Message(id: "msg_\(index)", projectId: primaryProjectId, channelId: channelId, senderRoleId: row.0, recipientRoleId: row.1, body: row.2, createdAt: now.addingTimeInterval(-row.3 * 60))
+        // A run channel with threads, receipts in each state, an unplanned
+        // send and a question for the owner.
+        func message(_ id: String, _ from: String, _ to: String?, _ body: String, minutesAgo: Double, parent: String? = nil, thread: String? = nil,
+                     receipt: Receipt? = nil, unplanned: Bool = false) -> Message {
+            Message(id: id, projectId: primaryProjectId, channelId: channelId, senderRoleId: from, recipientRoleId: to, body: body,
+                    createdAt: now.addingTimeInterval(-minutesAgo * 60), threadId: thread ?? parent ?? id, parentId: parent,
+                    senderKind: from == "owner" ? .owner : .agent, unplanned: unplanned, receipt: receipt)
         }
+        func at(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
+        let messages: [Message] = [
+            message("msg_1", "plan", nil, "Split the roadmap into 25 items. Contract-sensitive ones are tagged in their bodies.", minutesAgo: 182),
+            message("msg_2", "review", "build", "wi_11 passes. Please keep the overview keys exactly as the contract names them.", minutesAgo: 95,
+                    receipt: Receipt(state: .acked, deliveredAt: at(94), deliveredVia: .steer, ackedAt: at(93))),
+            message("msg_3", "build", "plan", "The metrics endpoint item is two PRs. Can it be split?", minutesAgo: 31,
+                    receipt: Receipt(state: .delivered, deliveredAt: at(30), deliveredVia: .steer), unplanned: true),
+            message("msg_4", "plan", "build", "Yes. Split it into the endpoint and the dashboard; both are queued now.", minutesAgo: 27, parent: "msg_3",
+                    receipt: Receipt(state: .acked, deliveredAt: at(26), deliveredVia: .steer, ackedAt: at(25))),
+            message("msg_5", "review", "owner", "Review queue is at 7. I've proposed a second review role as a draft. Can you look before the next batch?", minutesAgo: 12,
+                    receipt: Receipt(state: .stored)),
+            message("msg_6", "build", "review", "Pushed a fix for the cooldown race; ready for another look.", minutesAgo: 1,
+                    receipt: Receipt(state: .stored)),
+            message("msg_7", "owner", "build", "Keep the cooldown change behind the existing flag until review passes.", minutesAgo: 0.5, parent: "msg_6", thread: "msg_6",
+                    receipt: Receipt(state: .delivered, deliveredAt: at(0.2), deliveredVia: .prompt)),
+        ]
         return ProjectState(
             workflows: [versions.last!, improve],
             versions: [buildWorkflowId: versions, improveWorkflowId: [improve]],
@@ -460,12 +475,14 @@ public enum DemoFixtures {
             ],
             channels: [Channel(id: channelId, name: "Run \(liveRunId)"), Channel(id: "general", name: "General")],
             messages: [channelId: messages, "general": [
-                Message(id: "msg_g1", projectId: primaryProjectId, channelId: "general", senderRoleId: "owner", body: "Prioritise anything that blocks the two-machine end-to-end check.", createdAt: now.addingTimeInterval(-86400)),
+                Message(id: "msg_g1", projectId: primaryProjectId, channelId: "general", senderRoleId: "owner", body: "Prioritise anything that blocks the two-machine end-to-end check.",
+                        createdAt: now.addingTimeInterval(-86400), senderKind: .owner),
             ]],
             usage: UsageBundle(records: usageRecords(projectId: primaryProjectId, now: now)),
             metrics: liveMetrics(),
             runMetrics: [liveRunId: liveMetrics()],
-            events: events(now: now))
+            events: events(now: now),
+            unread: [channelId: 1])
     }
 
     static func ledger(now: Date) -> ProjectState {

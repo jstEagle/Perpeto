@@ -12,6 +12,10 @@ Status: early implementation, 21 October 2026. A native SwiftUI client in `apps/
 
 Goals decode from the hub's objects `{id, title, status, workItemIds, done, total}` and from legacy strings, and show a count and progress meter. The sidebar footer shows the owner's name and initials from `/overview`.
 
+**Messaging (controlled messaging, schema v2).** Messages decode `threadId`, `parentId`, `senderKind`, `unplanned` and `receipt`, and older messages still decode as roots. The Messages screen lists run and project channels with the owner's unread count (`GET …/unread?roleId=owner`), shows threads with replies indented under their root, receipt state as a quiet icon and words ("Waiting for you", "Delivered into the running turn", "Acknowledged"), and an Unplanned mark for flagged sends. The owner can acknowledge messages addressed to them, reply in a thread (to the parent's sender, a chosen role or everyone; an explicit `null` addresses the channel) and start a message to any role. Opening a channel moves the owner's read cursor forward. `message.delivered`, `message.acked` and `agent.messaged` events refresh the project. Verified against a seeded hub: an agent send delivered by steer, a question for the owner, an unplanned send and an owner message, with unread 1.
+
+**Live map fitting.** When the full drawing would need shrinking below 85%, the run map switches to compact cards (168 pt, name and stat line) and fits all steps down to 45%; the card height follows the fitted drawing. When the drawing is still wider than the map, it opens centred on the top bottleneck. "Show on map" pans to the step and selects it. The 12-step hub template fits in one screen.
+
 Known difference from the mocks: the Mac split view keeps the system divider between sidebar and content.
 
 ## What changed in this round
@@ -41,7 +45,7 @@ Known difference from the mocks: the Mac split view keeps the system divider bet
 
 | Check | Result |
 | --- | --- |
-| `swift build`, `swift test` | Passed, no warnings; 67 tests in 16 suites, including routing (no shared lanes, no card crossings, no label overlaps, on demo graphs and the hub's build template), history, decisions and the event debounce |
+| `swift build`, `swift test` | Passed, no warnings; 71 tests in 18 suites, including routing (no shared lanes, no card crossings, no label overlaps, on demo graphs and the hub's build template), history, decisions and the event debounce |
 | Live hub tests (`PERPETO_HUB_URL`, `PERPETO_HUB_TOKEN_FILE`) | Passed against the branch's hub and against `main`'s hub (temporary detached worktree): every read route decodes strictly, and a human decision with its `decisionId` is accepted while a repeat is refused |
 | `xcodebuild` macOS (`-scheme Perpeto`), PerpetoUI and the iOS app for the iOS Simulator | Passed |
 | Live refresh | An input added through the API appeared in the app without a manual refresh (`screenshots/hub/hub-10…`, `hub-11…`) |

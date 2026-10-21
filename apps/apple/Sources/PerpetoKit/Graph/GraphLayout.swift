@@ -16,6 +16,9 @@ import Foundation
 /// cross a lane inside a channel.
 public struct GraphLayout: Sendable {
     public static let nodeWidth: CGFloat = PerpetoEditor.nodeWidth
+    /// Compact cards for fitting a whole run on screen.
+    public static let compactNodeWidth: CGFloat = 168
+    public static let compactGapX: CGFloat = 40
     public static let grid: CGFloat = PerpetoEditor.dotSpacing
     public static let margin: CGFloat = 40
     /// Vertical space between rows, which also holds the lanes between them.
@@ -49,6 +52,7 @@ public struct GraphLayout: Sendable {
 
     public let graph: WorkflowGraph
     public let nodeHeight: CGFloat
+    public let cardWidth: CGFloat
     /// Horizontal spread applied to stored positions so cards in a row keep a
     /// gutter between them. Drags divide by it to store positions.
     public let xScale: CGFloat
@@ -68,24 +72,25 @@ public struct GraphLayout: Sendable {
     ///   - overrides: live origins while dragging, in stored coordinates.
     ///   - extraRoleEdges: edges drawn like roles but not part of the graph.
     ///   - includeRole: which role edges to route. Hidden ones take no space.
-    public init(graph: WorkflowGraph, nodeHeight: CGFloat, overrides: [String: CGPoint] = [:], extraRoleEdges: [GraphEdge] = [],
-                includeRole: (GraphEdge) -> Bool = { _ in true }) {
+    public init(graph: WorkflowGraph, nodeHeight: CGFloat, nodeWidth: CGFloat = GraphLayout.nodeWidth, gapX: CGFloat = PerpetoEditor.nodeGapX,
+                overrides: [String: CGPoint] = [:], extraRoleEdges: [GraphEdge] = [], includeRole: (GraphEdge) -> Bool = { _ in true }) {
         self.graph = graph
         self.nodeHeight = nodeHeight
+        self.cardWidth = nodeWidth
         let nodeIds = Set(graph.nodes.map(\.id))
         let roleEdges = (graph.edges.filter { $0.kind == .delegates || $0.kind == .messages }
             + extraRoleEdges.filter { nodeIds.contains($0.from.node) && nodeIds.contains($0.to.node) }).filter(includeRole)
         self.roleEdges = roleEdges
 
         // Stretch stored positions so cards keep their gaps at this size.
-        let xScale = Self.spread(graph)
+        let xScale = Self.spread(graph, width: nodeWidth, gap: gapX)
         self.xScale = xScale
         let ys = Array(Set(graph.nodes.map { CGFloat($0.position.y) })).sorted()
         let rowPitch = zip(ys, ys.dropFirst()).map { $1 - $0 }.filter { $0 > 1 }.min() ?? Self.storedRowPitch
         let yScale = max(1, (nodeHeight + Self.rowGap) / rowPitch)
         let leftX = graph.nodes.map(\.position.x).min() ?? 0
         let topY = graph.nodes.map(\.position.y).min() ?? 0
-        let size = CGSize(width: Self.nodeWidth, height: nodeHeight)
+        let size = CGSize(width: nodeWidth, height: nodeHeight)
         var raw: [String: CGRect] = [:]
         for node in graph.nodes {
             let p = overrides[node.id] ?? CGPoint(x: node.position.x, y: node.position.y)
@@ -366,8 +371,8 @@ public struct GraphLayout: Sendable {
 
     /// The smallest horizontal scale that leaves the node gap between cards
     /// that share a row. 1 when the stored layout already fits.
-    static func spread(_ graph: WorkflowGraph) -> CGFloat {
-        let pitch = Double(nodeWidth + PerpetoEditor.nodeGapX)
+    static func spread(_ graph: WorkflowGraph, width: CGFloat = nodeWidth, gap: CGFloat = PerpetoEditor.nodeGapX) -> CGFloat {
+        let pitch = Double(width + gap)
         var scale = 1.0
         for (i, a) in graph.nodes.enumerated() {
             for b in graph.nodes[(i + 1)...] where abs(a.position.y - b.position.y) < 76 {
@@ -393,7 +398,7 @@ public struct GraphLayout: Sendable {
     // MARK: Geometry
 
     public func frame(_ node: GraphNode) -> CGRect {
-        frames[node.id] ?? CGRect(origin: .zero, size: CGSize(width: Self.nodeWidth, height: nodeHeight))
+        frames[node.id] ?? CGRect(origin: .zero, size: CGSize(width: cardWidth, height: nodeHeight))
     }
 
     public func frame(id: String) -> CGRect? { frames[id] }

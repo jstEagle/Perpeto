@@ -96,6 +96,8 @@ public struct GraphCanvas: View {
     var editable: Bool
     var connectKind: GraphEdge.Kind
     var roleScope: RoleEdgeScope
+    /// Smaller cards, so a whole run fits on screen.
+    var compact: Bool
     var onMove: (String, GraphNode.Position) -> Void
     var onConnect: (GraphEdge.Endpoint, GraphEdge.Endpoint, GraphEdge.Kind) -> Void
 
@@ -106,7 +108,7 @@ public struct GraphCanvas: View {
 
     public init(
         graph: WorkflowGraph, mode: GraphMode, selection: Binding<GraphSelection?>, zoom: CGFloat = 1, minSize: CGSize = .zero, editable: Bool = false,
-        connectKind: GraphEdge.Kind = .messages, roleScope: RoleEdgeScope = .all,
+        connectKind: GraphEdge.Kind = .messages, roleScope: RoleEdgeScope = .all, compact: Bool = false,
         onMove: @escaping (String, GraphNode.Position) -> Void = { _, _ in },
         onConnect: @escaping (GraphEdge.Endpoint, GraphEdge.Endpoint, GraphEdge.Kind) -> Void = { _, _, _ in }
     ) {
@@ -118,17 +120,18 @@ public struct GraphCanvas: View {
         self.editable = editable
         self.connectKind = connectKind
         self.roleScope = roleScope
+        self.compact = compact
         self.onMove = onMove
         self.onConnect = onConnect
     }
 
     private var layout: GraphLayout {
-        Self.layout(graph: graph, mode: mode, overrides: dragOverrides, include: isVisible)
+        Self.layout(graph: graph, mode: mode, compact: compact, overrides: dragOverrides, include: isVisible)
     }
 
     /// The one layout used by the canvas and the viewport's fit calculation.
     /// Hidden role edges are left out so they reserve no space.
-    static func layout(graph: WorkflowGraph, mode: GraphMode, overrides: [String: CGPoint] = [:], include: (GraphEdge) -> Bool = { _ in true }) -> GraphLayout {
+    static func layout(graph: WorkflowGraph, mode: GraphMode, compact: Bool = false, overrides: [String: CGPoint] = [:], include: (GraphEdge) -> Bool = { _ in true }) -> GraphLayout {
         var g = graph
         var extra: [GraphEdge] = []
         switch mode {
@@ -138,6 +141,10 @@ public struct GraphCanvas: View {
             g.edges += diff.removedEdges.filter { r in !g.edges.contains { $0.id == r.id } }
         case .live(let live): extra = live.edges
         default: break
+        }
+        if compact {
+            return GraphLayout(graph: g, nodeHeight: 84, nodeWidth: GraphLayout.compactNodeWidth, gapX: GraphLayout.compactGapX,
+                               overrides: overrides, extraRoleEdges: extra, includeRole: include)
         }
         return GraphLayout(graph: g, nodeHeight: mode.nodeHeight, overrides: overrides, extraRoleEdges: extra, includeRole: include)
     }
@@ -211,7 +218,7 @@ public struct GraphCanvas: View {
     private func nodeView(_ node: GraphNode, layout: GraphLayout) -> some View {
         let frame = layout.frame(node)
         let selected = selection == .node(node.id)
-        NodeCard(node: node, mode: mode, selected: selected, lifted: dragOverrides[node.id] != nil)
+        NodeCard(node: node, mode: mode, selected: selected, lifted: dragOverrides[node.id] != nil, compact: compact)
             .frame(width: frame.width, height: frame.height)
             .position(x: frame.midX, y: frame.midY)
             .onTapGesture {

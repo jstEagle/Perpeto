@@ -69,6 +69,7 @@ struct Snapshotter {
             ("hub-03b-run-node-selected", { navigator.selectedNodeId = busiest }),
             ("hub-03c-run-window-1h", { Task { await store.setMetricsWindow(.hour) } }),
             ("hub-04-work", { navigator.route = .project(project, .work) }),
+            ("hub-05-messages", { navigator.route = .project(project, .messages) }),
             ("hub-07-machines", { navigator.route = .factory(.machines) }),
             ("hub-08-accounts", { navigator.route = .factory(.accounts) }),
             ("hub-09-usage", { navigator.route = .factory(.usage) }),

@@ -119,6 +119,7 @@ public final class FactoryStore {
         }
         if let projectId = event.projectId,
            type.hasPrefix("workflow.") || type.hasPrefix("merge-entry.") || type.hasPrefix("project.") || type == "run.started"
+            || type.hasPrefix("message.") || type == "agent.messaged"
             || (event.runId != nil && projectStates[projectId]?.runs.contains(where: { $0.id == event.runId }) != true) {
             pendingProjects.insert(projectId)
         }
@@ -243,9 +244,32 @@ public final class FactoryStore {
         await reloadProject(projectId)
     }
 
-    public func send(projectId: String, channelId: String, body: String) async {
+    public func send(projectId: String, channelId: String, body: String, to recipient: MessageRecipient = .everyone, parentId: String? = nil) async {
         await perform("Sending the message", projectId: projectId) {
-            _ = try await self.source.sendMessage(projectId: projectId, channelId: channelId, body: body)
+            _ = try await self.source.sendMessage(projectId: projectId, channelId: channelId, body: body, to: recipient, parentId: parentId)
+        }
+    }
+
+    /// Acknowledges a message addressed to the owner, in place.
+    public func acknowledge(_ message: Message) async {
+        do {
+            let updated = try await source.ackMessage(projectId: message.projectId, channelId: message.channelId, messageId: message.id)
+            if let index = projectStates[message.projectId]?.messages[message.channelId]?.firstIndex(where: { $0.id == message.id }) {
+                projectStates[message.projectId]?.messages[message.channelId]?[index] = updated
+            }
+            lastError = nil
+        } catch {
+            lastError = describe(error, operation: "Acknowledging the message")
+        }
+    }
+
+    /// Marks a channel read up to its newest message. Quiet on failure: the
+    /// count stays and the next refresh tries again.
+    public func markRead(projectId: String, channelId: String) async {
+        guard (projectStates[projectId]?.unread[channelId] ?? 0) > 0,
+              let last = projectStates[projectId]?.messages[channelId]?.last else { return }
+        if let result = try? await source.markRead(projectId: projectId, channelId: channelId, messageId: last.id) {
+            projectStates[projectId]?.unread[channelId] = result.unreadCount
         }
     }
 
