@@ -62,7 +62,7 @@ DocRef       { id, title, path?: string, url?: string, kind: 'requirements'|'vis
 Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
 Run          { id, projectId, workflowId, workflowVersion, status: 'running'|'paused'|'stopped'|'completed'|'failed', startedAt, stoppedAt? }
 WorkItem     { id, runId, title, body, nodeId, status: 'queued'|'active'|'blocked'|'done'|'failed', branch?, prUrl?, headSha?, iteration, parentId? }
-Assignment   { id, runId, workItemId, nodeId, role, prompt, harness: Harness, policy: AgentPolicy,
+Assignment   { id, projectId, runId? /* absent for project-scoped work such as the workflow architect */, workItemId?, nodeId, role, prompt, harness: Harness, policy: AgentPolicy,
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'succeeded'|'failed'|'cancelled',
                machineId?, leaseExpiresAt?, attempt, result?: AssignmentResult }
 Harness      { provider: string, model: string, options?: Record<string, string|boolean> }   // provider = T3 driver kind, e.g. 'claudeAgent', 'codex'
@@ -176,7 +176,8 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `POST /work-items/:id/decision` | Answer a `human` gate |
 | `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain` | Machines |
 | `GET /accounts` | Subscription pool across machines |
-| `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log` | CI jobs |
+| `GET /assignments/:id` | One assignment, used to follow the workflow architect |
+| `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
 | `GET /projects/:id/merge-queue` | Merge queue |
 | `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
 | `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
