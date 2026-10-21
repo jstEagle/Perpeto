@@ -51,14 +51,23 @@ export function createAccountProvider({ config = {}, configRoot = process.cwd(),
       try { return await locked(value => value.select({ provider, assignmentId: id, idempotencyKey: `select:${id}` })); }
       catch (error) { if (error instanceof AccountPoolError && UNAVAILABLE.has(error.code)) return null; throw error; }
     },
-    async release(_selection, { assignmentId, attempt = 1 }) {
+    async renewReservation({ assignmentId, attempt = 1, reservationId, idempotencyKey }) {
       const id = reservation({ assignmentId, attempt });
-      return locked(value => value.release({ assignmentId: id, idempotencyKey: `release:${id}` }));
+      if (typeof idempotencyKey !== 'string' || !idempotencyKey) throw new Error('Reservation renewal requires a fresh idempotency key.');
+      return locked(value => value.renewReservation({ assignmentId: id, reservationId, idempotencyKey }));
+    },
+    async release(selection, { assignmentId, attempt = 1, reservationId = selection?.reservation?.id, result }) {
+      const id = reservation({ assignmentId, attempt });
+      return locked(value => value.release({ assignmentId: id,
+        ...(reservationId ? { reservationId } : {}), ...(result !== undefined ? { result } : {}),
+        idempotencyKey: `release:${id}${reservationId ? `:${reservationId}` : ''}` }));
     },
     /** Feed a provider error or usage update so limits cool the account and auth failures mark it invalid. */
-    async observe({ accountId, message, idempotencyKey }) { return locked(value => value.observe({ accountId, message, idempotencyKey })); },
+    async observe({ accountId, message, reservationId, idempotencyKey }) {
+      return locked(value => value.observe({ accountId, message, ...(reservationId ? { reservationId } : {}), idempotencyKey }));
+    },
     /** Recheck eligibility immediately before launching a thread with this account. Local only. */
-    async bindingFor(accountId) { return locked(value => value.bindingFor(accountId)); },
+    async bindingFor(accountId, options) { return locked(value => value.bindingFor(accountId, options)); },
     get pool() { return pool; },
     async close() {},
   };

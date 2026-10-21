@@ -34,13 +34,17 @@ export async function loadConfig(configPath) {
   if (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && raw.allowInsecureHttp !== true) throw new Error('Remote hubs require HTTPS.');
   if (raw.name !== undefined && (typeof raw.name !== 'string' || !raw.name.trim())) throw new Error('Invalid node name.');
   const jobs = raw.jobs ?? {};
-  const jobKeys = ['defaultTimeoutSec', 'checkoutTimeoutSec', 'maxLogChunkBytes', 'redactionFile', 'redactPatterns'];
+  const jobKeys = ['defaultTimeoutSec', 'checkoutTimeoutSec', 'maxLogChunkBytes', 'redactionFile', 'redactPatterns', 'path', 'protectedPaths'];
   if (!jobs || typeof jobs !== 'object' || Array.isArray(jobs) || Object.keys(jobs).some(key => !jobKeys.includes(key))) throw new Error('Invalid jobs configuration.');
   for (const key of ['defaultTimeoutSec', 'checkoutTimeoutSec']) {
     if (jobs[key] !== undefined && (!Number.isFinite(jobs[key]) || jobs[key] <= 0 || jobs[key] > 2147483)) throw new Error(`Invalid jobs.${key}.`);
   }
   if (jobs.maxLogChunkBytes !== undefined && (!Number.isSafeInteger(jobs.maxLogChunkBytes) || jobs.maxLogChunkBytes < 128 || jobs.maxLogChunkBytes > 65536)) throw new Error('Log chunks must be between 128 and 65536 bytes.');
+  for (const key of ['path', 'protectedPaths']) {
+    if (jobs[key] !== undefined && (!Array.isArray(jobs[key]) || jobs[key].some(value => typeof value !== 'string' || !value || value.includes('\0')))) throw new Error(`Invalid jobs.${key}.`);
+  }
   const path = value => resolve(root, value);
+  for (const key of ['path', 'protectedPaths']) if (jobs[key]) jobs[key] = jobs[key].map(path);
   const dataDir = path(raw.dataDir ?? '../.perpeto/node');
   const capacity = raw.capacity ?? { maxAgents: 1, maxJobs: 1 };
   for (const key of ['maxAgents', 'maxJobs']) {
