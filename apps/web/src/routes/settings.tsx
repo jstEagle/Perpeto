@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { HttpHub } from '../api/client';
-import { checkBaseUrl } from '../api/settings';
+import { checkBaseUrl, defaultHubUrl } from '../api/settings';
 import { useHub } from '../app/hub-context';
 import { Button, Field, PageHeader, Panel } from '../components/ui';
 import { StatusLabel } from '../components/status';
 
 export function SettingsPage() {
   const { api, settings, reconnect, connect } = useHub();
-  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? reconnect ?? 'http://127.0.0.1:4320');
+  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? reconnect ?? defaultHubUrl());
   const [token, setToken] = useState('');
   const [show, setShow] = useState(false);
   const [test, setTest] = useState<{ tone: 'success' | 'error' | 'accent'; text: string } | null>(null);
@@ -41,7 +41,9 @@ export function SettingsPage() {
     try {
       const cookie = await HttpHub.startSession(url, token.trim());
       connect({ baseUrl: url, auth: cookie ? { kind: 'cookie' } : { kind: 'bearer', token: token.trim() } });
+      // The token is no longer needed here; an empty field after connecting is not an error.
       setToken('');
+      setTouched(false);
     } catch (err) {
       setTest({ tone: 'error', text: `Could not start a session. ${(err as Error).message}` });
     }
@@ -93,7 +95,7 @@ export function SettingsPage() {
             <div className="callout callout-warning" role="note">
               <div className="callout-body">
                 <span className="callout-title">The token is kept in this tab only.</span>
-                <span>This hub cannot set a session cookie yet, so the token sits in session storage until the tab closes. Scripts running on this page’s origin can read it. Serve the app only from an origin you trust.</span>
+                <span>This hub has no session route, so it cannot set a session cookie. The token sits in session storage until the tab closes, and scripts running on this page’s origin can read it. Update the hub, or serve the app only from an origin you trust.</span>
               </div>
             </div>
           )}

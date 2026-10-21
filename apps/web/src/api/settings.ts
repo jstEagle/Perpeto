@@ -6,9 +6,9 @@ import type { HubSettings } from './client';
  * The owner token is never written to localStorage. Preferred: the hub sets
  * an HttpOnly session cookie (POST /api/v1/session), so scripts on this
  * origin cannot read any credential and only `{ baseUrl, auth: 'cookie' }`
- * is remembered. Until the hub serves that route, the token is kept in
- * sessionStorage: it is gone when the tab closes, but any script running on
- * this origin can still read it while the tab is open.
+ * is remembered. Only a hub without that route gets the fallback: the token
+ * in sessionStorage, gone when the tab closes but readable by any script on
+ * this origin while it is open. A hub with the route never falls back.
  */
 const CONFIG_KEY = 'perpeto.hub.v2';
 const TOKEN_KEY = 'perpeto.hub.token';
@@ -68,6 +68,15 @@ export function saveSettings(settings: HubSettings | null) {
   const config: StoredConfig = { baseUrl: settings.baseUrl, auth: settings.auth.kind === 'cookie' ? 'cookie' : 'session' };
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   if (settings.auth.kind === 'bearer') sessionStorage.setItem(TOKEN_KEY, settings.auth.token);
+}
+
+/**
+ * The local hub at the default port, on the same loopback name as this
+ * page: the hub's SameSite=Strict cookie treats `localhost` and
+ * `127.0.0.1` as different sites.
+ */
+export function defaultHubUrl(host = typeof location === 'undefined' ? 'localhost' : location.hostname): string {
+  return `http://${host === '127.0.0.1' ? '127.0.0.1' : 'localhost'}:4320`;
 }
 
 /** Returns an error message, or null when the URL is acceptable. */

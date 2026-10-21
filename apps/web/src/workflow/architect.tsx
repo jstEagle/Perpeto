@@ -122,7 +122,7 @@ const issueText = (e: string | { message: string }) => (typeof e === 'string' ? 
  * assignment; the panel follows the chain until a draft is saved or the
  * hub stops retrying. Calls onDone with the drafted workflow and version.
  */
-export function ArchitectProgress({ assignmentId, onDone, onDismiss }: { assignmentId: string; projectId?: string; onDone(workflowId: string, version: number): void; onDismiss?(): void }) {
+export function ArchitectProgress({ assignmentId, projectId, onDone, onDismiss }: { assignmentId: string; projectId?: string; onDone(workflowId: string, version: number): void; onDismiss?(): void }) {
   const { api, onEvent } = useHub();
   const [chain, setChain] = useState<Assignment[]>([]);
   const [events, setEvents] = useState<HubEvent[]>([]);
@@ -165,7 +165,11 @@ export function ArchitectProgress({ assignmentId, onDone, onDismiss }: { assignm
         if (!cancelled) setError((err as Error).message);
       }
     };
-    void api.recentEvents(200, (e) => e.subject.kind === 'assignment' && e.subject.id === assignmentId).then((list) => !cancelled && list.forEach(take));
+    // Events from before this panel opened: the project's newest page, oldest first.
+    void api
+      .eventPage({ projectId, limit: 200 })
+      .then((page) => !cancelled && [...page.events].reverse().forEach(take))
+      .catch(() => undefined);
     void refresh();
     const off = onEvent((event) => {
       if (take(event) || (event.subject.kind === 'assignment' && event.subject.id === current)) void refresh();
@@ -177,7 +181,7 @@ export function ArchitectProgress({ assignmentId, onDone, onDismiss }: { assignm
       off();
       clearInterval(timer);
     };
-  }, [api, onEvent, assignmentId]);
+  }, [api, onEvent, assignmentId, projectId]);
 
   const last = chain.at(-1);
   const succeeded = last?.status === 'succeeded';

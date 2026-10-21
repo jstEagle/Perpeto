@@ -48,7 +48,8 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
   const items = useResource((a) => a.listWorkItems(run.id), [run.id], (e) => isRunEvent(e) && (e.type.startsWith('workitem') || e.type === 'gate.result'));
   const assignments = useResource((a) => a.listAssignments(run.id), [run.id], (e) => isRunEvent(e) && e.type.startsWith('assignment'));
   const machines = useResource((a) => a.listMachines(), [], (e) => e.subject.kind === 'machine');
-  const { events, fresh } = useRunEvents(run.id);
+  const { events, fresh, hasOlder, loadingOlder, loadOlder } = useRunEvents(run.id);
+  const olderProps = { hasOlder, loadingOlder, onOlder: () => void loadOlder() };
 
   const version = versions.data?.find((v) => v.version === run.workflowVersion);
   const draft = versions.data?.find((v) => v.status === 'draft' && v.version > run.workflowVersion);
@@ -221,7 +222,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
                     }
                     flush
                   >
-                    <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={selection} items={items.data} machines={machines.data} />
+                    <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={selection} items={items.data} machines={machines.data} {...olderProps} />
                   </Panel>
                   <NodeTable graph={version.graph} metrics={metrics.data} selection={selection} onSelect={setSelection} />
                 </div>
@@ -249,7 +250,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
         )}
         {tab === 'timeline' && version && (
           <Panel title="Timeline" flush>
-            <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={null} limit={60} onlyInteractions={false} items={items.data} machines={machines.data} />
+            <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={null} limit={60} onlyInteractions={false} items={items.data} machines={machines.data} {...olderProps} />
           </Panel>
         )}
       </div>

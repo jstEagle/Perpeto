@@ -80,7 +80,11 @@ async function lease(m, kinds = ['assignment', 'job']) {
   return work;
 }
 const path = (w) => `/${w.kind === 'job' ? 'jobs' : 'assignments'}/${w.value.id}/events`;
-const report = (w, type, data) => w.machine.api('POST', path(w), { type, attempt: w.value.attempt, data });
+const report = (w, type, data) =>
+  w.machine.api('POST', path(w), { type, attempt: w.value.attempt, data }).catch((error) => {
+    error.message = `${type}: ${error.message}`;
+    throw error;
+  });
 const release = (w) => (w.machine.held = w.machine.held.filter((x) => x !== w));
 
 /** Act as the workflow architect for one draft request. */
@@ -175,7 +179,14 @@ for (let round = 0; round < 9; round++) {
   for (const m of machines) await heartbeat(m);
   const earlier = machines.flatMap((m) => m.held);
   for (const m of machines) await lease(m);
-  for (const w of earlier) if (Math.random() < 0.85 || round < 2) await finish(w);
+  for (const w of earlier)
+    if (Math.random() < 0.85 || round < 2)
+      await finish(w).catch((error) => {
+        // The hub may have reassigned work this script held (for example after an escalation); drop it and carry on.
+        if (!String(error.message).includes('lease_lost')) throw error;
+        console.log(`dropped ${w.kind} ${w.value.id} (${w.value.nodeId ?? 'job'}): ${error.message}`);
+        release(w);
+      });
   await sleep(150);
 }
 

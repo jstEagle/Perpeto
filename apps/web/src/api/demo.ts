@@ -1,5 +1,5 @@
 import { HubError, OWNER_ROLE_ID } from './hub';
-import type { HubApi, MessageQuery, StreamState, UsageQuery, WorkflowUpdate } from './hub';
+import type { EventQuery, HubApi, MessageQuery, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import { createDemoState, DEMO_IDS } from './fixtures';
 import type { DemoState } from './fixtures';
 import type {
@@ -391,9 +391,11 @@ export class DemoHub implements HubApi {
     return this.#state.seq;
   }
 
-  async recentEvents(limit: number, match: (event: HubEvent) => boolean = () => true) {
+  async eventPage({ runId, projectId, before, limit = 200 }: EventQuery = {}) {
     await latency(60);
-    return clone(this.#state.events.filter(match).slice(-limit));
+    const matching = this.#state.events.filter((e) => (!runId || e.runId === runId) && (!projectId || e.projectId === projectId) && (!before || e.seq < before));
+    const page = matching.slice(-limit);
+    return { events: clone(page).reverse(), before: page[0]?.seq ?? before ?? 0, hasMore: matching.length > page.length };
   }
 
   subscribe(after: number, onEvent: (event: HubEvent) => void, onState: (state: StreamState) => void) {
