@@ -1,0 +1,177 @@
+# Factory architecture
+
+Status: implementation contract, 21 October 2026. Justus asked to start building the expanded direction in [the vision](vision.md#expanded-product-direction). This document fixes shared names and interfaces so parallel workers build compatible pieces. Anything below that is not yet implemented and verified is a plan, not a shipped capability. Change this file deliberately and note the change in the commit.
+
+## Shape
+
+```text
+ clients: web app, native Swift app, CLI
+            │  HTTPS JSON + event stream
+            ▼
+ ┌──────────────────────────────┐
+ │ hub (one per factory)        │  projects, workflows, runs, work items,
+ │ packages/factory-hub         │  assignments, jobs, merge queue, machines,
+ │                              │  accounts, usage ledger, messaging
+ └──────────────────────────────┘
+            ▲  enrollment, heartbeats, leases, results
+            │
+ ┌──────────────────────────────┐   one per machine
+ │ node daemon                  │   supervises the local T3 environment server,
+ │ packages/factory-node        │   executes assignments through T3, runs CI jobs,
+ │                              │   owns the machine's subscription pool
+ └──────────────────────────────┘
+            │  T3 environment API (local)
+            ▼
+     T3 runtime (vendor/t3code) → harnesses (Claude, Codex, …) → inference
+```
+
+The hub decides what should happen. Nodes do the work and report evidence. T3 remains the only path to inference; Perpeto never calls a model API directly.
+
+## Packages and owners
+
+| Path | Purpose |
+| --- | --- |
+| `packages/factory-core` | Existing durable messaging store. Reused by the hub. |
+| `packages/factory-workflow` | Workflow graph schema, validation, compilation, and the deterministic run engine. No I/O except its SQLite store. |
+| `packages/factory-hub` | Hub HTTP server, persistence, leasing, event log, usage ledger. Mounts workflow engine and messaging. |
+| `packages/factory-node` | Node daemon: enrollment, heartbeats, lease loop, executor registry, CI job runner. |
+| `packages/factory-t3` | Executor that drives a local T3 environment: threads, turns, events, token usage, subagent policy. |
+| `packages/factory-accounts` | Per-machine subscription pool and hot swapping, in the spirit of CCswap. |
+| `packages/factory-delivery` | PR policy, merge queue, CI job definitions, revision-bound evidence. |
+| `packages/design-tokens` | Brand tokens generated from `brand/tokens.css` for CSS and Swift, plus logo assets. |
+| `apps/web` | Perpeto web app. |
+| `apps/apple` | Native SwiftUI app for macOS (iPadOS/iOS later). |
+| `packages/perpeto-cli` | `perpeto` command: install, start hub, enroll node, status. |
+
+Factory services stay outside `vendor/t3code`. Patch the vendored runtime only when T3 lacks a required hook, and record each patch in `config/upstream-patches.json`.
+
+## Runtime conventions
+
+- Node 24 (`>=24.13.1 <25`), ESM JavaScript with JSDoc types, `node:sqlite`, `node:test`. Server packages stay dependency-free unless a dependency clearly pays for itself.
+- Non-secret configuration lives in JSON files under `config/` or a user config directory. Secrets live in owner-only files (mode 600) referenced by path, never in JSON config, CLI arguments, or logs.
+- IDs are strings: a short prefix plus a random suffix, for example `prj_…`, `wf_…`, `run_…`, `wi_…`, `asg_…`, `job_…`, `mch_…`, `acct_…`, `mq_…`.
+- Timestamps are ISO 8601 UTC strings.
+- Every mutating request accepts an `idempotencyKey`. A repeat with the same body returns the original result; a repeat with a different body returns `409 conflict`.
+- Errors are `{ "error": { "code": "SNAKE_CASE", "message": "…" } }` and never include raw SQL, stack traces, or secrets.
+
+## Entities
+
+```ts
+Project      { id, name, repo: { url, defaultBranch, localPath? }, docs: DocRef[], goals: string[], createdAt, updatedAt }
+DocRef       { id, title, path?: string, url?: string, kind: 'requirements'|'vision'|'spec'|'notes' }
+Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
+Run          { id, projectId, workflowId, workflowVersion, status: 'running'|'paused'|'stopped'|'completed'|'failed', startedAt, stoppedAt? }
+WorkItem     { id, runId, title, body, nodeId, status: 'queued'|'active'|'blocked'|'done'|'failed', branch?, prUrl?, headSha?, iteration, parentId? }
+Assignment   { id, runId, workItemId, nodeId, role, prompt, harness: Harness, policy: AgentPolicy,
+               requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'succeeded'|'failed'|'cancelled',
+               machineId?, leaseExpiresAt?, attempt, result?: AssignmentResult }
+Harness      { provider: string, model: string, options?: Record<string, string|boolean> }   // provider = T3 driver kind, e.g. 'claudeAgent', 'codex'
+AgentPolicy  { maxSubagents: number, allowedSubagentProviders: string[], maxTurns?: number, maxTokens?: number, canMessage: string[] }
+MachineRequirements { os?: 'darwin'|'linux'|'windows', labels?: string[], providers?: string[] }
+AssignmentResult { outcome: 'success'|'failure'|'blocked', summary, branch?, prUrl?, headSha?, threadRef? }
+Job          { id, projectId, runId?, workItemId?, repo, revision /* full commit sha */, steps: JobStep[],
+               requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'passed'|'failed'|'cancelled'|'error',
+               machineId?, leaseExpiresAt?, attempt, logRef?, artifacts: ArtifactRef[], configHash }
+JobStep      { name, run: string /* shell command */, timeoutSec? }
+MergeEntry   { id, projectId, prUrl, headSha, baseBranch, status: 'queued'|'testing'|'merging'|'merged'|'rejected', jobId?, reason? }
+Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
+               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version }
+Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt? }
+UsageRecord  { id, projectId, runId?, assignmentId?, machineId, accountId?, provider, model,
+               inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd?, at }
+Event        { seq /* hub-global increasing integer */, at, type, projectId?, runId?, subject: { kind, id }, data }
+```
+
+Messaging keeps the existing `factory-core` model: project channels, stable role IDs, idempotent sends and cursor reads. Each run gets a channel `run-<runId>`. Messages never imply task ownership or a verified result; assignments and jobs carry those.
+
+## Workflow graph v1
+
+A workflow is a typed graph. Edges carry one meaning each, so the editor and engine agree on what a line means.
+
+```ts
+WorkflowGraph { schema: 'perpeto.workflow/1', nodes: GraphNode[], edges: GraphEdge[] }
+GraphNode     { id, type: NodeType, label, position: { x, y }, config: object }
+GraphEdge     { id, from: { node, port? }, to: { node, port? }, kind: 'flow'|'delegates'|'messages' }
+```
+
+| Node type | Meaning | Key config |
+| --- | --- | --- |
+| `input` | Source of work: ideas, backlog, goals, docs | `source: 'manual'|'goals'|'issues'`, `docs: DocRef ids` |
+| `planner` | Agent that turns input into work items | `harness`, `prompt`, `maxItems` |
+| `agent` | Agent role that does a work item | `harness`, `prompt`, `concurrency`, `policy` |
+| `review` | Agent review gate; passes or returns work | `harness`, `prompt`, `rubric` |
+| `ci` | CI gate run on a user-owned machine at the exact head commit | `steps`, `requirements` |
+| `merge-queue` | Serialises merges into the base branch | `strategy: 'serial'|'batch'`, `requiredChecks`, `method: 'squash'|'merge'|'rebase'` |
+| `loop` | Repeats its body until a condition or limit | `until: 'review-pass'|'ci-pass'|'manual'`, `maxIterations` |
+| `human` | Pauses for a person | `prompt` |
+| `output` | Terminal: work item finished | none |
+
+Ports: gates have `pass` and `fail` output ports. `flow` edges move work items. `delegates` edges grant authority for the source agent to create subagents or assign to the target role, bounded by the target's `concurrency` and the source's `policy.maxSubagents`. `messages` edges permit the two roles to message each other; the engine derives each assignment's `policy.canMessage` from them.
+
+The engine is deterministic: it reads the run's state plus incoming results (assignment finished, job finished, human decision) and emits new work items, assignments, jobs and merge entries. It never calls a harness. A loop counts iterations on the work item and fails it at `maxIterations`.
+
+Default templates live in `packages/factory-workflow/templates/`: `build` (input → planner → agent pool → review loop → CI → merge queue → output) and `improve` (goals → auditor → agent → review → CI → merge queue → output).
+
+## Hub API v1
+
+All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owner tokens act for the user. Node tokens act for one machine and may only call `/nodes/*`, `/assignments/:id/*` and `/jobs/:id/*` for work leased to that machine.
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /health` | Unauthenticated liveness and version |
+| `GET/POST /projects`, `GET/PATCH /projects/:id` | Projects, repo, docs, goals |
+| `GET/POST /projects/:id/workflows`, `GET/PUT /workflows/:id` | Workflows; PUT validates and bumps `version` |
+| `POST /workflows/:id/validate` | Validation result without saving |
+| `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/{pause,resume,stop}` | Runs |
+| `POST /runs/:id/inputs` | Add ideas or input items to a running workflow |
+| `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |
+| `POST /work-items/:id/decision` | Answer a `human` gate |
+| `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain` | Machines |
+| `GET /accounts` | Subscription pool across machines |
+| `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log` | CI jobs |
+| `GET /projects/:id/merge-queue` | Merge queue |
+| `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
+| `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
+| `GET /events?after=<seq>&limit=` | Event page; `Accept: text/event-stream` streams live |
+| Messaging | Existing routes from [messaging](messaging.md), served by the hub under `/api/v1/messaging/…` |
+
+### Node protocol
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /nodes/enroll` `{ code, name, os, arch, labels, providers, version }` | Exchange a one-time enrollment code for `{ machineId, token }` |
+| `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers }` | Every 10 s. Missing three marks the machine `offline` |
+| `POST /nodes/lease` `{ kinds: ['assignment','job'], max }` | Long-poll up to 25 s. Returns leased assignments and jobs with `leaseExpiresAt` (60 s) |
+| `POST /assignments/:id/renew`, `POST /jobs/:id/renew` | Extend a lease while working |
+| `POST /assignments/:id/events` `{ type: 'started'|'progress'|'usage'|'message'|'completed'|'failed', data }` | Report progress, usage and the final `AssignmentResult` |
+| `POST /jobs/:id/events` `{ type: 'started'|'log'|'step'|'completed', data }` | Report log chunks and the final status bound to `revision` |
+
+An expired lease returns work to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
+
+## Node executors
+
+```js
+// packages/factory-node
+/** @typedef {{ signal: AbortSignal, report: (event) => Promise<void>, workspace: string }} ExecContext */
+/** Executor: { kind: string, canRun(assignment, machine): boolean, run(assignment, ctx): Promise<AssignmentResult> } */
+```
+
+The node ships a `fake` executor for tests and loads `@perpeto/factory-t3` for real work. CI jobs run in a fresh worktree checked out at `revision`, one directory per job, never in a developer's checkout.
+
+`factory-t3` creates a T3 thread for each assignment on the configured provider and model, sends the prompt, follows the thread's events to completion, forwards token usage as `usage` events, and enforces `AgentPolicy`: subagent creation beyond `maxSubagents` or to a provider outside `allowedSubagentProviders` is refused.
+
+`factory-accounts` chooses which subscription account a T3 provider instance uses. When a harness reports a rate limit, the account cools down and the next eligible account takes over. It never copies credentials between machines.
+
+## Clients and brand
+
+Both clients follow the Workshop system strictly: [brand.md](../brand.md), [brand/tokens.css](../brand/tokens.css) and the Spindle identity in `brand/identity/`. `packages/design-tokens` is the only place clients read colors, type scale, spacing and radii from. No ad-hoc colors, no uppercase microcopy, no numbered eyebrows or tracked-out kickers, no decorative node meshes or gradients. The workflow editor is the one place nodes and edges appear, and it should look like a precise ruled drawing, not a sci-fi network.
+
+Primary navigation: Projects → Project (Overview, Workflows, Runs, Work, Messages, Merge queue) and Factory (Machines, Accounts, Usage). Usage and agent counts are always visible at the project level.
+
+## Scale target
+
+Design for many machines: leases, a global event sequence, idempotent writes and stateless clients let the hub move from SQLite to a networked database later. The first verified target is 5 machines and 100 concurrent agents on one hub. Do not claim higher scale without a load test.
+
+## Verification
+
+Each package has `node --test` coverage of its contract, including restart and lease-expiry cases where relevant. `npm test` discovers tests under `packages/` and `scripts/`. End-to-end: one hub, one node, fake executor, a `build` workflow run from input to merged output against a local bare Git repository. Live T3 and harness runs are separate, explicitly reported checks.

@@ -122,6 +122,24 @@ Assistant proposals to discuss:
 - Give messages and executable assignments distinct semantics: a conversation message alone should not imply task ownership or a verified result.
 - Keep conversational judgment about user intent with agents; configurable execution rules do not require the previously rejected proposal/approval workflow.
 
+## Expanded product direction
+
+Stated by Justus on 21 October 2026. These are requested capabilities, not decisions on architecture or release scope:
+
+- Perpeto is the interface and orchestration/planning layer for managing software factories. T3 Code remains the layer that runs agents on machines; agent relationships, workflows, loops, merge queues and CI runners are defined in Perpeto.
+- A project is configured from a repository plus its docs, requirements and goals. Workflows are authored in a node editor controlling agents, models, orchestration layers, testing, and how PRs are made, tested and merged. A run can be left unattended.
+- A project can have several workflows, for example one for building and one for improving existing work. Ideas or other input go in one side; well-built software comes out the other.
+- Messaging resembles Cooler (`lumin-products/cooler`): agents communicate effectively, but through controlled systems.
+- Visibility includes token usage and how many agents are working on each project.
+- Better support for T3 agents on several machines, including limits on which subagents or threads an agent may create.
+- Subscription hot-swapping like CCswap, inside Perpeto.
+- One easy machine install that runs efficiently and scales to hundreds of machines and thousands of agents.
+- A web app and a native Swift app, both following the brand vision, design system, logo, colors and art direction strictly.
+
+Implementation of this direction started on 21 October 2026; shared interfaces are in [the architecture contract](architecture.md). Pi is disabled in the local T3 install, so DeepSeek through Pi was not used for the first build wave.
+
+Open challenges raised in discussion: whether to reuse Cooler rather than maintain a second messaging system; whether a fixed opinionated workflow should be proven before a general node editor; the target scale for the first release; and whether rotating consumer subscriptions at large scale fits provider terms.
+
 ## Decisions
 
 Justus's stated direction: all inference should come through existing agent harnesses such as Claude Code, Codex, and Grok. Perpeto orchestrates those harnesses.
