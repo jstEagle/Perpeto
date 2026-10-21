@@ -41,7 +41,7 @@ async function fixture(t, config = {}, engine = createStubEngine()) {
   };
   return fixture;
 }
-const heartbeat = { capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, providers: ['codex'], accounts: [] };
+const heartbeat = { status: 'online', capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, providers: ['codex'], accounts: [] };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function eventually(fn) {
   for (let attempt = 0; attempt < 100; attempt++) { const value = await fn(); if (value) return value; await sleep(10); }
@@ -114,15 +114,15 @@ test('leases enforce requirements, actual capacity, ownership and renewal', asyn
   const leased = await f.request('POST', '/nodes/lease', { max: 100 }, node.token); assert.equal(leased.body.assignments.length, 1);
   const work = leased.body.assignments[0]; assert.equal(work.attempt, 1);
   assert.equal((await f.request('POST', '/nodes/lease', { max: 1 }, node.token)).body.assignments.length, 0);
-  assert.equal((await f.request('POST', `/assignments/${work.id}/renew`, { leaseId: work.leaseId }, other.token)).status, 409);
-  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { type: 'started', leaseId: work.leaseId }, other.token)).status, 409);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/renew`, { attempt: work.attempt }, other.token)).status, 409);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { type: 'started', attempt: work.attempt }, other.token)).status, 409);
   assert.equal((await f.request('GET', `/assignments/${work.id}`, undefined, other.token)).status, 409);
-  assert.equal((await f.request('POST', `/assignments/${work.id}/renew`, {}, node.token)).body.error.code, 'LEASE_LOST');
-  const renewal = await f.request('POST', `/assignments/${work.id}/renew`, { leaseId: work.leaseId }, node.token); assert.equal(renewal.status, 200);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/renew`, {}, node.token)).body.error.code, 'lease_lost');
+  const renewal = await f.request('POST', `/assignments/${work.id}/renew`, { attempt: work.attempt }, node.token); assert.equal(renewal.status, 200);
   assert.ok(renewal.body.leaseExpiresAt >= work.leaseExpiresAt);
-  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { leaseId: work.leaseId, type: 'started' }, node.token)).status, 200);
-  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { leaseId: work.leaseId, type: 'completed', data: { outcome: 'success', summary: 'Done' } }, node.token)).status, 200);
-  assert.equal((await f.request('POST', `/assignments/${work.id}/renew`, { leaseId: work.leaseId }, node.token)).status, 409);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type: 'started' }, node.token)).status, 200);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type: 'completed', data: { outcome: 'success', summary: 'Done' } }, node.token)).status, 200);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/renew`, { attempt: work.attempt }, node.token)).status, 409);
 });
 
 test('lease expiry requeues with incremented attempt, including same-machine fencing', async t => {
@@ -131,9 +131,9 @@ test('lease expiry requeues with incremented attempt, including same-machine fen
   const first = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
   await eventually(async () => (await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments[0].status === 'queued');
   const second = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
-  assert.equal(second.attempt, 2); assert.notEqual(second.leaseId, first.leaseId);
-  const stale = await f.request('POST', `/assignments/${first.id}/events`, { leaseId: first.leaseId, type: 'completed', data: { outcome: 'success', summary: 'Old' } }, node.token);
-  assert.equal(stale.status, 409); assert.equal(stale.body.error.code, 'LEASE_LOST');
+  assert.equal(second.attempt, 2); assert.notEqual(second.attempt, first.attempt);
+  const stale = await f.request('POST', `/assignments/${first.id}/events`, { attempt: first.attempt, type: 'completed', data: { outcome: 'success', summary: 'Old' } }, node.token);
+  assert.equal(stale.status, 409); assert.equal(stale.body.error.code, 'lease_lost');
   assert.equal((await f.request('POST', `/assignments/${first.id}/renew`, { attempt: 1 }, node.token)).status, 409);
   assert.equal((await f.request('POST', `/assignments/${first.id}/renew`, { attempt: 2 }, node.token)).status, 200);
 });
@@ -153,7 +153,7 @@ test('usage ingestion is idempotent, grouped and filterable, overview counts rea
   const f = await fixture(t); const { project, run } = await f.run(); await f.seed(run.id, 2); const node = await f.enroll();
   const work = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
   const data = { provider: 'codex', model: 'test', inputTokens: 100, outputTokens: 20, cacheReadTokens: 10, cacheWriteTokens: 3, costUsd: 0.25 };
-  const event = { idempotencyKey: 'usage-one', leaseId: work.leaseId, type: 'usage', data };
+  const event = { idempotencyKey: 'usage-one', attempt: work.attempt, type: 'usage', data };
   assert.equal((await f.request('POST', `/assignments/${work.id}/events`, event, node.token)).status, 200);
   await f.request('POST', `/assignments/${work.id}/events`, event, node.token);
   for (const groupBy of ['provider', 'model', 'machine', 'day']) {
@@ -163,7 +163,7 @@ test('usage ingestion is idempotent, grouped and filterable, overview counts rea
   assert.equal((await f.request('GET', '/usage?projectId=unknown')).body.groups.length, 0);
   assert.equal((await f.request('GET', '/usage?from=2999-01-01')).body.groups.length, 0);
   const overview = (await f.request('GET', '/overview')).body; assert.equal(overview.activeAgents, 1); assert.equal(overview.queuedWork, 1); assert.equal(overview.tokensToday, 133);
-  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { leaseId: work.leaseId, type: 'usage', data: { ...data, inputTokens: -1 } }, node.token)).status, 400);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type: 'usage', data: { ...data, inputTokens: -1 } }, node.token)).status, 400);
   await f.restart(); assert.equal((await f.request('GET', '/usage')).body.totals.inputTokens, 100);
 });
 
@@ -172,9 +172,9 @@ test('job results bind revision and config; logs, merge queue and run snapshots 
   const revision = 'a'.repeat(40);
   await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_test', projectId: project.id, revision, configHash: 'config-v1', repo: { url: '/tmp/repo', defaultBranch: 'main' }, steps: [{ name: 'Test', run: 'true' }], requirements: { labels: ['ci'] } }] });
   const work = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0];
-  await f.request('POST', '/jobs/job_test/events', { leaseId: work.leaseId, type: 'log', data: { chunk: 'hello' } }, node.token);
+  await f.request('POST', '/jobs/job_test/events', { attempt: work.attempt, type: 'log', data: { chunk: 'hello' } }, node.token);
   assert.equal((await f.request('GET', '/jobs/job_test/log')).body.chunks[0].chunk, 'hello');
-  const body = { leaseId: work.leaseId, type: 'completed', data: { revision: 'b'.repeat(40), status: 'passed' } };
+  const body = { attempt: work.attempt, type: 'completed', data: { revision: 'b'.repeat(40), status: 'passed' } };
   assert.equal((await f.request('POST', '/jobs/job_test/events', body, node.token)).status, 400);
   body.data.revision = revision; body.data.configHash = 'wrong';
   assert.equal((await f.request('POST', '/jobs/job_test/events', body, node.token)).status, 400);
@@ -208,7 +208,7 @@ test('all owner workflow routes, graph validation, pause/resume/stop and human d
   const leased = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
   assert.equal((await f.request('POST', `/runs/${run.id}/stop`, {})).body.status, 'stopped');
   assert.equal((await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments[0].status, 'cancelled');
-  assert.equal((await f.request('POST', `/assignments/${leased.id}/renew`, { leaseId: leased.leaseId }, node.token)).status, 409);
+  assert.equal((await f.request('POST', `/assignments/${leased.id}/renew`, { attempt: leased.attempt }, node.token)).status, 409);
 });
 
 test('messaging preserves project/channel scope, role cursors and idempotent sends', async t => {
@@ -287,7 +287,7 @@ test('load: 100 simulated machines concurrently lease and renew over real HTTP',
   const assignmentIds = leases.map(result => result.body.assignments[0].id); assert.equal(new Set(assignmentIds).size, 100);
   const renewals = await Promise.all(machines.map((node, index) => {
     const assignment = leases[index].body.assignments[0];
-    return f.request('POST', `/assignments/${assignment.id}/renew`, { leaseId: assignment.leaseId }, node.token);
+    return f.request('POST', `/assignments/${assignment.id}/renew`, { attempt: assignment.attempt }, node.token);
   }));
   const endedAt = performance.now(); assert.ok(renewals.every(result => result.status === 200));
   assert.equal((await f.request('GET', '/overview')).body.activeAgents, 100);
@@ -326,12 +326,12 @@ test('architect assignments retry invalid graphs and save valid inactive agent-a
   assert.deepEqual((await f.request('POST', `/projects/${project.id}/workflows/drafts`, { prompt: 'Add a review gate.', baseWorkflowId: workflow.id, idempotencyKey: 'architect' })).body, requested.body);
   let assignment = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
   assert.equal(assignment.id, requested.body.id); assert.equal(assignment.architectAttempt, 1);
-  const invalid = { leaseId: assignment.leaseId, type: 'completed', data: { outcome: 'success', summary: 'Proposed', graph: {}, rationale: 'Review first.' } };
+  const invalid = { attempt: assignment.attempt, type: 'completed', data: { outcome: 'success', summary: 'Proposed', graph: {}, rationale: 'Review first.' } };
   assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, invalid, node.token)).status, 200);
   assert.equal(prompts.length, 2); assert.ok(prompts[1].validationErrors.length); assert.equal(prompts[0].project.id, project.id); assert.deepEqual(prompts[0].baseGraph, graph);
   const first = await f.request('GET', `/assignments/${assignment.id}`); assert.ok(first.body.retryAssignmentId); assert.equal(first.body.status, 'failed');
   assignment = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0]; assert.equal(assignment.architectAttempt, 2);
-  const valid = { leaseId: assignment.leaseId, type: 'completed', data: { outcome: 'success', summary: 'Valid proposal', graph, rationale: 'Keep the graph simple.' } };
+  const valid = { attempt: assignment.attempt, type: 'completed', data: { outcome: 'success', summary: 'Valid proposal', graph, rationale: 'Keep the graph simple.' } };
   assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, valid, node.token)).status, 200);
   const versions = (await f.request('GET', `/workflows/${workflow.id}/versions`)).body.versions;
   assert.equal(versions.length, 2); assert.equal(versions[1].authoredBy.assignmentId, assignment.id); assert.equal(versions[1].authoredBy.prompt, 'Add a review gate.'); assert.equal(versions[1].parentVersion, 1); assert.equal(versions[1].rationale, 'Keep the graph simple.');
@@ -347,7 +347,7 @@ test('architect validation stops after three attempts and never activates an inv
   assert.equal(draft.status, 202);
   for (let attempt = 1; attempt <= 3; attempt++) {
     const assignment = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0]; assert.equal(assignment.architectAttempt, attempt);
-    assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { leaseId: assignment.leaseId, type: 'completed', data: { outcome: 'success', summary: 'Invalid', graph: {}, rationale: 'Try again' } }, node.token)).status, 200);
+    assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { attempt: assignment.attempt, type: 'completed', data: { outcome: 'success', summary: 'Invalid', graph: {}, rationale: 'Try again' } }, node.token)).status, 200);
     if (attempt === 3) assert.equal((await f.request('GET', `/assignments/${assignment.id}`)).body.retryAssignmentId, undefined);
   }
   assert.equal((await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments.length, 0);
@@ -363,9 +363,9 @@ test('run interaction events include roles and planned edges; controlled run mes
   await f.seed(nextRun.id, 1, { policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: ['reviewer'] } }); const node = await f.enroll();
   const assignment = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
   for (const [type, data] of [['workitem.moved', { sourceNodeId: 'builder', targetNodeId: 'reviewer' }], ['agent.delegated', { sourceNodeId: 'builder', targetNodeId: 'surprise' }], ['gate.result', { result: 'pass', nodeId: 'builder' }]]) {
-    assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { leaseId: assignment.leaseId, type, data }, node.token)).status, 200);
+    assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { attempt: assignment.attempt, type, data }, node.token)).status, 200);
   }
-  const send = { leaseId: assignment.leaseId, type: 'message', data: { body: 'Review this.', recipientRoleId: 'reviewer' }, idempotencyKey: 'run-message' };
+  const send = { attempt: assignment.attempt, type: 'message', data: { body: 'Review this.', recipientRoleId: 'reviewer' }, idempotencyKey: 'run-message' };
   assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, send, node.token)).status, 200);
   await f.request('POST', `/assignments/${assignment.id}/events`, send, node.token);
   assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { ...send, idempotencyKey: 'bad-message', data: { ...send.data, recipientRoleId: 'forbidden' } }, node.token)).status, 403);
@@ -394,4 +394,63 @@ test('metrics call the engine with windowed state and overlay current lease loca
   assert.equal((await f.request('GET', '/runs/missing/metrics')).status, 404);
   await f.request('POST', `/runs/${run.id}/stop`, {});
   assert.equal((await f.request('GET', `/runs/${run.id}/metrics`)).body.run.machines.length, 0);
+});
+
+test('node wire format uses mandatory attempts, exact renew and heartbeat cancellation responses', async t => {
+  const f = await fixture(t); const { run } = await f.run(); await f.seed(run.id, 1); const node = await f.enroll(); const stranger = await f.enroll(2);
+  const revision = 'c'.repeat(40);
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_cancel', revision, configHash: 'test', repo: '/tmp/repo', steps: [] }] });
+  const leased = (await f.request('POST', '/nodes/lease', { kinds: ['assignment', 'job'], max: 2 }, node.token)).body;
+  assert.deepEqual(Object.keys(leased).sort(), ['assignments', 'jobs']); assert.equal(leased.assignments.length, 1); assert.equal(leased.jobs.length, 1);
+  const assignment = leased.assignments[0]; const job = leased.jobs[0];
+  assert.equal(assignment.leaseId, undefined); assert.ok(assignment.leaseExpiresAt); assert.ok(Number.isSafeInteger(assignment.attempt));
+  const renewed = await f.request('POST', `/assignments/${assignment.id}/renew`, { attempt: assignment.attempt }, node.token);
+  assert.deepEqual(Object.keys(renewed.body), ['leaseExpiresAt']);
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/renew`, { attempt: String(assignment.attempt) }, node.token)).status, 409);
+  const draining = await f.request('POST', '/nodes/heartbeat', { ...heartbeat, status: 'draining' }, node.token);
+  assert.deepEqual(draining.body, { status: 'draining', cancel: { assignments: [], jobs: [] } });
+  await f.request('POST', '/nodes/heartbeat', heartbeat, node.token);
+  await f.request('POST', `/runs/${run.id}/stop`, {});
+  const cancelled = await f.request('POST', '/nodes/heartbeat', heartbeat, node.token);
+  assert.deepEqual(cancelled.body, { status: 'online', cancel: { assignments: [assignment.id], jobs: [job.id] } });
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/renew`, { attempt: assignment.attempt }, node.token)).body.error.code, 'lease_lost');
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { attempt: assignment.attempt, type: 'failed', data: { outcome: 'blocked', summary: 'Cancelled' } }, stranger.token)).status, 409);
+  await f.restart(); assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, node.token)).body.cancel.jobs.length, 1);
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { attempt: assignment.attempt, type: 'failed', data: { outcome: 'blocked', summary: 'Cancelled' } }, node.token)).status, 200);
+  assert.equal((await f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'completed', data: { status: 'cancelled', revision } }, node.token)).status, 200);
+  assert.deepEqual((await f.request('POST', '/nodes/heartbeat', heartbeat, node.token)).body.cancel, { assignments: [], jobs: [] });
+  assert.equal((await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments[0].status, 'cancelled');
+});
+
+test('owner can cancel an individual job and nodes receive only their cancellations', async t => {
+  const f = await fixture(t); const { run } = await f.run(); const node = await f.enroll(); const other = await f.enroll(1);
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_individual', revision: 'd'.repeat(64), configHash: 'hash', repo: '/tmp/repo', steps: [] }] });
+  const job = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0]; assert.ok(job);
+  assert.equal((await f.request('POST', `/jobs/${job.id}/cancel`, {}, node.token)).status, 403);
+  assert.equal((await f.request('POST', `/jobs/${job.id}/cancel`, {})).body.status, 'cancelled');
+  assert.deepEqual((await f.request('POST', '/nodes/heartbeat', heartbeat, other.token)).body.cancel.jobs, []);
+  assert.deepEqual((await f.request('POST', '/nodes/heartbeat', heartbeat, node.token)).body.cancel.jobs, [job.id]);
+});
+
+test('chunked oversized requests return JSON 413 without tearing down the response', async t => {
+  const f = await fixture(t, { requestMaxBytes: 128 });
+  const response = await fetch(`${f.baseUrl}/api/v1/projects`, { method: 'POST', headers: { Authorization: `Bearer ${f.owner}`, 'Content-Type': 'application/json' }, duplex: 'half',
+    body: (async function* () { yield '{"name":"'; yield 'x'.repeat(512); yield '"}'; })() });
+  assert.equal(response.status, 413); assert.equal((await response.json()).error.code, 'REQUEST_TOO_LARGE');
+  assert.equal((await f.request('GET', '/overview')).status, 200);
+});
+
+test('engine effect failure rolls back work and global events together', async t => {
+  const engine = { ...createStubEngine(), applyEvent() { return { state: {}, effects: [{ type: 'assignment', value: { id: 'asg_rollback', requirements: {}, harness: { provider: 'codex' } } }, { type: 'unknown', value: {} }] }; } };
+  const f = await fixture(t, {}, engine); const { run } = await f.run(); const before = (await f.request('GET', '/events?limit=1000')).body.nextCursor;
+  assert.equal((await f.request('POST', `/runs/${run.id}/inputs`, {})).status, 400);
+  assert.equal((await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments.length, 0);
+  assert.equal((await f.request('GET', `/events?after=${before}`)).body.events.length, 0);
+});
+
+test('restart requeues persisted expired leases with attempt incremented', async t => {
+  const f = await fixture(t, { leaseDurationMs: 30, maintenanceIntervalMs: 60000 }); const { run } = await f.run(); await f.seed(run.id); const node = await f.enroll();
+  const work = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
+  await sleep(40); await f.restart();
+  const requeued = (await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments[0]; assert.equal(requeued.status, 'queued'); assert.equal(requeued.attempt, work.attempt + 1);
 });

@@ -128,6 +128,7 @@ export class Hub {
       let changed = false;
       await this.store.transaction(() => {
         const time = Date.now();
+        for (const cancellation of this.store.list('cancellation', value => Date.parse(value.leaseExpiresAt) <= time)) this.store.remove('cancellation', cancellation.id);
         for (const machine of this.store.list('machine')) {
           if (machine.status !== 'offline' && time - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) {
             machine.status = 'offline'; this.store.put('machine', machine); this.emit('machine.offline', 'machine', machine); changed = true;
@@ -136,7 +137,7 @@ export class Hub {
         for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, active)) {
           if (Date.parse(value.leaseExpiresAt) <= time) {
             value.status = 'queued'; value.attempt += 1;
-            delete value.machineId; delete value.leaseExpiresAt; delete value.leaseId;
+            delete value.machineId; delete value.leaseExpiresAt;
             this.store.put(kind, value); this.emit(`${kind}.requeued`, kind, value, { attempt: value.attempt });
             if (kind === 'assignment') this.observation.assignment(value); changed = true;
           }
@@ -148,17 +149,33 @@ export class Hub {
   fenced(kind, entityId, auth, body, read = false) {
     const value = this.store.need(kind, entityId);
     const owned = value.machineId === auth.machineId && active(value) && Date.parse(value.leaseExpiresAt) > Date.now();
-    if (auth.kind === 'node' && !owned) fail(409, 'LEASE_LOST', 'This machine no longer holds the lease.');
-    if (!read) {
-      // A machine can reacquire the same item. Its token alone cannot fence old results.
-      if (!active(value) || Date.parse(value.leaseExpiresAt) <= Date.now() ||
-          (body.leaseId === undefined && body.attempt === undefined) ||
-          (body.leaseId !== undefined && body.leaseId !== value.leaseId) ||
-          (body.attempt !== undefined && body.attempt !== value.attempt)) {
-        fail(409, 'LEASE_LOST', 'A current leaseId or attempt is required.');
-      }
+    if (auth.kind === 'node' && !owned) fail(409, 'lease_lost', 'This machine no longer holds the lease.');
+    if (!read && (!active(value) || Date.parse(value.leaseExpiresAt) <= Date.now() ||
+        !Number.isSafeInteger(body.attempt) || body.attempt !== value.attempt)) {
+      fail(409, 'lease_lost', 'The current attempt and an unexpired lease are required.');
     }
     return value;
+  }
+  cancelWork(kind, value) {
+    if (active(value)) {
+      this.store.put('cancellation', { id: `${kind}:${value.id}:${value.attempt}`, kind, entityId: value.id,
+        machineId: value.machineId, attempt: value.attempt, leaseExpiresAt: value.leaseExpiresAt });
+    }
+    value.status = 'cancelled'; delete value.leaseExpiresAt;
+    this.store.put(kind, value); this.emit(`${kind}.cancelled`, kind, value);
+    if (kind === 'assignment') this.observation.assignment(value);
+  }
+  cancellationAck(kind, entityId, auth, body) {
+    if (!Number.isSafeInteger(body.attempt)) return null;
+    const cancelled = body.type === 'cancelled' || (kind === 'job' && body.type === 'completed' && body.data?.status === 'cancelled') ||
+      (kind === 'assignment' && body.type === 'failed' && body.data?.outcome === 'blocked');
+    if (!cancelled) return null;
+    const cancellation = this.store.get('cancellation', `${kind}:${entityId}:${body.attempt}`);
+    if (!cancellation || cancellation.machineId !== auth.machineId || Date.parse(cancellation.leaseExpiresAt) <= Date.now()) return null;
+    if (kind === 'job') requireValue(body.data?.revision === this.store.need(kind, entityId).revision, 'Job cancellation must match the leased revision.');
+    this.store.remove('cancellation', cancellation.id);
+    this.emit(`${kind}.cancellation-acknowledged`, kind, this.store.need(kind, entityId));
+    return { status: 200, body: { accepted: true, status: 'cancelled' } };
   }
   async engineEvent(run, event) {
     const workflow = this.store.need('run-workflow', run.id).workflow;
@@ -193,7 +210,7 @@ export class Hub {
         value.status = 'queued'; value.attempt = previous?.attempt ?? 1; value.requirements ??= {};
         this.requirements(value.requirements);
         if (kind === 'job') {
-          requireValue(/^[a-f0-9]{40}$/i.test(value.revision), 'Job revision must be a full commit SHA.');
+          requireValue(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value.revision), 'Job revision must be a full commit SHA.');
           requireValue(Array.isArray(value.steps), 'Job steps are required.');
           nonblank(value.configHash, 'job configHash'); value.artifacts ??= [];
         }
@@ -205,11 +222,7 @@ export class Hub {
     if (['stopped', 'completed', 'failed'].includes(run.status)) this.cancelRunWork(run);
   }
   cancelRunWork(run) {
-    for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, item => item.runId === run.id && (item.status === 'queued' || active(item)))) {
-      value.status = 'cancelled'; delete value.leaseExpiresAt; delete value.leaseId;
-      this.store.put(kind, value); this.emit(`${kind}.cancelled`, kind, value);
-      if (kind === 'assignment') this.observation.assignment(value);
-    }
+    for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, item => item.runId === run.id && (item.status === 'queued' || active(item)))) this.cancelWork(kind, value);
   }
   requirements(value) {
     object(value, 'requirements');
@@ -236,7 +249,7 @@ export class Hub {
         if (!(requirements.providers ?? []).every(provider => machine.providers.includes(provider))) continue;
         if (kind === 'assignment' && value.harness?.provider && !machine.providers.includes(value.harness.provider)) continue;
         if (value.runId && this.store.need('run', value.runId).status !== 'running') continue;
-        value.status = 'leased'; value.machineId = machine.id; value.leaseId = id('lease');
+        value.status = 'leased'; value.machineId = machine.id;
         value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
         this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
         if (kind === 'assignment') this.observation.assignment(value);
@@ -369,8 +382,9 @@ export class Hub {
       for (const key of ['maxAgents', 'maxJobs']) integer(body.capacity[key], key, 0, 100000);
       for (const key of ['agents', 'jobs']) integer(body.running[key], key, 0, 100000);
       if (body.providers !== undefined) strings(body.providers, 'providers');
+      requireValue(body.status === undefined || ['online', 'draining'].includes(body.status), 'Invalid heartbeat status.');
       machine.capacity = { maxAgents: body.capacity.maxAgents, maxJobs: body.capacity.maxJobs }; machine.running = { agents: body.running.agents, jobs: body.running.jobs };
-      machine.providers = body.providers ?? machine.providers; machine.lastHeartbeatAt = now(); machine.status = machine.drainRequested ? 'draining' : 'online';
+      machine.providers = body.providers ?? machine.providers; machine.lastHeartbeatAt = now(); machine.status = machine.drainRequested || body.status === 'draining' ? 'draining' : 'online';
       if (body.accounts !== undefined) {
         requireValue(Array.isArray(body.accounts) && body.accounts.length <= 1000, 'Invalid accounts snapshot.');
         const accounts = body.accounts.map(account => {
@@ -386,7 +400,8 @@ export class Hub {
         for (const account of this.store.list('account', value => value.machineId === machine.id)) this.store.remove('account', account.id);
         for (const account of accounts) this.store.put('account', account);
       }
-      this.store.put('machine', machine); this.emit('machine.heartbeat', 'machine', machine); return reply({ machineId: machine.id, status: machine.status, heartbeatIntervalMs: this.config.heartbeatIntervalMs });
+      this.store.put('machine', machine); this.emit('machine.heartbeat', 'machine', machine); const cancelled = this.store.list('cancellation', value => value.machineId === machine.id && Date.parse(value.leaseExpiresAt) > Date.now());
+      return reply({ status: machine.status, cancel: { assignments: cancelled.filter(value => value.kind === 'assignment').map(value => value.entityId), jobs: cancelled.filter(value => value.kind === 'job').map(value => value.entityId) } });
     }
     if (path === '/accounts' && method === 'GET') return reply({ accounts: this.store.list('account') });
     if (path === '/jobs' && method === 'GET') return reply({ jobs: this.store.list('job', value => (!query.get('projectId') || value.projectId === query.get('projectId')) && (!query.get('runId') || value.runId === query.get('runId'))) });
@@ -397,11 +412,18 @@ export class Hub {
         if (auth.kind === 'node') this.fenced(kind, entityId, auth, body, true); else this.store.need(kind, entityId);
         return reply({ jobId: entityId, chunks: this.store.list('job-log', value => value.jobId === entityId) });
       }
+      if (action === 'cancel' && kind === 'job' && method === 'POST') {
+        const value = this.store.need(kind, entityId);
+        if (value.status === 'queued' || active(value)) this.cancelWork(kind, value);
+        return reply(value);
+      }
       if (action === 'renew' && method === 'POST') {
         const value = this.fenced(kind, entityId, auth, body); value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
-        this.store.put(kind, value); this.emit(`${kind}.renewed`, kind, value); return reply({ id: value.id, leaseId: value.leaseId, attempt: value.attempt, leaseExpiresAt: value.leaseExpiresAt });
+        this.store.put(kind, value); this.emit(`${kind}.renewed`, kind, value); return reply({ leaseExpiresAt: value.leaseExpiresAt });
       }
       if (action === 'events' && method === 'POST') {
+        const acknowledgement = this.cancellationAck(kind, entityId, auth, body);
+        if (acknowledgement) return acknowledgement;
         const value = this.fenced(kind, entityId, auth, body); object(body.data ?? {}, 'event data');
         const types = kind === 'assignment' ? ['started', 'progress', 'usage', 'message', 'completed', 'failed', 'workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'] : ['started', 'log', 'step', 'completed', 'gate.result'];
         requireValue(types.includes(body.type), 'Invalid work event type.');
@@ -440,7 +462,7 @@ export class Hub {
             if (data.configHash !== undefined) requireValue(data.configHash === value.configHash, 'Job result must match configHash.');
             value.status = data.status; requireValue(Array.isArray(data.artifacts ?? []), 'Invalid artifacts.'); value.artifacts = data.artifacts ?? [];
           }
-          delete value.leaseExpiresAt; delete value.leaseId;
+          delete value.leaseExpiresAt;
         }
         this.store.put(kind, value);
         if (final && value.architectRequestId) await this.workflows.completed(value, data);
