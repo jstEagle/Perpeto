@@ -23,11 +23,11 @@ export function OverviewPage() {
 function Overview({ project, onChanged }: { project: Project; onChanged(): void }) {
   const projectId = project.id;
   const overview = useResource((api) => api.overview(projectId), [projectId], (e) => e.projectId === projectId && (e.type.startsWith('assignment') || e.type.startsWith('run')));
-  const week = useResource((api) => api.usage({ projectId, groupBy: 'day' }), [projectId]);
+  const week = useResource((api) => api.usage({ projectId, groupBy: 'day' }), [projectId], (e) => e.projectId === projectId && e.type === 'assignment.usage', { debounceMs: 2000, maxWaitMs: 10000 });
   const runs = useResource((api) => api.listRuns(projectId), [projectId], (e) => e.projectId === projectId && e.type.startsWith('run'));
   const workflows = useResource((api) => api.listWorkflows(projectId), [projectId], (e) => e.subject.kind === 'workflow');
-  const metrics = useResource((api) => api.projectMetrics(projectId, '24h'), [projectId], (e) => e.projectId === projectId && e.type.startsWith('gate'));
-  const queue = useResource((api) => api.mergeQueue(projectId), [projectId], (e) => e.subject.kind === 'merge');
+  const metrics = useResource((api) => api.projectMetrics(projectId, '24h'), [projectId], (e) => e.projectId === projectId && !!e.runId, { debounceMs: 1500, maxWaitMs: 6000 });
+  const queue = useResource((api) => api.mergeQueue(projectId), [projectId], (e) => e.projectId === projectId && e.subject.kind === 'merge-entry');
   const [editingGoals, setEditingGoals] = useState(false);
 
   const cutoff = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
@@ -179,6 +179,7 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
 }
 
 
+/** The overview reads the 24 h window, which the hub splits into hourly buckets. */
 function TrendNote({ trend }: { trend: number[] }) {
   const prev = trend.slice(0, -1);
   const avg = prev.reduce((a, b) => a + b, 0) / prev.length;
@@ -187,7 +188,7 @@ function TrendNote({ trend }: { trend: number[] }) {
   return (
     <span className="note">
       {' '}
-      · today {last}, {Math.abs(diff) < 0.5 ? 'level with' : diff > 0 ? `${rate(diff)} above` : `${rate(-diff)} below`} the {prev.length}-day average
+      · last hour {last}, {Math.abs(diff) < 0.5 ? 'level with' : diff > 0 ? `${rate(diff)} above` : `${rate(-diff)} below`} the hourly average
     </span>
   );
 }

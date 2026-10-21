@@ -6,21 +6,22 @@ import { Button, Field, PageHeader, Panel } from '../components/ui';
 import { StatusLabel } from '../components/status';
 
 export function SettingsPage() {
-  const { api, settings, connect } = useHub();
-  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? 'http://localhost:7300');
-  const [token, setToken] = useState(settings?.token ?? '');
+  const { api, settings, reconnect, connect } = useHub();
+  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? reconnect ?? 'http://127.0.0.1:4320');
+  const [token, setToken] = useState('');
   const [show, setShow] = useState(false);
   const [test, setTest] = useState<{ tone: 'success' | 'error' | 'accent'; text: string } | null>(null);
   const [touched, setTouched] = useState(false);
 
   const urlError = touched ? checkBaseUrl(baseUrl.trim()) : null;
   const tokenError = touched && !token.trim() ? 'Enter the owner token.' : null;
+  const tabOnly = settings?.auth.kind === 'bearer';
 
   async function testConnection() {
     setTouched(true);
     if (checkBaseUrl(baseUrl.trim()) || !token.trim()) return false;
     setTest({ tone: 'accent', text: 'Checking the hub…' });
-    const hub = new HttpHub({ baseUrl: baseUrl.trim(), token: token.trim() });
+    const hub = new HttpHub({ baseUrl: baseUrl.trim(), auth: { kind: 'bearer', token: token.trim() } });
     try {
       const health = await hub.health();
       await hub.overview();
@@ -32,9 +33,25 @@ export function SettingsPage() {
     }
   }
 
+  /** Prefer an HttpOnly session cookie; keep the token for this tab only if the hub cannot set one. */
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    if (await testConnection()) connect({ baseUrl: baseUrl.trim().replace(/\/+$/, ''), token: token.trim() });
+    if (!(await testConnection())) return;
+    const url = baseUrl.trim().replace(/\/+$/, '');
+    try {
+      const cookie = await HttpHub.startSession(url, token.trim());
+      connect({ baseUrl: url, auth: cookie ? { kind: 'cookie' } : { kind: 'bearer', token: token.trim() } });
+      setToken('');
+    } catch (err) {
+      setTest({ tone: 'error', text: `Could not start a session. ${(err as Error).message}` });
+    }
+  }
+
+  async function disconnect() {
+    if (api instanceof HttpHub) await api.endSession();
+    connect(null);
+    setToken('');
+    setTest(null);
   }
 
   return (
@@ -45,7 +62,12 @@ export function SettingsPage() {
           <Field label="Hub URL" htmlFor="hub-url" error={urlError} hint="The hub’s address. HTTPS is required unless the hub runs on this machine.">
             <input id="hub-url" className="input mono-input" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} spellCheck={false} autoComplete="url" aria-invalid={!!urlError} />
           </Field>
-          <Field label="Owner token" htmlFor="hub-token" error={tokenError} hint="Stored in this browser’s local storage so you stay connected. Anyone with access to this browser profile can read it.">
+          <Field
+            label="Owner token"
+            htmlFor="hub-token"
+            error={tokenError}
+            hint="The hub keeps it in .perpeto/hub/owner.secret. This browser asks the hub for a session cookie and does not store the token. If the hub cannot set one, the token stays in this tab until you close it."
+          >
             <div className="input-row">
               <input
                 id="hub-token"
@@ -62,6 +84,19 @@ export function SettingsPage() {
               </Button>
             </div>
           </Field>
+          {reconnect && !settings && (
+            <p className="note" role="status">
+              The session with <span className="mono">{new URL(reconnect).host}</span> ended. Enter the owner token to connect again.
+            </p>
+          )}
+          {tabOnly && (
+            <div className="callout callout-warning" role="note">
+              <div className="callout-body">
+                <span className="callout-title">The token is kept in this tab only.</span>
+                <span>This hub cannot set a session cookie yet, so the token sits in session storage until the tab closes. Scripts running on this page’s origin can read it. Serve the app only from an origin you trust.</span>
+              </div>
+            </div>
+          )}
           {test && (
             <p role="status">
               <StatusLabel tone={test.tone}>{test.text}</StatusLabel>
@@ -75,15 +110,7 @@ export function SettingsPage() {
               Test connection
             </Button>
             {settings && (
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  connect(null);
-                  setToken('');
-                  setTest(null);
-                }}
-              >
+              <Button type="button" variant="ghost" onClick={() => void disconnect()}>
                 Disconnect and use demo data
               </Button>
             )}

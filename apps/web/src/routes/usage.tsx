@@ -11,8 +11,8 @@ export function UsagePage() {
   const [groupBy, setGroupBy] = useState<UsageGroupBy>('day');
   const [projectId, setProjectId] = useState('');
   const projects = useResource((api) => api.listProjects(), []);
-  const usage = useResource((api) => api.usage({ groupBy, projectId: projectId || undefined }), [groupBy, projectId], (e) => e.type === 'usage.recorded');
-  const byDay = useResource((api) => api.usage({ groupBy: 'day', projectId: projectId || undefined }), [projectId], (e) => e.type === 'usage.recorded');
+  const usage = useResource((api) => api.usage({ groupBy, projectId: projectId || undefined }), [groupBy, projectId], (e) => e.type === 'assignment.usage');
+  const byDay = useResource((api) => api.usage({ groupBy: 'day', projectId: projectId || undefined }), [projectId], (e) => e.type === 'assignment.usage');
 
   const today = new Date().toISOString().slice(0, 10);
   const cutoff = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);

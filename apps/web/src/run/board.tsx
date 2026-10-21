@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useHub } from '../app/hub-context';
 import type { WorkItem, WorkItemStatus, WorkflowGraph } from '../api/types';
 import { Button } from '../components/ui';
-import { WorkStatusLabel } from '../components/status';
+import { StatusLabel, WorkStatusLabel } from '../components/status';
 import { prNumber, shortSha } from '../lib/format';
 
 const COLUMNS: { status: WorkItemStatus; title: string; empty: string }[] = [
@@ -94,10 +94,7 @@ function WorkCard({ item, graph, runLabel }: { item: WorkItem; graph?: WorkflowG
       )}
       {atHuman && !result && (
         <div className="stack-sm" style={{ gap: 8 }}>
-          <span className="status status-warning">
-            <span className="status-mark" aria-hidden="true" />
-            Approval needed
-          </span>
+          <StatusLabel tone="approval">Approval needed</StatusLabel>
           <div className="row" style={{ gap: 8 }}>
             <Button size="sm" variant="primary" busy={busy} onClick={() => decide('approve')}>
               Approve

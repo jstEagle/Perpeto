@@ -523,62 +523,43 @@ code.mono {
   background: var(--surface);
 }
 
-/* Status labels */
+/* Status labels: a 16 px shape plus a word in ink. Colour only reinforces. */
 
 .status {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   font-size: var(--text-12);
   font-weight: 500;
   line-height: 20px;
+  color: var(--ink);
   white-space: nowrap;
 }
 
-.status-mark {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
+.status-icon {
   flex: none;
-  background: var(--muted);
+  color: var(--muted);
 }
 
-.status-neutral .status-mark {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--control-border);
+.status-icon-accent {
+  color: var(--accent);
 }
 
-.status-info .status-mark {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--ink);
+.status-icon-info {
+  color: var(--ink);
 }
 
-.status-accent .status-mark {
-  background: var(--accent);
-}
-
-.status-success {
+.status-icon-success {
   color: var(--success);
 }
 
-.status-success .status-mark {
-  background: var(--success);
-}
-
-.status-warning {
+.status-icon-warning,
+.status-icon-approval {
   color: var(--warning);
 }
 
-.status-warning .status-mark {
-  background: var(--warning);
-}
-
-.status-error {
+.status-icon-error {
   color: var(--error);
-}
-
-.status-error .status-mark {
-  background: var(--error);
 }
 
 /* Panels */
@@ -2064,6 +2045,9 @@ select.input {
 
 .spark-axis span {
   flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: visible;
   display: flex;
   flex-direction: column;
   align-items: center;

@@ -1,21 +1,25 @@
-import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router';
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from '@tanstack/react-router';
 import { Shell } from './shell';
-import { ProjectsPage } from '../routes/projects';
-import { ProjectLayout } from '../routes/project-layout';
-import { OverviewPage } from '../routes/overview';
-import { WorkflowsPage } from '../routes/workflows';
-import { WorkflowPage } from '../routes/workflow';
-import { EditorPage } from '../routes/editor';
-import { RunsPage } from '../routes/runs';
-import { RunPage } from '../routes/run';
-import { WorkPage } from '../routes/work';
-import { MessagesPage } from '../routes/messages';
-import { MergeQueuePage } from '../routes/merge-queue';
-import { MachinesPage } from '../routes/machines';
-import { AccountsPage } from '../routes/accounts';
-import { UsagePage } from '../routes/usage';
-import { SettingsPage } from '../routes/settings';
 import { NotFound } from '../routes/not-found';
+import { Loading } from '../components/ui';
+
+// Each screen loads on first visit, so the graph library and the editor stay
+// out of the first download. NotFound stays in the main chunk.
+const ProjectsPage = lazyRouteComponent(() => import('../routes/projects'), 'ProjectsPage');
+const ProjectLayout = lazyRouteComponent(() => import('../routes/project-layout'), 'ProjectLayout');
+const OverviewPage = lazyRouteComponent(() => import('../routes/overview'), 'OverviewPage');
+const WorkflowsPage = lazyRouteComponent(() => import('../routes/workflows'), 'WorkflowsPage');
+const WorkflowPage = lazyRouteComponent(() => import('../routes/workflow'), 'WorkflowPage');
+const EditorPage = lazyRouteComponent(() => import('../routes/editor'), 'EditorPage');
+const RunsPage = lazyRouteComponent(() => import('../routes/runs'), 'RunsPage');
+const RunPage = lazyRouteComponent(() => import('../routes/run'), 'RunPage');
+const WorkPage = lazyRouteComponent(() => import('../routes/work'), 'WorkPage');
+const MessagesPage = lazyRouteComponent(() => import('../routes/messages'), 'MessagesPage');
+const MergeQueuePage = lazyRouteComponent(() => import('../routes/merge-queue'), 'MergeQueuePage');
+const MachinesPage = lazyRouteComponent(() => import('../routes/machines'), 'MachinesPage');
+const AccountsPage = lazyRouteComponent(() => import('../routes/accounts'), 'AccountsPage');
+const UsagePage = lazyRouteComponent(() => import('../routes/usage'), 'UsagePage');
+const SettingsPage = lazyRouteComponent(() => import('../routes/settings'), 'SettingsPage');
 
 const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
 
@@ -57,7 +61,14 @@ const tree = root.addChildren([
   settings,
 ]);
 
-export const router = createRouter({ routeTree: tree, defaultPreload: false, scrollRestoration: true });
+export const router = createRouter({
+  routeTree: tree,
+  defaultPreload: 'intent',
+  // Shown only if a screen's code takes longer than a moment to arrive.
+  defaultPendingMs: 400,
+  defaultPendingComponent: () => <Loading label="Loading this screen" />,
+  scrollRestoration: true,
+});
 
 declare module '@tanstack/react-router' {
   interface Register {
