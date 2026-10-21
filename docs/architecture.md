@@ -62,7 +62,7 @@ DocRef       { id, title, path?: string, url?: string, kind: 'requirements'|'vis
 Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
 Run          { id, projectId, workflowId, workflowVersion, status: 'running'|'paused'|'stopped'|'completed'|'failed', startedAt, stoppedAt? }
 WorkItem     { id, runId, title, body, nodeId, status: 'queued'|'active'|'blocked'|'done'|'failed', branch?, prUrl?, headSha?, iteration, parentId? }
-Assignment   { id, projectId, runId? /* absent for project-scoped work such as the workflow architect */, workItemId?, nodeId, role, prompt, harness: Harness, policy: AgentPolicy,
+Assignment   { id, projectId, repo: { url, defaultBranch, localPath? } /* copied from the project when created */, runId? /* absent for project-scoped work such as the workflow architect */, workItemId?, nodeId, role, prompt, harness: Harness, policy: AgentPolicy,
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'succeeded'|'failed'|'cancelled',
                machineId?, leaseExpiresAt?, attempt, result?: AssignmentResult }
 Harness      { provider: string, model: string, options?: Record<string, string|boolean> }   // provider = T3 driver kind, e.g. 'claudeAgent', 'codex'
@@ -75,7 +75,9 @@ Job          { id, projectId, runId?, workItemId?, repo, revision /* full commit
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'passed'|'failed'|'cancelled'|'error',
                machineId?, leaseExpiresAt?, attempt, logRef?, artifacts: ArtifactRef[], configHash }
 JobStep      { name, run: string /* shell command */, timeoutSec? }
-MergeEntry   { id, projectId, prUrl, headSha, baseBranch, status: 'queued'|'testing'|'merging'|'merged'|'rejected', jobId?, reason? }
+MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queued'|'testing'|'merging'|'merged'|'rejected', jobId?, reason?,
+               mergedRevision?, deliveryError? }
+// Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
                running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version }
 Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt? }
@@ -205,7 +207,7 @@ Lease wire format, fixed after the node implementation:
 - Renew and event bodies include `attempt` beside `idempotencyKey`. The hub checks machine ownership, attempt and expiry atomically, so an older attempt re-leased to the same machine is fenced off. Renew returns `{ leaseExpiresAt }`; a node that gets no confirmation abandons the work.
 - Heartbeat bodies include `status: 'online'|'draining'`. Heartbeat responses are `{ status, cancel: { assignments: string[], jobs: string[] } }`; the node aborts listed work and reports it `cancelled`. This is how stopping a run or cancelling a job reaches a machine.
 
-An expired lease returns work to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
+An expired lease on run work is reported to the engine as a failed attempt, and the engine's retry policy schedules the next attempt. Project-scoped work and merge-queue jobs return to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
 
 ## Node executors
 
