@@ -8,7 +8,7 @@ import type { Pt, Route, RouteNode } from './router';
 import { buildTemplate, TEMPLATES } from './templates';
 
 const full = { w: 208, h: 120 };
-const compact = { w: COMPACT_W, h: 88 };
+const compact = { w: COMPACT_W, h: 100 };
 
 /**
  * The live map's canvas on a 1440 px screen: the window minus the 248 px

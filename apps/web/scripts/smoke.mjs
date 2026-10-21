@@ -126,6 +126,21 @@ await page.getByText("Delivered into Reviewer's running turn").last().waitFor({ 
 assert.ok(await page.getByText('Unplanned').first().isVisible(), 'unplanned agent messages are marked');
 step('messages: threaded reply, delivery receipt, acknowledge, unplanned flag');
 
+// The sidebar marks exactly one item current on every section's pages.
+for (const [path, label] of [
+  ['/projects/prj_perpeto', 'Overview'],
+  ['/projects/prj_perpeto/runs/run_7q4m2x', 'Runs'],
+  ['/projects/prj_perpeto/messages', 'Messages'],
+  ['/projects/prj_perpeto/workflows/wf_k3build?version=3', 'Workflows'],
+  ['/machines', 'Machines'],
+]) {
+  await page.goto(`${base}${path}`);
+  await page.locator('.sidebar .nav-link').first().waitFor();
+  const currentItems = await page.locator('.sidebar [aria-current="page"]').allInnerTexts();
+  assert.deepEqual(currentItems.map((t) => t.trim().split('\n')[0]), [label], `${path}: ${JSON.stringify(currentItems)}`);
+}
+step('the sidebar marks exactly one current item per page');
+
 // 5. Keyboard: skip link and visible focus.
 await page.goto(`${base}/`);
 await page.getByRole('heading', { name: 'Projects' }).waitFor();
