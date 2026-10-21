@@ -120,7 +120,7 @@ async function configurationChecks(dir, role, config) {
       try { const url = new URL(origin); return !['http:', 'https:'].includes(url.protocol) || url.origin !== origin; } catch { return true; }
     }))) problems.push('Set corsOrigins to exact HTTP(S) origins.');
   }
-  const paths = role === 'hub' ? ['databasePath', 'messagingDatabasePath', 'deliveryDatabasePath', 'workflowDatabasePath', 'deliveryRepositoriesPath', 'ownerTokenPath'] : ['dataDir', 'credentialFile'];
+  const paths = role === 'hub' ? ['databasePath', 'messagingDatabasePath', 'deliveryDatabasePath', 'workflowDatabasePath', 'deliveryRepositoriesPath', 'ownerTokenPath', 'credentialKeyPath'] : ['dataDir', 'credentialFile'];
   const files = [];
   for (const key of paths) {
     const value = config[key];

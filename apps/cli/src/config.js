@@ -31,7 +31,7 @@ export function hubConfig(dir, { host = '127.0.0.1', port = 4320 } = {}) {
   return { host, port, databasePath: './hub/hub.sqlite', messagingDatabasePath: './hub/messaging.sqlite',
     deliveryDatabasePath: './hub/delivery.sqlite', workflowDatabasePath: './hub/workflow.sqlite',
     deliveryRepositoriesPath: './hub/repositories', deliveryLeaseDurationMs: 60000,
-    deliveryMaxStepFailures: 5, deliveryRetryBackoffMs: 2000, ownerTokenPath: './hub/owner.secret',
+    deliveryMaxStepFailures: 5, deliveryRetryBackoffMs: 2000, ownerTokenPath: './hub/owner.secret', credentialKeyPath: './hub/credentials.key',
     corsOrigins: [], requestMaxBytes: 1048576, heartbeatIntervalMs: 10000, leaseDurationMs: 60000,
     longPollMs: 25000, maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
     finishedWorkRetentionMs: 604800000, eventRetentionMs: 2592000000, usageRetentionMs: 2592000000,

@@ -17,6 +17,7 @@
   "deliveryRepositoriesPath": "../.perpeto/hub/repositories",
   "deliveryLeaseDurationMs": 60000,
   "ownerTokenPath": "../.perpeto/hub/owner.secret",
+  "credentialKeyPath": "../.perpeto/hub/credentials.key",
   "corsOrigins": [
     "http://127.0.0.1:4321"
   ],

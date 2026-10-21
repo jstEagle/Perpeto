@@ -55,6 +55,7 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 - Non-secret configuration lives in JSON files under `config/` or a user config directory. Secrets live in owner-only files (mode 600) referenced by path, never in JSON config, CLI arguments, or logs.
 - IDs are strings: a short prefix plus a random suffix (engine-created IDs are deterministic, `wi_<runSuffix>_<n>`, so runs replay identically), for example `prj_…`, `wf_…`, `run_…`, `wi_…`, `asg_…`, `job_…`, `mch_…`, `acct_…`, `mq_…`.
 - Timestamps are ISO 8601 UTC strings.
+- Machine tokens, enrollment codes and session tokens are random and stored only as hashes. Idempotent replays return the original token, kept encrypted under a separate owner-only `credentialKeyPath` file; back it up with the hub databases. A leaked owner secret cannot mint machine tokens.
 - Every mutating request accepts an `idempotencyKey`. A repeat with the same body returns the original result; a repeat with a different body returns `409 conflict`.
 - Errors are `{ "error": { "code": "SNAKE_CASE", "message": "…" } }` and never include raw SQL, stack traces, or secrets.
 - Paths that URL normalization would rewrite (dot segments, encoded slashes, repeated slashes) are rejected with `400 INVALID_PATH`; authorization and routing always use the same normalized path.
@@ -147,7 +148,7 @@ Interaction events are first-class. The executor and messaging layer report them
 | `assignment.state` | Assignment queued, leased, running, finished, with machine and account |
 | `gate.result` | Review, CI or human gate passed or failed |
 
-Interaction events carry `from` and `to` node ids. An interaction with no matching edge is recorded with `unplanned: true` and shown, rather than hidden.
+Interaction events carry `from` and `to` node ids; an end that cannot be resolved through the run's graph is `null` with `sourceUnknown`/`targetUnknown: true`, never a role id. An interaction with no matching edge is recorded with `unplanned: true` and shown, rather than hidden.
 
 ### Metrics
 
@@ -190,6 +191,7 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /accounts` | Subscription pool across machines |
 | `GET /assignments/:id` | One assignment, used to follow the workflow architect |
 | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
+| `GET /jobs/:id/bundle?attempt=N` | Git bundle of a hub-hosted job revision for the leasing machine or the owner; jobs with `source: { kind: 'hub-bundle' }` are fetched this way so any enrolled machine can run them. `409 SOURCE_UNAVAILABLE` if the revision is gone |
 | `GET /projects/:id/merge-queue` | Merge queue |
 | `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
 | `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
