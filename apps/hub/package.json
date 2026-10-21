@@ -18,7 +18,8 @@
     "node": ">=24.13.1 <25"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "load": "node test/load.js"
   },
   "dependencies": {
     "@perpeto/delivery": "*",
