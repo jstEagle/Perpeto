@@ -17,7 +17,7 @@ export const GRID = 16;
 export const SIDE_GAP = 64;
 /** Default space between bands; widened when routing needs more lanes. */
 export const BAND_GAP = 112;
-export const MAX_PER_ROW = 4;
+export const MAX_PER_ROW = 5;
 
 export type Size = { w: number; h: number };
 export type Point = { x: number; y: number };
@@ -79,16 +79,28 @@ export function autoLayout(nodes: GraphNode[], edges: GraphEdge[], size: (id: st
   const slot = new Map<string, { band: number; col: number; side: boolean }>();
   line.forEach((id, i) => slot.set(id, { band: Math.floor(i / perRow), col: i % perRow, side: false }));
 
-  // Anchor each remaining node to a placed neighbour: delegate source, flow
-  // neighbour or the node that escalates to it. Repeat so chains settle.
+  // Anchor each remaining node to the node it serves, strongest tie first:
+  // who delegates to it, who escalates to it, who sends it work, who it
+  // messages, then where it sends work. Repeat so chains settle.
   const rest = nodes.filter((n) => !onLine.has(n.id)).sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y);
-  const neighbours = new Map<string, string[]>();
-  const link = (a: string, b: string) => {
-    neighbours.set(a, [...(neighbours.get(a) ?? []), b]);
-    neighbours.set(b, [...(neighbours.get(b) ?? []), a]);
+  const neighbours = new Map<string, string[][]>();
+  const tie = (id: string, rank: number, other: string) => {
+    const ranks = neighbours.get(id) ?? [[], [], [], [], []];
+    ranks[rank].push(other);
+    neighbours.set(id, ranks);
   };
-  for (const e of edges) link(e.from.node, e.to.node);
-  for (const n of nodes) for (const t of escalationTargets(n)) link(n.id, t);
+  for (const e of edges) {
+    if (e.kind === 'delegates') tie(e.to.node, 0, e.from.node);
+    if (e.kind === 'flow') {
+      tie(e.to.node, 2, e.from.node);
+      tie(e.from.node, 4, e.to.node);
+    }
+    if (e.kind === 'messages') {
+      tie(e.to.node, 3, e.from.node);
+      tie(e.from.node, 3, e.to.node);
+    }
+  }
+  for (const n of nodes) for (const t of escalationTargets(n)) tie(t, 1, n.id);
 
   const taken = new Set<string>();
   const key = (band: number, col: number) => `${band}:${col}`;
@@ -96,7 +108,7 @@ export function autoLayout(nodes: GraphNode[], edges: GraphEdge[], size: (id: st
   for (let round = 0; pending.length && round < nodes.length + 1; round++) {
     const later: GraphNode[] = [];
     for (const n of pending) {
-      const anchor = (neighbours.get(n.id) ?? []).map((id) => slot.get(id)).find(Boolean);
+      const anchor = (neighbours.get(n.id) ?? []).flat().map((id) => slot.get(id)).find(Boolean);
       if (!anchor) {
         later.push(n);
         continue;

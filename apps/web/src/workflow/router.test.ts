@@ -89,3 +89,15 @@ describe('edge router', () => {
     expect(routes.get('m')!.points[0][0]).toBeGreaterThan(routes.get('m')!.points.at(-1)![0]);
   });
 });
+
+describe('auto layout', () => {
+  it('puts side roles under the node that delegates or escalates to them', () => {
+    const g = buildGraph as unknown as WorkflowGraph;
+    const p = autoLayout(g.nodes, g.edges, size);
+    const row = (id: string) => p.get(id)!.y;
+    expect(row('helper')).toBeGreaterThan(row('builder'));
+    expect(row('senior-reviewer')).toBe(row('helper'));
+    expect(row('triage')).toBe(row('helper'));
+    expect(row('ci')).toBeGreaterThan(row('helper'));
+  });
+});

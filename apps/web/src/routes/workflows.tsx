@@ -32,7 +32,7 @@ export function WorkflowsPage() {
               {d.name} version {d.version} is waiting for review
             </span>
             <span className="muted">
-              {d.authoredBy?.kind === 'agent' ? 'Proposed by an agent' : 'Saved by you'} {relative(d.createdAt)}. The active version keeps running until you activate this one.
+              {d.authoredBy?.kind === 'agent' ? 'Proposed by an agent' : 'Saved by you'}{d.createdAt ? ` ${relative(d.createdAt)}` : ''}. The active version keeps running until you activate this one.
             </span>
           </div>
           <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: d.id }} search={{ version: d.version }} className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }}>

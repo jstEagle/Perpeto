@@ -73,8 +73,8 @@ export interface HubApi {
   validateWorkflow(id: string, graph: WorkflowGraph): Promise<ValidationResult>;
   /** Ask the workflow architect for a draft; returns the assignment to follow. */
   requestDraft(projectId: string, input: DraftRequest): Promise<Assignment>;
-  /** Follow an architect (or any) assignment. Not a contract route; see client.ts. */
-  getAssignment(id: string, runIdHint?: string): Promise<Assignment>;
+  /** Follow an architect (or any) assignment. */
+  getAssignment(id: string): Promise<Assignment>;
   listVersions(workflowId: string): Promise<Workflow[]>;
   diffVersions(workflowId: string, from: number, to: number): Promise<GraphDiff>;
   activateVersion(workflowId: string, version: number): Promise<Workflow>;
@@ -85,10 +85,10 @@ export interface HubApi {
   pauseRun(id: string): Promise<Run>;
   resumeRun(id: string): Promise<Run>;
   stopRun(id: string): Promise<Run>;
-  addRunInput(runId: string, input: RunInput): Promise<WorkItem>;
+  addRunInput(runId: string, input: RunInput): Promise<void>;
   listWorkItems(runId: string): Promise<WorkItem[]>;
   listAssignments(runId: string): Promise<Assignment[]>;
-  decideWorkItem(id: string, decision: HumanDecision): Promise<WorkItem>;
+  decideWorkItem(id: string, decision: HumanDecision): Promise<void>;
 
   listMachines(): Promise<Machine[]>;
   createEnrollmentCode(): Promise<EnrollmentCode>;
@@ -105,6 +105,10 @@ export interface HubApi {
 
   usage(query: UsageQuery): Promise<UsageSummary>;
   events(after?: number, limit?: number): Promise<HubEvent[]>;
+  /** Sequence number of the newest event, to start a live stream without replaying history. */
+  latestSeq(): Promise<number>;
+  /** The newest `limit` events that match, oldest first. */
+  recentEvents(limit: number, match?: (event: HubEvent) => boolean): Promise<HubEvent[]>;
   /** Live events after `after`. Returns an unsubscribe function. */
   subscribe(after: number, onEvent: (event: HubEvent) => void, onState: (state: StreamState) => void): () => void;
 

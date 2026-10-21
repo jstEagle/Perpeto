@@ -10,12 +10,15 @@ import { EdgeLegend, GraphCanvas } from '../workflow/graph-canvas';
 import type { Selection } from '../workflow/graph-canvas';
 import { BOTTLENECK_LABEL } from '../workflow/step-node';
 import { NODE_SPECS, providerLabel } from '../workflow/registry';
-import { INTERACTION_TYPES, InteractionFeed, useRunEvents } from '../run/feed';
+import { InteractionFeed, useRunEvents } from '../run/feed';
 import { BottlenecksPanel, VelocityPanel, WhereRunningPanel } from '../run/panels';
 import { WorkBoard } from '../run/board';
 import { duration, pct, rate, relative, tokens } from '../lib/format';
 
 type Tab = 'map' | 'work' | 'assignments' | 'timeline';
+
+/** Metrics are recomputed by the hub per request; coalesce bursts of events into one fetch a second, at most every 4 s. */
+const METRICS_REFRESH = { debounceMs: 1000, maxWaitMs: 4000 };
 
 export function RunPage() {
   const { projectId, runId } = useParams({ from: '/projects/$projectId/runs/$runId' });
@@ -41,7 +44,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
 
   const isRunEvent = (e: { runId?: string }) => e.runId === run.id;
   const versions = useResource((a) => a.listVersions(run.workflowId), [run.workflowId], (e) => e.subject.kind === 'workflow' && e.subject.id === run.workflowId);
-  const metrics = useResource((a) => a.runMetrics(run.id, metricsWindow), [run.id, metricsWindow], (e) => isRunEvent(e) && INTERACTION_TYPES.has(e.type));
+  const metrics = useResource((a) => a.runMetrics(run.id, metricsWindow), [run.id, metricsWindow], isRunEvent, METRICS_REFRESH);
   const items = useResource((a) => a.listWorkItems(run.id), [run.id], (e) => isRunEvent(e) && (e.type.startsWith('workitem') || e.type === 'gate.result'));
   const assignments = useResource((a) => a.listAssignments(run.id), [run.id], (e) => isRunEvent(e) && e.type.startsWith('assignment'));
   const machines = useResource((a) => a.listMachines(), [], (e) => e.subject.kind === 'machine');
@@ -124,7 +127,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
         </div>
       )}
       {top.map((b) => (
-        <div key={b.nodeId} className={`callout callout-${b.severity}`}>
+        <div key={`${b.nodeId}-${b.reason}`} className={`callout callout-${b.severity}`}>
           <div className="callout-body">
             <span className="callout-title">
               {version?.graph.nodes.find((n) => n.id === b.nodeId)?.label ?? b.nodeId}: {BOTTLENECK_LABEL[b.reason].toLowerCase()}
@@ -218,7 +221,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
                     }
                     flush
                   >
-                    <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={selection} />
+                    <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={selection} items={items.data} machines={machines.data} />
                   </Panel>
                   <NodeTable graph={version.graph} metrics={metrics.data} selection={selection} onSelect={setSelection} />
                 </div>
@@ -246,7 +249,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
         )}
         {tab === 'timeline' && version && (
           <Panel title="Timeline" flush>
-            <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={null} limit={60} onlyInteractions={false} />
+            <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={null} limit={60} onlyInteractions={false} items={items.data} machines={machines.data} />
           </Panel>
         )}
       </div>
@@ -323,7 +326,7 @@ function NodeTable({ graph, metrics, selection, onSelect }: { graph: WorkflowGra
 function selectionName(selection: NonNullable<Selection>, graph: WorkflowGraph, metrics: MetricsSnapshot) {
   if (selection.kind === 'node') return graph.nodes.find((n) => n.id === selection.id)?.label ?? selection.id;
   const e = graph.edges.find((x) => x.id === selection.id);
-  const name = (id?: string) => graph.nodes.find((n) => n.id === id)?.label ?? id;
+  const name = (id?: string | null) => graph.nodes.find((n) => n.id === id || n.config?.role === id)?.label ?? id ?? '—';
   if (e) return `${name(e.from.node)} → ${name(e.to.node)}`;
   const u = metrics.edges.find((x) => x.edgeId === selection.id);
   return u ? `${name(u.from)} → ${name(u.to)}, unplanned` : selection.id;
@@ -349,7 +352,7 @@ function SelectionPanel({
   if (selection.kind === 'edge') {
     const e = graph.edges.find((x) => x.id === selection.id);
     const m = metrics.edges.find((x) => x.edgeId === selection.id);
-    const name = (id?: string) => graph.nodes.find((n) => n.id === id)?.label ?? id;
+    const name = (id?: string | null) => graph.nodes.find((n) => n.id === id || n.config?.role === id)?.label ?? id ?? '—';
     return (
       <Panel title="Connection" actions={<Button size="sm" variant="ghost" onClick={onClear}>Clear</Button>}>
         <dl className="kv">
@@ -500,7 +503,6 @@ function AssignmentsTable({ assignments, items, machines, graph }: { assignments
 
 function AddInputDialog({ open, onClose, runId }: { open: boolean; onClose(): void; runId: string }) {
   const { api } = useHub();
-  const [kind, setKind] = useState<'idea' | 'input'>('idea');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
@@ -516,8 +518,8 @@ function AddInputDialog({ open, onClose, runId }: { open: boolean; onClose(): vo
     setBusy(true);
     setError(null);
     try {
-      const item = await api.addRunInput(runId, { kind, title: title.trim(), body: body.trim() || undefined });
-      setDone(`Added as ${item.id}.`);
+      await api.addRunInput(runId, { title: title.trim(), body: body.trim() || undefined });
+      setDone(`Added "${title.trim()}". It enters the run at its input node.`);
       setTitle('');
       setBody('');
     } catch (err) {
@@ -544,25 +546,16 @@ function AddInputDialog({ open, onClose, runId }: { open: boolean; onClose(): vo
             {done ? 'Done' : 'Cancel'}
           </Button>
           <Button variant="primary" type="submit" form="add-input" busy={busy}>
-            Add {kind === 'idea' ? 'idea' : 'input'}
+            Add input
           </Button>
         </>
       }
     >
       <form id="add-input" className="form" onSubmit={submit}>
-        <Segmented<'idea' | 'input'>
-          label="Input kind"
-          value={kind}
-          onChange={setKind}
-          options={[
-            { value: 'idea', label: 'Idea' },
-            { value: 'input', label: 'Input item' },
-          ]}
-        />
         <Field label="Title" htmlFor="in-title">
           <input id="in-title" className="input" value={title} onChange={(e) => setTitle(e.target.value)} autoComplete="off" />
         </Field>
-        <Field label="Details" htmlFor="in-body" hint="Context, acceptance criteria, links.">
+        <Field label="Details" htmlFor="in-body" hint="Context, acceptance criteria, links. The planner reads this.">
           <textarea id="in-body" className="input" rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
         </Field>
         {error && (

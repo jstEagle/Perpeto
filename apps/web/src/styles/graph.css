@@ -15,7 +15,7 @@
 }
 
 .graph-map {
-  height: 640px;
+  height: 720px;
 }
 
 .graph-fill {
@@ -372,6 +372,10 @@
   transition: opacity var(--duration-base) var(--ease-standard);
 }
 
+.gedge-fail {
+  stroke: var(--muted);
+}
+
 .gedge-unreached {
   stroke: var(--control-border);
   stroke-dasharray: 4 4;
@@ -495,10 +499,21 @@
   justify-content: flex-end;
   gap: var(--space-3);
   height: 44px;
-  padding: 0 var(--space-2) 0 var(--space-4);
+  padding: 0 var(--space-2);
   background: var(--surface);
   border-bottom: var(--stroke-hairline) solid var(--border);
   font-size: var(--text-12);
+}
+
+.graph-zoom {
+  display: flex;
+  margin-right: auto;
+  gap: var(--space-1);
+}
+
+.graph-zoom .icon-btn {
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
 }
 
 .graph-bar-label {

@@ -1,7 +1,8 @@
 const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 const whole = new Intl.NumberFormat('en');
 
-export function tokens(n: number): string {
+export function tokens(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—';
   return n < 10_000 ? whole.format(n) : compact.format(n);
 }
 
