@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunStore } from '../src/index.js';
-import { Driver, sha, code } from './fixtures.js';
+import { Driver, bare, sha, code } from './fixtures.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'perpeto-workflow-'));
@@ -128,4 +128,17 @@ test('validates run ids and run.started consistency', t => {
   assert.throws(() => store.apply('run_test1', run.event('run.paused')), code('RUN_NOT_FOUND'));
   assert.equal(store.getRun('run_test1'), null);
   assert.equal(store.getState('run_test1'), null);
+});
+
+test('verify replays graphs whose warnings depend on key order', t => {
+  // The store keeps events with sorted keys, so warnings must not depend on the order keys were written in.
+  const { open } = fixture(t);
+  const holder = { store: open() };
+  const graph = { ...bare('build'), zeta: 1, alpha: 2 };
+  const builder = graph.nodes.find(entry => entry.id === 'builder');
+  builder.config = { zulu: 1, ...builder.config, alpha: 2 };
+  const run = storeDriver(holder);
+  run.start({ graph });
+  assert.equal(run.state.plan.warnings.length, 3);
+  assert.deepEqual(holder.store.verify('run_test1'), { ok: true, events: 1 });
 });

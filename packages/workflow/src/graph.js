@@ -34,7 +34,8 @@ const integer = (min, max, code) => value =>
 const stringArray = (max = 100) => value =>
   Array.isArray(value) && value.length <= max && value.every(item => isText(item, 200)) && new Set(value).size === value.length
     ? null : invalid(`must be an array of at most ${max} distinct nonblank strings.`);
-const exactKeys = (value, allowed) => Object.keys(value).find(key => !allowed.includes(key));
+// Keys are checked in sorted order so issues do not depend on how the JSON was written (stored events sort keys).
+const exactKeys = (value, allowed) => Object.keys(value).sort().find(key => !allowed.includes(key));
 
 function harness(value) {
   const bad = message => invalid(message, 'INVALID_HARNESS');
@@ -188,7 +189,7 @@ function analyse(graph, { providers } = {}) {
       const problem = field.check(config[key]);
       if (problem) error(problem[0], `${node.type} node "${node.id}" config.${key} ${problem[1]}`, at);
     }
-    for (const key of Object.keys(config)) {
+    for (const key of Object.keys(config).sort()) {
       if (!Object.hasOwn(spec, key)) warn('UNKNOWN_CONFIG_KEY', `${node.type} node "${node.id}" has unknown config key "${key}".`, at);
     }
     if (node.type === 'loop' && typeof config.expectedIterations === 'number' && Number.isSafeInteger(config.maxIterations) &&
