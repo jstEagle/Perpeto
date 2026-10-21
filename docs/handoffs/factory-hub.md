@@ -1,6 +1,6 @@
 # Factory hub handoff
 
-Implemented in `packages/factory-hub/**` and `config/hub.example.json`; no architecture, other package, upstream runtime, or root configuration changes. Branch: `t3/build-factory-hub`. Based on `e02784f`, with the later agent-authored workflow, run observation and fixed node wire-format contracts read directly from `main` in `/Users/justuswork/Documents/Perpeto`.
+Implemented in `apps/hub/**` and `config/hub.example.json`; no architecture, other package, upstream runtime, or root configuration changes. Branch: `t3/build-factory-hub`. Based on `e02784f`, with the later agent-authored workflow, run observation and fixed node wire-format contracts read directly from `main` in `/Users/justuswork/Documents/Perpeto`.
 
 ## What exists
 
@@ -16,7 +16,7 @@ Implemented in `packages/factory-hub/**` and `config/hub.example.json`; no archi
 
 ## Workflow integration boundary
 
-`src/engine/workflow-adapter.js` deliberately fails closed with `503 ENGINE_UNAVAILABLE`. The lead must map actual `@perpeto/factory-workflow` exports and its RunStore into this small interface. No production path imports the test stub.
+`src/engine/workflow-adapter.js` deliberately fails closed with `503 ENGINE_UNAVAILABLE`. The lead must map actual `@perpeto/workflow` exports and its RunStore into this small interface. No production path imports the test stub.
 
 ```text
 validate(graph) -> { valid, errors }
@@ -37,7 +37,7 @@ Executed on this Mac with Node `v24.22.0`, using:
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24
-node --test packages/factory-hub/test/hub.test.js
+node --test apps/hub/test/hub.test.js
 npm test
 ```
 

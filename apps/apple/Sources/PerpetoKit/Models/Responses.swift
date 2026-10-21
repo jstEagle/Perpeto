@@ -117,7 +117,7 @@ public struct DraftRequestResult: Codable, Hashable, Sendable {
     }
 }
 
-// MARK: - Messaging (factory-core model, served under /api/v1/messaging)
+// MARK: - Messaging (@perpeto/messaging model, served under /api/v1/messaging)
 
 public struct Channel: Codable, Hashable, Identifiable, Sendable {
     public var id: String

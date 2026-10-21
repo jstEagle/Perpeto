@@ -61,10 +61,15 @@ if ! command -v pnpm >/dev/null 2>&1; then
   exit 1
 fi
 [ "$(pnpm --version)" = '11.10.0' ] || { echo 'Select pnpm 11.10.0, then rerun.' >&2; exit 1; }
-target="$install_dir/packages/perpeto-cli/bin/perpeto.js"
+target="$install_dir/apps/cli/bin/perpeto.js"
+# Installs made before the apps/ layout link the CLI from packages/perpeto-cli; re-point those.
+legacy_target="$install_dir/packages/perpeto-cli/bin/perpeto.js"
 link="$bin_dir/perpeto"
+relink=''
 if [ -e "$link" ] || [ -L "$link" ]; then
-  [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ] || { echo 'An unrelated perpeto bin already exists. Choose --bin-dir.' >&2; exit 1; }
+  if [ -L "$link" ] && [ "$(readlink "$link")" = "$legacy_target" ]; then relink=1
+  else [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ] || { echo 'An unrelated perpeto bin already exists. Choose --bin-dir.' >&2; exit 1; }
+  fi
 fi
 if [ -e "$install_dir" ]; then
   [ -d "$install_dir/.git" ] || { echo 'Install directory is not a standalone Git checkout. Choose an empty path.' >&2; exit 1; }
@@ -84,6 +89,6 @@ cd "$install_dir"
 npm run setup
 npm run build
 mkdir -p "$bin_dir"
-if [ ! -L "$link" ]; then ln -s "$target" "$link"; fi
+if [ ! -L "$link" ]; then ln -s "$target" "$link"; elif [ -n "$relink" ]; then ln -sfn "$target" "$link"; fi
 echo "Installed: $link"
 echo "Add $bin_dir to PATH, then run: perpeto hub init && perpeto hub start"

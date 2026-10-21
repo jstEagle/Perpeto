@@ -11,7 +11,7 @@ struct EntityDecodingTests {
     @Test func project() throws {
         let project = try decode(Project.self, """
         { "id": "prj_a1", "name": "perpeto", "repo": { "url": "https://github.com/jstEagle/Perpeto", "defaultBranch": "main" },
-          "docs": [{ "id": "doc_1", "title": "Vision", "path": "docs/vision.md", "kind": "vision" }],
+          "docs": [{ "id": "doc_1", "title": "Vision", "path": "docs/product/vision.md", "kind": "vision" }],
           "goals": ["Ship"], "createdAt": "2026-10-21T09:00:00.000Z", "updatedAt": "2026-10-21T09:30:00Z" }
         """)
         #expect(project.repo.defaultBranch == "main")

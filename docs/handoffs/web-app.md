@@ -2,7 +2,7 @@
 
 Implemented `apps/web`: a self-contained Vite + React + TypeScript app with TanStack Router (code-based routes) and `@xyflow/react` for workflow graphs. It has its own lockfile and `dev`, `build`, `test`, `typecheck`, `screenshots` scripts. Node 24. Default dev port 5180.
 
-It follows `docs/architecture.md` as of the "Agent-authored workflows" and "Observing runs" addendum on `main`. It talks only to the hub; it was not run against a real hub because none existed in this worktree. Every screen was exercised with the built-in demo adapter.
+It follows `docs/architecture/README.md` as of the "Agent-authored workflows" and "Observing runs" addendum on `main`. It talks only to the hub; it was not run against a real hub because none existed in this worktree. Every screen was exercised with the built-in demo adapter.
 
 ## What exists
 
@@ -18,7 +18,7 @@ It follows `docs/architecture.md` as of the "Agent-authored workflows" and "Obse
 
 ## Brand
 
-All colour, type, spacing and radius values come from `src/styles/tokens.css`, which imports `brand/tokens.css` and defines the `--text-*`, `--space-*` and `--leading-*` scales plus tints mixed from canonical tokens. To adopt `packages/design-tokens`, repoint that one import and delete the stopgap scale. A grep finds no colour literals elsewhere; the only hex in `src` is the logo recolour regex. Logos are unchanged copies of `brand/identity/*.svg` in `src/brand/`, rendered with `currentColor`; the loader is the Relay motion from `brand/motion`, static under reduced motion. No favicon is set because brand.md says not to ship an untested symbol as one.
+All colour, type, spacing and radius values come from `src/styles/tokens.css`, which imports `brand/tokens.css` and defines the `--text-*`, `--space-*` and `--leading-*` scales plus tints mixed from canonical tokens. To adopt `packages/design-tokens`, repoint that one import and delete the stopgap scale. A grep finds no colour literals elsewhere; the only hex in `src` is the logo recolour regex. Logos are unchanged copies of `brand/identity/*.svg` in `src/brand/`, rendered with `currentColor`; the loader is the Relay motion from `brand/motion`, static under reduced motion. No favicon is set because brand/README.md says not to ship an untested symbol as one.
 
 ## Verification
 

@@ -51,7 +51,7 @@ struct MainWindow: View {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // Dark mode is intentionally undefined in brand.md; stay in light appearance.
+        // Dark mode is intentionally undefined in brand/README.md; stay in light appearance.
         NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.setActivationPolicy(.regular)
         if let directory = IconRenderer.requestedDirectory {

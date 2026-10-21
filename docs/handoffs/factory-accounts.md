@@ -4,7 +4,7 @@ Implemented on `t3/factory-account-pool`, based on the supplied Perpeto foundati
 
 ## What exists
 
-- Dependency-free ESM/JSDoc package [`@perpeto/factory-accounts`](../../packages/factory-accounts/README.md), with `AccountPool` / `createAccountPool` exports and a [JSON configuration example](../../config/accounts.example.json).
+- Dependency-free ESM/JSDoc package [`@perpeto/accounts`](../../packages/accounts/README.md), with `AccountPool` / `createAccountPool` exports and a [JSON configuration example](../../config/accounts.example.json).
 - Explicit same-machine copy enrollment for file-backed Claude/Codex current homes and ccswap stores. Credentials live only in private Perpeto homes under the node data directory. No source/account-switching commands, Keychain access, global login mutation, or cross-machine credential transfer.
 - Durable LRU/headroom selection, assignment reservations, configurable per-account concurrency, idempotency/conflict detection, cooldowns, disable/enable, and invalid authentication state. Selection ties use a persisted sequence. Enabling never clears invalidity/cooldowns.
 - `snapshot()` produces the exact architecture `Account[]` fields without local paths, tokens, credential fingerprints, usage payloads, or source profiles.
@@ -16,7 +16,7 @@ Implemented on `t3/factory-account-pool`, based on the supplied Perpeto foundati
 
 Verified on Node `v24.22.0` after `source ~/.nvm/nvm.sh && nvm use 24`:
 
-- `node --test packages/factory-accounts/test/accounts.test.js`: the initial 14-test suite passed; subsequent coverage is included in the root run below.
+- `node --test packages/accounts/test/accounts.test.js`: the initial 14-test suite passed; subsequent coverage is included in the root run below.
 - Final `npm test`: **39 passed**, including **18 accounts tests**. Tests generate all credential material as synthetic fixture strings. They cover both import layouts, source preservation, permissions, safe errors, snapshots, LRU/headroom, same-millisecond ordering, cooldown expiry/fallback, sparse resets, idempotent retries, restart reservations, disable/auth precedence, independent handles, and competing child processes.
 - `git diff --check` and staged whitespace checks passed.
 - Read installed `ccswap help` plus its `paths.py`, `credentials.py`, `codex.py` and `session.py`. No real account/store data was read or imported. No switch/add/remove commands were run.
@@ -36,7 +36,7 @@ Construct one pool with the node's private data directory and machine ID. All mu
 
 ## Contract deviations and requests
 
-No shared entity/schema changes are requested. `docs/architecture.md` was not edited. The public heartbeat shape matches `Account`.
+No shared entity/schema changes are requested. `docs/architecture/README.md` was not edited. The public heartbeat shape matches `Account`.
 
 Clarify the architecture's “next eligible account takes over” sentence as **new assignment/retry placement**, rather than seamless transfer of a running conversation. This package deliberately does not move T3 sessions between account homes or replay side-effecting work. The executor owns that policy and its verification.
 

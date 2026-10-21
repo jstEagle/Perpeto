@@ -1,0 +1,21 @@
+{
+  "name": "@perpeto/t3-executor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node executor that runs work items as T3 Code threads with agent policy.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./policy-store": "./src/policy-store.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "live": "node scripts/live-check.mjs"
+  },
+  "devDependencies": {
+    "@perpeto/node": "*"
+  }
+}

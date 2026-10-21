@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
-import { MessagingError } from "../../../../../../packages/factory-transport/src/storage.js";
+import { MessagingError } from "../../../../../../packages/messaging/src/messaging-store.js";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as AgentPolicy from "./AgentPolicy.ts";
 import * as Messaging from "./Messaging.ts";

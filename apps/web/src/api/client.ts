@@ -57,7 +57,7 @@ function one<T>(body: unknown, key: string): T {
   return body as T;
 }
 
-/** Client for Hub API v1 (docs/architecture.md). */
+/** Client for Hub API v1 (docs/architecture/README.md). */
 export class HttpHub implements HubApi {
   readonly mode = 'hub' as const;
   readonly #base: string;

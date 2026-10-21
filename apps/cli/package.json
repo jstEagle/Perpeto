@@ -1,0 +1,20 @@
+{
+  "name": "@perpeto/cli",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The perpeto command: install, configure, run and supervise hubs and nodes.",
+  "type": "module",
+  "bin": {
+    "perpeto": "./bin/perpeto.js"
+  },
+  "engines": {
+    "node": ">=24.13.1 <25"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@perpeto/hub": "*",
+    "@perpeto/node": "*"
+  }
+}

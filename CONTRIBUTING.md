@@ -1,8 +1,8 @@
 # Contributing
 
-Perpeto is in early implementation. Read the [vision](docs/vision.md), [build brief](docs/brief.md), and [current status](docs/status.md) before changing direction.
+Perpeto is in early implementation. Read the [vision](docs/product/vision.md), [build brief](docs/product/brief.md), and [current status](docs/product/status.md) before changing direction.
 
-Keep proposals, implemented behavior, and verified outcomes distinct. Include a real workflow or failure case when proposing a change. New factory code lives outside `vendor/t3code`; deliberate changes to the imported foundation must include provenance and verification updates.
+Keep proposals, implemented behavior, and verified outcomes distinct. Include a real workflow or failure case when proposing a change. New factory code lives outside `vendor/t3code`: deployable surfaces in `apps/`, libraries in `packages/`, cross-package suites in `tests/`, each with its own README and `test` script. Import other workspaces by package name, not relative path. Deliberate changes to the imported foundation must include provenance and verification updates.
 
 Run `npm test` for Perpeto code. Changes involving the inherited runtime also need `npm run test:upstream` and `npm run build`. Use `npm run verify:upstream` to check the original source import; update the recorded hashes only when an upstream change is intentional and explained.
 

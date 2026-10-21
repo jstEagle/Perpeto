@@ -6,18 +6,28 @@
   "engines": {
     "node": ">=24.13.1 <25"
   },
+  "workspaces": [
+    "apps/web",
+    "apps/hub",
+    "apps/node",
+    "apps/cli",
+    "packages/*",
+    "tests/*"
+  ],
   "scripts": {
     "setup": "npm install --no-audit --no-fund && node scripts/runtime.mjs setup",
     "build": "node scripts/runtime.mjs build",
     "start": "node scripts/runtime.mjs start",
     "test": "node scripts/test.mjs",
+    "test:e2e": "node --test tests/e2e/test/build-run.test.js tests/e2e/test/architect.test.js",
     "test:upstream": "node scripts/runtime.mjs test",
     "verify:upstream": "node scripts/check-upstream.mjs",
     "runtime:help": "node scripts/runtime.mjs help",
     "smoke:messaging": "node scripts/smoke-messaging.mjs",
-    "test:e2e": "node --test packages/factory-e2e/test/build-run.test.js packages/factory-e2e/test/architect.test.js"
-  },
-  "workspaces": [
-    "packages/*"
-  ]
+    "dev:web": "npm run dev -w @perpeto/web",
+    "build:web": "npm run build -w @perpeto/web",
+    "build:apple": "swift build --package-path apps/apple",
+    "hub": "node apps/hub/bin/perpeto-hub.js",
+    "node": "node apps/node/bin/perpeto-node.js"
+  }
 }

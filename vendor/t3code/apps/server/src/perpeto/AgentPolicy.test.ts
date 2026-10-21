@@ -20,7 +20,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import { afterEach, beforeEach } from "vitest";
 
-import { AgentPolicyStore } from "../../../../../../packages/factory-t3/src/policy-store.js";
+import { AgentPolicyStore } from "../../../../../../packages/t3-executor/src/policy-store.js";
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";

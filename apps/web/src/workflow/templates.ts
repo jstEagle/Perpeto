@@ -2,8 +2,8 @@ import type { GraphEdge, GraphNode, WorkflowGraph, WorkflowPurpose } from '../ap
 import { NODE_SPECS } from './registry';
 
 /**
- * Local copies of the default templates described in docs/architecture.md.
- * The hub's packages/factory-workflow/templates/ are canonical; these seed
+ * Local copies of the default templates described in docs/architecture/README.md.
+ * The hub's packages/workflow/templates/ are canonical; these seed
  * the editor and the demo data.
  */
 

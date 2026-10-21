@@ -1,0 +1,28 @@
+{
+  "name": "@perpeto/hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Factory hub: HTTP API, workflow engine, messaging and delivery merge queues.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./engine": "./src/engine/workflow-adapter.js",
+    "./delivery": "./src/delivery/index.js",
+    "./delivery/github": "./src/delivery/github.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "perpeto-hub": "./bin/perpeto-hub.js"
+  },
+  "engines": {
+    "node": ">=24.13.1 <25"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@perpeto/delivery": "*",
+    "@perpeto/messaging": "*",
+    "@perpeto/workflow": "*"
+  }
+}

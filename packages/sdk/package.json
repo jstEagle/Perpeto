@@ -1,0 +1,20 @@
+{
+  "name": "@perpeto/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Messaging HTTP client, perpeto-messages CLI and MCP stdio server.",
+  "type": "module",
+  "exports": {
+    ".": "./src/client.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "perpeto-messages": "./src/cli.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

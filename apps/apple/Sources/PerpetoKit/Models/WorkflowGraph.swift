@@ -1,6 +1,6 @@
 import Foundation
 
-// Workflow graph v1 from docs/architecture.md.
+// Workflow graph v1 from docs/architecture/README.md.
 
 public struct WorkflowGraph: Codable, Hashable, Sendable {
     public static let schemaV1 = "perpeto.workflow/1"

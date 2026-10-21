@@ -53,7 +53,7 @@ export interface WorkflowUpdate {
 
 /**
  * Everything the screens need from a hub. Implemented by HttpHub (a real
- * hub, docs/architecture.md "Hub API v1") and DemoHub (fixtures).
+ * hub, docs/architecture/README.md "Hub API v1") and DemoHub (fixtures).
  */
 export interface HubApi {
   readonly mode: 'hub' | 'demo';

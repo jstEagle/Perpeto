@@ -1,13 +1,13 @@
 # Apple app handoff
 
-Status: early implementation on branch `t3/2f00a902`, 21 October 2026. A native SwiftUI client in `apps/apple`, built on the contract in [the architecture](../architecture.md) including the agent-authored workflows and observing-runs addendum. It runs on demo fixtures. It has not been run against a live hub.
+Status: early implementation on branch `t3/2f00a902`, 21 October 2026. A native SwiftUI client in `apps/apple`, built on the contract in [the architecture](../architecture/README.md) including the agent-authored workflows and observing-runs addendum. It runs on demo fixtures. It has not been run against a live hub.
 
 ## What exists
 
 - **PerpetoKit:** Codable models for every contract entity, `Workflow.authoredBy`, `rationale` and `parentVersion`, and `NodeMetrics`, `EdgeMetrics`, `RunMetrics` and `Bottleneck`. Unknown enum values decode to `unknown` rather than failing a response. Workflow graph v1 with local validation and a version diff. An async Hub API v1 client covering every route in the contract table plus messaging, with server-sent events and reconnect from the last `seq`. The owner token lives in the Keychain; the hub URL in UserDefaults.
 - **Demo fixtures:** the `perpeto` project runs its Build workflow on two machines. The single reviewer is saturated (utilization 1.00, queue 3 → 7), the review loop shows rework (four items on iteration 3 of 3, one failed at the limit), builders sit at 67%, and a reviewer agent has proposed draft version 4 that adds a UI reviewer. Builder-to-planner messages appear as unplanned interactions.
 - **Screens:** sidebar per contract with project vitals in the toolbar; overview with top bottleneck and velocity; prompt-first workflows with architect progress, proposal rationale, a diff against the active version, Activate, Ask for changes and Edit by hand, and version history; a hand editor with draggable nodes, typed ports, three edge kinds, inspector and validation; a run live map with per-node load, queue, wait, throughput and utilization, work-item markers, edge traffic counts, unplanned interactions, bottleneck reasons and evidence, velocity, where-work-is-running and a selection-filtered interaction feed; work, messages, merge queue, machines, accounts and usage (Swift Charts).
-- **Brand:** Workshop tokens only, system font with monospace for identifiers and logs, 6 and 12 pt radii, ruled surfaces, explicit status labels, no uppercase microcopy, kickers or gradients. The only motion is the Flywheel Spindle loader while the architect works, plus a 0.18 s map transition; both are off under Reduce Motion. Light appearance is forced because dark mode is undefined in brand.md.
+- **Brand:** Workshop tokens only, system font with monospace for identifiers and logs, 6 and 12 pt radii, ruled surfaces, explicit status labels, no uppercase microcopy, kickers or gradients. The only motion is the Flywheel Spindle loader while the architect works, plus a 0.18 s map transition; both are off under Reduce Motion. Light appearance is forced because dark mode is undefined in brand/README.md.
 
 ## Verification
 

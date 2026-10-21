@@ -1,10 +1,10 @@
 # Factory delivery handoff
 
-Originally implemented on `t3/factory-delivery`. GitHub publication follow-up is on `t3/github-merge-publication`, based on `13cdd2d`. Changes are confined to `packages/factory-delivery/**` and this handoff. No upstream/runtime or shared architecture files changed. No real remote push, merge, GitHub mutation, or live credential test was performed. Git pushes in tests target temporary local bare repositories only.
+Originally implemented on `t3/factory-delivery`. GitHub publication follow-up is on `t3/github-merge-publication`, based on `13cdd2d`. Changes are confined to `packages/delivery/**` and this handoff. No upstream/runtime or shared architecture files changed. No real remote push, merge, GitHub mutation, or live credential test was performed. Git pushes in tests target temporary local bare repositories only.
 
 ## What exists
 
-`@perpeto/factory-delivery` is a dependency-free Node 24 ESM library with JSDoc contracts and these root exports:
+`@perpeto/delivery` is a dependency-free Node 24 ESM library with JSDoc contracts and these root exports:
 
 - `buildJob`, `normalizeCI`, `isEvidenceCurrent`, `checksPass`, `stableHash`: exact-revision CI definitions, canonical steps/requirements hashing, and fail-closed check evaluation. Evidence currency compares revision and config hash; it does not imply a passing result.
 - `createQueueState`, `selectEntries`, `reduceQueue`: pure deterministic queue transitions. `MergeQueueStore` supplies SQLite WAL/FULL durability, immutable config, request receipts, and worker leases. `MergeQueue` advances one durable phase per idempotent `step` call.
@@ -16,7 +16,7 @@ Queue behavior includes FIFO serial/batch selection, speculative merged-result J
 
 ## Hub/workflow integration
 
-Import the package directly from its root entry `packages/factory-delivery/src/index.js` until the lead adds workspace/package installation wiring. The root test discovery already finds delivery tests without changes to root scripts.
+Import the package directly from its root entry `packages/delivery/src/index.js` until the lead adds workspace/package installation wiring. The root test discovery already finds delivery tests without changes to root scripts.
 
 1. Store non-secret queue/CI configuration in JSON. Construct one queue per project/repository/base, with a dedicated delivery SQLite filename and a Git adapter scoped to that repository. Reopen using the same config; changing persisted config fails with `CONFLICT`.
 2. For a `ci` gate, call `buildJob({config:node.config,workItem,projectId,repo})`; the work item must have its full `headSha`.
@@ -25,7 +25,7 @@ Import the package directly from its root entry `packages/factory-delivery/src/i
 5. Validate the node lease in the hub, then call `recordJobResult({id,revision,configHash,status,artifacts,logRef?,checks?},{idempotencyKey})`. The delivery package validates candidate/config identity, not node authority. Result statuses are `passed`, `failed`, `cancelled`, `error`.
 6. Continue ticking to approve/publish or reject/requeue. Mirror delivery cancellations into hub job state. Make candidate Git objects available to remote runners before leasing a speculative job.
 
-The [package README](../../packages/factory-delivery/README.md) contains runnable API examples and the adapter contract. `DeliveryError.toJSON()` supplies the shared error envelope. The transport owns authorization, safe error mapping, events, scheduling, and hub Job synchronization.
+The [package README](../../packages/delivery/README.md) contains runnable API examples and the adapter contract. `DeliveryError.toJSON()` supplies the shared error envelope. The transport owns authorization, safe error mapping, events, scheduling, and hub Job synchronization.
 
 ## GitHub publication follow-up
 

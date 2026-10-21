@@ -1,6 +1,6 @@
 # Perpeto CLI handoff
 
-Owner: Francis Dirac, gpt-6.1-sol. Branch: `t3/perpeto-install-cli`. Base: `13cdd2d`. Scope: `packages/perpeto-cli/**`, `install/**`, `docs/install.md`, and this handoff. No other packages, architecture, root manifests, upstream source, services, or user account configuration were changed. No push or merge.
+Owner: Francis Dirac, gpt-6.1-sol. Branch: `t3/perpeto-install-cli`. Base: `13cdd2d`. Scope: `apps/cli/**`, `install/**`, `docs/guides/install.md`, and this handoff. No other packages, architecture, root manifests, upstream source, services, or user account configuration were changed. No push or merge.
 
 ## Implemented
 
@@ -17,7 +17,7 @@ Owner: Francis Dirac, gpt-6.1-sol. Branch: `t3/perpeto-install-cli`. Base: `13cd
 
 Executed on macOS with Node `v24.22.0` selected through nvm:
 
-- `node --test packages/perpeto-cli/test/*.test.js`: **10 passed**. Parsing, non-secret config and init identity preservation, private/symlink secret checks, both service formats, real `plutil -lint`, stub-only service installation/removal/failure, stubbed doctor commands/health/build and URL redaction, live/stale process locks, actual ephemeral hub/node lifecycle, single-use enrollment and lost-response retry, overview, drain, restart, secret-free output/logs, cancellation during unreachable-hub startup and nonzero fatal daemon exits.
+- `node --test apps/cli/test/*.test.js`: **10 passed**. Parsing, non-secret config and init identity preservation, private/symlink secret checks, both service formats, real `plutil -lint`, stub-only service installation/removal/failure, stubbed doctor commands/health/build and URL redaction, live/stale process locks, actual ephemeral hub/node lifecycle, single-use enrollment and lost-response retry, overview, drain, restart, secret-free output/logs, cancellation during unreachable-hub startup and nonzero fatal daemon exits.
 - Installer test uses a real local Git fixture, stubbed npm/pnpm, and a temporary user bin. It verifies first/repeated installation, a real fast-forward update, dirty-checkout preservation and unrelated-bin preservation. It does not download/build the full upstream runtime or install Node through real version managers.
 - Root `npm test`: **219 passed**, including these 10 CLI tests.
 - `sh -n install/install.sh`, `git diff --check`, and generated macOS plist syntax validation pass. Markdown links and terminology checked locally. No browser/rendered documentation review.
@@ -25,8 +25,8 @@ Executed on macOS with Node `v24.22.0` selected through nvm:
 
 ## Required integration outside this worker's ownership
 
-1. The real hub workflow adapter remains intentionally unintegrated in `packages/factory-hub/src/engine/workflow-adapter.js`. CLI liveness/overview/enrollment are real, but starting a workflow still needs the hub/workflow composition owned elsewhere.
-2. Root/package wiring must make `@perpeto/factory-t3` and account integration resolvable from factory-node. The current account package exports AccountPool factories, while factory-node expects `createAccountProvider({config,configRoot})`. An adapter is needed before account acquisition, public metadata and T3 provider binding work together. This CLI does not silently substitute empty/fake implementations or import/copy real account credentials.
+1. The real hub workflow adapter remains intentionally unintegrated in `apps/hub/src/engine/workflow-adapter.js`. CLI liveness/overview/enrollment are real, but starting a workflow still needs the hub/workflow composition owned elsewhere.
+2. Root/package wiring must make `@perpeto/t3-executor` and account integration resolvable from factory-node. The current account package exports AccountPool factories, while factory-node expects `createAccountProvider({config,configRoot})`. An adapter is needed before account acquisition, public metadata and T3 provider binding work together. This CLI does not silently substitute empty/fake implementations or import/copy real account credentials.
 3. Hub enrollment codes currently store no label restrictions. `hub enroll-code --labels` saves labels as join defaults in the private enrollment file. Raw-code join needs explicit `--labels`; neither path treats labels as an enforced enrollment policy. Add hub-side code metadata/validation if restriction was intended.
 4. Remote access requires an existing HTTPS/private-network endpoint. The hub has no TLS terminator, and node join refuses non-loopback HTTP. No firewall, relay, forwarding, Cloudflare policy or production infrastructure was changed.
 

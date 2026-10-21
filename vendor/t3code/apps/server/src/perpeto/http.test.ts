@@ -13,7 +13,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { MessagingStore } from "../../../../../../packages/factory-transport/src/storage.js";
+import { MessagingStore } from "../../../../../../packages/messaging/src/messaging-store.js";
 import * as Messaging from "./Messaging.ts";
 import * as MessagingHttp from "./http.ts";
 

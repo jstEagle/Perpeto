@@ -10,7 +10,7 @@ import {
   AgentPolicyError,
   AgentPolicyStore,
   type AuthorizeInput,
-} from "../../../../../../packages/factory-t3/src/policy-store.js";
+} from "../../../../../../packages/t3-executor/src/policy-store.js";
 import * as ServerConfig from "../config.ts";
 
 /**

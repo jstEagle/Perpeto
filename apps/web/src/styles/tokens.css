@@ -1,16 +1,16 @@
 /*
  * The only place the web app reads brand values from.
  *
- * Canonical Workshop tokens come from brand/tokens.css. When
- * packages/design-tokens/dist/tokens.css lands, repoint the import below; it
- * carries the same names plus the type, spacing and leading scales defined
- * here as a stopgap. Everything else in the app uses var(--…) only: no
- * colour literals outside this file.
+ * Canonical Workshop tokens come from brand/tokens.css through
+ * @perpeto/design-tokens, which carries the same names plus derived scales.
+ * The type, spacing and leading scales below remain a local stopgap.
+ * Everything else in the app uses var(--…) only: no colour literals outside
+ * this file.
  */
-@import "../../../../packages/design-tokens/dist/tokens.css";
+@import "@perpeto/design-tokens/tokens.css";
 
 :root {
-  /* Interface type scale (brand.md: 12, 14, 16, 20, 24, 32). */
+  /* Interface type scale (brand/README.md: 12, 14, 16, 20, 24, 32). */
   --text-12: 12px;
   --text-14: 14px;
   --text-16: 16px;

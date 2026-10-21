@@ -126,10 +126,10 @@ export function createDemoState(now = Date.now()): DemoState {
       name: 'perpeto',
       repo: { url: 'https://github.com/lumin-products/perpeto', defaultBranch: 'main' },
       docs: [
-        { id: 'doc_vision', title: 'Vision', path: 'docs/vision.md', kind: 'vision' },
-        { id: 'doc_arch', title: 'Architecture contract', path: 'docs/architecture.md', kind: 'spec' },
-        { id: 'doc_brand', title: 'Brand direction', path: 'brand.md', kind: 'requirements' },
-        { id: 'doc_dod', title: 'Definition of done', path: 'docs/definition-of-done.md', kind: 'requirements' },
+        { id: 'doc_vision', title: 'Vision', path: 'docs/product/vision.md', kind: 'vision' },
+        { id: 'doc_arch', title: 'Architecture contract', path: 'docs/architecture/README.md', kind: 'spec' },
+        { id: 'doc_brand', title: 'Brand direction', path: 'brand/README.md', kind: 'requirements' },
+        { id: 'doc_dod', title: 'Definition of done', path: 'docs/product/definition-of-done.md', kind: 'requirements' },
       ],
       goals: ['Ship Hub API v1 with leases and an event log', 'Run 100 concurrent agents across 5 machines', 'Web and native clients follow the Workshop system'],
       createdAt: ago(12 * DAY),
@@ -295,7 +295,7 @@ export function createDemoState(now = Date.now()): DemoState {
       id: `wi_${(1000 + i * 37).toString(36)}${i}`,
       runId: DEMO_IDS.run,
       title,
-      body: `Acceptance criteria from docs/architecture.md for "${title}".`,
+      body: `Acceptance criteria from docs/architecture/README.md for "${title}".`,
       nodeId,
       status,
       iteration,
@@ -527,7 +527,7 @@ export function createDemoState(now = Date.now()): DemoState {
     messages.push({ id: `msg_${msgN++}`, projectId, channelId, senderRoleId: sender, recipientRoleId: recipient, body, createdAt: ago(minsAgo * MIN) });
   };
   const runCh = `run-${DEMO_IDS.run}`;
-  say(DEMO_IDS.perpeto, runCh, 180, 'planner', 'Created 6 work items from docs/architecture.md "Observing runs". Each has acceptance criteria in its body.');
+  say(DEMO_IDS.perpeto, runCh, 180, 'planner', 'Created 6 work items from docs/architecture/README.md "Observing runs". Each has acceptance criteria in its body.');
   say(DEMO_IDS.perpeto, runCh, 64, 'builder-2', 'Does lease renewal need its own test, or is the expiry test enough?', 'reviewer');
   say(DEMO_IDS.perpeto, runCh, 61, 'reviewer', 'Its own test. Renewal after expiry must return 409 lease_lost.', 'builder-2');
   say(DEMO_IDS.perpeto, runCh, 58, 'reviewer', 'Please split "Delivery: merge queue batching". It mixes batching and rejection reasons.', 'planner');

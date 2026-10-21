@@ -2,7 +2,7 @@ import PerpetoKit
 import SwiftUI
 
 /// Typed configuration for the selected node, per the node-type table in
-/// docs/architecture.md "Workflow graph v1".
+/// docs/architecture/README.md "Workflow graph v1".
 struct NodeInspector: View {
     @Binding var node: GraphNode
     var issues: [ValidationIssue]

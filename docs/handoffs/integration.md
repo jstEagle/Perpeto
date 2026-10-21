@@ -4,11 +4,11 @@ Branch `t3/b6753bf9`, based on main `13cdd2d`, with main `4d8bd2d` (workflow ret
 
 ## What is wired
 
-- **Engine:** the hub's default engine is now [workflow-adapter.js](../../packages/factory-hub/src/engine/workflow-adapter.js) over `@perpeto/factory-workflow`. It runs the pure `step` with hub-persisted state, maps hub events to engine events and engine effects to hub effects, and delegates validation, diffs, architect prompts and parsing, and run metrics. Project metrics aggregate per-run results. The mapping table is in the [hub README](../../packages/factory-hub/README.md#engine-mapping).
+- **Engine:** the hub's default engine is now [workflow-adapter.js](../../apps/hub/src/engine/workflow-adapter.js) over `@perpeto/workflow`. It runs the pure `step` with hub-persisted state, maps hub events to engine events and engine effects to hub effects, and delegates validation, diffs, architect prompts and parsing, and run metrics. Project metrics aggregate per-run results. The mapping table is in the [hub README](../../apps/hub/README.md#engine-mapping).
 - **Verdicts and retries:** review `verdict` passes through. A review `success` without a verdict goes to the engine as an error, which it retries. Expired leases on run work become failed attempts reported to the engine. Jobs that end `error` or `cancelled` reach the engine as well. The hub does not lease a retry before its `notBefore`.
-- **Delivery:** [delivery/index.js](../../packages/factory-hub/src/delivery/index.js) mounts `@perpeto/factory-delivery` merge queues. It enqueues engine merge entries, dispatches speculative jobs through the hub job queue, records node results, ticks the queue and reports merged or rejected entries back to the engine. It uses the local-git adapter.
-- **Accounts:** [integrations/accounts.js](../../packages/factory-node/src/integrations/accounts.js) wraps `createAccountPool` in the node's `createAccountProvider({ config, configRoot, dataDir })` interface. The pool opens after enrollment, and reservations are scoped to each attempt.
-- **E2E:** [packages/factory-e2e](../../packages/factory-e2e/README.md) runs the build template and the architect flow against a real hub and node.
+- **Delivery:** [delivery/index.js](../../apps/hub/src/delivery/index.js) mounts `@perpeto/delivery` merge queues. It enqueues engine merge entries, dispatches speculative jobs through the hub job queue, records node results, ticks the queue and reports merged or rejected entries back to the engine. It uses the local-git adapter.
+- **Accounts:** [integrations/accounts.js](../../apps/node/src/integrations/accounts.js) wraps `createAccountPool` in the node's `createAccountProvider({ config, configRoot, dataDir })` interface. The pool opens after enrollment, and reservations are scoped to each attempt.
+- **E2E:** [tests/e2e](../../tests/e2e/README.md) runs the build template and the architect flow against a real hub and node.
 
 ## Fixes outside the owned paths
 
@@ -30,14 +30,14 @@ Run on macOS with Node v24.22.0 and Git 2.54.0, after `source ~/.nvm/nvm.sh && n
 | --- | --- |
 | `npm test` | 261 passed, 0 failed, about 26 s |
 | `npm run test:e2e` | 2 passed, about 3 s |
-| `node --test packages/factory-hub/test/workflow-adapter.test.js` | 1 passed. Covers a lost lease retried by the engine, `notBefore`, a fenced stale result and a verdict-less review retried as an error. |
-| `node --test packages/factory-node/test/accounts-integration.test.js` | 2 passed |
+| `node --test apps/hub/test/workflow-adapter.test.js` | 1 passed. Covers a lost lease retried by the engine, `notBefore`, a fenced stale result and a verdict-less review retried as an error. |
+| `node --test apps/node/test/accounts-integration.test.js` | 2 passed |
 
 The build e2e passed in 5 of 5 repeated runs before the merge with main and in every run after it. The e2e tests are part of `npm test`.
 
 ## Gaps and contract requests
 
-- **Architecture doc:** `docs/architecture.md` was not edited. It should record the following:
+- **Architecture doc:** `docs/architecture/README.md` was not edited. It should record the following:
   - `deliveryDatabasePath`
   - speculative Jobs carrying `delivery: { queueId, mergeEntryIds }`
   - MergeEntry `queueId`, `mergedRevision` and `deliveryError`

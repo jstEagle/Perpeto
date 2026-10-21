@@ -1,6 +1,6 @@
 # Design tokens
 
-The only place the Perpeto clients read colours, type, spacing, radii and identity assets from. Everything here is generated from [brand/tokens.css](../../brand/tokens.css) and [brand/identity](../../brand/identity/) by a dependency-free Node script. The Workshop direction is still a proposal; see [brand.md](../../brand.md).
+The only place the Perpeto clients read colours, type, spacing, radii and identity assets from. Everything here is generated from [brand/tokens.css](../../brand/tokens.css) and [brand/identity](../../brand/identity/) by a dependency-free Node script. The Workshop direction is still a proposal; see [brand/README.md](../../brand/README.md).
 
 ```sh
 npm run build        # regenerate dist/, swift/, assets/ and specimen.html
@@ -17,7 +17,7 @@ npm run screenshot   # optional: specimen screenshot with local Chrome
 | `assets/` | Spindle, wordmark and lockup in black, ink, paper and orange; app icons; favicons. See [assets/README.md](assets/README.md). |
 | `specimen.html` | Self-contained specimen of tokens and components. |
 
-Component guidance lives in [docs/design-system.md](../../docs/design-system.md).
+Component guidance lives in [docs/architecture/design-system.md](../../docs/architecture/design-system.md).
 
 ## Changing values
 
