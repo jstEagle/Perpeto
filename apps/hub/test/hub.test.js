@@ -129,9 +129,13 @@ test('leases enforce requirements, actual capacity, ownership and renewal', asyn
 });
 
 test('lease expiry requeues with incremented attempt, including same-machine fencing', async t => {
+  // Only advance the lease clock deliberately. Under load, the HTTP fencing checks
+  // can otherwise outlive the second lease and correctly reject its renewal.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const f = await fixture(t, { leaseDurationMs: 60 }); const { run } = await f.run(); await f.seed(run.id);
   const node = await f.enroll();
   const first = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
+  t.mock.timers.setTime(Date.parse(first.leaseExpiresAt));
   await eventually(async () => (await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments[0].status === 'queued');
   const second = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
   assert.equal(second.attempt, 2); assert.notEqual(second.attempt, first.attempt);
@@ -371,15 +375,17 @@ test('run interaction events include roles and planned edges; controlled run mes
   const send = { attempt: assignment.attempt, type: 'message', data: { body: 'Review this.', recipientRoleId: 'reviewer' }, idempotencyKey: 'run-message' };
   assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, send, node.token)).status, 200);
   await f.request('POST', `/assignments/${assignment.id}/events`, send, node.token);
-  assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { ...send, idempotencyKey: 'bad-message', data: { ...send.data, recipientRoleId: 'forbidden' } }, node.token)).status, 403);
+  // The default messaging policy flags an off-graph send instead of refusing it (see messaging.test.js for enforce).
+  const flagged = await f.request('POST', `/assignments/${assignment.id}/events`, { ...send, idempotencyKey: 'bad-message', data: { ...send.data, recipientRoleId: 'forbidden' } }, node.token);
+  assert.equal(flagged.status, 200); assert.equal(flagged.body.message.unplanned, true);
   const path = `/messaging/projects/${nextRun.projectId}/channels/run-${nextRun.id}/messages`;
   const message = { senderRoleId: 'builder', recipientRoleId: 'reviewer', body: 'Owner message', idempotencyKey: 'owner-message' };
   await f.request('POST', path, message); await f.request('POST', path, message);
-  assert.equal((await f.request('GET', path)).body.messages.length, 2);
+  assert.equal((await f.request('GET', path)).body.messages.length, 3);
   const events = (await f.request('GET', '/events?limit=1000')).body.events.filter(event => event.runId === nextRun.id);
   const moved = events.find(event => event.type === 'workitem.moved'); assert.equal(moved.data.edgeId, 'flow_edge'); assert.equal(moved.data.unplanned, false); assert.equal(moved.data.role, 'builder');
   const delegated = events.find(event => event.type === 'agent.delegated'); assert.equal(delegated.data.unplanned, true);
-  const messages = events.filter(event => event.type === 'agent.messaged'); assert.equal(messages.length, 2); assert.ok(messages.every(event => event.data.edgeId === 'msg_edge' && !event.data.unplanned));
+  const messages = events.filter(event => event.type === 'agent.messaged' && event.data.recipientRoleId === 'reviewer'); assert.equal(messages.length, 2); assert.ok(messages.every(event => event.data.edgeId === 'msg_edge' && !event.data.unplanned));
   assert.ok(events.some(event => event.type === 'assignment.state' && event.data.state === 'leased' && event.data.machineId === node.machineId));
   assert.ok(events.some(event => event.type === 'gate.result'));
   assert.equal((await f.request('GET', `/runs/${run.id}/metrics`, undefined, node.token)).status, 403);
@@ -408,7 +414,7 @@ test('node wire format uses mandatory attempts, exact renew and heartbeat cancel
   const assignment = leased.assignments[0]; const job = leased.jobs[0];
   assert.equal(assignment.leaseId, undefined); assert.ok(assignment.leaseExpiresAt); assert.ok(Number.isSafeInteger(assignment.attempt));
   const renewed = await f.request('POST', `/assignments/${assignment.id}/renew`, { attempt: assignment.attempt }, node.token);
-  assert.deepEqual(Object.keys(renewed.body), ['leaseExpiresAt']);
+  assert.deepEqual(Object.keys(renewed.body), ['leaseExpiresAt', 'inbox']); assert.deepEqual(renewed.body.inbox, []);
   assert.equal((await f.request('POST', `/assignments/${assignment.id}/renew`, { attempt: String(assignment.attempt) }, node.token)).status, 409);
   const draining = await f.request('POST', '/nodes/heartbeat', { ...heartbeat, status: 'draining' }, node.token);
   assert.deepEqual(draining.body, { status: 'draining', cancel: { assignments: [], jobs: [] } });

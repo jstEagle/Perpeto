@@ -39,7 +39,9 @@ Warnings, which don't block a graph: `UNKNOWN_KEY`, `UNKNOWN_CONFIG_KEY`, `DUPLI
 
 These semantics go beyond the contract table:
 
-- Merge queues route a merge on `pass`. An unported edge also counts as `pass`. A `fail` edge is optional; without one, a rejected merge fails the item.
+- Merge queues route a merge on `pass`. An unported edge also counts as `pass`. A `fail` edge is optional; without one, an unrecovered rejected merge fails the item.
+- Merge queues accept `onConflict: 'rebase' | 'review'` (default `rebase`) and `rebaseReview: 'changed' | 'always' | 'never'` (default `changed`). Typed conflicts recover before the normal fail route; other rejections retain it. See [Concurrent work and conflict recovery](#concurrent-work-and-conflict-recovery).
+- Planners accept `serializeOverlappingTouches` (boolean, default `true`). Declared file/directory scopes serialize building through delivery within a run.
 - Planner and review nodes also accept `concurrency` (default 1), `policy`, `requirements` and `role`. Agent nodes accept `requirements` and `role`. A node's role id defaults to its node id.
 - An agent reached only by `delegates` edges is a helper role. It needs no flow edges.
 - Loops accept `expectedIterations`, which defaults to `min(2, maxIterations)`. The `rework-loop` metric uses it.
@@ -76,13 +78,13 @@ Events are `{ id, type, at, data }`:
 
 | Type | Data |
 | --- | --- |
-| `run.started` | `{ runId, projectId, workflowId, workflowVersion, graph, repo?: { url or localPath, defaultBranch }, inputs?: [{ title, body?, nodeId? }], keepOpen?, source?: 'manual' or 'goals' or 'schedule', schedule?: string, budget?: { maxTokensPerDay?, maxActiveItems?, maxItemsPerDay? } }`. `repo` is required when the graph has CI or a merge queue |
-| `input.added` | `{ items: [{ title, body?, nodeId? }], requestId? }`. `nodeId` is needed when there are several input nodes |
+| `run.started` | `{ runId, projectId, workflowId, workflowVersion, graph, repo?: { url or localPath, defaultBranch }, inputs?: [{ title, body?, nodeId?, touches? }], keepOpen?, source?: 'manual' or 'goals' or 'schedule', schedule?: string, budget?: { maxTokensPerDay?, maxActiveItems?, maxItemsPerDay? } }`. `repo` is required when the graph has CI or a merge queue |
+| `input.added` | `{ items: [{ title, body?, nodeId?, touches? }], requestId? }`. `nodeId` is needed when there are several input nodes |
 | `input.tick` | `{}`; the hub drives UTC minute ticks, including day rollover |
 | `usage.recorded` | `{ inputTokens, outputTokens }` nonnegative integer deltas, deduplicated by event id |
 | `assignment.completed` | `{ assignmentId, result: AssignmentResult }` |
 | `job.completed` | `{ jobId, status: 'passed', 'failed', 'error' or 'cancelled', summary?, logRef? }` |
-| `merge.completed` / `merge.rejected` | `{ mergeId, mergedSha? }` / `{ mergeId, reason }` |
+| `merge.completed` / `merge.rejected` | `{ mergeId, mergedSha? }` / `{ mergeId, reason, kind?: 'conflict' | 'ci' | 'other' }`. Only explicit `kind: 'conflict'` enters rebase recovery; reason text is never classified |
 | `human.decision` | `{ workItemId, decision: 'pass' or 'fail', note?, decisionId? }` |
 | `run.paused`, `run.resumed`, `run.stopped` | `{}`, or `{ reason? }` for `run.stopped` |
 
@@ -90,7 +92,7 @@ Assignment results are interpreted by the role that produced them:
 
 - **Agent:** a `success` result's `branch`, `prUrl` and `headSha` become the item's. A full 40- or 64-character lowercase SHA is required.
 - **Review:** `verdict` decides the gate: `pass` passes and `fail` returns the work, with the summary as feedback in the next agent prompt. A legacy result with `outcome: 'success'` and no verdict passes, and `gate.result` carries `legacyVerdict: true`. `outcome: 'failure'` without a verdict is an error, never a rejection.
-- **Planner:** `success` may include `items: [{ title, body? }]`, truncated to `maxItems`. Each item becomes a child work item at the planner's next node. The parent stays `active` until every child finishes, then becomes `done`, or `failed` if any child failed. With no items, the original item continues as the work item, and a nonblank `summary` becomes its `plan` (`{ from, summary }`, at most 8,000 characters): the contract and acceptance criteria every later role receives.
+- **Planner:** `success` may include `items: [{ title, body?, touches?: string[] }]`, truncated to `maxItems`. Each item becomes a child work item at the planner's next node. The parent stays `active` until every child finishes, then becomes `done`, or `failed` if any child failed. With no items, the original item continues as the work item, and a nonblank `summary` becomes its `plan` (`{ from, summary }`, at most 8,000 characters): the contract and acceptance criteria every later role receives.
 - **Any role:** `failure` from a planner or agent is an error. `blocked` goes to the node's human gate if it has one. Otherwise the item waits as `blocked` at the node until `human.decision` either retries it (`pass`, with the optional note as feedback) or fails it (`fail`).
 
 ### Continuous intake and budgets
@@ -129,6 +131,18 @@ Every planner, agent and review assignment gets the same work-item context, in t
 The executor adds the answer format and factory facts (branch, delivery) below this; see `@perpeto/t3-executor`.
 
 Every wait for a person gets a `decisionId` (`hd_` plus the run suffix and a counter), carried in `item.waiting`, `human.requested` and the in-place `workitem.blocked`. A decision that names a different `decisionId` throws `STALE_DECISION`, so a retried request or a second person answering cannot pass the item's next gate. Hosts should always send it; a decision without one still applies to whatever the item waits for now.
+
+### Concurrent work and conflict recovery
+
+Planner prompts ask for file/module boundaries and `touches: string[]` per proposed item, including shared exports, manifests and tests. Touches are up to 100 distinct repository-relative file or directory paths of at most 4,096 characters. Paths normalize `./` and trailing/repeated slashes; parent traversal, absolute paths, backslashes, control characters and globs are rejected. Directory prefixes overlap descendants (`src` overlaps `src/index.js`, but not `src2`); `.` covers the repository. Omitted/empty declarations preserve legacy concurrency. The planner's `serializeOverlappingTouches: false` opts its children out of scope locking.
+
+The first builder assignment claims the item's declared scopes. Other overlapping items wait across builder roles until the holder is done or failed, including its reviews, CI, retries, human waits and merge recovery. Independent scopes still use the configured concurrency. Scope claims persist on work items and survive replay/restart. They are local to one run and rely on accurate declarations; they do not detect undeclared writes or coordinate separate runs. Later builders must start from the current base, as supplied by the host workspace adapter.
+
+On `merge.rejected { kind: 'conflict' }`, default recovery finds the item's latest successful agent visit and schedules that same role with `assignment.step: 'rebase'` and `rebaseOf: <rejected merge id>`. Its prompt replaces normal implementation instructions: fetch and rebase onto the latest base, resolve conflicts, keep behavior, publish a new head and report `rebaseTouchedBeyondConflicts: boolean`. A successful rebase must return a new full `headSha`; missing/unchanged heads use the builder's error retry policy.
+
+With `rebaseReview: 'changed'`, only an explicit `false` skips review. `true` or an omitted report returns through the builder's normal next route. `always` always takes that route; `never` skips it regardless of the report. This is builder-reported evidence, not a Git hunk verifier. A clean rebase repeats each distinct successful CI node visited since that builder, in order, at the new head, then creates a fresh merge entry. Graphs without an authored CI gate return directly to the merge queue's speculative CI. A CI failure takes its normal fail route, so behavior repairs still receive review. A rebase error retries as a rebase; escalation ends recovery and uses the normal target.
+
+Recovery leaves review/delivery loop counts unchanged and uses the existing item hop limit as its routing backstop. If no successful agent visit is retained, recovery falls back to the merge's normal fail route. `onConflict: 'review'` always uses that route. Missing rejection kinds and CI/other rejection kinds also use that route. Recovery moves emit `workitem.moved` with `step: 'rebase'`, `edgeId: null`, `unplanned: false`; they are engine routing, excluded from authored-edge traffic metrics. Hosts must preserve these fields and the result flag; the [handoff](../../docs/handoffs/factory-workflow.md#concurrent-work-and-conflict-recovery-21-october-2026) lists integration requirements.
 
 ### Retries and escalation
 
@@ -178,6 +192,7 @@ Work items carry these fields beyond the contract:
 - `lastError` `{ nodeId, attempt, reason, summary, assignmentId | jobId }` and `retryAt` while a retry is pending
 - `escalations`, the last 20 of `{ from, to, reason, at, iterations?, attempts? }`, and `unattendedEscalations`
 - `visits`, the last 100 of `{ nodeId, enteredAt, startedAt, endedAt?, result?, assignmentId | jobId | mergeId }`. `result` is `pass`, `fail`, `error` (an attempt that errored), `blocked` or `cancelled`
+- `touches`, `serializeOverlappingTouches` and `touchesClaimed` for declared scope scheduling; `rebase` while conflict recovery is active
 - `feedback`, `failure`, `waiting`, `childIds`, `completedAt`
 
 ## Run store
@@ -230,6 +245,7 @@ Output details:
 - `concurrency` and `utilization` are `null` for nodes without a concurrency limit.
 - NodeMetrics also has `errors` (errored attempts), `retries` (assignments and jobs past attempt 1) and `escalations` (escalations out of the node). `failureRate` counts errors and failures over all finished visits.
 - RunMetrics also has `retries`, `escalations` and `waitingOnHuman`, the number of blocked items.
+- Both NodeMetrics and RunMetrics include windowed `conflictRejections` and `rebases`. Rejections count typed rejected merge entries at completion, attributed to the merge node. Rebases count created rebase assignments (including retries), attributed to the builder node, without depending on the event log.
 - An edge with no matching graph edge is reported once per kind and node pair, as `unplanned:<kind>:<from>-><to>`, with `from` and `to`.
 - `velocity.trend` counts finished leaf items in 12 buckets for 1h, 24 for 24h or one per day for longer windows.
 
@@ -243,6 +259,7 @@ Bottleneck rules, with thresholds in `BOTTLENECK_RULES`:
 | `waiting-on-human` | Items blocked at the node | `warning` after 1h, `critical` after 24h, otherwise `info` |
 | `no-capacity` | Waiting assignments or CI jobs whose requirements no online machine meets | `critical` |
 | `rework-loop` | Average loop iterations above `expectedIterations`. Escalated items count with the iterations they used | `critical` if any item hit the limit, otherwise `warning` |
+| `conflict-churn` | At least 2 typed conflict rejections at a merge node in the window | `critical` at 4, otherwise `warning`; evidence reports rejections, related rebase assignments and window |
 
 Every bottleneck's `evidence` carries the measured numbers, for example `utilization 1.00 (2 of 2 slots busy); queue 4, up from 0 at window start`. A `rework-loop` evidence string names escalations, as in `…; 1 hit the limit; 1 escalated to senior-reviewer`. A `high-failure` one counts errors and retries.
 
@@ -261,7 +278,7 @@ Every bottleneck's `evidence` carries the measured numbers, for example `utiliza
 
 New templates use three role attempts with 30-second backoff, two CI attempts, a delivery loop capped at three passes and one or two concurrent workers per role. Planning and reproduction/verification can use cheaper models; implementation and sensitive reviews use stronger ones. Exhausted or blocked delivery reaches human triage. Planning errors end after bounded retries. Docs use a bounded review loop and rely on the reviewer's link/example/layout evidence instead of a generic code test command. CI commands and models must be adapted to the repository and installed providers.
 
-`templates/build.json` runs ideas → planner → delivery loop (until CI passes, 3 passes) → review loop (until review passes, 3 passes) → builder, which can delegate to a helper → reviewer → CI → merge queue → shipped. CI failures and rejected merges return through the delivery loop. For unattended runs:
+`templates/build.json` runs ideas → planner → delivery loop (until CI passes, 3 passes) → review loop (until review passes, 3 passes) → builder, which can delegate to a helper → reviewer → CI → merge queue → shipped. CI failures and non-conflict rejected merges return through the delivery loop. All templates configure conflict rebases with conditional re-review, and every planner configures overlap serialization. For unattended runs:
 
 - Every agent, review and CI node retries errors two or three times with backoff.
 - An exhausted review loop, or a reviewer that keeps erroring, escalates to a senior reviewer. Its pass goes to CI, and its fail goes to triage.

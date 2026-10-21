@@ -31,6 +31,7 @@ const PROVIDER = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
 // Config field checkers return null when valid, or [code, message].
 const invalid = (message, code = 'INVALID_CONFIG') => [code, message];
 const oneOf = values => value => values.includes(value) ? null : invalid(`must be one of ${values.join(', ')}.`);
+const boolean = value => typeof value === 'boolean' ? null : invalid('must be a boolean.');
 const text = max => value => isText(value, max) ? null : invalid(`must be a nonblank string of at most ${max} characters.`);
 const integer = (min, max, code) => value =>
   Number.isSafeInteger(value) && value >= min && value <= max ? null : invalid(`must be an integer from ${min} to ${max}.`, code);
@@ -120,13 +121,14 @@ const agentRole = {
 /** Config fields per node type. Unknown keys produce a warning, not an error, so drafts survive editor upgrades. */
 export const NODE_CONFIG = Object.freeze({
   input: { source: required(oneOf(['manual', 'goals', 'issues', 'schedule'])), docs: optional(stringArray(200)), schedule: optional(value => validSchedule(value) ? null : invalid('must be a five-field UTC cron expression.')) },
-  planner: { ...agentRole, emptyResult: optional(oneOf(['continue', 'complete'])), maxItems: optional(integer(1, LIMITS.maxItems)) },
+  planner: { ...agentRole, emptyResult: optional(oneOf(['continue', 'complete'])), maxItems: optional(integer(1, LIMITS.maxItems)), serializeOverlappingTouches: optional(boolean) },
   agent: agentRole,
   review: { ...agentRole, rubric: optional(text(20000)) },
   ci: { steps: required(steps), requirements: optional(requirements), retry: optional(retry), onExhausted: optional(nodeRef) },
   'merge-queue': {
     strategy: required(oneOf(['serial', 'batch'])), method: required(oneOf(['squash', 'merge', 'rebase'])),
     requiredChecks: optional(stringArray()),
+    onConflict: optional(oneOf(['rebase', 'review'])), rebaseReview: optional(oneOf(['changed', 'always', 'never'])),
   },
   loop: {
     until: required(oneOf(['review-pass', 'ci-pass', 'manual'])),
@@ -466,9 +468,13 @@ export function compileGraph(graph, options = {}) {
   for (const node of nodes.values()) {
     const config = structuredClone(node.config);
     if (node.type === 'input') config.docs ??= [];
-    if (node.type === 'planner') config.maxItems ??= 20;
+    if (node.type === 'planner') { config.maxItems ??= 20; config.serializeOverlappingTouches ??= true; }
     if (node.type === 'ci') config.requirements ??= {};
-    if (node.type === 'merge-queue') config.requiredChecks ??= [];
+    if (node.type === 'merge-queue') {
+      config.requiredChecks ??= [];
+      config.onConflict ??= 'rebase';
+      config.rebaseReview ??= 'changed';
+    }
     if (node.type === 'loop') config.expectedIterations ??= Math.min(2, config.maxIterations);
     if (RETRY_TYPES.includes(node.type)) config.retry = { maxAttempts: config.retry?.maxAttempts ?? 1, backoffSec: config.retry?.backoffSec ?? 0 };
     const entry = { id: node.id, type: node.type, label: node.label, config, routes: routes.get(node.id) };

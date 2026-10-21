@@ -81,7 +81,9 @@ export class Workflows {
       return;
     }
     const base = this.store.get('workflow', request.workflowId);
+    // A drafted graph keeps the workflow's messaging settings; only the graph is the architect's.
     const workflow = this.save({ id: request.workflowId, projectId: request.projectId, name: base?.name ?? 'Proposed workflow', purpose: base?.purpose ?? 'custom', graph: parsed.graph,
+      ...(base?.messagingPolicy ? { messagingPolicy: base.messagingPolicy } : {}), ...(base?.messageRateLimits ? { messageRateLimits: base.messageRateLimits } : {}),
       authoredBy: { kind: 'agent', assignmentId: assignment.id, prompt: request.prompt }, rationale: parsed.rationale,
       ...(request.baseVersion ? { parentVersion: request.baseVersion } : {}) });
     request.status = 'completed'; request.version = workflow.version;

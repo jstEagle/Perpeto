@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/client.js",
+    "./cli": "./src/cli.js",
     "./package.json": "./package.json"
   },
   "bin": {
@@ -16,5 +17,8 @@
   },
   "scripts": {
     "test": "node --test"
+  },
+  "devDependencies": {
+    "@perpeto/hub": "*"
   }
 }

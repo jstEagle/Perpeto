@@ -124,12 +124,12 @@ test('refuses a future database schema without discarding its data', t => {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const filename = join(directory, 'future.sqlite');
   const db = new DatabaseSync(filename);
-  db.exec("CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES ('keep'); PRAGMA user_version = 2;");
+  db.exec("CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES ('keep'); PRAGMA user_version = 3;");
   db.close();
   assert.throws(() => new MessagingStore(filename), code('SCHEMA_VERSION'));
   const check = new DatabaseSync(filename);
   try {
-    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 3);
     assert.equal(check.prepare('SELECT value FROM future_data').get().value, 'keep');
   } finally { check.close(); }
 });

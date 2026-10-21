@@ -133,7 +133,7 @@ test('MCP stdio actual process negotiates, lists tools, calls HTTP and emits onl
   assert.equal(replies.length, 5);
   assert.ok(replies.every(reply => reply.jsonrpc === '2.0'));
   assert.equal(replies[0].result.protocolVersion, '2025-06-18');
-  assert.equal(replies[1].result.tools.length, 3);
+  assert.equal(replies[1].result.tools.length, 7);
   assert.deepEqual(JSON.parse(replies[2].result.content[0].text), { ok: true });
   assert.equal(replies[3].error.code, -32602);
   assert.deepEqual(replies[4].result, {});

@@ -28,11 +28,12 @@
           "model": "claude-opus-5-5"
         },
         "maxItems": 8,
-        "prompt": "Read the idea, the project docs and goals. Split the idea into independent work items that can each be built, reviewed and merged as one pull request. Give each item a short title and a body with acceptance criteria.",
+        "prompt": "Read the idea, the project docs and goals. Split the idea into independent work items that can each be built, reviewed and merged as one pull request. Give each item a short title and a body with acceptance criteria. Split along file/module boundaries and declare touches: string[] per item, including shared entry points and manifests.",
         "retry": {
           "maxAttempts": 2,
           "backoffSec": 60
-        }
+        },
+        "serializeOverlappingTouches": true
       }
     },
     {
@@ -206,7 +207,9 @@
         "method": "squash",
         "requiredChecks": [
           "ci"
-        ]
+        ],
+        "onConflict": "rebase",
+        "rebaseReview": "changed"
       }
     },
     {
