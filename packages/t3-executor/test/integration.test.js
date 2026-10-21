@@ -122,6 +122,18 @@ test('builders clone repo.url, publish the work branch and rework from it', asyn
   assert.equal(third.prUrl, undefined, 'no new push, so the work item keeps its earlier reference');
 });
 
+test('providers lists the driver kinds T3 reports enabled and ready', async t => {
+  const fake = await startFakeT3({ providers: [
+    { instanceId: 'codex', driver: 'codex', enabled: true, status: 'ready' },
+    { instanceId: 'codex_work', driver: 'codex', enabled: true, status: 'ready' },
+    { instanceId: 'claudeAgent', driver: 'claudeAgent', enabled: true, status: 'error' },
+    { instanceId: 'cursor', driver: 'cursor', enabled: false, status: 'ready' },
+  ] });
+  const executor = createT3Executor({ config: { url: fake.url }, createClient: settings => new T3Client({ baseUrl: settings.url, token: 'test-token', pingMs: 0 }) });
+  t.after(async () => { await executor.close(); await fake.close(); });
+  assert.deepEqual(await executor.providers(), ['codex']);
+});
+
 test('local pull request references cover local bare repositories only', () => {
   assert.equal(localPullRequestUrl({ url: '/srv/app.git', defaultBranch: 'main' }, 'perpeto/wi_1'), 'local:perpeto/wi_1');
   assert.equal(localPullRequestUrl({ url: 'file:///srv/app.git' }, 'b'), 'local:b');

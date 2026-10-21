@@ -149,6 +149,11 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       if (typeof provider !== 'string' || !provider || provider === 'fake' || typeof assignment?.harness?.model !== 'string') return false;
       return !Array.isArray(machine?.providers) || machine.providers.includes(provider);
     },
+    /** Driver kinds T3 reports enabled and ready, so the node can advertise harnesses its PATH does not show. */
+    async providers({ signal } = {}) {
+      const providers = (await (await client()).getConfig({ signal }))?.providers ?? [];
+      return [...new Set(providers.filter(item => item.enabled !== false && item.status === 'ready' && typeof item.driver === 'string').map(item => item.driver))];
+    },
     async run(assignment, ctx) {
       try { return await runAssignment(await client(), assignment, ctx); }
       catch (error) {

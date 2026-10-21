@@ -5,7 +5,8 @@ Node executor that runs factory assignments through a local T3 environment serve
 ```js
 import { createT3Executor } from '@perpeto/t3-executor';
 const executor = createT3Executor({ config, runtimeUrl, accountProvider });
-// { kind: 't3', canRun(assignment, machine), run(assignment, ctx), close() }
+// { kind: 't3', canRun(assignment, machine), run(assignment, ctx), providers({ signal }), close() }
+// providers() lists the driver kinds T3 reports enabled and ready; the node advertises them.
 ```
 
 `@perpeto/node` loads it by package name (the default `executorPackages` entry); the root npm workspaces link it. A node outside this checkout can list an absolute module path instead, for example `"executorPackages": ["/path/Perpeto/packages/t3-executor/src/index.js"]`.

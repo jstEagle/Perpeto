@@ -90,7 +90,7 @@ Executor-owned follow-up remains in `packages/t3-executor`: retain `selection.re
 
 `accountProviderPackage` overrides the module, and `accounts` is its non-secret configuration. Heartbeats allow only string values from the contract's Account fields, dropping other properties. Never return credentials as account labels or IDs. Without a package/injected provider, accounts default to an empty list.
 
-Provider discovery checks executable names on PATH: `codex`, `claude`, `gemini`, `opencode`, `amp`, `droid`, `agent` (Cursor), `copilot`, and `pi`. `providers` restricts the detected set. Advertisement intersects discovery with the installed registry's `canRun` result. An unexpected lease with no matching executor fails for retry instead of parking on a human. Discovery does not prove authentication, model availability, runtime connectivity, or a successful harness turn.
+Provider discovery checks executable names on PATH: `codex`, `claude`, `gemini`, `opencode`, `amp`, `droid`, `agent` (Cursor), `copilot`, and `pi`. Executors may also expose `providers({ signal })`; the T3 executor returns the driver kinds T3 reports enabled and ready, which covers harnesses the daemon's PATH cannot see (for example a CLI installed under another nvm Node version). Startup waits at most ten seconds for it, and a failing executor adds nothing. `providers` restricts the detected and reported set. Advertisement intersects that with the installed registry's `canRun` result. An unexpected lease with no matching executor fails for retry instead of parking on a human. Discovery does not prove authentication, model availability, runtime connectivity, or a successful harness turn.
 
 ## CI jobs and logs
 
