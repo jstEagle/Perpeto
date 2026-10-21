@@ -163,3 +163,63 @@ test('sessions slide while used and expire when idle', async t => {
   await new Promise(resolve => setTimeout(resolve, 1700));
   assert.equal((await f.request('GET', '/session', { auth })).status, 401);
 });
+
+test('machine liveness stays out of the event log: no heartbeat, renewal or log-line events, only online/offline transitions', async t => {
+  const f = await fixture(t, { heartbeatIntervalMs: 200, maintenanceIntervalMs: 50 });
+  const run = await start(f);
+  const code = (await f.request('POST', '/machines/enrollment-codes', { body: {} })).body.code;
+  const machine = (await f.request('POST', '/nodes/enroll', { auth: null, body: { code, name: 'm', os: 'linux', arch: 'x64', providers: ['codex'], version: 't' } })).body;
+  const beat = () => f.request('POST', '/nodes/heartbeat', { auth: machine.token, body: { status: 'online', capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, providers: ['codex'] } });
+  const work = (await (await beat(), f.request('POST', '/nodes/lease', { auth: machine.token, body: { kinds: ['assignment'] } }))).body.assignments[0];
+  const before = (await f.request('GET', '/events?latest=true&limit=1')).body.nextCursor;
+  for (let index = 0; index < 5; index++) {
+    assert.equal((await beat()).status, 200);
+    assert.equal((await f.request('POST', `/assignments/${work.id}/renew`, { auth: machine.token, body: { attempt: work.attempt } })).status, 200);
+  }
+  assert.deepEqual((await f.request('GET', `/events?after=${before}&exclude=`)).body.events.map(event => event.type), [], 'heartbeats and renewals write nothing');
+  const listed = (await f.request('GET', '/machines')).body.machines[0];
+  assert.equal(listed.status, 'online'); assert.ok(Date.now() - Date.parse(listed.lastHeartbeatAt) < 1000, 'liveness is in machine state');
+  // Missing heartbeats marks the machine offline; the next heartbeat brings it back. Each transition is one event.
+  const offline = Date.now() + 5000;
+  while ((await f.request('GET', '/machines')).body.machines[0].status !== 'offline' && Date.now() < offline) await new Promise(resolve => setTimeout(resolve, 50));
+  await beat(); await beat();
+  const transitions = (await f.request('GET', `/events?after=${before}&exclude=`)).body.events.filter(event => event.type.startsWith('machine.'));
+  assert.deepEqual(transitions.map(event => event.type), ['machine.offline', 'machine.online']);
+  // CI output is kept with its job, not in the global log.
+  await f.request('POST', `/runs/${run.id}/stop`, { body: {} });
+  const sha = 'a'.repeat(40);
+  const hub = f.hub; const jobRun = await start(f);
+  await hub.store.transaction(async () => hub.applyEffects(hub.store.need('run', jobRun.id), { seq: 999, effects: [{ type: 'job', value: { id: 'job_logs', revision: sha, steps: [], configHash: 'h', repo: '/tmp/web.git' } }] }));
+  await beat();
+  const job = (await f.request('POST', '/nodes/lease', { auth: machine.token, body: { kinds: ['job'] } })).body.jobs[0];
+  const mark = (await f.request('GET', '/events?latest=true&limit=1')).body.nextCursor;
+  for (const chunk of ['one\n', 'two\n', 'three\n']) await f.request('POST', `/jobs/${job.id}/events`, { auth: machine.token, body: { attempt: job.attempt, type: 'log', data: { chunk } } });
+  assert.equal((await f.request('POST', `/jobs/${job.id}/renew`, { auth: machine.token, body: { attempt: job.attempt } })).status, 200);
+  assert.deepEqual((await f.request('GET', `/events?after=${mark}&exclude=`)).body.events, []);
+  assert.deepEqual((await f.request('GET', `/jobs/${job.id}/log`)).body.chunks.map(value => value.chunk), ['one\n', 'two\n', 'three\n']);
+});
+
+test('the event log hides legacy liveness noise by default, and filters by project, type or an explicit exclude list', async t => {
+  const f = await fixture(t);
+  const first = await start(f); const second = await start(f);
+  // A hub upgraded from before the change still holds heartbeat and renewal events.
+  const db = new DatabaseSync(join(f.directory, 'hub.sqlite'));
+  const insert = db.prepare('INSERT INTO events(at,type,project_id,run_id,subject,data) VALUES(?,?,?,?,?,?)');
+  for (let index = 0; index < 40; index++) for (const type of ['machine.heartbeat', 'assignment.renewed', 'job.renewed', 'job.log']) {
+    insert.run(new Date().toISOString(), type, null, null, JSON.stringify({ kind: 'machine', id: 'mch_old' }), '{}');
+  }
+  db.close();
+  const page = (await f.request('GET', '/events?latest=true&limit=10')).body.events;
+  assert.equal(page.length, 10); assert.ok(page.every(event => !['machine.heartbeat', 'assignment.renewed', 'job.renewed', 'job.log'].includes(event.type)), 'real activity is not crowded out');
+  assert.equal((await f.request('GET', '/events?limit=1000')).body.events.filter(event => event.type === 'machine.heartbeat').length, 0);
+  assert.equal((await f.request('GET', '/events?limit=1000&exclude=')).body.events.filter(event => event.type === 'machine.heartbeat').length, 40, 'exclude= shows everything');
+  const custom = (await f.request('GET', '/events?limit=1000&exclude=run.started')).body.events;
+  assert.ok(custom.some(event => event.type === 'machine.heartbeat'), 'an explicit list replaces the default'); assert.ok(!custom.some(event => event.type === 'run.started'));
+  const project = (await f.request('GET', `/events?limit=1000&projectId=${second.projectId}`)).body.events;
+  assert.ok(project.length > 0); assert.ok(project.every(event => event.projectId === second.projectId));
+  const types = (await f.request('GET', '/events?limit=1000&types=run.started,project.created')).body.events;
+  assert.deepEqual([...new Set(types.map(event => event.type))].sort(), ['project.created', 'run.started']);
+  assert.equal(types.filter(event => event.type === 'run.started').length, 2);
+  assert.equal((await f.request('GET', `/events?types=${'x,'.repeat(100)}x`)).status, 400);
+  assert.equal((await f.request('GET', `/runs/${first.id}/metrics?window=1h`)).status, 200);
+});

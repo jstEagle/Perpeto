@@ -74,7 +74,8 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
   }
   async function stream(request, response, args, url) {
     let cursor = integer(Number(url.searchParams.get('after') ?? request.headers['last-event-id'] ?? 0), 'after');
-    const runId = url.searchParams.get('runId'); const run = runId ? `&runId=${encodeURIComponent(runId)}` : '';
+    // The stream takes the same filters as GET /events.
+    const run = ['runId', 'projectId', 'types', 'exclude'].filter(name => url.searchParams.has(name)).map(name => `&${name}=${encodeURIComponent(url.searchParams.get(name))}`).join('');
     await hub.request({ ...args, method: 'GET', path: `/events?after=${cursor}&limit=1${run}` });
     if (closing) fail(503, 'SHUTTING_DOWN', 'Hub is shutting down.');
     response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
