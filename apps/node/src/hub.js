@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { Readable, Transform } from 'node:stream';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createTransport, HubIdentityError } from './transport.js';
 
 export const jitter = cap => Math.floor(Math.random() * (cap + 1));
 export const sleep = (ms, signal) => delay(ms, undefined, { signal });
@@ -20,7 +21,18 @@ export class HubClient {
   #gate = Promise.resolve();
   #active = 0;
   #idle;
-  constructor(config, token, { onUnauthorized } = {}) { this.config = config; this.#token = token; this.onUnauthorized = onUnauthorized; }
+  /** `pins` returns the hub certificate fingerprints this machine trusts; without it HTTPS uses the system CAs. */
+  constructor(config, token, { onUnauthorized, pins } = {}) {
+    this.config = config; this.#token = token; this.onUnauthorized = onUnauthorized;
+    this.transport = createTransport(config.hubUrl, { pins });
+  }
+  /** Connection failures: an unpinned hub certificate is fatal and never retried; anything else is retryable. */
+  #unreachable(error, signal) {
+    signal?.throwIfAborted();
+    if (error instanceof HubIdentityError) { const failure = new HubError(0, 'HUB_CERTIFICATE_MISMATCH'); failure.retryable = false; failure.message = error.message; failure.fingerprint = error.fingerprint; return failure; }
+    return new HubError(0);
+  }
+  close() { this.transport.close(); }
   async #access(fn) {
     while (true) {
       const gate = this.#gate;
@@ -49,12 +61,9 @@ export class HubClient {
     signal?.throwIfAborted();
     let response;
     try {
-      response = await fetch(`${this.config.hubUrl}/api/v1${path}`, { redirect: 'error', headers: { Authorization: `Bearer ${this.#token}` },
+      response = await this.transport.request(path, { headers: { Authorization: `Bearer ${this.#token}` },
         signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]) });
-    } catch {
-      signal?.throwIfAborted();
-      throw new HubError(0);
-    }
+    } catch (error) { throw this.#unreachable(error, signal); }
     if (!response.ok) {
       let code; try { code = (await response.json())?.error?.code; } catch { /* Not a hub error body. */ }
       if (response.status === 401) { const error = new HubError(401, 'MACHINE_REVOKED'); this.onUnauthorized?.(error); throw error; }
@@ -62,23 +71,20 @@ export class HubClient {
     }
     let size = 0;
     const limit = new Transform({ transform(chunk, _encoding, done) { size += chunk.length; done(size > maxBytes ? new Error('Job source exceeds its size limit.') : null, chunk); } });
-    await pipeline(Readable.fromWeb(response.body), limit, createWriteStream(file, { flags: 'wx', mode: 0o600 }), { signal });
+    await pipeline(response.body, limit, createWriteStream(file, { flags: 'wx', mode: 0o600 }), { signal });
   }
   retry(...args) { return this.#access(() => this.#retry(...args)); }
   async #post(path, body, { signal, key = randomUUID() } = {}) {
     signal?.throwIfAborted();
     let response;
     try {
-      response = await fetch(`${this.config.hubUrl}/api/v1${path}`, {
-        method: 'POST', redirect: 'error',
+      response = await this.transport.request(path, {
+        method: 'POST',
         signal: AbortSignal.any([AbortSignal.timeout(this.config.timing.requestMs), ...(signal ? [signal] : [])]),
         headers: { 'Content-Type': 'application/json', ...(this.#token ? { Authorization: `Bearer ${this.#token}` } : {}) },
         body: JSON.stringify({ ...body, idempotencyKey: key }),
       });
-    } catch {
-      signal?.throwIfAborted();
-      throw new HubError(0);
-    }
+    } catch (error) { throw this.#unreachable(error, signal); }
     let data;
     try { data = await response.json(); } catch { if (response.status !== 401) throw new HubError(response.ok ? 502 : response.status); }
     if (response.status === 401 && this.#token && path !== '/nodes/enroll') {
