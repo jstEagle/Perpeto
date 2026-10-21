@@ -1,0 +1,189 @@
+<div class="app">
+  <aside class="sidebar" aria-label="Navigation">
+    <span class="brand"><!-- @lockup --></span>
+    <button class="switcher" type="button">
+      <span class="tile monogram">p</span>
+      <span><span class="switcher-name">perpeto</span><span class="switcher-sub">lumin-products</span></span>
+      <svg class="i"><use href="#i-selector"/></svg>
+    </button>
+    <nav class="nav" aria-label="Project">
+      <a href="#run-desktop"><svg class="i"><use href="#i-overview"/></svg>Overview</a>
+      <a href="#run-desktop"><svg class="i"><use href="#i-workflow"/></svg>Workflows</a>
+      <a href="#run-desktop" aria-current="page"><svg class="i"><use href="#i-runs"/></svg>Runs<span class="dot" aria-label="1 live"></span></a>
+      <a href="#run-desktop"><svg class="i"><use href="#i-work"/></svg>Work<span class="count">31</span></a>
+      <a href="#run-desktop"><svg class="i"><use href="#i-messages"/></svg>Messages</a>
+      <a href="#run-desktop"><svg class="i"><use href="#i-merge"/></svg>Merge queue<span class="count">2</span></a>
+    </nav>
+    <nav class="nav" aria-label="Factory">
+      <p class="nav-title">Factory</p>
+      <a href="#run-desktop"><svg class="i"><use href="#i-machines"/></svg>Machines</a>
+      <a href="#run-desktop"><svg class="i"><use href="#i-accounts"/></svg>Accounts</a>
+      <a href="#run-desktop"><svg class="i"><use href="#i-usage"/></svg>Usage</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span class="avatar">JH</span>
+      <div class="row-main"><span class="row-title" style="font-size: var(--text-13)">Justus</span><span class="row-meta">Demo data</span></div>
+      <svg class="i i-sm" style="color: var(--muted)"><use href="#i-settings"/></svg>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <a class="btn btn-secondary btn-sm" href="#run-mobile" style="padding-left: var(--space-2)"><svg class="i"><use href="#i-chevron-left"/></svg>Runs</a>
+      <button class="btn btn-secondary btn-icon btn-sm" type="button" aria-label="More actions"><svg class="i"><use href="#i-more"/></svg></button>
+    </header>
+    <div class="main-inner">
+      <header class="page-head">
+        <div>
+          <a class="page-crumb only-desktop" href="#run-desktop"><svg class="i"><use href="#i-chevron-left"/></svg>Runs</a>
+          <div class="page-title-row">
+            <h1 class="page-title">Build run</h1>
+            <span class="chip"><span class="dot"></span>Running</span>
+          </div>
+          <p class="page-sub"><code>run_7q4m2x</code> · Workflow v3 · Started 3 days ago</p>
+        </div>
+        <div class="page-actions">
+          <button class="btn btn-secondary" type="button"><svg class="i"><use href="#i-pause"/></svg>Pause</button>
+          <button class="btn btn-secondary" type="button"><svg class="i"><use href="#i-stop"/></svg>Stop</button>
+        </div>
+      </header>
+
+      <section class="card" aria-label="Needs attention">
+        <div class="issue">
+          <svg class="i issue-icon"><use href="#i-alert"/></svg>
+          <div style="flex: 1; min-width: 0">
+            <div class="toolbar" style="align-items: flex-start">
+              <div>
+                <p class="issue-title">Reviewer is saturated</p>
+                <p class="issue-text">Utilization 100% at concurrency 1. Queue grew from 3 to 7 in two hours; p90 wait is 48 minutes.</p>
+              </div>
+              <div class="issue-actions" style="margin-top: 0">
+                <button class="btn btn-ghost btn-sm only-desktop" type="button">Show on map</button>
+                <button class="btn btn-primary btn-sm" type="button">Review proposal</button>
+              </div>
+            </div>
+            <details class="disclosure" style="margin-top: var(--space-4)">
+              <summary>1 more issue<svg class="i"><use href="#i-chevron-down"/></svg></summary>
+              <div class="disclosure-body"><p class="issue-title" style="font-size: var(--text-14)">Review loop is reworking more</p><p class="issue-text">1.9 iterations per item against a 7-day average of 1.2.</p></div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="View"><button type="button" aria-pressed="true">Live map</button><button type="button" aria-pressed="false">Work <span class="count">31</span></button><button type="button" aria-pressed="false">Timeline</button></div>
+        <div class="seg only-desktop" role="group" aria-label="Window"><button type="button" aria-pressed="false">1 h</button><button type="button" aria-pressed="true">24 h</button><button type="button" aria-pressed="false">7 d</button></div>
+      </div>
+
+      <div class="map only-desktop" aria-label="Live map">
+        <div class="map-canvas">
+          <svg class="map-lines" aria-hidden="true">
+            <rect class="map-dots" width="100%" height="100%"/>
+            <path class="edge" d="M244 124 H308"/>
+            <path class="edge" d="M516 124 H580"/>
+            <path class="edge edge-active" d="M788 124 H852"/>
+            <path class="edge edge-active" d="M956 184 V208 Q956 220 944 220 H424 Q412 220 412 232 V256"/>
+            <path class="edge edge-active" d="M516 316 H580"/>
+            <path class="edge" d="M788 316 H852"/>
+            <path class="edge" d="M956 64 V44 Q956 32 944 32 H696 Q684 32 684 44 V64"/>
+          </svg>
+          <span class="edge-label" style="left: 276px; top: 124px">31</span>
+          <span class="edge-label" style="left: 548px; top: 124px">31</span>
+          <span class="edge-label" style="left: 820px; top: 124px">22</span>
+          <span class="edge-label" style="left: 684px; top: 220px">17</span>
+          <span class="edge-label" style="left: 548px; top: 316px">15</span>
+          <span class="edge-label" style="left: 820px; top: 316px">14</span>
+          <span class="edge-label" style="left: 820px; top: 32px">12 returned</span>
+
+          <div class="node" style="left: 36px; top: 64px"><div class="node-head"><span class="tile"><svg class="i"><use href="#i-inbox"/></svg></span><div><div class="node-name">Ideas and goals</div><div class="node-meta">Manual input</div></div></div><div class="node-foot"><div class="node-stat"><span>31 received</span></div></div></div>
+          <div class="node" style="left: 308px; top: 64px"><div class="node-head"><span class="tile"><svg class="i"><use href="#i-planner"/></svg></span><div><div class="node-name">Planner</div><div class="node-meta">Claude Opus 5.5</div></div></div><div class="node-foot"><div class="node-stat"><span class="status status-quiet"><svg class="i"><use href="#i-circle"/></svg>Idle</span><span class="quiet">0 queued</span></div><div class="meter"><span style="width: 0"></span></div></div></div>
+          <div class="node" style="left: 580px; top: 64px"><div class="node-head"><span class="tile"><svg class="i"><use href="#i-code"/></svg></span><div><div class="node-name">Builder</div><div class="node-meta">Claude Sonnet 5.5</div></div></div><span class="dot" aria-label="Live"></span><div class="node-foot"><div class="node-stat"><span>4 of 6 active</span><span class="quiet">2 queued</span></div><div class="meter"><span style="width: 67%"></span></div></div></div>
+          <div class="node" style="left: 852px; top: 64px"><div class="node-head"><span class="tile"><svg class="i"><use href="#i-review"/></svg></span><div><div class="node-name">Reviewer</div><div class="node-meta">Codex · 1 at a time</div></div></div><span class="dot" aria-label="Live"></span><div class="node-foot"><div class="node-stat"><span class="status status-attention"><svg class="i"><use href="#i-alert"/></svg>Saturated</span><span class="quiet">7 queued</span></div><div class="meter"><span style="width: 100%"></span></div></div></div>
+          <div class="node" style="left: 308px; top: 256px"><div class="node-head"><span class="tile"><svg class="i"><use href="#i-ci"/></svg></span><div><div class="node-name">CI</div><div class="node-meta">3 steps on build-linux</div></div></div><span class="dot" aria-label="Live"></span><div class="node-foot"><div class="node-stat"><span>1 of 2 active</span><span class="quiet">0 queued</span></div><div class="meter"><span style="width: 50%"></span></div></div></div>
+          <div class="node" style="left: 580px; top: 256px"><div class="node-head"><span class="tile"><svg class="i"><use href="#i-merge"/></svg></span><div><div class="node-name">Merge queue</div><div class="node-meta">Serial · squash</div></div></div><div class="node-foot"><div class="node-stat"><span>0 of 1 active</span><span class="quiet">1 queued</span></div><div class="meter"><span style="width: 0"></span></div></div></div>
+          <div class="node" style="left: 852px; top: 256px"><div class="node-head"><span class="tile"><svg class="i"><use href="#i-flag"/></svg></span><div><div class="node-name">Merged</div><div class="node-meta">Work item finished</div></div></div><div class="node-foot"><div class="node-stat"><span>14 finished</span></div></div></div>
+
+          <div class="legend">
+            <span><svg viewBox="0 0 20 8"><path class="edge" d="M1 4h18"/></svg>Flow</span>
+            <span><svg viewBox="0 0 20 8"><path class="edge edge-active" d="M1 4h18"/></svg>Flowing now</span>
+            <span><svg viewBox="0 0 20 8"><path class="edge edge-pending" d="M1 4h18"/></svg>Not reached</span>
+            <span><span class="dot"></span>Live</span>
+          </div>
+          <div class="map-tools">
+            <button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Zoom out"><svg class="i"><use href="#i-minus"/></svg></button>
+            <span class="zoom">100%</span>
+            <button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Zoom in"><svg class="i"><use href="#i-plus"/></svg></button>
+            <button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Fit to screen"><svg class="i"><use href="#i-fit"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="only-mobile">
+        <ol class="steps" aria-label="Steps in flow order">
+          <li class="step"><span class="tile"><svg class="i"><use href="#i-inbox"/></svg></span><div class="step-main"><span class="step-name">Ideas and goals</span><span class="step-meta">Manual input</span></div><span class="step-end">31 in</span></li>
+          <li class="step"><span class="tile"><svg class="i"><use href="#i-planner"/></svg></span><div class="step-main"><span class="step-name">Planner</span><span class="step-meta">Claude Opus 5.5</span></div><span class="step-end status-quiet">Idle</span></li>
+          <li class="step"><span class="tile"><svg class="i"><use href="#i-code"/></svg></span><div class="step-main"><span class="step-name">Builder</span><span class="step-meta">4 of 6 active · 2 queued</span></div><span class="step-end"><span class="dot"></span></span></li>
+          <li class="step"><span class="tile"><svg class="i"><use href="#i-review"/></svg></span><div class="step-main"><span class="step-name">Reviewer</span><span class="step-meta">7 queued · 12 returned to Builder</span></div><span class="step-end"><span class="status status-attention"><svg class="i"><use href="#i-alert"/></svg>Saturated</span></span></li>
+          <li class="step"><span class="tile"><svg class="i"><use href="#i-ci"/></svg></span><div class="step-main"><span class="step-name">CI</span><span class="step-meta">1 of 2 active</span></div><span class="step-end"><span class="dot"></span></span></li>
+          <li class="step"><span class="tile"><svg class="i"><use href="#i-merge"/></svg></span><div class="step-main"><span class="step-name">Merge queue</span><span class="step-meta">1 queued</span></div><span class="step-end status-quiet">Waiting</span></li>
+          <li class="step"><span class="tile"><svg class="i"><use href="#i-flag"/></svg></span><div class="step-main"><span class="step-name">Merged</span><span class="step-meta">Work item finished</span></div><span class="step-end">14</span></li>
+        </ol>
+      </div>
+
+      <div class="cols">
+        <section class="card" aria-labelledby="run-activity">
+          <div class="card-head"><h2 class="card-title" id="run-activity">Activity</h2><span class="card-meta">16 events today</span></div>
+          <ul class="rows">
+            <li style="align-items: flex-start"><span class="card-meta tabular" style="width: 40px; flex: none; padding-top: 1px">16:51</span><div class="row-main"><span>“Usage ledger: group by day” merged into main</span><span class="row-meta">Merge queue to Merged</span></div></li>
+            <li style="align-items: flex-start"><span class="card-meta tabular" style="width: 40px; flex: none; padding-top: 1px">16:47</span><div class="row-main"><span>CI started “Workflow: version history” on <code>studio-mac</code></span><span class="row-meta">CI</span></div></li>
+            <li style="align-items: flex-start"><span class="card-meta tabular" style="width: 40px; flex: none; padding-top: 1px">16:42</span><div class="row-main"><span>Builder asked for a design review of “Web: live run map”</span><span class="row-meta">Builder to Reviewer</span></div></li>
+            <li style="align-items: flex-start"><span class="card-meta tabular" style="width: 40px; flex: none; padding-top: 1px">16:36</span><div class="row-main"><span>Reviewer asked Planner for acceptance criteria</span><span class="row-meta">Unplanned message · Reviewer to Planner</span></div></li>
+            <li style="align-items: flex-start"><span class="card-meta tabular" style="width: 40px; flex: none; padding-top: 1px">16:17</span><div class="row-main"><span>Review returned “Delivery: merge queue batching” for lint errors</span><span class="row-meta">Reviewer to Builder</span></div></li>
+          </ul>
+          <button class="btn btn-ghost btn-sm" type="button" style="margin: var(--space-5) 0 0 calc(var(--space-4) * -1)">Show all 16</button>
+        </section>
+
+        <div class="stack">
+          <section class="card" aria-labelledby="run-velocity">
+            <div class="card-head"><h2 class="card-title" id="run-velocity">Velocity</h2><span class="card-meta">Last 24 h</span></div>
+            <dl class="metrics"><div class="metric"><dt>Items done per day</dt><dd>4.7</dd></div><div class="metric"><dt>Cycle time</dt><dd>6.4<small>h</small></dd></div></dl>
+            <div style="margin-top: var(--space-6)">
+              <div class="bars" aria-hidden="true"><span style="height: 20%"></span><span class="zero"></span><span style="height: 45%"></span><span style="height: 30%"></span><span class="zero"></span><span style="height: 60%"></span><span style="height: 85%"></span><span style="height: 40%"></span><span class="zero"></span><span style="height: 55%"></span><span style="height: 70%"></span><span style="height: 25%"></span><span style="height: 50%"></span><span class="zero"></span><span style="height: 65%"></span><span style="height: 35%"></span><span style="height: 90%"></span><span style="height: 45%"></span><span class="zero"></span><span style="height: 30%"></span><span style="height: 75%"></span><span style="height: 55%"></span><span style="height: 40%"></span><span class="now" style="height: 62%"></span></div>
+              <div class="bars-axis"><span>24 h ago</span><span>Now</span></div>
+            </div>
+          </section>
+
+          <section class="card" aria-labelledby="run-machines">
+            <div class="card-head"><h2 class="card-title" id="run-machines">Where work is running</h2></div>
+            <ul class="rows">
+              <li><div class="row-main" style="gap: var(--space-2)"><div class="toolbar"><span class="row-title mono" style="font-size: var(--text-13)">studio-mac</span><span class="card-meta tabular">2 of 6 slots</span></div><div class="meter"><span style="width: 33%"></span></div></div></li>
+              <li><div class="row-main" style="gap: var(--space-2)"><div class="toolbar"><span class="row-title mono" style="font-size: var(--text-13)">build-linux</span><span class="card-meta tabular">3 of 8 slots</span></div><div class="meter"><span style="width: 37.5%"></span></div></div></li>
+            </ul>
+          </section>
+        </div>
+      </div>
+
+      <details class="card disclosure only-desktop" style="padding-block: var(--space-5)">
+        <summary style="margin: 0; padding: 0">Node details<svg class="i"><use href="#i-chevron-down"/></svg></summary>
+        <div class="disclosure-body">
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Node</th><th class="num">Active</th><th class="num">Queued</th><th class="num">Utilization</th><th class="num">Wait p90</th><th class="num">Per hour</th></tr></thead>
+              <tbody>
+                <tr><td class="cell-title">Builder</td><td class="num">4 of 6</td><td class="num">2</td><td class="num">67%</td><td class="num">9 min</td><td class="num">1.7</td></tr>
+                <tr><td class="cell-title">Reviewer</td><td class="num">1 of 1</td><td class="num">7</td><td class="num">100%</td><td class="num">48 min</td><td class="num">1.4</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+    </div>
+    <nav class="tabbar" aria-label="Sections">
+      <a href="#run-mobile"><svg class="i"><use href="#i-overview"/></svg>Overview</a>
+      <a href="#run-mobile" aria-current="page"><svg class="i"><use href="#i-runs"/></svg>Runs</a>
+      <a href="#run-mobile"><svg class="i"><use href="#i-work"/></svg>Work</a>
+      <a href="#run-mobile"><svg class="i"><use href="#i-messages"/></svg>Messages</a>
+      <a href="#run-mobile"><svg class="i"><use href="#i-more"/></svg>More</a>
+    </nav>
+  </main>
+</div>

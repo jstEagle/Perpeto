@@ -1,0 +1,107 @@
+import CoreGraphics
+import Foundation
+import Testing
+@testable import PerpetoKit
+
+@Suite("Graph routing")
+struct GraphLayoutTests {
+    static let unplanned = GraphEdge(id: "unplanned:build>plan", from: .init(node: "build"), to: .init(node: "plan"), kind: .messages)
+
+    /// The hub's build template, laid out for narrower cards than ours.
+    static func template() -> WorkflowGraph? {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../../../packages/workflow/templates/build.json").standardized
+        return (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(WorkflowGraph.self, from: $0) }
+    }
+
+    static func layouts() -> [(String, GraphLayout)] {
+        (template().map { [("hub template live", GraphLayout(graph: $0, nodeHeight: 156))] } ?? []) + [
+            ("v3 editor", GraphLayout(graph: DemoFixtures.buildGraphV3(), nodeHeight: 76)),
+            ("v3 live", GraphLayout(graph: DemoFixtures.buildGraphV3(), nodeHeight: 156, extraRoleEdges: [unplanned])),
+            ("v4 proposal", GraphLayout(graph: DemoFixtures.buildGraphV4(), nodeHeight: 76)),
+        ]
+    }
+
+    static func segments(_ route: GraphLayout.Route) -> [(CGPoint, CGPoint)] { Array(zip(route.points, route.points.dropFirst())) }
+
+    @Test func roleEdgesStayOutOfTheFlowBand() {
+        for (name, layout) in Self.layouts() {
+            let frames = layout.graph.nodes.map { layout.frame($0) }
+            let row0 = frames.filter { $0.minY == frames.map(\.minY).min() }
+            let row1Top = frames.map(\.minY).filter { $0 > row0[0].maxY }.min() ?? .infinity
+            for edge in layout.roleEdges {
+                let route = try! #require(layout.route(edge))
+                for (a, b) in Self.segments(route) where abs(a.y - b.y) < 0.5 {
+                    // Horizontal role segments never run in the gap between the first two rows.
+                    let inGap = a.y > row0[0].maxY + 0.5 && a.y < row1Top - 0.5
+                    #expect(!inGap, "\(name): \(edge.id) runs through the flow band at y \(a.y)")
+                }
+            }
+        }
+    }
+
+    @Test func routesNeverCrossCards() {
+        for (name, layout) in Self.layouts() {
+            for edge in layout.graph.edges + layout.roleEdges {
+                guard let route = layout.route(edge) else { continue }
+                for node in layout.graph.nodes {
+                    let inner = layout.frame(node).insetBy(dx: 2, dy: 2)
+                    for (a, b) in Self.segments(route) {
+                        let box = CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y)).insetBy(dx: -0.5, dy: -0.5)
+                        #expect(!box.intersects(inner), "\(name): \(edge.id) crosses \(node.id)")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test func parallelLanesNeverOverlap() {
+        for (name, layout) in Self.layouts() {
+            let all = (layout.graph.edges + layout.roleEdges).compactMap { e in layout.route(e).map { (e, $0) } }
+            for (i, (e1, r1)) in all.enumerated() {
+                for (e2, r2) in all[(i + 1)...] where e1.to.node != e2.to.node && e1.from.node != e2.from.node {
+                    for (a, b) in Self.segments(r1) where abs(a.y - b.y) < 0.5 {
+                        for (c, d) in Self.segments(r2) where abs(c.y - d.y) < 0.5 && abs(a.y - c.y) < 0.5 {
+                            let overlap = min(max(a.x, b.x), max(c.x, d.x)) - max(min(a.x, b.x), min(c.x, d.x))
+                            #expect(overlap <= 0.5, "\(name): \(e1.id) and \(e2.id) share a lane")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test func labelsNeverOverlap() {
+        for (name, layout) in Self.layouts() {
+            let ids = (layout.graph.edges + layout.roleEdges).map(\.id)
+            let size = CGSize(width: 34, height: 18)
+            let placed = layout.placeLabels(ids.map { .init(edgeId: $0, size: size) })
+            let rects = placed.map { CGRect(x: $0.value.x - size.width / 2, y: $0.value.y - size.height / 2, width: size.width, height: size.height) }
+            for (i, a) in rects.enumerated() {
+                for b in rects[(i + 1)...] { #expect(!a.intersects(b), "\(name): labels overlap") }
+                for node in layout.graph.nodes { #expect(!a.intersects(layout.frame(node)), "\(name): label covers \(node.id)") }
+            }
+        }
+    }
+
+    @Test func hubTemplateIsValidLocally() throws {
+        let result = WorkflowValidator.validate(try #require(Self.template()))
+        #expect(result.issues.filter { $0.severity == .error }.map(\.message) == [])
+    }
+
+    @Test func crowdedLayoutsSpreadApart() throws {
+        let graph = try #require(Self.template())
+        let layout = GraphLayout(graph: graph, nodeHeight: 76)
+        #expect(layout.xScale > 1)
+        let frames = graph.nodes.map { layout.frame($0) }
+        for (i, a) in frames.enumerated() {
+            for b in frames[(i + 1)...] { #expect(!a.insetBy(dx: -8, dy: 0).intersects(b), "cards collide") }
+        }
+    }
+
+    @Test func drawingLeavesRoomForChannels() {
+        let layout = GraphLayout(graph: DemoFixtures.buildGraphV3(), nodeHeight: 156, extraRoleEdges: [Self.unplanned])
+        let points = (layout.graph.edges + layout.roleEdges).compactMap(layout.route).flatMap(\.points)
+        #expect(points.allSatisfy { $0.x >= 0 && $0.y >= 0 && $0.x <= layout.contentSize.width && $0.y <= layout.contentSize.height })
+    }
+}

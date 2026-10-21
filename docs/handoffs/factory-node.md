@@ -42,3 +42,7 @@ No architecture contract was edited. The binding document should specify the fol
 - Assignment executors must honor AbortSignal and await reporting. CI processes and clones are cleaned during normal completion/cancellation/lease loss. Hard daemon termination can leave external processes or temporary directories; orphan reaping/recovery is not implemented.
 - Assignment workspaces are retained for executor-owned recovery/cleanup. Lease journal retention is currently unbounded. A crash during stale-lock recovery may leave `daemon-recovery.lock`; it fails closed and requires operator inspection/removal.
 - Artifact upload, submodule/LFS checkout, repository caches, local config-hash calculation, and remote cancellation are not implemented. Empty artifact lists and the submitted config hash are returned honestly.
+
+## Update: CI from hub sources (21 October 2026)
+
+Since `c90abc4`, a job with `source: {kind: 'hub-bundle', path: '/jobs/:id/bundle'}` is fetched from the hub instead of cloned from `repo`: the daemon downloads `GET <hubUrl>/api/v1/jobs/:id/bundle?attempt=N` with its machine token into the job's private workspace, fetches it into a fresh repository, checks out the job's SHA detached and verifies `HEAD` before any step runs. Merge-queue candidates and CI for projects whose repository lives on the hub arrive this way, so a machine needs no access to the hub's filesystem. Jobs without `source` clone `repo` as before. The download honours `jobs.checkoutTimeoutSec` and is capped at 4 GiB.

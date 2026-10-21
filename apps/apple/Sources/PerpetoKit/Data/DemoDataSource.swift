@@ -19,7 +19,25 @@ public actor DemoDataSource: FactoryDataSource {
 
     public func loadFactory() async throws -> FactoryState { factory }
 
-    public func loadProject(_ projectId: String) async throws -> ProjectState {
+    public func loadProject(_ projectId: String, window: MetricsWindow = .day) async throws -> ProjectState {
+        var state = try project(projectId)
+        for runId in state.runMetrics.keys {
+            state.runMetrics[runId] = state.runMetrics[runId].map { DemoFixtures.scaled($0, to: window) }
+        }
+        return state
+    }
+
+    public func loadRun(_ runId: String, window: MetricsWindow) async throws -> RunSnapshot {
+        guard let state = projects.values.first(where: { $0.runs.contains { $0.id == runId } }),
+              let run = state.runs.first(where: { $0.id == runId }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "run not found.")
+        }
+        return RunSnapshot(
+            run: run, workItems: state.workItems.filter { $0.runId == runId }, assignments: state.assignments.filter { $0.runId == runId },
+            metrics: state.runMetrics[runId].map { DemoFixtures.scaled($0, to: window) })
+    }
+
+    private func project(_ projectId: String) throws -> ProjectState {
         if let state = projects[projectId] { return state }
         let state = DemoFixtures.project(projectId, now: now())
         projects[projectId] = state
@@ -50,7 +68,7 @@ public actor DemoDataSource: FactoryDataSource {
     /// applies a fixed change: a human approval gate before the merge queue,
     /// or the build template when the project has no workflow yet.
     private func makeDraft(projectId: String, prompt: String, baseWorkflowId: String?, assignmentId: String) async throws -> Workflow {
-        var state = try await loadProject(projectId)
+        var state = try project(projectId)
         let base = baseWorkflowId.flatMap { state.activeVersion(of: $0) ?? state.versions[$0]?.last }
         var graph: WorkflowGraph
         var rationale: String
@@ -106,7 +124,7 @@ public actor DemoDataSource: FactoryDataSource {
     }
 
     public func save(_ workflow: Workflow) async throws -> Workflow {
-        var state = try await loadProject(workflow.projectId)
+        var state = try project(workflow.projectId)
         let result = WorkflowValidator.validate(workflow.graph)
         guard result.valid else {
             throw HubError.http(status: 422, code: "INVALID_GRAPH", message: "The graph has \(result.errorCount) validation errors. Fix them before saving.")
@@ -154,19 +172,30 @@ public actor DemoDataSource: FactoryDataSource {
         return run
     }
 
-    public func decide(workItemId: String, _ decision: HubClient.Decision) async throws -> WorkItem {
+    public func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws {
         guard let projectId = projects.first(where: { $0.value.workItems.contains { $0.id == workItemId } })?.key,
               var state = projects[projectId],
               let index = state.workItems.firstIndex(where: { $0.id == workItemId }) else {
             throw HubError.http(status: 404, code: "NOT_FOUND", message: "That work item no longer exists.")
         }
+        if let decisionId, let current = state.workItems[index].decisionId, decisionId != current {
+            throw HubError.conflict(code: "STALE_DECISION", message: "This decision answers an earlier wait; the work item now waits for another decision.")
+        }
+        state.workItems[index].decisionId = nil
         state.workItems[index].status = decision == .pass ? .queued : .failed
         projects[projectId] = state
-        return state.workItems[index]
+    }
+
+    /// Marks an item as waiting for a person, for tests of stale decisions.
+    func setDecisionId(_ decisionId: String, workItemId: String) throws {
+        guard let projectId = projects.first(where: { $0.value.workItems.contains { $0.id == workItemId } })?.key,
+              let index = projects[projectId]?.workItems.firstIndex(where: { $0.id == workItemId }) else { return }
+        projects[projectId]?.workItems[index].decisionId = decisionId
+        projects[projectId]?.workItems[index].status = .blocked
     }
 
     public func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message {
-        var state = try await loadProject(projectId)
+        var state = try project(projectId)
         let message = Message(id: "msg_\(UUID().uuidString.prefix(8))", projectId: projectId, channelId: channelId, senderRoleId: "owner", body: body, createdAt: now())
         state.messages[channelId, default: []].append(message)
         projects[projectId] = state

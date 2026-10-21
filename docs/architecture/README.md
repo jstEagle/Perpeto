@@ -55,6 +55,7 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 - Non-secret configuration lives in JSON files under `config/` or a user config directory. Secrets live in owner-only files (mode 600) referenced by path, never in JSON config, CLI arguments, or logs.
 - IDs are strings: a short prefix plus a random suffix (engine-created IDs are deterministic, `wi_<runSuffix>_<n>`, so runs replay identically), for example `prj_…`, `wf_…`, `run_…`, `wi_…`, `asg_…`, `job_…`, `mch_…`, `acct_…`, `mq_…`.
 - Timestamps are ISO 8601 UTC strings.
+- Machine tokens, enrollment codes and session tokens are random and stored only as hashes. Idempotent replays return the original token, kept encrypted under a separate owner-only `credentialKeyPath` file; back it up with the hub databases. A leaked owner secret cannot mint machine tokens.
 - Every mutating request accepts an `idempotencyKey`. A repeat with the same body returns the original result; a repeat with a different body returns `409 conflict`.
 - Errors are `{ "error": { "code": "SNAKE_CASE", "message": "…" } }` and never include raw SQL, stack traces, or secrets.
 - Paths that URL normalization would rewrite (dot segments, encoded slashes, repeated slashes) are rejected with `400 INVALID_PATH`; authorization and routing always use the same normalized path.
@@ -147,7 +148,7 @@ Interaction events are first-class. The executor and messaging layer report them
 | `assignment.state` | Assignment queued, leased, running, finished, with machine and account |
 | `gate.result` | Review, CI or human gate passed or failed |
 
-An interaction with no matching edge is recorded with `unplanned: true` and shown, rather than hidden.
+Interaction events carry `from` and `to` node ids; an end that cannot be resolved through the run's graph is `null` with `sourceUnknown`/`targetUnknown: true`, never a role id. An interaction with no matching edge is recorded with `unplanned: true` and shown, rather than hidden.
 
 ### Metrics
 
@@ -190,10 +191,12 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /accounts` | Subscription pool across machines |
 | `GET /assignments/:id` | One assignment, used to follow the workflow architect |
 | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
+| `GET /jobs/:id/bundle?attempt=N` | Git bundle of a hub-hosted job revision for the leasing machine or the owner; jobs with `source: { kind: 'hub-bundle' }` are fetched this way so any enrolled machine can run them. `409 SOURCE_UNAVAILABLE` if the revision is gone |
 | `GET /projects/:id/merge-queue` | Merge queue |
 | `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
 | `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
-| `GET /events?after=<seq>&limit=` | Event page; `Accept: text/event-stream` streams live |
+| `GET /events?after=<seq>|latest=true|before=<seq>&runId=&limit=` | Event page, always oldest first; `after` returns `{events, nextCursor, hasMore}`, `latest`/`before` add `previousCursor`; the three are mutually exclusive. `Accept: text/event-stream` streams live, also filterable by `runId` |
+| `GET /session`, `POST /session`, `DELETE /session` | Exchange the owner bearer for an HttpOnly, SameSite=Strict `perpeto_session` cookie (`sessionTtlMs`, sliding); cookie-authenticated mutations need an `Origin` in `corsOrigins` and a JSON body, else `403 CSRF_REJECTED` |
 | Messaging | Existing routes from [messaging](../guides/messaging.md), served by the hub under `/api/v1/messaging/…` |
 
 ### Node protocol
@@ -217,6 +220,10 @@ Lease wire format, fixed after the node implementation:
 
 A run result the engine refuses is acknowledged with `200` plus a `reason` and recorded as a failed attempt, so a node never loops resending it.
 
+Heartbeats, renewals and CI log lines do not write events; liveness lives in machine state, logs at `GET /jobs/:id/log`. The log records only transitions (`machine.online`, `machine.offline`). `/events` and the stream accept `exclude=`, `types=` and `projectId=` filters and exclude legacy noise types by default. Free capacity is computed from the leases the hub holds, not the heartbeat's `running` count.
+
+Finished assignments and jobs are archived after `finishedWorkRetentionMs` but remain readable by id and in per-run listings. Events, usage and idempotency records have their own retention keys; event retention is at least 7 days so metric windows stay complete, and usage past retention keeps hourly rollups.
+
 An expired lease on run work is reported to the engine as a failed attempt, and the engine's retry policy schedules the next attempt. Project-scoped work and merge-queue jobs return to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
 
 ## Node executors
@@ -235,7 +242,7 @@ The node ships a `fake` executor for tests and loads `@perpeto/t3-executor` for 
 
 ## Clients and brand
 
-Both clients follow the Workshop system strictly: [brand/README.md](../../brand/README.md), [brand/tokens.css](../../brand/tokens.css) and the Spindle identity in `brand/identity/`. `packages/design-tokens` is the only place clients read colors, type scale, spacing and radii from. No ad-hoc colors, no uppercase microcopy, no numbered eyebrows or tracked-out kickers, no decorative node meshes or gradients. The workflow editor is the one place nodes and edges appear, and it should look like a precise ruled drawing, not a sci-fi network.
+Both clients follow Perpeto Mono strictly (see [design system](design-system.md)): [brand/README.md](../../brand/README.md), [brand/tokens.css](../../brand/tokens.css) and the Spindle identity in `brand/identity/`. `packages/design-tokens` is the only place clients read colors, type scale, spacing and radii from. No ad-hoc colors, no uppercase microcopy, no numbered eyebrows or tracked-out kickers, no decorative node meshes or gradients. The workflow editor is the one place nodes and edges appear: soft rounded nodes and thin grey edges on a faint dot grid, not a ruled drawing or a sci-fi network.
 
 Primary navigation: Projects → Project (Overview, Workflows, Runs, Work, Messages, Merge queue) and Factory (Machines, Accounts, Usage). Usage and agent counts are always visible at the project level.
 

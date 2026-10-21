@@ -5,13 +5,21 @@ import SwiftUI
 
 // Developer tooling, triggered only by launch arguments:
 //   --snapshots <dir>   capture the main window on each screen, then quit
+//     --hub-url <url> --hub-token-file <path>   capture a live hub instead of
+//     demo data; the token is read from an owner-only file, never an argument
+//     --live-check   also add one input to the newest run through the API and
+//     capture again, to show live events refreshing the map without ⌘R
 //   --render-icon <dir> write the app icon PNGs, then quit
 
 enum LaunchArgument {
     static func value(after flag: String) -> URL? {
+        string(after: flag).map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
+    static func string(after flag: String) -> String? {
         let args = CommandLine.arguments
         guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return nil }
-        return URL(fileURLWithPath: args[index + 1], isDirectory: true)
+        return args[index + 1]
     }
 }
 
@@ -21,6 +29,15 @@ enum LaunchArgument {
 struct Snapshotter {
     static var requestedDirectory: URL? { LaunchArgument.value(after: "--snapshots") }
 
+    /// A hub client for snapshotting live data, when both flags are given.
+    static func hubSource() -> HubDataSource? {
+        guard let url = LaunchArgument.string(after: "--hub-url").flatMap(URL.init(string:)),
+              let path = LaunchArgument.string(after: "--hub-token-file"),
+              let token = try? String(contentsOfFile: path, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+              let client = try? HubClient(baseURL: url, token: token) else { return nil }
+        return HubDataSource(client: client)
+    }
+
     var store: FactoryStore
     var navigator: Navigator
     var directory: URL
@@ -29,7 +46,51 @@ struct Snapshotter {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         await store.refresh()
         guard let project = store.factory.projects.first?.id else { return }
-        let shots: [(String, () -> Void)] = [
+        let shots = store.isDemo ? demoShots(project) : hubShots(project)
+        try? await Task.sleep(for: .seconds(1.5))
+        for (name, show) in shots {
+            show()
+            try? await Task.sleep(for: .seconds(name.hasPrefix("12") || name.contains("window") || name.contains("after-live") ? 4 : 1.4))
+            capture(name)
+        }
+        NSApp.terminate(nil)
+    }
+
+    /// Live hub screens. The run is the project's newest; the selected node is its busiest.
+    private func hubShots(_ project: String) -> [(String, () -> Void)] {
+        let state = store.state(project)
+        let run = state.runs.first?.id
+        let busiest = run.flatMap { state.runMetrics[$0]?.nodes.max { $0.active < $1.active }?.nodeId }
+        return [
+            ("hub-01-overview", { navigator.route = .project(project, .overview) }),
+            ("hub-02-workflow-proposal", { navigator.route = .project(project, .workflows) }),
+            ("hub-03-run-live-map", { navigator.selectedRunId = run; navigator.route = .project(project, .runs) }),
+            ("hub-03b-run-node-selected", { navigator.selectedNodeId = busiest }),
+            ("hub-03c-run-window-1h", { Task { await store.setMetricsWindow(.hour) } }),
+            ("hub-04-work", { navigator.route = .project(project, .work) }),
+            ("hub-07-machines", { navigator.route = .factory(.machines) }),
+            ("hub-08-accounts", { navigator.route = .factory(.accounts) }),
+            ("hub-09-usage", { navigator.route = .factory(.usage) }),
+        ] + (CommandLine.arguments.contains("--live-check") ? liveCheck(project, run: run) : [])
+    }
+
+    /// Adds an input through the hub, outside the store, then shows the run.
+    /// The store must pick the change up from the event stream alone.
+    private func liveCheck(_ project: String, run: String?) -> [(String, () -> Void)] {
+        guard let run, let source = store.source as? HubDataSource else { return [] }
+        return [
+            ("hub-10-before-live-input", {
+                navigator.selectedNodeId = nil
+                navigator.route = .project(project, .work)
+            }),
+            ("hub-11-after-live-input", {
+                Task { try? await source.client.addInputs(runId: run, items: ["Live update check"]) }
+            }),
+        ]
+    }
+
+    private func demoShots(_ project: String) -> [(String, () -> Void)] {
+        [
             ("01-overview", { navigator.route = .project(project, .overview) }),
             ("02-workflow-proposal", { navigator.route = .project(project, .workflows) }),
             ("03-run-live-map", { navigator.selectedRunId = DemoFixtures.liveRunId; navigator.route = .project(project, .runs) }),
@@ -52,13 +113,6 @@ struct Snapshotter {
             }),
             ("14-editor", { navigator.route = .project(project, .workflows); navigator.editWorkflowRequest += 1 }),
         ]
-        try? await Task.sleep(for: .seconds(1.5))
-        for (name, show) in shots {
-            show()
-            try? await Task.sleep(for: .seconds(name.hasPrefix("12") ? 4 : 1.4))
-            capture(name)
-        }
-        NSApp.terminate(nil)
     }
 
     private func capture(_ name: String) {

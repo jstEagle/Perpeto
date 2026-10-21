@@ -32,6 +32,7 @@ const RUN_STATUSES = new Set(['running', 'paused', 'stopped', 'completed', 'fail
 const HUB_OWNED_EVENTS = new Set(['assignment.state', 'run.started', 'run.paused', 'run.resumed', 'run.stopped', 'run.completed', 'run.failed']);
 const ENTITY_KINDS = [['workItems', 'work-item'], ['merges', 'merge-entry']];
 const SUMMARY_MAX = 20000;
+const INTERACTIONS = new Set(['workitem.moved', 'agent.delegated', 'agent.messaged']);
 const OUTBOX_PAGE = 500;
 
 /** Run engine calls, translating workflow errors to the hub's error envelope. */
@@ -312,9 +313,12 @@ export function createWorkflowAdapter() {
       for (const run of runs) {
         const state = states[run.id] ?? (store ? this.runState(run.id) : null);
         if (!state?.plan) continue;
-        // Hub lifecycle events identify the assignment by subject; the engine's formulas read it from data.
+        // Hub lifecycle events identify the assignment by subject; the engine's formulas read it from data. Interactions
+        // recorded before the hub wrote from/to carry their endpoints only as sourceNodeId/targetNodeId.
         const runEvents = events.filter(event => event.runId === run.id).map(event => event.type === 'assignment.state'
-          ? { ...event, data: { assignmentId: event.subject.id, ...event.data } } : event);
+          ? { ...event, data: { assignmentId: event.subject.id, ...event.data } }
+          : INTERACTIONS.has(event.type) && event.data.from === undefined
+            ? { ...event, data: { ...event.data, from: event.data.sourceNodeId, to: event.data.targetNodeId } } : event);
         const result = engine(() => runMetrics(state, runEvents, { now: at, window, machines, usage: usage.filter(record => record.runId === run.id) }));
         results.push(result);
       }

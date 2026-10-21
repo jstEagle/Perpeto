@@ -1,0 +1,125 @@
+<div class="app">
+  <aside class="sidebar" aria-label="Navigation">
+    <span class="brand"><!-- @lockup --></span>
+    <button class="switcher" type="button">
+      <span class="tile monogram">p</span>
+      <span><span class="switcher-name">perpeto</span><span class="switcher-sub">lumin-products</span></span>
+      <svg class="i"><use href="#i-selector"/></svg>
+    </button>
+    <nav class="nav" aria-label="Project">
+      <a href="#overview-desktop" aria-current="page"><svg class="i"><use href="#i-overview"/></svg>Overview</a>
+      <a href="#overview-desktop"><svg class="i"><use href="#i-workflow"/></svg>Workflows</a>
+      <a href="#overview-desktop"><svg class="i"><use href="#i-runs"/></svg>Runs<span class="dot" aria-label="1 live"></span></a>
+      <a href="#overview-desktop"><svg class="i"><use href="#i-work"/></svg>Work<span class="count">31</span></a>
+      <a href="#overview-desktop"><svg class="i"><use href="#i-messages"/></svg>Messages</a>
+      <a href="#overview-desktop"><svg class="i"><use href="#i-merge"/></svg>Merge queue<span class="count">2</span></a>
+    </nav>
+    <nav class="nav" aria-label="Factory">
+      <p class="nav-title">Factory</p>
+      <a href="#overview-desktop"><svg class="i"><use href="#i-machines"/></svg>Machines</a>
+      <a href="#overview-desktop"><svg class="i"><use href="#i-accounts"/></svg>Accounts</a>
+      <a href="#overview-desktop"><svg class="i"><use href="#i-usage"/></svg>Usage</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span class="avatar">JH</span>
+      <div class="row-main"><span class="row-title" style="font-size: var(--text-13)">Justus</span><span class="row-meta">Demo data</span></div>
+      <svg class="i i-sm" style="color: var(--muted)"><use href="#i-settings"/></svg>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <span class="mark" aria-label="Perpeto"><!-- @symbol --></span>
+      <button class="btn btn-secondary btn-icon btn-sm" type="button" aria-label="Menu"><svg class="i"><use href="#i-menu"/></svg></button>
+    </header>
+    <div class="main-inner">
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">perpeto</h1>
+          <p class="page-sub"><code>lumin-products/perpeto</code> on <code>main</code></p>
+        </div>
+        <div class="page-actions">
+          <button class="btn btn-ghost btn-icon only-desktop" type="button" aria-label="Project settings"><svg class="i"><use href="#i-more"/></svg></button>
+          <a class="btn btn-primary" href="#run-desktop">Open live map<svg class="i"><use href="#i-arrow-right"/></svg></a>
+        </div>
+      </header>
+
+      <section class="card now" aria-label="Now">
+        <div class="toolbar" style="align-items: flex-start; gap: var(--space-8)">
+          <div style="display: grid; gap: var(--space-2)">
+            <span class="status status-live" style="font-size: var(--text-16)"><span class="dot"></span>Build run is live</span>
+            <span class="row-meta"><code>run_7q4m2x</code> · Workflow v3 · Started 3 days ago</span>
+          </div>
+          <dl class="metrics" style="flex: 1; max-width: 560px">
+            <div class="metric"><dt>Agents working</dt><dd>5</dd></div>
+            <div class="metric"><dt>Queued work</dt><dd>10</dd></div>
+            <div class="metric"><dt>Tokens today</dt><dd>2.4M</dd></div>
+          </dl>
+        </div>
+        <details class="disclosure" style="margin-top: var(--space-6)">
+          <summary>More metrics<svg class="i"><use href="#i-chevron-down"/></svg></summary>
+          <div class="disclosure-body"><dl class="metrics metrics-small"><div class="metric"><dt>Tokens, 7 days</dt><dd>13.2M</dd></div><div class="metric"><dt>Items done per day</dt><dd>4.7</dd></div><div class="metric"><dt>Cycle time</dt><dd>6.4 h</dd></div><div class="metric"><dt>Tokens per item</dt><dd>182K</dd></div></dl></div>
+        </details>
+      </section>
+
+      <div class="cols">
+        <div class="stack">
+          <section class="card" aria-labelledby="ov-attention">
+            <div class="card-head"><h2 class="card-title" id="ov-attention">Needs attention</h2><span class="card-meta">2 open</span></div>
+            <div class="issue">
+              <svg class="i issue-icon"><use href="#i-alert"/></svg>
+              <div>
+                <p class="issue-title">Reviewer is saturated</p>
+                <p class="issue-text">Utilization is 100% at concurrency 1. Its queue grew from 3 to 7 in two hours. Workflow v4 proposes a second reviewer.</p>
+                <div class="issue-actions"><button class="btn btn-secondary btn-sm" type="button">Review proposal</button><button class="btn btn-ghost btn-sm" type="button">Show on map</button></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card" aria-labelledby="ov-goals">
+            <div class="card-head"><h2 class="card-title" id="ov-goals">Goals</h2><a class="card-link" href="#overview-desktop">Edit</a></div>
+            <ul class="rows">
+              <li><div class="row-main" style="gap: var(--space-3)"><div class="goal"><span>Ship Hub API v1 with leases and an event log</span><span class="card-meta tabular">3 of 5</span></div><div class="meter"><span style="width: 60%"></span></div></div></li>
+              <li><div class="row-main" style="gap: var(--space-3)"><div class="goal"><span>Run 100 concurrent agents across 5 machines</span><span class="card-meta tabular">1 of 4</span></div><div class="meter"><span style="width: 25%"></span></div></div></li>
+              <li><div class="row-main" style="gap: var(--space-3)"><div class="goal"><span>Web and native clients follow Perpeto Mono</span><span class="card-meta tabular">0 of 3</span></div><div class="meter"><span style="width: 0"></span></div></div></li>
+            </ul>
+            <details class="disclosure" style="margin-top: var(--space-6)">
+              <summary>Docs and requirements · 4<svg class="i"><use href="#i-chevron-down"/></svg></summary>
+              <div class="disclosure-body"><ul class="rows">
+                <li><span class="tile"><svg class="i"><use href="#i-doc"/></svg></span><div class="row-main"><span class="row-title">Vision</span><span class="row-meta mono">docs/product/vision.md</span></div></li>
+                <li><span class="tile"><svg class="i"><use href="#i-doc"/></svg></span><div class="row-main"><span class="row-title">Definition of done</span><span class="row-meta mono">docs/product/definition-of-done.md</span></div></li>
+              </ul></div>
+            </details>
+          </section>
+        </div>
+
+        <div class="stack">
+          <section class="card" aria-labelledby="ov-runs">
+            <div class="card-head"><h2 class="card-title" id="ov-runs">Runs</h2><a class="card-link" href="#overview-desktop">All<svg class="i"><use href="#i-chevron-right"/></svg></a></div>
+            <ul class="rows">
+              <li><div class="row-main"><span class="row-title mono">run_7q4m2x</span><span class="row-meta">v3 · 3 days ago</span></div><span class="status status-live"><span class="dot"></span>Running</span></li>
+              <li><div class="row-main"><span class="row-title mono">run_5d1h8a</span><span class="row-meta">v2 · 6 days ago</span></div><span class="status status-quiet"><svg class="i"><use href="#i-stop"/></svg>Stopped</span></li>
+              <li><div class="row-main"><span class="row-title mono">run_3c8w1n</span><span class="row-meta">v1 · 7 days ago</span></div><span class="status"><svg class="i"><use href="#i-check-circle"/></svg>Completed</span></li>
+            </ul>
+          </section>
+
+          <section class="card" aria-labelledby="ov-merge">
+            <div class="card-head"><h2 class="card-title" id="ov-merge">Merge queue</h2><a class="card-link" href="#overview-desktop">Open<svg class="i"><use href="#i-chevron-right"/></svg></a></div>
+            <ul class="rows">
+              <li><span class="status status-live"><span class="dot"></span>Testing</span><span class="row-end tabular" style="color: var(--ink)">1</span></li>
+              <li><span class="status"><svg class="i"><use href="#i-check-circle"/></svg>Merged today</span><span class="row-end tabular" style="color: var(--ink)">2</span></li>
+              <li><span class="status status-quiet"><svg class="i"><use href="#i-x-circle"/></svg>Rejected</span><span class="row-end tabular" style="color: var(--ink)">1</span></li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </div>
+    <nav class="tabbar" aria-label="Sections">
+      <a href="#overview-mobile" aria-current="page"><svg class="i"><use href="#i-overview"/></svg>Overview</a>
+      <a href="#overview-mobile"><svg class="i"><use href="#i-runs"/></svg>Runs</a>
+      <a href="#overview-mobile"><svg class="i"><use href="#i-work"/></svg>Work</a>
+      <a href="#overview-mobile"><svg class="i"><use href="#i-messages"/></svg>Messages</a>
+      <a href="#overview-mobile"><svg class="i"><use href="#i-more"/></svg>More</a>
+    </nav>
+  </main>
+</div>

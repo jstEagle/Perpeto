@@ -47,6 +47,8 @@ struct TokenDayChart: View {
             }
         }
         .chartForegroundStyleScale(domain: TokenKind.allCases.map(\.rawValue), range: TokenKind.allCases.map(\.color))
+        // Always at least two weeks wide, so a new hub's first day is one bar, not the whole chart.
+        .chartXScale(domain: dayDomain)
         .chartLegend(compact ? .hidden : .visible)
         .chartLegend(position: .top, alignment: .leading)
         .chartYAxis {
@@ -63,6 +65,13 @@ struct TokenDayChart: View {
             }
         }
         .accessibilityLabel("Tokens per day by type")
+    }
+
+    private var dayDomain: ClosedRange<Date> {
+        let days = groups.compactMap { HubCoding.parseDate($0.key + "T00:00:00Z") }
+        let last = (days.max() ?? Date()).addingTimeInterval(86400)
+        let first = min(days.min() ?? last, last.addingTimeInterval(-14 * 86400))
+        return first...last
     }
 }
 
@@ -109,6 +118,7 @@ struct BreakdownPanel: View {
 
 struct UsageScreen: View {
     var store: FactoryStore
+    @Environment(\.compactLayout) private var compact
 
     var body: some View {
         let usage = store.factory.usage
@@ -120,9 +130,9 @@ struct UsageScreen: View {
             cacheWriteTokens: usage.byDay.reduce(0) { $0 + $1.cacheWriteTokens })
         ScrollView {
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(6)) {
-                ScreenHeader("Usage", subtitle: "Tokens reported by harnesses across every project and machine, last 14 days.")
+                ScreenHeader("Usage", subtitle: "Tokens reported by harnesses across every project and machine, over \(Format.plural(usage.byDay.count, "day")).")
                 FigureStrip([
-                    Figure("Total", value: Format.tokens(totals.totalTokens), detail: "14 days"),
+                    Figure("Total", value: Format.tokens(totals.totalTokens), detail: Format.plural(usage.byDay.count, "day")),
                     Figure("Today", value: Format.tokens(usage.today), detail: "UTC day"),
                     Figure("Input", value: Format.tokens(totals.inputTokens)),
                     Figure("Output", value: Format.tokens(totals.outputTokens)),
@@ -134,14 +144,19 @@ struct UsageScreen: View {
                         .frame(height: 260)
                 }
                 .panel()
-                HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
+                let breakdowns = Group {
                     BreakdownPanel(title: "By provider", groups: usage.byProvider, name: Format.provider)
                     BreakdownPanel(title: "By model", groups: usage.byModel, name: { $0 })
                     BreakdownPanel(title: "By machine", groups: usage.byMachine, name: { id in store.machine(id)?.name ?? id })
                 }
+                if compact {
+                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) { breakdowns }
+                } else {
+                    HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) { breakdowns }
+                }
                 projectTable
             }
-            .padding(PerpetoSpacing.x(6))
+            .screenPadding()
             .frame(maxWidth: 1240, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -152,9 +167,9 @@ struct UsageScreen: View {
             SectionTitle("By project").padding(.bottom, PerpetoSpacing.x(3))
             HStack {
                 Text("Project").frame(maxWidth: .infinity, alignment: .leading)
-                Text("Agents working").frame(width: 120, alignment: .trailing)
-                Text("Today").frame(width: 100, alignment: .trailing)
-                Text("14 days").frame(width: 100, alignment: .trailing)
+                Text(compact ? "Agents" : "Agents working").frame(width: compact ? 56 : 120, alignment: .trailing)
+                Text("Today").frame(width: compact ? 64 : 100, alignment: .trailing)
+                Text("Total").frame(width: compact ? 64 : 100, alignment: .trailing)
             }
             .font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
             .padding(.bottom, PerpetoSpacing.x(2))
@@ -163,9 +178,9 @@ struct UsageScreen: View {
                 let state = store.state(project.id)
                 HStack {
                     Text(project.name).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink).frame(maxWidth: .infinity, alignment: .leading)
-                    Text("\(state.activeAgents)").frame(width: 120, alignment: .trailing)
-                    Text(Format.tokens(state.usage.today)).frame(width: 100, alignment: .trailing)
-                    Text(Format.tokens(state.usage.total)).frame(width: 100, alignment: .trailing)
+                    Text("\(state.activeAgents)").frame(width: compact ? 56 : 120, alignment: .trailing)
+                    Text(Format.tokens(state.usage.today)).frame(width: compact ? 64 : 100, alignment: .trailing)
+                    Text(Format.tokens(state.usage.total)).frame(width: compact ? 64 : 100, alignment: .trailing)
                 }
                 .font(PerpetoFont.body.monospacedDigit()).foregroundStyle(PerpetoColor.ink)
                 .padding(.vertical, PerpetoSpacing.x(2.5))

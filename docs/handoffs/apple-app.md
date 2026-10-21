@@ -1,45 +1,52 @@
 # Apple app handoff
 
-Status: early implementation on branch `t3/2f00a902`, 21 October 2026. A native SwiftUI client in `apps/apple`, built on the contract in [the architecture](../architecture/README.md) including the agent-authored workflows and observing-runs addendum. It runs on demo fixtures. It has not been run against a live hub.
+Status: early implementation, 21 October 2026. A native SwiftUI client in `apps/apple` for macOS, iPhone and iPad, built on the contract in [the architecture](../architecture/README.md). It reads a live local hub (`apps/hub`) and falls back to demo fixtures. **The visual style is provisional:** Justus has asked for a new minimal, monochrome design system, and a restyle will follow. This round covered function only.
 
-## What exists
+## What changed in this round
 
-- **PerpetoKit:** Codable models for every contract entity, `Workflow.authoredBy`, `rationale` and `parentVersion`, and `NodeMetrics`, `EdgeMetrics`, `RunMetrics` and `Bottleneck`. Unknown enum values decode to `unknown` rather than failing a response. Workflow graph v1 with local validation and a version diff. An async Hub API v1 client covering every route in the contract table plus messaging, with server-sent events and reconnect from the last `seq`. The owner token lives in the Keychain; the hub URL in UserDefaults.
-- **Demo fixtures:** the `perpeto` project runs its Build workflow on two machines. The single reviewer is saturated (utilization 1.00, queue 3 → 7), the review loop shows rework (four items on iteration 3 of 3, one failed at the limit), builders sit at 67%, and a reviewer agent has proposed draft version 4 that adds a UI reviewer. Builder-to-planner messages appear as unplanned interactions.
-- **Screens:** sidebar per contract with project vitals in the toolbar; overview with top bottleneck and velocity; prompt-first workflows with architect progress, proposal rationale, a diff against the active version, Activate, Ask for changes and Edit by hand, and version history; a hand editor with draggable nodes, typed ports, three edge kinds, inspector and validation; a run live map with per-node load, queue, wait, throughput and utilization, work-item markers, edge traffic counts, unplanned interactions, bottleneck reasons and evidence, velocity, where-work-is-running and a selection-filtered interaction feed; work, messages, merge queue, machines, accounts and usage (Swift Charts).
-- **Brand:** Workshop tokens only, system font with monospace for identifiers and logs, 6 and 12 pt radii, ruled surfaces, explicit status labels, no uppercase microcopy, kickers or gradients. The only motion is the Flywheel Spindle loader while the architect works, plus a 0.18 s map transition; both are off under Reduce Motion. Light appearance is forced because dark mode is undefined in brand/README.md.
+- **Live map routing.** Layout moved into PerpetoKit as a tested router (`Graph/GraphLayout.swift`). Flow edges keep the rows and the gaps between them. Delegates, messages and unplanned interactions leave cards from their outer edge, run in channels above and below the drawing, and change rows through side gutters. Lanes are allocated shortest span first, so routes never share a lane, and lines are drawn with a paper halo so crossings read as bridges. Count labels are placed along their own route so none overlaps another label or a card. The legend toggles role edges between all roles and the selected node. Rows spread horizontally when stored positions are too close for the cards (the hub's build template needed this). Applies to the live map, the proposal diff (removed edges are routed too) and the editor.
+- **Hub shapes.** Every assumption from the previous handoff was checked against `apps/hub` routes and tests and corrected; see below. The run list uses `GET /projects/:id/runs`; the architect is followed with `GET /assignments/:id`, including retries after invalid drafts. Live events trigger a debounced (750 ms) refetch of the affected run, project or factory; lease renewals and heartbeats are ignored because they made up most of the log. The window picker refetches run and project metrics.
+- **Human decisions** send the work item's `decisionId`. A `409 STALE_DECISION` (or `CONFLICT`) explains that the item now waits for another decision and reloads the project.
+- **Local validation** now matches `packages/workflow` on merge-queue `pass`/`fail` ports, delegate-only agents, escalation targets and required config (`source`, `prompt`, `strategy`, `method`, `until`). Before this, a draft the hub accepted showed as invalid. The proposal panel uses the hub's validation when connected.
+- **iPhone and iPad app** (`apps/apple/iOS`), sharing PerpetoKit and PerpetoUI: adaptive navigation (split view on iPad, stack on iPhone), overview, runs list, run live map with pan, pinch zoom and tap to inspect (a sheet on iPhone), workflow proposal with Activate and Ask for changes, machines and usage. Hub settings are shared with the Mac; the token stays in the Keychain.
+- **Editor undo and redo** through `GraphHistory` in PerpetoKit: every edit undoes the same way, typing in one node's fields coalesces, and ⌘Z / ⇧⌘Z go through the Edit menu.
+
+## Hub shapes, as implemented
+
+| Previous assumption | Hub |
+| --- | --- |
+| Lists bare or wrapped in `items`/`data` | Always `{<resource>: [...]}`, for example `{runs}`, `{entries}`, `{groups, totals}`, `{events, nextCursor}` |
+| `POST /workflows/:id/validate` → `{valid, issues}` | `{valid, errors, warnings}`; issues carry no `severity` |
+| Drafts return `{assignment}` or `{assignmentId}` | HTTP 202 with the bare architect Assignment (no `runId`) |
+| Decisions and inputs return entities | `{accepted: true}`; decisions also take `decisionId` |
+| Metrics `{window, …}`, unplanned edge `from>to` | No `window`; unplanned `edgeId` is `unplanned:<kind>:<from>-><to>` with `from`/`to` fields; node `concurrency`, `utilization`, `failureRate` and percentiles may be null |
+| Interaction data `fromNode`, `toNode`, `fromRole`, `toRole`, `summary` | `sourceNodeId`, `targetNodeId`, `role`, `senderRoleId`/`recipientRoleId`, `messageId`; no summary |
+| `PUT /workflows/:id` takes a whole workflow | Merges `{name, graph, purpose, rationale}` over the head |
+| Job log is text | `{jobId, chunks: [{chunk, at}]}` |
+| `GET /health` → `{ok}` | `{status: "ok", version}` |
 
 ## Verification
 
 | Check | Result |
 | --- | --- |
-| `swift build` | Passed, no warnings |
-| `swift test` | 40 tests in 9 suites passed: decoding, metrics, envelopes, client paths and headers, idempotency keys, error mapping, SSE parsing, validation, diff, demo story, Keychain round trip |
-| `xcodebuild -scheme PerpetoUI -destination 'generic/platform=iOS Simulator'` | Passed. No iOS app target exists and nothing was run on iOS |
-| `scripts/build-app.sh` | Produced an ad-hoc signed `Perpeto.app` |
-| `scripts/snapshots.sh` | 15 window captures plus the icon in `apps/apple/screenshots/`, reviewed against the brand boards |
+| `swift build`, `swift test` | Passed, no warnings; 62 tests in 15 suites, including routing (no shared lanes, no card crossings, no label overlaps, on demo graphs and the hub's build template), history, decisions and the event debounce |
+| Live hub tests (`PERPETO_HUB_URL`, `PERPETO_HUB_TOKEN_FILE`) | Passed against the branch's hub and against `main`'s hub (temporary detached worktree): every read route decodes strictly, and a human decision with its `decisionId` is accepted while a repeat is refused |
+| `xcodebuild` macOS (`-scheme Perpeto`), PerpetoUI and the iOS app for the iOS Simulator | Passed |
+| Live refresh | An input added through the API appeared in the app without a manual refresh (`screenshots/hub/hub-10…`, `hub-11…`) |
+| Screenshots | macOS demo (`screenshots/`), macOS live hub (`screenshots/hub/`), iPhone 17 Pro and iPad Pro 13-inch simulators on a seeded hub (`screenshots/ios/`). Window or device captures only. They show the provisional style |
 
-Not verified: dragging nodes, connecting ports, deleting with the keyboard, menus and shortcuts were built but not exercised by automation or by hand. Screenshots show rendering only. The hub data source has only stubbed-transport tests.
+Not verified: undo and redo were not exercised in the running app. Synthetic mouse events did not drive SwiftUI's drag gesture and this machine denies UI scripting, so only `GraphHistory` and the build are tested. Pinch zoom and tap-to-inspect were checked by launch arguments and captures, not by touch. Nothing ran on a physical device. Distribution signing, notarization and sandboxing are not set up.
 
-## Assumptions to confirm with the hub owner
+## Findings for the hub owner
 
-The contract leaves these shapes open. The client is tolerant where it can be.
+- `GET /events` only pages forward from `after`. To show recent activity the client walks the whole log. A `before` cursor or `latest=true`, plus type and project filters, would fix this.
+- Lease renewals and heartbeats are written to the event log every few seconds per lease. On the seeded hub they were 786 of the last 1,000 events.
+- `agent.messaged` defaults `targetNodeId` to `recipientRoleId`, a role rather than a node, so an observed message without an explicit target can be counted against the wrong edge.
+- The build template's positions are 160 pt apart, narrower than either client's cards. The app spreads them; storing wider positions would be simpler.
 
-- Lists may be a bare array or an object holding one array (`items`, `data` or the resource name).
-- `idempotencyKey` is sent in the JSON body, as messaging does.
-- `GET /overview` keys: `activeAgents`, `queuedWork`, `tokensToday`, `machinesOnline`.
-- `GET /usage` rows: `{ key, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd? }`; day keys are `yyyy-MM-dd`.
-- Metrics routes return `{ window, nodes, edges, run, bottlenecks }` (`summary` accepted for `run`). An unplanned `EdgeMetrics.edgeId` of the form `fromNode>toNode` is drawn between those nodes.
-- Interaction event `data` carries `fromNode`, `toNode`, `nodeId`, `edgeId`, `fromRole`, `toRole`, `state`, `result`, `unplanned` and `summary`.
-- `POST /workflows/:id/validate` returns `{ valid, issues }` (`errors` accepted); drafts return `{ assignment }` or `{ assignmentId }`; decisions send `{ decision: 'pass'|'fail' }`; inputs send `{ items: [{ title }] }`.
-- Messaging is served at `/api/v1/messaging/projects/:id/channels…`, mirroring the existing `/api/perpeto` routes.
-- The diff view is computed locally from `GET /workflows/:id/versions`; `GET /workflows/:id/diff` is not used yet.
+## Gaps
 
-## Gaps and recommendations
-
-- **No project run list in the contract.** The hub data source finds runs through the event log, which misses runs whose events have aged out. Recommend `GET /projects/:id/runs`.
-- Live events are appended to the feed, but metrics and work items refresh only on ⌘R or after an action. The metrics window picker does not refetch yet.
-- The editor has no undo, no pinch zoom and no auto-layout. Removed nodes are drawn as ghosts only in the diff view.
-- **App icon mismatch.** My brief said Spindle on paper; `packages/design-tokens` ships an ink tile with a paper Spindle. `build-app.sh` uses the shared icon when that package is present and falls back to the paper icon drawn in code (`screenshots/app-icon.png`). Justus should pick one.
-- `PerpetoEditor.nodeWidth` in the shared tokens is 240 pt; the app uses 168 pt so a build workflow fits at 100% beside the inspector. Align the token or the app.
-- Distribution signing, notarization, sandboxing and an iOS app target are not set up.
+- Restyle to the new design system (pending a brief).
+- The app icon mismatch and the 168 vs 240 pt node width from the previous handoff are still open.
+- No auto-layout in the editor, and the iOS app has no editor.
+- `GET /workflows/:id/diff` is still unused; the diff is computed locally.

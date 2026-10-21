@@ -41,8 +41,12 @@ export async function eventually(check, { timeoutMs = 45000, intervalMs = 50, me
   throw new Error(message);
 }
 
-/** Start a real hub (ephemeral port, temporary SQLite and secrets) and enroll a real node daemon with `executor`. */
-export async function startFactory(t, { executor, hub: hubConfig = {}, node: nodeConfig = {}, subprocess = false }) {
+/**
+ * Start a real hub (ephemeral port, temporary SQLite and secrets) and enroll a real node daemon with `executor`.
+ * `separateNode` gives the node its own temporary root, sharing no directory with the hub; `node` may then be a
+ * function of `{ root }` (the hub's root) for settings that name hub paths.
+ */
+export async function startFactory(t, { executor, hub: hubConfig = {}, node: nodeConfig = {}, subprocess = false, separateNode = false }) {
   const root = await mkdtemp(join(tmpdir(), 'perpeto-e2e-'));
   await chmod(root, 0o700);
   const cleanups = [];
@@ -57,14 +61,17 @@ export async function startFactory(t, { executor, hub: hubConfig = {}, node: nod
   cleanups.push(() => hub.close());
   const owner = (await readFile(join(root, 'hub/owner.secret'), 'utf8')).trim();
   const request = async (method, path, body) => {
-    const response = await fetch(`${url}/api/v1${path}`, { method, headers: { Authorization: `Bearer ${owner}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const response = await fetch(`${url}/api/v1${path}`, { method, signal: AbortSignal.timeout(10000), headers: { Authorization: `Bearer ${owner}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const data = await response.json();
     if (!response.ok) throw Object.assign(new Error(`${method} ${path} -> ${response.status} ${data?.error?.code}: ${data?.error?.message}`), { status: response.status, body: data });
     return data;
   };
 
   const enrollment = await request('POST', '/machines/enrollment-codes', {});
-  const nodeDir = join(root, 'node'); await mkdir(nodeDir, { mode: 0o700 });
+  const nodeRoot = separateNode ? await mkdtemp(join(tmpdir(), 'perpeto-e2e-node-')) : root;
+  if (separateNode) { await chmod(nodeRoot, 0o700); t.after(() => rm(nodeRoot, { recursive: true, force: true })); }
+  const nodeDir = join(nodeRoot, 'node'); await mkdir(nodeDir, { mode: 0o700 });
+  if (typeof nodeConfig === 'function') nodeConfig = nodeConfig({ root });
   await writeFile(join(nodeDir, 'enrollment-code'), enrollment.code, { mode: 0o600 });
   const nodePath = join(nodeDir, 'node.json');
   await writeFile(nodePath, JSON.stringify({ hubUrl: url, name: 'e2e-machine', dataDir: './data', enrollmentCodeFile: './enrollment-code',
@@ -83,7 +90,7 @@ export async function startFactory(t, { executor, hub: hubConfig = {}, node: nod
       after = page.nextCursor;
     }
   }
-  return { root, url, owner, request, hub, node, events, nodeDataDir: join(nodeDir, 'data') };
+  return { root, nodeRoot, url, owner, request, hub, node, events, nodeDataDir: join(nodeDir, 'data') };
 }
 
 /** Load the default build template and point every role at the `fake` provider the e2e executor serves. */
@@ -149,11 +156,14 @@ async function processHub(configPath, options) {
       import { HubDelivery } from ${JSON.stringify(import.meta.resolve('@perpeto/hub/delivery'))};
       import { existsSync, writeFileSync } from 'node:fs';
       import { setTimeout as sleep } from 'node:timers/promises';
+      let released = existsSync(${JSON.stringify(release)});
       const sync = HubDelivery.prototype.sync;
       HubDelivery.prototype.sync = async function (...args) {
-        if ([...this.queues.values()].some(queue => queue.state.entries.some(entry => entry.status === 'merged')) && !existsSync(${JSON.stringify(release)})) {
+        released ||= existsSync(${JSON.stringify(release)});
+        if (!released && [...this.queues.values()].some(queue => queue.state.entries.some(entry => entry.status === 'merged')) && !existsSync(${JSON.stringify(release)})) {
           writeFileSync(${JSON.stringify(barrier)}, 'delivery committed before hub sync');
           while (!existsSync(${JSON.stringify(release)})) await sleep(20);
+          released = true;
         }
         return sync.apply(this, args);
       };
@@ -183,6 +193,11 @@ async function processHub(configPath, options) {
     get url() { return url; },
     async kill() { child.kill('SIGKILL'); await exited; },
     async restart() { await start(); },
-    async close() { child.kill('SIGTERM'); await exited; },
+    async close() {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill('SIGTERM');
+      const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+      try { await exited; } finally { clearTimeout(timer); }
+    },
   };
 }

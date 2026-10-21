@@ -119,8 +119,8 @@ struct WorkItemDetail: View {
                 }
                 if item.status == .blocked {
                     HStack {
-                        Button("Approve") { Task { await store.decide(projectId: project.id, workItemId: item.id, .pass) } }.buttonStyle(.perpetoPrimary)
-                        Button("Return for changes") { Task { await store.decide(projectId: project.id, workItemId: item.id, .fail) } }.buttonStyle(.perpetoSecondary)
+                        Button("Approve") { Task { await store.decide(projectId: project.id, item: item, .pass) } }.buttonStyle(.perpetoPrimary)
+                        Button("Return for changes") { Task { await store.decide(projectId: project.id, item: item, .fail) } }.buttonStyle(.perpetoSecondary)
                     }
                 }
             }

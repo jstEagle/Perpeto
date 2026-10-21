@@ -26,6 +26,22 @@ export function localRepository(repo = {}) {
   return isAbsolute(candidate) ? candidate : null;
 }
 
+/** Where a job's source lives on the hub: CI for a local project builds from its repository, merge-queue jobs from their queue's. */
+export function hubRepository(store, job) {
+  if (job.delivery) return store.get('delivery-queue', job.delivery.queueId)?.repository ?? null;
+  const project = store.get('project', job.projectId);
+  try { return project ? localRepository(project.repo) : null; } catch { return null; }
+}
+
+/**
+ * Hand a job whose revision lives in a hub repository to any machine: the job names an authenticated route instead
+ * of a hub path, and keeps only the default branch from its repo.
+ */
+export function servedFromHub(job, repo) {
+  const defaultBranch = typeof repo === 'object' ? repo?.defaultBranch : undefined;
+  return { ...job, repo: defaultBranch ? { defaultBranch } : {}, source: { kind: 'hub-bundle', path: `/jobs/${job.id}/bundle` } };
+}
+
 function requirements(list) {
   if (list.length <= 1) return structuredClone(list[0] ?? {});
   const os = list.map(value => value.os).find(Boolean);
@@ -99,7 +115,7 @@ export class HubDelivery {
   /** Enqueue newly created hub merge entries and return the queues with open work. */
   admit() {
     const { store } = this.hub;
-    for (const entry of store.list('merge-entry', value => value.status === 'queued' && !value.queueId && !value.deliveryRejected)) {
+    for (const entry of store.byStatus('merge-entry', ['queued'], value => !value.queueId && !value.deliveryRejected)) {
       // Entries are admitted one by one, so one project's unusable repository never halts admission for the others.
       // A blocked entry stays queued and is retried, for example after the project's repo is corrected.
       let record;
@@ -205,7 +221,7 @@ export class HubDelivery {
   /** Mirror queue state into hub jobs and merge entries, and report finished entries to their runs. */
   async sync(ids) {
     const { store } = this.hub; let changed = false;
-    for (const entry of store.list('merge-entry', value => value.deliveryRejected && !TERMINAL.has(value.status))) {
+    for (const entry of store.byStatus('merge-entry', ['queued', 'testing', 'merging'], value => value.deliveryRejected)) {
       const run = entry.runId && store.get('run', entry.runId);
       if (!run || !['running', 'paused'].includes(run.status)) continue;
       await this.hub.engineEvent(run, { type: 'merge.finished', mergeEntryId: entry.id, data: { status: 'rejected', reason: `Merge queue refused the entry (${entry.deliveryError}).` } });
@@ -225,9 +241,10 @@ export class HubDelivery {
         if (!hubJob) {
           if (job.status !== 'queued') continue;
           const members = state.entries.filter(entry => entry.jobId === job.id).map(entry => store.get('merge-entry', entry.id)).filter(Boolean);
-          const value = { id: job.id, projectId: job.projectId, ...(job.runId ? { runId: job.runId } : {}), ...(job.workItemId ? { workItemId: job.workItemId } : {}),
-            ...(members[0]?.nodeId ? { nodeId: members[0].nodeId } : {}), repo: job.repo, revision: job.revision, steps: job.steps, requirements: job.requirements,
-            status: 'queued', attempt: 1, artifacts: [], configHash: job.configHash, delivery: { queueId: id, mergeEntryIds: members.map(entry => entry.id) }, createdAt: now() };
+          // Candidates exist only in the hub's repository, so machines fetch them from the hub rather than a hub path.
+          const value = servedFromHub({ id: job.id, projectId: job.projectId, ...(job.runId ? { runId: job.runId } : {}), ...(job.workItemId ? { workItemId: job.workItemId } : {}),
+            ...(members[0]?.nodeId ? { nodeId: members[0].nodeId } : {}), revision: job.revision, steps: job.steps, requirements: job.requirements,
+            status: 'queued', attempt: 1, artifacts: [], configHash: job.configHash, delivery: { queueId: id, mergeEntryIds: members.map(entry => entry.id) }, createdAt: now() }, job.repo);
           this.hub.requirements(value.requirements);
           store.put('job', value); this.hub.emit('job.updated', 'job', value, { status: 'queued', source: 'merge-queue' }); changed = true;
           if (members.length && members.every(entry => TERMINAL.has(entry.status))) this.hub.cancelWork('job', value);

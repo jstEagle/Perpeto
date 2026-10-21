@@ -1,11 +1,15 @@
 import PerpetoKit
-import PerpetoUI
 import SwiftUI
 
-/// Hub address in UserDefaults; owner token in the Keychain only.
-struct SettingsView: View {
+/// Hub address in UserDefaults; owner token in the Keychain only. macOS shows
+/// it as the Settings window, iOS as a sheet.
+public struct HubConnectionView: View {
     var store: FactoryStore
     private let settings = HubSettings()
+
+    public init(store: FactoryStore) {
+        self.store = store
+    }
 
     @State private var url = ""
     @State private var token = ""
@@ -13,24 +17,43 @@ struct SettingsView: View {
     @State private var status: (String, StatusTone)?
     @State private var working = false
 
-    var body: some View {
+    #if os(macOS)
+    private let device = "this Mac"
+    private let keychain = "your login Keychain"
+    #else
+    private let device = "this device"
+    private let keychain = "the Keychain on this device"
+    #endif
+
+    public var body: some View {
+        #if os(macOS)
+        form.frame(width: 520)
+        #else
+        ScrollView { form }.background(PerpetoColor.surface)
+        #endif
+    }
+
+    private var form: some View {
         VStack(alignment: .leading, spacing: PerpetoSpacing.x(5)) {
             HStack(spacing: PerpetoSpacing.x(3)) {
                 SpindleShape().fill(PerpetoColor.ink).frame(width: 28, height: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Hub connection").font(PerpetoFont.title()).foregroundStyle(PerpetoColor.ink)
-                    Text("Without a hub, the app shows demo data that stays on this Mac.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
+                    Text("Without a hub, the app shows demo data that stays on \(device).").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
                 }
             }
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
                 Text("Hub address").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
                 TextField("https://hub.example.com", text: $url).font(PerpetoFont.mono(PerpetoType.text14)).perpetoField()
+                    #if os(iOS)
+                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    #endif
                 Text("HTTPS is required except for localhost.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
             }
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
                 Text("Owner token").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
                 SecureField(hasToken ? "Saved in Keychain. Enter a new token to replace it." : "Paste the owner token", text: $token).perpetoField()
-                Text("Stored in your login Keychain. It is never written to preferences or logs.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                Text("Stored in \(keychain). It is never written to preferences or logs.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
             }
             if let status { StatusLabel(status.0, tone: status.1) }
             HStack(spacing: PerpetoSpacing.x(2)) {
@@ -54,7 +77,6 @@ struct SettingsView: View {
             }
         }
         .padding(PerpetoSpacing.x(6))
-        .frame(width: 520)
         .background(PerpetoColor.surface)
         .onAppear {
             url = settings.hubURLString

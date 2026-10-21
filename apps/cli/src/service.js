@@ -47,7 +47,7 @@ export async function service(action, dir, role, { dryRun = false, platform = pr
     const existing = await readFile(generated.file, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
     if (existing !== null) {
       const stat = await lstat(generated.file);
-      if (!stat.isFile() || stat.uid !== process.getuid() || !existing.includes(generated.marker)) throw new Error('Existing service belongs to another installation.');
+      if (!stat.isFile() || stat.uid !== process.getuid() || !(platform === 'linux' ? existing.split(/\r?\n/).includes(generated.marker) : existing.includes(generated.marker))) throw new Error('Existing service belongs to another installation.');
     }
     if (action === 'install') {
       if (await control(dir, role).catch(() => null)) throw new Error(`Stop the ${role} daemon before installing its service.`);

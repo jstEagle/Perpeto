@@ -253,18 +253,19 @@ test('H6: daemon protects external credential/redaction/account paths and redact
   const credentialFile = join(dir, 'outside-machine.json');
   const redactionFile = join(dir, 'redaction.json');
   const accountDir = join(dir, 'outside-accounts');
+  await writeFile(`${credentialFile}.rotation.tmp`, 'ROTATION_TEMP_SECRET', { mode: 0o600 });
   await mkdir(accountDir, { mode: 0o700 });
   await writeFile(join(accountDir, 'secret'), 'ACCOUNT_SECRET', { mode: 0o600 });
   await writeFile(redactionFile, JSON.stringify({ literals: ['EXACT_SECRET'] }), { mode: 0o600 });
   await writeFile(configPath, JSON.stringify({ ...config, credentialFile, accounts: { nodeDataDir: accountDir }, jobs: { redactionFile } }));
-  hub.jobs.push(job(repo, [{ name: 'probe', run: `! cat '${credentialFile}' && ! cat '${redactionFile}' && ! cat '${accountDir}/secret' && printf 'private-machine-token\\nEXACT_SECRET\\n'` }]));
+  hub.jobs.push(job(repo, [{ name: 'probe', run: `! cat '${credentialFile}' && ! cat '${credentialFile}.rotation.tmp' && ! cat '${redactionFile}' && ! cat '${accountDir}/secret' && printf 'private-machine-token\\nEXACT_SECRET\\n'` }]));
   const node = await createNode({ configPath });
   addCleanup(t, () => node.stop({ drain: false }));
   await node.start();
   await eventually(() => hub.events.some(e => e.type === 'completed'), 5000);
   assert.equal(hub.events.find(e => e.type === 'completed').data.status, 'passed');
   const output = hub.events.filter(e => e.type === 'log').map(e => e.data.chunk).join('');
-  assert.equal(/private-machine-token|EXACT_SECRET|ACCOUNT_SECRET/.test(output), false);
+  assert.equal(/private-machine-token|EXACT_SECRET|ACCOUNT_SECRET|ROTATION_TEMP_SECRET/.test(output), false);
   assert.match(output, /REDACTED/);
 });
 
@@ -280,4 +281,28 @@ test('H6: trusted checkout remote rewrites remain available without exposing Git
   const result = await runJob({ ...job(repo, [{ name: 'verify', run: `test -z "$GIT_CONFIG_GLOBAL" && ! cat '${configFile}' && git rev-parse HEAD` }]), repo: remote }, ctx, { dataDir: repo.root });
   assert.equal(result.status, 'passed');
   assert.equal(JSON.stringify(ctx.events).includes('CONFIG_SECRET'), false);
+});
+
+test('a hub-sourced job fetches its bundle into the job workspace and runs at exactly its revision; a bundle without it fails', async t => {
+  const repo = await repository(t);
+  // What the hub serves: a bundle of one ref at the job's revision, holding no newer commits.
+  const bundles = join(repo.root, 'bundles'); await mkdir(bundles);
+  const make = async (name, revision) => {
+    await exec('git', ['update-ref', `refs/perpeto/bundles/${name}`, revision], { cwd: repo.bare });
+    await exec('git', ['bundle', 'create', join(bundles, `${name}.bundle`), `refs/perpeto/bundles/${name}`], { cwd: repo.bare });
+  };
+  await make('exact', repo.revision);
+  const requests = [];
+  const source = name => ({ ...context(), fetchSource: async (path, file) => { requests.push(path); await writeFile(file, await readFile(join(bundles, `${name}.bundle`))); } });
+  const ctx = source('exact');
+  const hubJob = { ...job(repo, [{ name: 'verify', run: `test "$(git rev-parse HEAD)" = "${repo.revision}" && cat value.txt` }]), repo: { defaultBranch: 'main' }, source: { kind: 'hub-bundle', path: '/jobs/job_hub/bundle' } };
+  const result = await runJob(hubJob, ctx, { dataDir: repo.root });
+  assert.equal(result.status, 'passed'); assert.deepEqual(requests, ['/jobs/job_hub/bundle']);
+  assert.match(ctx.events.filter(event => event.type === 'log').map(event => event.data.chunk).join(''), /exact revision/);
+  // A bundle that does not hold the job's revision never yields a pass.
+  const wrong = await runJob({ ...hubJob, revision: repo.latest }, source('exact'), { dataDir: repo.root });
+  assert.equal(wrong.status, 'error');
+  for (const path of ['/jobs/../bundle', '/elsewhere', 'http://evil/jobs/x/bundle']) {
+    assert.equal((await runJob({ ...hubJob, source: { kind: 'hub-bundle', path } }, source('exact'), { dataDir: repo.root })).status, 'error', path);
+  }
 });

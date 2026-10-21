@@ -3,6 +3,7 @@ import { loadConfig } from './config.js';
 import { Hub } from './hub.js';
 import { HubError, fail, integer, object } from './errors.js';
 import { createWorkflowAdapter } from './engine/workflow-adapter.js';
+import { sendBundle } from './delivery/source.js';
 
 async function readBody(request, limit) {
   if (request.headers['content-length'] && Number(request.headers['content-length']) > limit) fail(413, 'REQUEST_TOO_LARGE', 'Request body exceeds the configured limit.');
@@ -35,31 +36,48 @@ async function readBody(request, limit) {
 export async function createHub({ configPath, engine = createWorkflowAdapter() }) {
   const config = loadConfig(configPath); const hub = new Hub(config, engine);
   const streams = new Set(); const polls = new Set(); let closing = false; let maintenanceBusy = false;
-  const json = (response, status, body) => {
+  const json = (response, status, body, headers = {}) => {
     if (response.destroyed) return;
-    response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-    response.end(JSON.stringify(body));
+    response.writeHead(status, { ...(status === 204 ? {} : { 'Content-Type': 'application/json; charset=utf-8' }), 'Cache-Control': 'no-store', ...headers });
+    response.end(status === 204 ? undefined : JSON.stringify(body));
+  };
+  /** Secure unless the browser is on a loopback http origin; HTTPS and remote origins always get it. */
+  const secure = request => {
+    if (request.socket.encrypted || request.headers['x-forwarded-proto'] === 'https') return true;
+    let url; try { url = new URL(request.headers.origin ?? `http://${request.headers.host ?? ''}`); } catch { return true; }
+    return url.protocol !== 'http:' || !(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.hostname.endsWith('.localhost'));
+  };
+  const setCookie = (request, cookie) => {
+    if (!cookie) return {};
+    const maxAge = cookie.clear ? 0 : Math.max(0, Math.ceil((Date.parse(cookie.expiresAt) - Date.now()) / 1000));
+    return { 'Set-Cookie': `perpeto_session=${cookie.clear ? '' : cookie.value}; HttpOnly; SameSite=Strict; Path=/api/v1; Max-Age=${maxAge}${secure(request) ? '; Secure' : ''}` };
   };
   async function lease(request, response, args) {
     const deadline = Date.now() + config.longPollMs;
+    // The poll registers as its machine's waiter before each attempt, so a wake during the attempt is not lost. The hub
+    // wakes it only for work this machine could lease or a change to its own capacity (Hub.flush).
+    const machineId = hub.machineOf(args.authorization);
+    const kinds = Array.isArray(args.body.kinds) ? args.body.kinds : ['assignment', 'job'];
     while (!closing && !response.destroyed) {
       let wake;
       const notified = new Promise(resolve => { wake = resolve; });
-      hub.listeners.add(wake); polls.add(wake);
+      const unregister = machineId ? hub.waiter(machineId, kinds, wake) : () => {}; polls.add(wake);
       const timer = setTimeout(wake, Math.max(0, deadline - Date.now()));
       const abort = () => wake(); response.once('close', abort);
       try {
-        const finalLease = Date.now() >= deadline;
+        const finalLease = Date.now() >= deadline || !machineId;
         const result = await hub.request({ ...args, finalLease });
         if (result.body.assignments.length || result.body.jobs.length || finalLease) return json(response, result.status, result.body);
         await notified;
-      } finally { clearTimeout(timer); hub.listeners.delete(wake); polls.delete(wake); response.off('close', abort); }
+      } finally { clearTimeout(timer); unregister(); polls.delete(wake); response.off('close', abort); }
     }
     if (!response.destroyed) json(response, 503, { error: { code: 'SHUTTING_DOWN', message: 'Hub is shutting down.' } });
   }
   async function stream(request, response, args, url) {
     let cursor = integer(Number(url.searchParams.get('after') ?? request.headers['last-event-id'] ?? 0), 'after');
-    await hub.request({ ...args, method: 'GET', path: `/events?after=${cursor}&limit=1` });
+    // The stream takes the same filters as GET /events.
+    const run = ['runId', 'projectId', 'types', 'exclude'].filter(name => url.searchParams.has(name)).map(name => `&${name}=${encodeURIComponent(url.searchParams.get(name))}`).join('');
+    await hub.request({ ...args, method: 'GET', path: `/events?after=${cursor}&limit=1${run}` });
     if (closing) fail(503, 'SHUTTING_DOWN', 'Hub is shutting down.');
     response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     response.flushHeaders(); response.write(': connected\n\n'); streams.add(response);
@@ -71,7 +89,7 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
       try {
         while (dirty && !response.destroyed && !closing) {
           dirty = false;
-          const result = await hub.request({ ...args, method: 'GET', path: `/events?after=${cursor}&limit=100` });
+          const result = await hub.request({ ...args, method: 'GET', path: `/events?after=${cursor}&limit=100${run}` });
           for (const event of result.body.events) {
             if (response.destroyed || closing) break;
             const writable = response.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
@@ -96,9 +114,11 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
       const origin = request.headers.origin;
       if (origin) {
         if (!config.corsOrigins.includes(origin)) fail(403, 'ORIGIN_FORBIDDEN', 'This origin is not allowed.');
+        // Exact configured origins only, never `*`, so the owner's session cookie is offered to the app alone.
         response.setHeader('Access-Control-Allow-Origin', origin); response.setHeader('Vary', 'Origin');
+        response.setHeader('Access-Control-Allow-Credentials', 'true');
         response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key, Last-Event-ID');
-        response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, OPTIONS');
+        response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       }
       if (request.method === 'OPTIONS') { response.writeHead(204); response.end(); return; }
       const url = new URL(request.url, 'http://hub');
@@ -108,10 +128,14 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
       if (!url.pathname.startsWith('/api/v1/')) fail(404, 'NOT_FOUND', 'Route not found.');
       if (closing) fail(503, 'SHUTTING_DOWN', 'Hub is shutting down.');
       const body = ['POST', 'PUT', 'PATCH'].includes(request.method) ? await readBody(request, config.requestMaxBytes) : {};
-      const args = { method: request.method, path: `${url.pathname.slice('/api/v1'.length)}${url.search}`, body, authorization: request.headers.authorization, key: request.headers['idempotency-key'] };
+      const args = { method: request.method, path: `${url.pathname.slice('/api/v1'.length)}${url.search}`, body, authorization: request.headers.authorization,
+        cookie: request.headers.cookie, origin: request.headers.origin, contentType: request.headers['content-type'], key: request.headers['idempotency-key'] };
       if (args.path.split('?')[0] === '/events' && request.method === 'GET' && request.headers.accept?.split(',').some(value => value.trim() === 'text/event-stream')) return await stream(request, response, args, url);
       if (args.path === '/nodes/lease' && request.method === 'POST') return await lease(request, response, args);
-      const result = await hub.request(args); json(response, result.status, result.body);
+      const result = await hub.request(args);
+      // Job sources stream outside the request serializer, after their lease was checked.
+      if (result.bundle) return await sendBundle(response, result.bundle);
+      json(response, result.status, result.body, setCookie(request, result.cookie));
     } catch (error) {
       if (response.headersSent) { response.destroy(); return; }
       const expected = error instanceof HubError;
@@ -126,7 +150,7 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
   }, config.maintenanceIntervalMs); timer.unref();
   await hub.maintenance();
   return {
-    server, config,
+    server, config, hub,
     async listen() {
       await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, config.host, () => { server.off('error', reject); resolve(); }); });
       const address = server.address(); return `http://${config.host.includes(':') ? `[${config.host}]` : config.host}:${address.port}`;

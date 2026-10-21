@@ -1,6 +1,6 @@
 import { hostname } from 'node:os';
 import { mkdir, readFile, open, unlink, rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { loadConfig, readSecret, writePrivate } from './config.js';
 import { HubClient, HubError, sleep, jitter } from './hub.js';
@@ -19,7 +19,7 @@ const accountFields = ['id', 'machineId', 'provider', 'label', 'status', 'cooldo
  */
 export async function createNode({ configPath, registry, accountProvider, runtimeSupervisor, onStatus = () => {} }) {
   const config = await loadConfig(configPath);
-  const hub = new HubClient(config);
+  const hub = new HubClient(config, undefined, { onUnauthorized: error => fatal(error) });
   const service = new AbortController();
   const polling = new AbortController();
   const active = new Map();
@@ -31,6 +31,11 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   let lastAccounts;
   let namespaceAllAccounts = false;
   let token;
+  let tokenGeneration = 0;
+  let tokenRotatedAt = Date.now();
+  let tokenRotationKey;
+  let rotationTask;
+  let rotationLoopTask;
   let machineId;
   let machine;
   let heartbeatTask;
@@ -54,6 +59,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   const fatal = error => {
     fatalError = new Error(error instanceof HubError ? error.message : 'Node background service failed.');
     draining = true;
+    if (error?.code === 'machine_revoked') service.abort(error);
     polling.abort();
     for (const record of active.values()) lose(record);
     notify();
@@ -107,7 +113,13 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     if (credentials?.token && credentials?.machineId) {
       if (typeof credentials.token !== 'string' || /[\r\n]/.test(credentials.token) || typeof credentials.machineId !== 'string') throw new Error('Invalid machine credential file.');
       machineId = credentials.machineId; token = credentials.token; hub.setToken(token);
-      freshEnrollment = credentials.pendingAccountRebind === true; return;
+      freshEnrollment = credentials.pendingAccountRebind === true;
+      tokenGeneration = credentials.tokenGeneration ?? 0;
+      tokenRotatedAt = credentials.tokenRotatedAt ? Date.parse(credentials.tokenRotatedAt) : Date.now();
+      tokenRotationKey = credentials.tokenRotationKey;
+      if (!Number.isSafeInteger(tokenGeneration) || tokenGeneration < 0 || !Number.isFinite(tokenRotatedAt) ||
+          (tokenRotationKey !== undefined && (typeof tokenRotationKey !== 'string' || !/^[a-zA-Z0-9_-]{1,200}$/.test(tokenRotationKey)))) throw new Error('Invalid machine credential file.');
+      return;
     }
     if (!config.enrollmentCodeFile) throw new Error('Enrollment requires an owner-only enrollmentCodeFile.');
     const code = (await readSecret(config.enrollmentCodeFile)).trim();
@@ -117,9 +129,49 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     const result = await hub.retry('/nodes/enroll', { code, name: machine.name, os: machine.os, arch: machine.arch,
       labels: machine.labels, providers: machine.providers, version: VERSION }, { signal: service.signal, key: enrollmentKey });
     if (!result?.machineId || typeof result.machineId !== 'string' || !result.token || typeof result.token !== 'string' || /[\r\n]/.test(result.token)) throw new Error('Invalid enrollment response.');
-    await writePrivate(config.credentialFile, { machineId: result.machineId, token: result.token, pendingAccountRebind: true });
     machineId = result.machineId; token = result.token; hub.setToken(token); freshEnrollment = true;
+    await saveCredentials();
   }
+  function credentialValue() {
+    return { machineId, token, tokenGeneration, tokenRotatedAt: new Date(tokenRotatedAt).toISOString(),
+      ...(freshEnrollment ? { pendingAccountRebind: true } : {}), ...(tokenRotationKey ? { tokenRotationKey } : {}) };
+  }
+  const saveCredentials = () => writePrivate(config.credentialFile, credentialValue());
+  function rotateCredentials() {
+    if (rotationTask) return rotationTask;
+    rotationTask = hub.withTokenRotation(async transport => {
+      service.signal.throwIfAborted();
+      tokenRotationKey ??= randomUUID();
+      // Persist replay intent with the still-valid old token before issuing the mutation.
+      await saveCredentials();
+      const next = await transport.retry('/nodes/token', {}, { signal: service.signal, key: tokenRotationKey });
+      if (next.machineId !== machineId || typeof next.token !== 'string' || !/^[A-Za-z0-9_-]+$/.test(next.token) ||
+          !Number.isSafeInteger(next.generation) || next.generation <= tokenGeneration) throw new Error('Invalid token rotation response.');
+      const rotatedAt = Date.now();
+      // Commit atomically before any request can present (and thereby activate) the new token.
+      await writePrivate(config.credentialFile, { machineId, token: next.token, tokenGeneration: next.generation,
+        tokenRotatedAt: new Date(rotatedAt).toISOString() });
+      token = next.token; tokenGeneration = next.generation; tokenRotatedAt = rotatedAt; tokenRotationKey = undefined;
+      hub.setToken(token);
+      const response = await transport.retry('/nodes/heartbeat', { capacity: config.capacity, running: status().running,
+        labels: machine.labels, providers: machine.providers, status: draining ? 'draining' : 'online' }, { signal: service.signal });
+      handleHeartbeat(response);
+      return { machineId, generation: tokenGeneration };
+    }).finally(() => { rotationTask = undefined; });
+    return rotationTask;
+  }
+  async function rotationLoop() {
+    while (!service.signal.aborted) {
+      try {
+        await sleep(Math.max(1, tokenRotatedAt + config.tokenRotationMs - Date.now()), service.signal);
+        await rotateCredentials();
+      } catch {
+        if (service.signal.aborted) return;
+        await sleep(jitter(config.timing.backoffMaxMs), service.signal).catch(() => {});
+      }
+    }
+  }
+
   function persistSeen(item) {
     seen[item.key] = Math.max(seen[item.key] ?? -1, item.attempt);
     const write = journalWrites.then(() => writePrivate(resolve(config.dataDir, 'leases.json'), seen));
@@ -167,6 +219,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         result = await hub[retry ? 'retry' : 'post']('/nodes/heartbeat', body, { signal: service.signal });
       }
     }
+    handleHeartbeat(result);
+  }
+  function handleHeartbeat(result) {
     for (const [kind, ids] of [['assignment', result.cancel?.assignments], ['job', result.cancel?.jobs]]) {
       if (!Array.isArray(ids)) continue;
       for (const id of ids) {
@@ -233,13 +288,16 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       await persistSeen(record);
       if (record.kind === 'assignment') await mkdir(workspace, { recursive: true, mode: 0o700 });
       const ctx = { signal: record.work.signal, report: event => report(record, event), workspace,
-        runtimeUrl: machine.runtimeUrl, accountProvider };
+        runtimeUrl: machine.runtimeUrl, accountProvider,
+        // Jobs whose revision lives on the hub fetch it over the job's authenticated route, for this lease's attempt.
+        fetchSource: (path, file) => hub.download(`${path}?attempt=${record.attempt}`, file,
+          { signal: record.work.signal, timeoutMs: (config.jobs?.checkoutTimeoutSec ?? 120) * 1000 }) };
       let result;
       if (record.kind === 'job') {
         const redaction = await loadRedaction(config);
         result = await runJob(record.item, ctx, {
           ...config.jobs, dataDir: config.dataDir,
-          protectedPaths: [config.credentialFile, config.enrollmentCodeFile,
+          protectedPaths: [dirname(config.credentialFile), config.credentialFile, config.enrollmentCodeFile,
             config.jobs?.redactionFile && resolve(config.configRoot, config.jobs.redactionFile),
             config.accounts?.nodeDataDir && resolve(config.configRoot, config.accounts.nodeDataDir),
             config.runtime?.repoRoot && resolve(config.configRoot, config.runtime.repoRoot, '.perpeto'),
@@ -293,15 +351,17 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   async function relinquish(item, kind) {
     if (!['assignment', 'job'].includes(kind) || typeof item?.id !== 'string' || !Number.isSafeInteger(item.attempt)) return;
     // Never finalise a duplicate response for an attempt that is still executing locally.
-    if (active.has(`${kind}:${item.id}`) || (seen[`${kind}:${item.id}`] ?? -1) >= item.attempt) return;
-    const data = kind === 'assignment'
-      ? { outcome: 'failure', summary: 'Node cannot accept this lease; retry on a compatible machine.' }
-      : { status: 'error', revision: item.revision, configHash: item.configHash, steps: [], artifacts: [] };
-    // There is no release route yet. A fenced terminal event frees the slot immediately,
-    // including when only the node clock considers the lease expired.
-    await hub.retry(`/${kind === 'assignment' ? 'assignments' : 'jobs'}/${encodeURIComponent(item.id)}/events`,
-      { type: kind === 'assignment' ? 'failed' : 'completed', attempt: item.attempt, data }, { signal: service.signal }).catch(() => {});
+    if (active.has(`${kind}:${item.id}`)) return;
+    try {
+      await hub.retry(`/${kind === 'assignment' ? 'assignments' : 'jobs'}/${encodeURIComponent(item.id)}/release`,
+        { attempt: item.attempt, reason: 'Node cannot run this lease with its current capacity or requirements.' }, { signal: service.signal });
+    } catch (error) {
+      // A stale/started lease cannot be released. Never turn a rejection into a terminal result.
+      if (error instanceof HubError && error.status === 409) return;
+      throw error;
+    }
   }
+
   async function pollLoop(kind) {
     const limit = kind === 'job' ? config.capacity.maxJobs : config.capacity.maxAgents;
     let wait = config.timing.backoffMinMs;
@@ -348,7 +408,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   function cleanup() {
     cleanupTask ??= (async () => {
       service.abort(); polling.abort();
-      await Promise.allSettled([heartbeatTask, ...pollTasks]);
+      await Promise.allSettled([heartbeatTask, rotationLoopTask, rotationTask, ...pollTasks]);
       try { if (integrationsReady) await accountProvider?.close?.(); }
       finally {
         try { if (runtimeAttempted) await runtime.stop(); }
@@ -393,12 +453,15 @@ export async function createNode({ configPath, registry, accountProvider, runtim
           if (Object.keys(settledReservations).length) await writePrivate(resolve(config.dataDir, 'settled-reservations.json'), {});
           settledReservations = {};
         } else await accountProvider.bind?.({ machineId });
-        if (freshEnrollment) await writePrivate(config.credentialFile, { machineId, token });
+        freshEnrollment = false;
+        await saveCredentials();
+        if (tokenRotationKey) await rotateCredentials();
         // Initial heartbeat may reconnect too, but no work is accepted until capacity is announced.
         await heartbeat(true);
         service.signal.throwIfAborted();
         started = true;
         heartbeatTask = heartbeatLoop();
+        if (config.tokenRotationMs) rotationLoopTask = rotationLoop();
         pollTasks = ['assignment', 'job'].filter(kind => kind === 'job' ? config.capacity.maxJobs : config.capacity.maxAgents)
           .map(kind => pollLoop(kind));
         notify();
@@ -407,6 +470,10 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       finally { finishStartup(); }
     },
     drain,
+    rotateToken() {
+      if (!started || stopped || service.signal.aborted) return Promise.reject(new Error('Node must be running to rotate its token.'));
+      return rotateCredentials();
+    },
     stop({ drain: shouldDrain = true } = {}) {
       if (stopping) return stopping;
       drain();
