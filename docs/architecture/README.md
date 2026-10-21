@@ -57,6 +57,7 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 - Timestamps are ISO 8601 UTC strings.
 - Every mutating request accepts an `idempotencyKey`. A repeat with the same body returns the original result; a repeat with a different body returns `409 conflict`.
 - Errors are `{ "error": { "code": "SNAKE_CASE", "message": "…" } }` and never include raw SQL, stack traces, or secrets.
+- Paths that URL normalization would rewrite (dot segments, encoded slashes, repeated slashes) are rejected with `400 INVALID_PATH`; authorization and routing always use the same normalized path.
 
 ## Entities
 
@@ -204,13 +205,15 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `POST /nodes/lease` `{ kinds: ['assignment','job'], max }` | Long-poll up to 25 s. Returns leased assignments and jobs with `leaseExpiresAt` (60 s) |
 | `POST /assignments/:id/renew`, `POST /jobs/:id/renew` | Extend a lease while working |
 | `POST /assignments/:id/events` `{ type: 'started'|'progress'|'usage'|'message'|'completed'|'failed', data }` | Report progress, usage and the final `AssignmentResult` |
-| `POST /jobs/:id/events` `{ type: 'started'|'log'|'step'|'completed', data }` | Report log chunks and the final status bound to `revision` |
+| `POST /jobs/:id/events` `{ type: 'started'|'log'|'step'|'completed', data }` | Report log chunks and the final status bound to `revision`; the final result must carry `configHash` |
 
 Lease wire format, fixed after the node implementation:
 
 - `POST /nodes/lease` returns `{ assignments: Assignment[], jobs: Job[] }`. Every item includes `attempt` and `leaseExpiresAt`.
 - Renew and event bodies include `attempt` beside `idempotencyKey`. The hub checks machine ownership, attempt and expiry atomically, so an older attempt re-leased to the same machine is fenced off. Renew returns `{ leaseExpiresAt }`; a node that gets no confirmation abandons the work.
 - Heartbeat bodies include `status: 'online'|'draining'`. Heartbeat responses are `{ status, cancel: { assignments: string[], jobs: string[] } }`; the node aborts listed work and reports it `cancelled`. This is how stopping a run or cancelling a job reaches a machine.
+
+A run result the engine refuses is acknowledged with `200` plus a `reason` and recorded as a failed attempt, so a node never loops resending it.
 
 An expired lease on run work is reported to the engine as a failed attempt, and the engine's retry policy schedules the next attempt. Project-scoped work and merge-queue jobs return to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
 
