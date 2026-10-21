@@ -19,6 +19,29 @@ function sort(value) {
 }
 const active = value => ['leased', 'running'].includes(value.status);
 
+/** Parse a request path once. Anything URL normalization would rewrite, such as dot segments or backslashes, is refused. */
+function canonicalUrl(path) {
+  const url = typeof path === 'string' && path.startsWith('/') && !path.startsWith('//') ? new URL(path, 'http://hub') : null;
+  if (!url || `${url.pathname}${url.search}` !== path || url.pathname.includes('//')) fail(400, 'INVALID_PATH', 'Request path must be canonical.');
+  const segments = url.pathname.split('/').filter(Boolean).map(value => {
+    let decoded;
+    try { decoded = decodeURIComponent(value); } catch { fail(400, 'INVALID_INPUT', 'Invalid URL encoding.'); }
+    if (decoded === '.' || decoded === '..' || /[/\\]/.test(decoded)) fail(400, 'INVALID_PATH', 'Request path must be canonical.');
+    return decoded;
+  });
+  return { url, segments };
+}
+
+/** Node tokens reach only machine routes, judged on the same decoded segments route() dispatches on. */
+function nodeRoute(method, segments) {
+  const [collection, entityId, action] = segments;
+  if (collection === 'nodes') return method === 'POST' && segments.length === 2 && ['heartbeat', 'lease'].includes(entityId);
+  if (!['assignments', 'jobs'].includes(collection) || !entityId || segments.length > 3) return false;
+  if (action === undefined) return method === 'GET';
+  if (method === 'POST') return ['renew', 'events'].includes(action);
+  return method === 'GET' && collection === 'jobs' && action === 'log';
+}
+
 function prepareDatabase(path) {
   try { closeSync(openSync(path, 'wx', 0o600)); } catch (error) { if (error.code !== 'EEXIST') throw error; }
   for (const filename of [path, `${path}-wal`, `${path}-shm`]) {
@@ -73,15 +96,15 @@ export class Hub {
   notify() { for (const fn of this.listeners) fn(); }
   async request({ method, path, body = {}, authorization, key, finalLease = true }) {
     return this.serialize(async () => {
-      const enroll = method === 'POST' && path === '/nodes/enroll';
+      // Authorization and routing read the same parsed path, so no later normalization can redirect a node token.
+      const target = canonicalUrl(path);
+      const enroll = method === 'POST' && target.url.pathname === '/nodes/enroll';
       const auth = enroll ? { kind: 'enroll', scope: hash(String(body.code ?? '')) } : this.authenticate(authorization);
-      if (auth.kind === 'node' && !(/^\/nodes\/(heartbeat|lease)$/.test(path) || /^\/(assignments|jobs)\/[^/]+(?:\/(renew|events|log))?$/.test(path))) fail(403, 'FORBIDDEN', 'Node tokens cannot access owner APIs.');
-      if (auth.kind === 'node' && path.startsWith('/nodes/') && method !== 'POST') fail(403, 'FORBIDDEN', 'Node operation is not permitted.');
       const mutation = !['GET', 'HEAD'].includes(method);
       const idempotencyKey = key ?? body.idempotencyKey;
       if (key && body.idempotencyKey && key !== body.idempotencyKey) fail(400, 'INVALID_INPUT', 'Idempotency keys disagree.');
       if (idempotencyKey !== undefined) nonblank(idempotencyKey, 'idempotencyKey', 200);
-      const scope = `${auth.scope}:${method}:${path.split('?')[0]}`;
+      const scope = `${auth.scope}:${method}:${target.url.pathname}`;
       const fingerprint = hash(canonical({ method, path, body }));
       const perform = async () => {
         if (mutation && idempotencyKey) {
@@ -92,8 +115,8 @@ export class Hub {
           }
         }
         const routeBody = key && body.idempotencyKey === undefined ? { ...body, idempotencyKey: key } : body;
-        const result = await this.route(method, new URL(path, 'http://hub'), routeBody, auth);
-        const emptyLease = path === '/nodes/lease' && !result.body.assignments.length && !result.body.jobs.length;
+        const result = await this.route(method, target, routeBody, auth);
+        const emptyLease = target.url.pathname === '/nodes/lease' && !result.body.assignments.length && !result.body.jobs.length;
         if (mutation && idempotencyKey && (!emptyLease || finalLease)) {
           this.store.db.prepare('INSERT INTO idempotency VALUES(?,?,?,?)').run(scope, idempotencyKey, fingerprint, JSON.stringify(this.persistResponse(result)));
         }
@@ -101,7 +124,7 @@ export class Hub {
       };
       try {
         const result = mutation ? await this.store.transaction(perform) : await perform();
-        if (mutation && (path !== '/nodes/lease' || result.body.assignments.length || result.body.jobs.length)) this.notify();
+        if (mutation && (target.url.pathname !== '/nodes/lease' || result.body.assignments.length || result.body.jobs.length)) this.notify();
         if (this.delivery.dirty) this.delivery.schedule();
         return result;
       } catch (error) {
@@ -287,11 +310,12 @@ export class Hub {
     }
     return result;
   }
-  async route(method, url, body, auth) {
+  async route(method, { url, segments }, body, auth) {
     const path = url.pathname; const query = url.searchParams;
-    const segments = path.split('/').filter(Boolean).map(value => {
-      try { return decodeURIComponent(value); } catch { fail(400, 'INVALID_INPUT', 'Invalid URL encoding.'); }
-    });
+    // Deny by default: only owner tokens reach routes outside the machine protocol.
+    if (auth.kind === 'node' && !nodeRoute(method, segments)) fail(403, 'FORBIDDEN', 'Node tokens cannot access owner APIs.');
+    if (auth.kind === 'enroll' && !(method === 'POST' && path === '/nodes/enroll')) fail(403, 'FORBIDDEN', 'Enrollment codes only enroll machines.');
+    if (!['owner', 'node', 'enroll'].includes(auth.kind)) fail(403, 'FORBIDDEN', 'Unknown token kind.');
     const [collection, entityId, action, childId, childAction] = segments;
     const reply = (value, status = 200) => ({ status, body: value });
     if (collection === 'messaging') return reply(this.messagingRoute(method, segments.slice(1), body, query));
