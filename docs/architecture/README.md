@@ -66,9 +66,10 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 Project      { id, name, repo: { url, defaultBranch, localPath? }, docs: DocRef[], goals: Goal[], gitIdentity?: { name, email }, createdAt, updatedAt }   // gitIdentity is copied onto every new assignment; agents commit under it, falling back to the node's runtime.t3.gitIdentity
 Goal         { id, title, status: 'active'|'done'|'dropped', workItemIds, done, total }   // progress counts leaf work items linked by goalId; legacy string goals are read with title-derived ids
 DocRef       { id, title, path?: string, url?: string, kind: 'requirements'|'vision'|'spec'|'notes' }
-Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
-Run          { id, projectId, workflowId, workflowVersion, status: 'running'|'paused'|'stopped'|'completed'|'failed', startedAt, stoppedAt? }
-WorkItem     { id, runId, title, body, nodeId, status: 'queued'|'active'|'blocked'|'done'|'failed', branch?, prUrl?, headSha?, iteration, parentId? }
+Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom'|'bugfix'|'docs'|'security-audit'|'dependency-upgrade', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
+Run          { id, projectId, workflowId, workflowVersion, status: 'running'|'paused'|'stopped'|'completed'|'failed', startedAt, stoppedAt?, completedAt?, keepOpen, source?: 'goals'|'schedule'|'manual', schedule?: string /* numeric UTC cron */,
+               budget?: { maxTokensPerDay?, maxActiveItems?, maxItemsPerDay? }, intake?, budgetUsage? }
+WorkItem     { id, runId, title, body, nodeId, status: 'queued'|'active'|'blocked'|'done'|'failed', branch?, prUrl?, headSha?, iteration, parentId?, goalId?, plan?: { from, summary } }
 Assignment   { id, projectId, repo: { url, defaultBranch, localPath? } /* copied from the project when created */, runId? /* absent for project-scoped work such as the workflow architect */, workItemId?, nodeId, role, prompt, harness: Harness, policy: AgentPolicy,
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'succeeded'|'failed'|'cancelled',
                machineId?, leaseExpiresAt?, attempt, result?: AssignmentResult }
@@ -77,13 +78,13 @@ AgentPolicy  { maxSubagents: number, allowedSubagentProviders: string[], maxTurn
 MachineRequirements { os?: 'darwin'|'linux'|'windows', labels?: string[], providers?: string[] }
 AssignmentResult { outcome: 'success'|'failure'|'blocked', summary, branch?, prUrl?, headSha?, threadRef?,
                    verdict?: 'pass'|'fail' /* review gates; a review without a verdict is an error, not a rejection */,
-                   items?: { title, body? }[] /* planner output */, graph?, rationale? /* workflow architect */ }
+                   items?: { title, body? }[] /* planner output; summary is retained as plan when keeping an item whole */, graph?, rationale?, templateId?, additionalWorkflows?: { name, graph, rationale, templateId? }[] /* workflow architect */ }
 Job          { id, projectId, runId?, workItemId?, repo, revision /* full commit sha */, steps: JobStep[],
                requirements: MachineRequirements, status: 'queued'|'leased'|'running'|'passed'|'failed'|'cancelled'|'error',
                machineId?, leaseExpiresAt?, attempt, logRef?, artifacts: ArtifactRef[], configHash }
 JobStep      { name, run: string /* shell command */, timeoutSec? }
 MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queued'|'testing'|'merging'|'merged'|'rejected', jobId?, reason?,
-               mergedRevision?, deliveryError? }
+               mergedRevision?, deliveryError?, rejectionKind?: 'conflict'|'ci_failure'|'other' }
 // Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
                running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
@@ -107,7 +108,7 @@ GraphEdge     { id, from: { node, port? }, to: { node, port? }, kind: 'flow'|'de
 
 | Node type | Meaning | Key config |
 | --- | --- | --- |
-| `input` | Source of work: ideas, backlog, goals, docs | `source: 'manual'|'goals'|'issues'`, `docs: DocRef ids` |
+| `input` | Source of work: ideas, backlog, goals, docs | `source: 'manual'|'goals'|'schedule'|'issues'`, `schedule: numeric UTC cron`, `docs: DocRef ids` |
 | `planner` | Agent that turns input into work items | `harness`, `prompt`, `maxItems` |
 | `agent` | Agent role that does a work item | `harness`, `prompt`, `concurrency`, `policy` |
 | `review` | Agent review gate; passes or returns work | `harness`, `prompt`, `rubric` |
@@ -123,11 +124,11 @@ Node config may also set `concurrency`, `policy`, `requirements` and `role` on p
 
 The engine is deterministic: it reads the run's state plus incoming results (assignment finished, job finished, human decision) and emits new work items, assignments, jobs and merge entries. It never calls a harness. A loop counts iterations on the work item and fails it at `maxIterations`.
 
-Default templates live in `packages/workflow/templates/`: `build` (input → planner → agent pool → review loop → CI → merge queue → output) and `improve` (goals → auditor → agent → review → CI → merge queue → output).
+Default templates live in `packages/workflow/templates/`: build, improve, bugfix, docs, security-audit and dependency-upgrade. `GET /workflow-templates` returns `{templates: [{id, description, graph}]}` from the workflow package's public library. Multiple workflows of one project may be active and run concurrently; activation is scoped to one workflow id, runs pin their version, and project delivery queues and machine capacity remain shared.
 
 ## Agent-authored workflows
 
-Users should not have to build workflows by hand. The default path is a prompt: "Describe how this project should be built." The hub creates an assignment for a `workflow-architect` role, which runs through T3 like any other agent with the project's docs, goals, available machines, providers and existing workflows as context. Its `AssignmentResult` carries `{ graph, rationale }`.
+Users should not have to build workflows by hand. The default path is a prompt: "Describe how this project should be built." The hub creates an assignment for a `workflow-architect` role, which runs through T3 like any other agent with the project's docs, goals, available machines, providers and existing workflows as context. Its `AssignmentResult` carries `{ graph, rationale, templateId?, additionalWorkflows?: [{name, graph, rationale, templateId?}] }` (up to three additional proposals), either directly or as fenced JSON in `summary`. The prompt includes existing workflows and the template library. Every proposed graph is validated before any draft is saved; errors on additional graphs carry `workflowIndex` starting at 1. Valid proposals are saved together as separate drafts and the assignment returns `drafts: [{workflowId, version}]`, alongside the existing primary `draftWorkflowId`/`draftVersion`. Each needs independent activation.
 
 The hub validates the graph with the workflow package. Invalid graphs go back to the architect with the validation errors, up to three attempts. A valid graph is saved as a new **draft** version with `authoredBy: { kind: 'agent', assignmentId, prompt }` and the rationale. Nothing runs until a person activates it. Clients show the proposed graph, the rationale and a diff against the active version, and the user can activate it, ask for changes in another prompt, or edit by hand.
 
@@ -184,8 +185,9 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `POST /workflows/:id/activate` `{ version }` | Make a draft version active |
 | `GET /runs/:id/metrics`, `GET /projects/:id/metrics` | Live node, edge and run metrics with bottlenecks |
 | `GET /projects/:id/runs?status=` | Runs for a project, newest first |
-| `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/{pause,resume,stop}` | Runs |
-| `POST /runs/:id/inputs` | Add ideas or input items to a running workflow |
+| `POST /workflows/:id/runs`, `GET/PATCH /runs/:id`, `POST /runs/:id/{pause,resume,stop}` | Runs |
+| `POST /runs/:id/inputs` | Durably accept ideas or input items; budget-limited batches wait for capacity or the next UTC day. Empty items require an outstanding `requestId` |
+| `GET /workflow-templates` | Template descriptions and editable graphs from `@perpeto/workflow` |
 | `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |
 | `POST /work-items/:id/decision` `{ decision, note?, decisionId }` | Answer a `human` gate; `decisionId` (exposed on the work item and `human.requested`) binds the answer to one gate visit, and a stale one gets `409 STALE_DECISION` |
 | `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain`, `POST /machines/:id/revoke` | Machines; revoke permanently invalidates every token for the machine |
@@ -194,12 +196,26 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
 | `GET /jobs/:id/bundle?attempt=N` | Git bundle of a hub-hosted job revision for the leasing machine or the owner; jobs with `source: { kind: 'hub-bundle' }` are fetched this way so any enrolled machine can run them. `409 SOURCE_UNAVAILABLE` if the revision is gone |
 | `GET /projects/:id/merge-queue` | Merge queue |
-| `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
+| `GET /usage?projectId&runId&groupBy=provider|model|machine|day|role` | Token and agent usage |
 | `GET /owner`, `PATCH /owner` `{ name?, initials? }` | Owner display name and initials (`ownerName` in hub config), also returned by `GET /session` and `/overview` |
-| `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
+| `GET /overview` | Counts for dashboards plus active/paused `runs` with settings, `intake` and `budgetUsage` |
 | `GET /events?after=<seq>|latest=true|before=<seq>&runId=&limit=` | Event page, always oldest first; `after` returns `{events, nextCursor, hasMore}`, `latest`/`before` add `previousCursor`; the three are mutually exclusive. `Accept: text/event-stream` streams live, also filterable by `runId` |
 | `GET /session`, `POST /session`, `DELETE /session` | Exchange the owner bearer for an HttpOnly, SameSite=Strict `perpeto_session` cookie (`sessionTtlMs`, sliding); cookie-authenticated mutations need an `Origin` in `corsOrigins` and a JSON body, else `403 CSRF_REJECTED` |
 | Messaging | Existing routes from [messaging](../guides/messaging.md), served by the hub under `/api/v1/messaging/…` |
+
+### Continuous intake and budgets
+
+`POST /workflows/:id/runs` accepts `{input: {items?, keepOpen?, source?, schedule?, budget?}}`. Settings may also be top-level. `PATCH /runs/:id` changes `{keepOpen?, source?, schedule?, budget?}` on running or paused runs; `budget` replaces the previous limits, and `{}` removes them. Limits are positive safe integers. A schedule is five numeric UTC cron fields with lists/ranges/steps; a schedule source requires a valid schedule, falling back to graph input config when omitted. Settings never mutate the pinned workflow graph. Terminal runs reject changes.
+
+Hub maintenance sends a stable `input.tick` once per observed UTC minute to running keep-open or budgeted runs. The minute marker, engine event id, input requests and prepared input batches survive restart. Missed scheduled minutes are not replayed. User-paused and terminal runs are not ticked or refilled. Goals intake omits done/dropped goals, goals whose linked leaves are all done, and goals already active or reserved across project workflows; work-item responses expose `goalId`. Sources include project docs, goal evidence, usage metrics and recent outcomes. Empty source replies fulfil the outstanding request and wait for another tick.
+
+Each accepted usage delta is stored with a durable delivery intent in the ledger transaction, then sent to the engine after commit using the usage record's id. Budgets count input plus output tokens, excluding cache subtotals; usage events must be deltas, not cumulative snapshots. Delayed usage from a previous window remains in the ledger without consuming the current window. `maxActiveItems` bounds unfinished leaf work, and `maxItemsPerDay` includes planner children. `budget.exhausted` pauses intake and planner expansion; existing assignments and retries continue. The next eligible tick/result emits `budget.available`. Daily allowances reset at UTC midnight on the next event. These are intake limits, not hard spend caps for work already admitted.
+
+Manual batches are split to available capacity and retained until admitted. A finite run with deferred inputs stays open internally until its last batch is admitted, then returns to normal completion. Configuration edits and these finite-run holds use the hub's existing whole-state snapshot path because the workflow package has no configuration event; ordinary runs retain incremental RunStore persistence. Snapshot runs remain durable but each event writes the full state, and their later events are outside RunStore replay verification. The hub records configuration changes in its event log. Moving this contract into a native workflow configuration event is future work.
+
+Run detail and `/overview.runs` expose `intake` (including its pause reason) and `budgetUsage: {day, tokens, items}` separately from user pause state. `completedAt` records successful completion; `stoppedAt` records any terminal end, preserving the engine's timestamp when available. `/usage?groupBy=role` groups by assignment role, falling back to its node id; new usage retains that attribution through rollup or assignment deletion. Older usage without retained assignment evidence groups as `unknown`.
+
+Delivery forwards `merge.rejected.data.rejectionKind` as `conflict`, `ci_failure` or `other`. Until delivery emits a structured kind, the hub classifies its known conflict reason and failed speculative CI evidence, with infrastructure/publication errors as `other`. This checkout's engine accepts the field additively but still uses its existing fail route; conflict-specific review bypass is not implemented here.
 
 ### Node protocol
 

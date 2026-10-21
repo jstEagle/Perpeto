@@ -1,5 +1,20 @@
 # Factory hub handoff
 
+## Continuous intake integration, 21 October 2026
+
+This section supersedes the original unwired-engine limits below. Based on main `81e629c`; changes stay in the owned hub paths and the architecture/handoff docs. No new hub config keys were needed, so CLI-generated config and `config/hub.example.json` keep their existing contract.
+
+Implemented and covered by regression tests added before the relevant fixes:
+
+- Run start forwards `keepOpen`, `source`, UTC cron `schedule` and per-run `budget`. `PATCH /runs/:id` updates live/paused runs without replacing their pinned graph or existing work. Maintenance sends durable minute ticks with stable ids; missed minutes do not catch up. Goal and schedule requests use the durable engine outbox, persisted prepared batches and stable fulfilment ids. Goals omit completed/dropped/already active or reserved project goals, include context/evidence and expose `goalId` links.
+- Usage records and delivery intents commit together, then input/output deltas reach the engine exactly once. Cache subtotals are excluded. Previous-day records remain in the ledger without consuming today's allowance. Intake pauses/resumes through engine budget events; deferred manual batches survive restart and split to capacity. Finite runs wait for their deferred input before completing. Run detail and overview expose settings, `intake` and `budgetUsage`.
+- Independent workflows stay concurrently active with separate runs and shared machine/delivery capacity. The template endpoint returns the public workflow library, and architect prompts retain existing workflows. Direct and fenced replies preserve templates/additional proposals; all graphs validate before the drafts save together, errors carry `workflowIndex`, and assignment `drafts` lists every workflow id/version for separate activation.
+- Role usage grouping persists assignment role/node attribution through rollup and assignment deletion. Successful runs record `completedAt`, and terminal runs retain the engine's `stoppedAt`. Merge rejections pass `rejectionKind: conflict|ci_failure|other`; this checkout has no engine conflict-specific route, so the field is additive.
+
+Durability tests inject a failure after engine commit but before the hub projection commits, including scheduled ticks and manual intake. Tests also cover close/reopen, daily rollover, active/item/token limits, finite batch completion, concurrent goal deduplication, all-or-nothing architect validation and usage retention. Node `v24.22.0`: root `npm test` passes **514 tests, 0 failures** (34.5 s), including CLI/example config parity, actual hub HTTP/SQLite tests and repository end-to-end crash recovery. `git diff --check` passes. No dependency manifest or lockfile changed.
+
+Limits: no live harness/browser/device acceptance was run. Budgets guard intake, not in-flight spend. Since `packages/workflow` has no configuration update event, changed runs and finite runs held for deferred input use the hub's existing whole-state snapshot execution path. This preserves durability and atomic effects, but writes the full state per event; later steps are outside RunStore replay verification. Ordinary runs retain the incremental store. A native workflow configuration event should replace this compatibility path in future work.
+
 Implemented in `apps/hub/**` and `config/hub.example.json`; no architecture, other package, upstream runtime, or root configuration changes. Branch: `t3/build-factory-hub`. Based on `e02784f`, with the later agent-authored workflow, run observation and fixed node wire-format contracts read directly from `main` in `/Users/justuswork/Documents/Perpeto`.
 
 ## What exists
