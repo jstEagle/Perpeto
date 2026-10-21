@@ -233,7 +233,9 @@ test('agent MCP messaging targets the hub and emits one run interaction for an i
   assert.equal(JSON.parse(replies[2].result.content[0].text).message.id, sent.id);
   const events = (await factory.events()).filter(event => event.type === 'agent.messaged' && event.runId === run.id);
   assert.equal(events.length, 1); assert.equal(events[0].data.messageId, sent.id); assert.equal(events[0].data.sourceNodeId, 'builder');
-  assert.equal(events[0].data.targetNodeId, 'reviewer'); assert.equal(events[0].data.unplanned, true);
+  // This graph has no reviewer role, so the target is recorded as unknown, never as the role id.
+  assert.equal(events[0].data.targetNodeId, null); assert.equal(events[0].data.targetUnknown, true);
+  assert.equal(events[0].data.recipientRoleId, 'reviewer'); assert.equal(events[0].data.unplanned, true);
 });
 
 test('GitHub clone URL parsing selects only supported public GitHub identities', () => {
