@@ -1,4 +1,4 @@
-# Factory messaging client
+# Messaging SDK
 
 Dependency-free Node 24 CLI and MCP stdio client for the Perpeto messaging HTTP API hosted by the hub. T3-hosted messaging remains available through configuration. Agents use the same authenticated channels as people. All inference continues to run through their existing harnesses.
 
@@ -27,12 +27,12 @@ Use an HTTPS endpoint for remote connections or forward the remote endpoint to l
 Run from the repository root:
 
 ```sh
-node packages/factory-client/src/cli.js --config /absolute/path/client.json init-project Perpeto
-node packages/factory-client/src/cli.js --config /absolute/path/client.json create-channel build Build
-node packages/factory-client/src/cli.js --config /absolute/path/client.json channels
-node packages/factory-client/src/cli.js --config /absolute/path/client.json send --body 'Revision abc123 is ready' --key review-abc123 --to reviewer
-node packages/factory-client/src/cli.js --config /absolute/path/client.json read --limit 50
-node packages/factory-client/src/cli.js --config /absolute/path/client.json read --latest --limit 50
+node packages/sdk/src/cli.js --config /absolute/path/client.json init-project Perpeto
+node packages/sdk/src/cli.js --config /absolute/path/client.json create-channel build Build
+node packages/sdk/src/cli.js --config /absolute/path/client.json channels
+node packages/sdk/src/cli.js --config /absolute/path/client.json send --body 'Revision abc123 is ready' --key review-abc123 --to reviewer
+node packages/sdk/src/cli.js --config /absolute/path/client.json read --limit 50
+node packages/sdk/src/cli.js --config /absolute/path/client.json read --latest --limit 50
 ```
 
 All successful CLI responses are JSON. Use `--channel ID` on send/read to override the configured channel. `read --to ROLE` filters to explicitly addressed messages, while unfiltered reads include all channel messages. Save the returned `nextCursor` and pass it to `read --after CURSOR` for subsequent arrivals. Use `read --latest` for a bounded newest page, then `read --before PREVIOUS_CURSOR` to fetch older history. Directions `--latest`, `--before`, and `--after` are mutually exclusive. Results are always ascending. `hasMore` refers to older history for latest/before and newer messages for default/after; `previousCursor` and `nextCursor` mark the oldest and newest message returned.
@@ -49,7 +49,7 @@ Configure an MCP stdio server in a harness that supports one, using absolute pat
     "perpeto-messages": {
       "command": "node",
       "args": [
-        "/absolute/path/Perpeto/packages/factory-client/src/cli.js",
+        "/absolute/path/Perpeto/packages/sdk/src/cli.js",
         "--config", "/absolute/path/backend-lead.json", "mcp"
       ]
     }
@@ -70,8 +70,7 @@ The stdio server implements newline-delimited MCP JSON-RPC initialization, ping,
 ## Validation
 
 ```sh
-cd packages/factory-client
-node --test
+npm test -w @perpeto/sdk
 ```
 
-Tests exercise authenticated HTTP request shapes, cursor encoding, retry idempotency, rejected credentials and HTTP errors, CLI child processes, and actual MCP stdio child-process exchanges. Client tests use a local HTTP fixture. `node --test packages/factory-e2e/test/hub-wiring.test.js` from the repository root additionally exercises real MCP stdio sends through the hub and their idempotent `agent.messaged` events. Deployed routing, pairing and real harness loading remain unverified.
+Tests exercise authenticated HTTP request shapes, cursor encoding, retry idempotency, rejected credentials and HTTP errors, CLI child processes, and actual MCP stdio child-process exchanges. Client tests use a local HTTP fixture. `node --test tests/e2e/test/hub-wiring.test.js` from the repository root additionally exercises real MCP stdio sends through the hub and their idempotent `agent.messaged` events. Deployed routing, pairing and real harness loading remain unverified.

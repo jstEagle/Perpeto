@@ -1,14 +1,14 @@
-# factory-t3
+# T3 executor
 
 Node executor that runs factory assignments through a local T3 environment server. It is dependency-free ESM for Node 24. All inference goes through T3 and its harnesses; this package never calls a model API.
 
 ```js
-import { createT3Executor } from '@perpeto/factory-t3';
+import { createT3Executor } from '@perpeto/t3-executor';
 const executor = createT3Executor({ config, runtimeUrl, accountProvider });
 // { kind: 't3', canRun(assignment, machine), run(assignment, ctx), close() }
 ```
 
-`factory-node` loads it by package name through `executorPackages`. Until the repository links workspace packages, configure the absolute module path instead, for example `"executorPackages": ["/path/Perpeto/packages/factory-t3/src/index.js"]`.
+`@perpeto/node` loads it by package name (the default `executorPackages` entry); the root npm workspaces link it. A node outside this checkout can list an absolute module path instead, for example `"executorPackages": ["/path/Perpeto/packages/t3-executor/src/index.js"]`.
 
 ## Configuration
 
@@ -130,11 +130,11 @@ Source: `vendor/t3code` at the pinned commit. Verified live where noted.
 
 ## Tests
 
-- `node --test packages/factory-t3/test/*.test.js` runs against a fake T3 server ([test/fake-t3.js](test/fake-t3.js)). The fake is real HTTP plus a minimal WebSocket using T3's RPC framing and chunk acknowledgement, and the real policy store backs its policy routes. One test drives the real `factory-node` account provider and pool with a synthetic credential.
+- `node --test packages/t3-executor/test/*.test.js` runs against a fake T3 server ([test/fake-t3.js](test/fake-t3.js)). The fake is real HTTP plus a minimal WebSocket using T3's RPC framing and chunk acknowledgement, and the real policy store backs its policy routes. One test drives the real `@perpeto/node` account provider and pool with a synthetic credential.
 - Vendor tests: `apps/server/src/perpeto/AgentPolicy*.test.ts`, run with `vp test run`.
 - **Opt-in live check** (not part of `npm test`; it uses this machine's existing harness logins):
 
   ```sh
   npm run setup && npm run build
-  node packages/factory-t3/scripts/live-check.mjs --policy --roles [--provider claudeAgent --model claude-haiku-5-5] [--native]
+  node packages/t3-executor/scripts/live-check.mjs --policy --roles [--provider claudeAgent --model claude-haiku-5-5] [--native]
   ```

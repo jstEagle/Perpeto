@@ -22,11 +22,11 @@ The descriptor and sentence describe the intended product. Until it exists, publ
 | **Current** | Continuous, distributed, calm | Deep blue, pale blue, electric blue; connected paths; open layouts | Networking imagery can overwhelm the software-building story |
 | **Commons** | Open, collaborative, durable | Cream, forest green, restrained serif headlines; editorial layouts | Less immediately associated with agent orchestration |
 
-See [the visual exploration](brand/preview.html). It compares concepts; it does not imply approval of any direction.
+See [the visual exploration](preview.html). It compares concepts; it does not imply approval of any direction.
 
 ## Workshop visual system
 
-The initial [CSS tokens](brand/tokens.css) are the canonical color, spacing, radius, and typography values for this proposal. The preview uses them directly. Alternatives are scoped within the preview and are not implementation themes.
+The initial [CSS tokens](tokens.css) are the canonical color, spacing, radius, and typography values for this proposal. The preview uses them directly. Alternatives are scoped within the preview and are not implementation themes.
 
 ### Typography
 

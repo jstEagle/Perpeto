@@ -1,6 +1,6 @@
 # Design tokens handoff
 
-Added `packages/design-tokens`: a dependency-free generator that reads `brand/tokens.css` and `brand/identity/*.svg` and writes web tokens, SwiftUI tokens, recoloured marks, app icons, favicons and a component specimen. Component guidance is in [docs/design-system.md](../design-system.md).
+Added `packages/design-tokens`: a dependency-free generator that reads `brand/tokens.css` and `brand/identity/*.svg` and writes web tokens, SwiftUI tokens, recoloured marks, app icons, favicons and a component specimen. Component guidance is in [docs/architecture/design-system.md](../architecture/design-system.md).
 
 ## Consumer paths
 
@@ -17,7 +17,7 @@ Colours, all sRGB mixes of brand roles: `--action-hover`, `--action-pressed`, `-
 
 Other: `--leading-display` 1.05, `--leading-compact` 1.3, `--weight-*`, `--tracking-heading` −0.01em, `--tracking-display` −0.03em, `--control-height-sm/md/lg` 28/32/40, `--stroke-hairline/edge/selection`, `--focus-width`, `--focus-offset`, `--editor-grid-minor/major` 16/64, `--editor-port` 8, `--editor-node-width` 240, `--duration-fast/base` (0 under reduced motion), `--ease-standard`, `--shadow-overlay`.
 
-No dark ink surface set was added. brand.md leaves dark mode undefined, and the editor is specified on paper.
+No dark ink surface set was added. brand/README.md leaves dark mode undefined, and the editor is specified on paper.
 
 ## Verification
 

@@ -1,6 +1,6 @@
 import Foundation
 
-// Entities from docs/architecture.md "Entities". Field names match the
+// Entities from docs/architecture/README.md "Entities". Field names match the
 // contract exactly; timestamps are ISO 8601 UTC strings decoded as Date.
 
 public struct Project: Codable, Hashable, Identifiable, Sendable {

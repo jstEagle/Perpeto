@@ -1,6 +1,6 @@
 import Foundation
 
-// "Observing runs" metrics from docs/architecture.md, returned by
+// "Observing runs" metrics from docs/architecture/README.md, returned by
 // GET /runs/:id/metrics and GET /projects/:id/metrics.
 
 public struct Percentiles: Codable, Hashable, Sendable {

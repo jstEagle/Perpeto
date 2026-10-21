@@ -1,10 +1,11 @@
-# Factory delivery
+# Delivery
 
-Dependency-free Node 24 ESM library for CI definitions, PR policy, and durable local merge queues. It does not execute CI, serve HTTP, or call a harness. See the [shared architecture](../../docs/architecture.md).
+Dependency-free Node 24 ESM library for CI definitions, PR policy, and durable local merge queues. It does not execute CI, serve HTTP, or call a harness. See the [shared architecture](../../docs/architecture/README.md).
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24
-node --test packages/factory-delivery/test/*.test.js
+node --test packages/delivery/test/*.test.js
+npm test -w @perpeto/delivery       # same suite through the workspace script
 ```
 
 ## CI jobs and evidence

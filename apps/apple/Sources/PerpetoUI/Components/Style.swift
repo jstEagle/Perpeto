@@ -188,7 +188,7 @@ public struct FieldModifier: ViewModifier {
 extension View {
     public func perpetoField() -> some View { modifier(FieldModifier()) }
 
-    /// Blue focus outline with an offset, as brand.md specifies.
+    /// Blue focus outline with an offset, as brand/README.md specifies.
     public func focusOutline(_ visible: Bool, radius: CGFloat = PerpetoRadius.control) -> some View {
         overlay(
             RoundedRectangle(cornerRadius: radius + 3, style: .continuous)

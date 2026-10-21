@@ -39,9 +39,9 @@ public enum DemoFixtures {
                 id: primaryProjectId, name: "perpeto",
                 repo: .init(url: "https://github.com/jstEagle/Perpeto", defaultBranch: "main", localPath: "~/Developer/Perpeto"),
                 docs: [
-                    DocRef(id: "doc_vision", title: "Vision", path: "docs/vision.md", kind: .vision),
-                    DocRef(id: "doc_arch", title: "Factory architecture", path: "docs/architecture.md", kind: .spec),
-                    DocRef(id: "doc_dod", title: "Definition of done", path: "docs/definition-of-done.md", kind: .requirements),
+                    DocRef(id: "doc_vision", title: "Vision", path: "docs/product/vision.md", kind: .vision),
+                    DocRef(id: "doc_arch", title: "Factory architecture", path: "docs/architecture/README.md", kind: .spec),
+                    DocRef(id: "doc_dod", title: "Definition of done", path: "docs/product/definition-of-done.md", kind: .requirements),
                 ],
                 goals: [
                     "Run a build workflow from input to merged output on two machines",
@@ -175,7 +175,7 @@ public enum DemoFixtures {
         }
         graph.nodes.append(GraphNode(
             id: "review-ui", type: .review, label: "UI reviewer", position: column(0, row: 2),
-            config: ["harness": harness("claudeAgent", "claude-sonnet-5-5"), "prompt": "Review UI and copy changes against brand.md.", "concurrency": 1,
+            config: ["harness": harness("claudeAgent", "claude-sonnet-5-5"), "prompt": "Review UI and copy changes against brand/README.md.", "concurrency": 1,
                      "rubric": "Tokens only, sentence case, explicit status labels."]))
         graph.edges.removeAll { $0.id == "m2" }
         graph.edges += [
@@ -273,7 +273,7 @@ public enum DemoFixtures {
         .init(id: "wi_14", title: "Cool down accounts on rate limit", node: "review", status: .active, iteration: 3, pr: 229),
         .init(id: "wi_15", title: "Workflow validate endpoint", node: "review", status: .queued, iteration: 1, pr: 230),
         .init(id: "wi_16", title: "Loop fails item at maxIterations", node: "review", status: .queued, iteration: 3, pr: 231),
-        .init(id: "wi_17", title: "Delegation policy enforcement in factory-t3", node: "review", status: .queued, iteration: 2, pr: 232),
+        .init(id: "wi_17", title: "Delegation policy enforcement in @perpeto/t3-executor", node: "review", status: .queued, iteration: 2, pr: 232),
         .init(id: "wi_18", title: "Per-account usage attribution", node: "review", status: .queued, iteration: 1, pr: 233),
         .init(id: "wi_19", title: "Pause and resume run state machine", node: "review", status: .queued, iteration: 3, pr: 234),
         .init(id: "wi_20", title: "Revision-bound CI evidence", node: "review", status: .queued, iteration: 1, pr: 235),
@@ -298,7 +298,7 @@ public enum DemoFixtures {
             let slug = seed.title.lowercased().split { !$0.isLetter && !$0.isNumber }.prefix(4).joined(separator: "-")
             return WorkItem(
                 id: seed.id, runId: liveRunId, title: seed.title,
-                body: "Acceptance: covered by node --test at the head commit; names match docs/architecture.md.",
+                body: "Acceptance: covered by node --test at the head commit; names match docs/architecture/README.md.",
                 nodeId: seed.node, status: seed.status, branch: "factory/\(slug)",
                 prUrl: seed.pr.map { "https://github.com/jstEagle/Perpeto/pull/\($0)" },
                 headSha: seed.pr == nil ? nil : sha(seed.id), iteration: seed.iteration)

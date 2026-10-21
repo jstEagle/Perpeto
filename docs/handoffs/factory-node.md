@@ -1,10 +1,10 @@
 # Factory node handoff
 
-Owner: factory-node implementation worker, Bernard Cayley (gpt-6.1-sol). Date: 21 October 2026. Branch: `t3/factory-node-daemon`. Base: `e02784f`. All changes are restricted to `packages/factory-node/**`, `config/node.example.json`, and this handoff.
+Owner: factory-node implementation worker, Bernard Cayley (gpt-6.1-sol). Date: 21 October 2026. Branch: `t3/factory-node-daemon`. Base: `e02784f`. All changes are restricted to `apps/node/**`, `config/node.example.json`, and this handoff.
 
 ## Implemented
 
-- Dependency-free ESM package `@perpeto/factory-node`, `bin/perpeto-node.js`, and async `createNode({ configPath })` API. File-based non-secret configuration with TLS default for remote hubs. Owner-only code/credential files; atomic private machine-token persistence and retry-stable enrollment. Data-directory lock with serialized stale-lock recovery.
+- Dependency-free ESM package `@perpeto/node`, `bin/perpeto-node.js`, and async `createNode({ configPath })` API. File-based non-secret configuration with TLS default for remote hubs. Owner-only code/credential files; atomic private machine-token persistence and retry-stable enrollment. Data-directory lock with serialized stale-lock recovery.
 - PATH executable detection, OS/architecture/labels, 10-second default heartbeats reporting capacity/running/public account metadata, independent capacity-limited long polls for assignments/jobs, periodic lease renewal, local confirmed-expiry watchdog, reconnect backoff, stable request idempotency keys, attempt journal preventing a repeat of an accepted lease after restart, drain and cancellation shutdown. `lease_lost` aborts execution and suppresses obsolete results.
 - Executor registry and configurable fake executor (delay/outcome/usage), plus package-name loading of optional T3/account integrations and injectable interfaces. No direct inference API calls. `src/executors.js` and the package README define integration factories and lifecycle responsibilities.
 - CI clones a local/remote repository into a unique per-job directory, checks out the exact full SHA, runs shell steps with bounded/redacted UTF-8 output, timeouts and cancellation, emits step evidence, returns status bound to `revision` and `configHash`, and removes the clone. Local bare-Git tests verify the selected older commit while the source checkout stays at a newer commit.
@@ -14,7 +14,7 @@ Owner: factory-node implementation worker, Bernard Cayley (gpt-6.1-sol). Date: 2
 
 Executed on macOS with Node `v24.22.0`, selected before every Node/npm command using `source ~/.nvm/nvm.sh && nvm use 24`.
 
-- `node --test packages/factory-node/test/*.test.js`: 26 tests passed, 0 failed.
+- `node --test apps/node/test/*.test.js`: 26 tests passed, 0 failed.
 - `npm test`: 47 tests passed, 0 failed, including the new package and existing client/core/launcher tests.
 - `git diff --check`: passed.
 - Local Markdown relative links and example JSON were checked. CLI usage failure was checked to exit `1` without printing credentials.
@@ -31,7 +31,7 @@ No architecture contract was edited. The binding document should specify the fol
 2. Fix the lease response envelope. Canonical support here is `{ assignments: [...], jobs: [...] }`; `{ leases: [...] }` and `{ items: [...] }` containing `{ kind, item }`, flat entities, or `assignment`/`job` wrappers are also accepted. Each accepted item must include `attempt` and `leaseExpiresAt`. Renewal must return `{ leaseExpiresAt }` or `{ lease: { leaseExpiresAt } }`; missing confirmation abandons work.
 3. Define drain reporting/response. This node adds heartbeat `status: 'online'|'draining'` and respects response `status: 'draining'` or `machine.status: 'draining'`. The existing heartbeat body/table does not define these fields.
 4. Define remote cancellation. No hub cancellation message/route appears in the current node protocol; local cancellation and lost-lease cancellation work.
-5. Confirm integration factories with parallel workers: `@perpeto/factory-t3` exports `createT3Executor` or `createExecutor({ config, runtimeUrl, accountProvider })`; `@perpeto/factory-accounts` exports `createAccountProvider({ config, configRoot })` with async `list()` and optional `close()`. Account acquire/release are executor-owned. See README for full interfaces.
+5. Confirm integration factories with parallel workers: `@perpeto/t3-executor` exports `createT3Executor` or `createExecutor({ config, runtimeUrl, accountProvider })`; `@perpeto/accounts` exports `createAccountProvider({ config, configRoot })` with async `list()` and optional `close()`. Account acquire/release are executor-owned. See README for full interfaces.
 
 ## Remaining and verification limits
 

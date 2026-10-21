@@ -1,11 +1,11 @@
-# Factory core
+# Messaging store
 
 Initial local persistence for factory communication. This package supplies project-scoped channels, append-only messages, stable sender and recipient role identifiers, retry deduplication, and cursor reads using Node's built-in SQLite. It makes no inference calls and does not replace the upstream harness integrations.
 
 Requires Node 24 or newer. No external dependencies or environment variables.
 
 ```js
-import { MessagingStore } from '@perpeto/factory-core';
+import { MessagingStore } from '@perpeto/messaging';
 
 // The caller creates the parent directory and owns the database location.
 const store = new MessagingStore('/absolute/path/factory.sqlite');
@@ -45,6 +45,9 @@ This is a storage component, not yet a Slack-like application or cross-device tr
 Run the actual temporary-database tests:
 
 ```sh
-cd packages/factory-core
-node --test
+npm test -w @perpeto/messaging
 ```
+
+## Server integration
+
+The inherited T3 environment server imports this store directly from `src/messaging-store.js`, typed by `src/messaging-store.d.ts`, so both servers share one SQLite implementation. Its authenticated HTTP routes are described in [messaging architecture](../../docs/architecture/messaging.md).

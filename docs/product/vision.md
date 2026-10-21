@@ -137,7 +137,7 @@ Stated by Justus on 21 October 2026. These are requested capabilities, not decis
 - Users should not have to build workflows by hand: they prompt agents to design them, then see the result and how agents actually interact, where work happens, velocity and bottlenecks.
 - A web app and a native Swift app, both following the brand vision, design system, logo, colors and art direction strictly.
 
-Implementation of this direction started on 21 October 2026; shared interfaces are in [the architecture contract](architecture.md). Pi is disabled in the local T3 install, so DeepSeek through Pi was not used for the first build wave.
+Implementation of this direction started on 21 October 2026; shared interfaces are in [the architecture contract](../architecture/README.md). Pi is disabled in the local T3 install, so DeepSeek through Pi was not used for the first build wave.
 
 Open challenges raised in discussion: whether to reuse Cooler rather than maintain a second messaging system; whether a fixed opinionated workflow should be proven before a general node editor; the target scale for the first release; and whether rotating consumer subscriptions at large scale fits provider terms.
 
@@ -147,7 +147,7 @@ Justus's stated direction: all inference should come through existing agent harn
 
 Decided 20 October 2026: reuse T3 Code's orchestrator code and all of its provider integrations as Perpeto's implementation foundation. Bring over the supporting contracts, runtime services, and dependencies needed for those components to work, rather than rebuilding equivalent integrations. Build Perpeto's factory-specific behavior on that foundation. Preserve upstream license and attribution notices when importing code.
 
-Implementation began on 20 October 2026. The pinned T3 source is now imported under `vendor/t3code`, preserving its runtime and provider dependency graph. See [implementation decisions](decisions.md) and [current verification](status.md). The inherited clients are a development surface; this does not establish Perpeto's final application or interface stack.
+Implementation began on 20 October 2026. The pinned T3 source is now imported under `vendor/t3code`, preserving its runtime and provider dependency graph. See [implementation decisions](../architecture/decisions.md) and [current verification](status.md). The inherited clients are a development surface; this does not establish Perpeto's final application or interface stack.
 
 On 18 October 2026, Justus clarified that deciding when discussion becomes actionable work should happen dynamically between the user and agents. Do not build a dedicated proposal/approval workflow or intent-classification system for this distinction. Agents should use conversational judgment and clarify with the user when needed. This decision does not remove the agreed need for durable project and execution state.
 
@@ -162,7 +162,7 @@ On 18 October 2026, Justus clarified that deciding when discussion becomes actio
 - A visual factory builder with configurable delegation, concurrency, and delivery workflows.
 - User-owned CI runners for agent-submitted testing and verification workflows.
 
-T3 Code is the chosen source for the orchestrator and all provider integrations, and a reference for connections across environments. See the [source study](research/t3-code.md). Whether to extract those components or maintain a broader fork remains open.
+T3 Code is the chosen source for the orchestrator and all provider integrations, and a reference for connections across environments. See the [source study](../research/t3-code.md). Whether to extract those components or maintain a broader fork remains open.
 
 ## Open questions
 

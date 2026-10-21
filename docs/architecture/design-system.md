@@ -1,6 +1,6 @@
 # Perpeto design system
 
-Status: proposed. This applies the Workshop direction from [brand.md](../brand.md) to the web and Apple clients. Values come only from [`packages/design-tokens`](../packages/design-tokens/README.md), which is generated from [brand/tokens.css](../brand/tokens.css). The [specimen](../packages/design-tokens/specimen.html) renders every component described here.
+Status: proposed. This applies the Workshop direction from [brand/README.md](../../brand/README.md) to the web and Apple clients. Values come only from [`packages/design-tokens`](../../packages/design-tokens/README.md), which is generated from [brand/tokens.css](../../brand/tokens.css). The [specimen](../../packages/design-tokens/specimen.html) renders every component described here.
 
 Workshop in one line: warm paper canvas, white work surfaces, ink text, signal orange for the brand and primary actions, system sans, ruled and precise.
 
@@ -138,7 +138,7 @@ The one place nodes and edges appear. It should look like a precise ruled drawin
 
 - Use the lockup or symbol from `packages/design-tokens/assets`, never redrawn or approximated. Ink on light, paper on ink, orange only at display sizes.
 - Keep clearspace of one arm width on every side. Don't rotate, outline, add effects or animate the static mark outside the selected motion studies.
-- Below 24 px the master Spindle muddies. A simplified small variant is proposed but not approved; see [assets/README.md](../packages/design-tokens/assets/README.md).
+- Below 24 px the master Spindle muddies. A simplified small variant is proposed but not approved; see [assets/README.md](../../packages/design-tokens/assets/README.md).
 
 ## Do
 

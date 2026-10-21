@@ -49,7 +49,7 @@ public struct URLSessionTransport: HTTPTransport {
     }
 }
 
-/// Async client for Hub API v1 (docs/architecture.md "Hub API v1").
+/// Async client for Hub API v1 (docs/architecture/README.md "Hub API v1").
 ///
 /// The owner token is held in memory only for the life of the client and is
 /// sent solely in the `Authorization` header. It is never logged or included

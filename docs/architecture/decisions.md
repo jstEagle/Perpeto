@@ -10,7 +10,7 @@ A surgical extraction of adapters was rejected for the initial foundation becaus
 
 ## Keep factory state beside the inherited runtime — 20 October 2026
 
-Implement initial durable messaging in `packages/factory-core`, independent of agent session lifetimes. This does not add a new inference harness. Network authentication, agent tools and UI integration are separate implementation work and must be verified before claiming cross-device messaging.
+Implement initial durable messaging in `packages/messaging`, independent of agent session lifetimes. This does not add a new inference harness. Network authentication, agent tools and UI integration are separate implementation work and must be verified before claiming cross-device messaging.
 
 ## File-based launch configuration — 20 October 2026
 

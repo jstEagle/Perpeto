@@ -1,14 +1,14 @@
-# Factory hub
+# Hub
 
-Dependency-free Node 24 HTTP control plane with its own durable SQLite state. It implements the [factory contract](../../docs/architecture.md) and the later agent-authored workflow, observation and node wire-format addenda. It never calls inference APIs.
+Dependency-free Node 24 HTTP control plane with its own durable SQLite state. It implements the [factory contract](../../docs/architecture/README.md) and the later agent-authored workflow, observation and node wire-format addenda. It never calls inference APIs.
 
-**Engine and delivery:** the default engine is [workflow-adapter.js](src/engine/workflow-adapter.js) over `@perpeto/factory-workflow`; tests may still inject the in-package stub. Merge-queue nodes run through [delivery/index.js](src/delivery/index.js) over `@perpeto/factory-delivery`, for local bare repositories and GitHub publication. The [e2e suite](../factory-e2e/README.md) runs a real hub, node and bare repository with a fake executor. No live T3 harness run is claimed.
+**Engine and delivery:** the default engine is [workflow-adapter.js](src/engine/workflow-adapter.js) over `@perpeto/workflow`; tests may still inject the in-package stub. Merge-queue nodes run through [delivery/index.js](src/delivery/index.js) over `@perpeto/delivery`, for local bare repositories and GitHub publication. The [e2e suite](../../tests/e2e/README.md) runs a real hub, node and bare repository with a fake executor. No live T3 harness run is claimed.
 
 ## Start
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24
-node packages/factory-hub/bin/perpeto-hub.js --config config/hub.example.json
+node apps/hub/bin/perpeto-hub.js --config config/hub.example.json
 ```
 
 The example binds loopback port 4320. Paths resolve relative to the configuration file. The first start creates `.perpeto/hub/owner.secret`, mode 600, containing the owner bearer token. The CLI prints only its address. Read this token through an owner-only credential-file flow; do not put it in JSON configuration, command arguments, URLs or logs. Losing the secret file requires restoring it; the hub refuses to silently replace an existing owner identity.
@@ -18,7 +18,7 @@ The example JSON configures host/port, hub and messaging DB paths, owner secret 
 Embedders can use:
 
 ```js
-import { createHub } from '@perpeto/factory-hub';
+import { createHub } from '@perpeto/hub';
 const hub = await createHub({ configPath: '/path/to/hub.json', engine });
 const url = await hub.listen(); // config port 0 selects an ephemeral port
 // ...
@@ -96,7 +96,7 @@ GET  /api/v1/messaging/projects/:projectId/channels/:channelId/messages
 POST /api/v1/messaging/projects/:projectId/channels/:channelId/messages
 ```
 
-Send/read bodies, role addressing and cursor semantics match [factory messaging](../../docs/messaging.md). Each run gets `run-<runId>` automatically. Owner sends in run channels emit `agent.messaged` once per message ID. `factory-client` defaults to this hub prefix and supports the T3-hosted `/api/perpeto` routes through its `messagingPrefix` JSON option.
+Send/read bodies, role addressing and cursor semantics match [factory messaging](../../docs/guides/messaging.md). Each run gets `run-<runId>` automatically. Owner sends in run channels emit `agent.messaged` once per message ID. `@perpeto/sdk` defaults to this hub prefix and supports the T3-hosted `/api/perpeto` routes through its `messagingPrefix` JSON option.
 
 ## Engine mapping
 
@@ -114,11 +114,11 @@ Engine retries carry `attempt`, `retryOf` and `notBefore`; the hub does not leas
 
 ## Merge queue
 
-A merge entry from the engine is enqueued into one `factory-delivery` queue per project repository, base branch and merge configuration, stored in `deliveryDatabasePath`. Its CI is the steps of the ci nodes named in `requiredChecks` (or every ci node), and a passing speculative job proves those named checks. Speculative jobs are hub Jobs with a `delivery` field, leased by nodes like any other job; their results go to the queue rather than the engine. The pump runs Git preparation and publication outside the request serializer, then reconciles queue state into hub merge entries and jobs, so a crash between the two stores is repaired on the next pump. Waiting entries of a stopped run are withdrawn.
+A merge entry from the engine is enqueued into one `@perpeto/delivery` queue per project repository, base branch and merge configuration, stored in `deliveryDatabasePath`. Its CI is the steps of the ci nodes named in `requiredChecks` (or every ci node), and a passing speculative job proves those named checks. Speculative jobs are hub Jobs with a `delivery` field, leased by nodes like any other job; their results go to the queue rather than the engine. The pump runs Git preparation and publication outside the request serializer, then reconciles queue state into hub merge entries and jobs, so a crash between the two stores is repaired on the next pump. Waiting entries of a stopped run are withdrawn.
 
 Local bare repositories (project `repo.localPath`, or an absolute path or `file://` `url`) retain atomic local ref publication. GitHub HTTPS/SSH URLs, or GitHub PR URLs paired with a local/remote Git origin, select `GitHubAdapter`. The hub clones an isolated bare mirror under `deliveryRepositoriesPath`, fetches the observed base and heads before candidate preparation, and gives speculative jobs that mirror URL. Nodes must be able to read that path; cross-machine object transfer is not implemented. Other forges remain blocked with `deliveryError`.
 
-Merge-queue node config accepts `publication: 'fast-forward-push'` (default) or `'github-merge-queue'` (serial only). The former pushes the exact tested candidate without force and finalizes PRs through `gh`; squash/rebase PRs become CLOSED with evidence. The native option lets GitHub own final ordering and checks, so `mergedRevision` can differ from `testedRevision`. These guarantees and remote race limits are documented by [factory-delivery](../factory-delivery/README.md). Git/gh authentication stays with their credential helpers.
+Merge-queue node config accepts `publication: 'fast-forward-push'` (default) or `'github-merge-queue'` (serial only). The former pushes the exact tested candidate without force and finalizes PRs through `gh`; squash/rebase PRs become CLOSED with evidence. The native option lets GitHub own final ordering and checks, so `mergedRevision` can differ from `testedRevision`. These guarantees and remote race limits are documented by [@perpeto/delivery](../../packages/delivery/README.md). Git/gh authentication stays with their credential helpers.
 
 `deliveryLeaseDurationMs` defaults to 60000 and fences a pump worker independently of node leases. After a crash, recovery waits for that lease to expire. Maintenance schedules the pump outside the request serializer, including after startup, and reconciles terminal delivery entries even when the hub did not commit their prior projection. `GET /projects/:id/runs?status=` returns `{runs}` newest first and rejects unknown status values.
 
@@ -132,7 +132,8 @@ MessagingStore writes are a separate durability boundary. A crash can leave a me
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24
-node --test packages/factory-hub/test/hub.test.js
+node --test apps/hub/test/hub.test.js
+npm test -w @perpeto/hub       # same suite through the workspace script
 npm test
 ```
 

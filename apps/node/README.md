@@ -1,6 +1,6 @@
-# Factory node
+# Node daemon
 
-Dependency-free Node 24 daemon for the [factory node protocol](../../docs/architecture.md#node-protocol). It enrolls a machine, advertises capacity and executable harnesses, leases assignments and CI jobs, renews leases, and reports revision-bound evidence. All inference goes through an executor; this package never calls model APIs.
+Dependency-free Node 24 daemon for the [factory node protocol](../../docs/architecture/README.md#node-protocol). It enrolls a machine, advertises capacity and executable harnesses, leases assignments and CI jobs, renews leases, and reports revision-bound evidence. All inference goes through an executor; this package never calls model APIs.
 
 ## Start
 
@@ -8,7 +8,7 @@ Use Node 24.13.1 or newer within Node 24:
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24
-node packages/factory-node/bin/perpeto-node.js --config config/node.json
+node apps/node/bin/perpeto-node.js --config config/node.json
 ```
 
 Copy [config/node.example.json](../../config/node.example.json) to `config/node.json`. Set `hubUrl`, `dataDir`, name, labels, and capacity. Paths in node JSON resolve relative to that JSON file. The daemon appends `/api/v1` to `hubUrl`. Remote hubs require HTTPS unless `allowInsecureHttp` explicitly permits HTTP.
@@ -22,7 +22,7 @@ The data directory holds `daemon.lock`, `leases.json`, retained assignment works
 ## Embed and extend
 
 ```js
-import { createNode } from '@perpeto/factory-node';
+import { createNode } from '@perpeto/node';
 const node = await createNode({ configPath: '/path/to/node.json' });
 await node.start();
 node.drain();                    // stop accepting work; active work continues
@@ -50,9 +50,9 @@ const executor = {
 
 Register executors with `new ExecutorRegistry().register(executor)`; first matching executor wins. The built-in `createFakeExecutor({ delayMs, outcome, summary, usage })` handles provider `fake` and emits configured usage. Setting a `fake` object in node JSON advertises `fake` as a provider. Fake execution is for tests/e2e and does not start a real harness.
 
-At startup the daemon imports `@perpeto/factory-t3` by package name if installed. It expects `createT3Executor({ config, runtimeUrl, accountProvider })`, or `createExecutor` with the same arguments, returning an executor. `executorPackages` explicitly overrides the package list. Explicitly configured missing packages and broken installed packages fail startup; absent optional defaults are allowed. Packages must be resolvable by Node from this package; no root workspace manifest or dependency installation was changed here.
+At startup the daemon imports `@perpeto/t3-executor` by package name if installed. It expects `createT3Executor({ config, runtimeUrl, accountProvider })`, or `createExecutor` with the same arguments, returning an executor. `executorPackages` explicitly overrides the package list. Explicitly configured missing packages and broken installed packages fail startup; absent optional defaults are allowed. Packages must be resolvable by Node from this package; no root workspace manifest or dependency installation was changed here.
 
-An `accounts` section in node JSON (without `accountProviderPackage`) uses the built-in [factory-accounts adapter](src/integrations/accounts.js). Its non-secret options are the pool's (`selection`, `defaultCooldownMs`, `maxConcurrentPerAccount`, optional `nodeDataDir`, default the node `dataDir`). The pool opens after enrollment via `bind({ machineId })`; `acquire({ provider, assignmentId, attempt })` reserves per attempt and returns `{ account, binding }` or `null`, and `release(selection, { assignmentId, attempt })` frees it. Bindings stay local; heartbeats carry only `snapshot()` metadata.
+An `accounts` section in node JSON (without `accountProviderPackage`) uses the built-in [@perpeto/accounts adapter](src/integrations/accounts.js). Its non-secret options are the pool's (`selection`, `defaultCooldownMs`, `maxConcurrentPerAccount`, optional `nodeDataDir`, default the node `dataDir`). The pool opens after enrollment via `bind({ machineId })`; `acquire({ provider, assignmentId, attempt })` reserves per attempt and returns `{ account, binding }` or `null`, and `release(selection, { assignmentId, attempt })` frees it. Bindings stay local; heartbeats carry only `snapshot()` metadata.
 
 A custom account package should export `createAccountProvider({ config, configRoot, dataDir })`, returning:
 
@@ -89,7 +89,7 @@ The injectable supervisor interface is `{ start(): Promise<string|undefined>, st
 
 ## Protocol integration notes
 
-No changes were made to `docs/architecture.md`. The following details should be fixed there and checked against the parallel hub implementation:
+No changes were made to `docs/architecture/README.md`. The following details should be fixed there and checked against the parallel hub implementation:
 
 - Requests add the global `idempotencyKey`. Renewals and events also add top-level `attempt` so the hub can reject stale work, including reassignment to the same machine. Hub implementations must validate that attempt atomically; the node cannot fence stale results by itself.
 - Canonical lease response accepted here is `{ assignments: Assignment[], jobs: Job[] }`. Also accepted are `{ leases: [{ kind, item }] }` or `{ items: [...] }`, including flat entities and `assignment`/`job` wrappers. Attempts and expiration may be on the entity or wrapper. Renewal needs `{ leaseExpiresAt }` (or `{ lease: { leaseExpiresAt } }`).
@@ -101,7 +101,8 @@ No changes were made to `docs/architecture.md`. The following details should be 
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24
-node --test packages/factory-node/test/*.test.js
+node --test apps/node/test/*.test.js
+npm test -w @perpeto/node       # same suite through the workspace script
 npm test
 ```
 

@@ -32,6 +32,6 @@ Next: integrate messaging with the inherited authenticated server and agent tool
 
 ## Remaining prerequisites and limits
 
-Local harness executables were detected; their authentication and execution were not tested. A second machine and user-owned CI runner have not been enrolled. Hosted identity, relay, app signing and release distribution are not configured. See [prerequisites](prerequisites.md) and [definition of done](definition-of-done.md).
+Local harness executables were detected; their authentication and execution were not tested. A second machine and user-owned CI runner have not been enrolled. Hosted identity, relay, app signing and release distribution are not configured. See [prerequisites](../guides/prerequisites.md) and [definition of done](definition-of-done.md).
 
 Setup was also verified to restore the host repository's Git hook configuration after upstream prepare, which otherwise installs a hook targeting the nested upstream workspace.

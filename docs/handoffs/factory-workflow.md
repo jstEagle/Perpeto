@@ -1,6 +1,6 @@
 # Factory workflow handoff
 
-`packages/factory-workflow` implements the workflow parts of the [architecture contract](../architecture.md), plus the lead's addendum on agent-authored workflows and observing runs. The addendum is on main's `docs/architecture.md`, not on this branch. The package has no dependencies and never calls a harness. The API is documented in the [package README](../../packages/factory-workflow/README.md).
+`packages/workflow` implements the workflow parts of the [architecture contract](../architecture/README.md), plus the lead's addendum on agent-authored workflows and observing runs. The addendum is on main's `docs/architecture/README.md`, not on this branch. The package has no dependencies and never calls a harness. The API is documented in the [package README](../../packages/workflow/README.md).
 
 ## What exists
 
@@ -28,7 +28,7 @@
 
 Run with Node v24.22.0.
 
-- `node --test` in `packages/factory-workflow` runs 87 tests, and all pass.
+- `node --test` in `packages/workflow` runs 87 tests, and all pass.
 - `npm test` from the repo root runs 221 tests, and all pass.
 
 The tests cover:
@@ -59,7 +59,7 @@ Not verified:
 
 ## Contract changes for the lead
 
-The verdict, planner items, `keepOpen`, helper roles and the role and loop config additions are now in `docs/architecture.md`. These are not yet. The README documents them all.
+The verdict, planner items, `keepOpen`, helper roles and the role and loop config additions are now in `docs/architecture/README.md`. These are not yet. The README documents them all.
 
 1. **Retry and escalation config:**
    - `retry: { maxAttempts, backoffSec? }` on planner, agent, review and CI nodes

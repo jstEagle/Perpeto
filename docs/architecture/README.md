@@ -1,6 +1,6 @@
 # Factory architecture
 
-Status: implementation contract, 21 October 2026. Justus asked to start building the expanded direction in [the vision](vision.md#expanded-product-direction). This document fixes shared names and interfaces so parallel workers build compatible pieces. Anything below that is not yet implemented and verified is a plan, not a shipped capability. Change this file deliberately and note the change in the commit.
+Status: implementation contract, 21 October 2026. Justus asked to start building the expanded direction in [the vision](../product/vision.md#expanded-product-direction). This document fixes shared names and interfaces so parallel workers build compatible pieces. Anything below that is not yet implemented and verified is a plan, not a shipped capability. Change this file deliberately and note the change in the commit.
 
 ## Shape
 
@@ -10,14 +10,14 @@ Status: implementation contract, 21 October 2026. Justus asked to start building
             ▼
  ┌──────────────────────────────┐
  │ hub (one per factory)        │  projects, workflows, runs, work items,
- │ packages/factory-hub         │  assignments, jobs, merge queue, machines,
+ │ apps/hub                     │  assignments, jobs, merge queue, machines,
  │                              │  accounts, usage ledger, messaging
  └──────────────────────────────┘
             ▲  enrollment, heartbeats, leases, results
             │
  ┌──────────────────────────────┐   one per machine
  │ node daemon                  │   supervises the local T3 environment server,
- │ packages/factory-node        │   executes assignments through T3, runs CI jobs,
+ │ apps/node                    │   executes assignments through T3, runs CI jobs,
  │                              │   owns the machine's subscription pool
  └──────────────────────────────┘
             │  T3 environment API (local)
@@ -29,19 +29,23 @@ The hub decides what should happen. Nodes do the work and report evidence. T3 re
 
 ## Packages and owners
 
-| Path | Purpose |
-| --- | --- |
-| `packages/factory-core` | Existing durable messaging store. Reused by the hub. |
-| `packages/factory-workflow` | Workflow graph schema, validation, compilation, and the deterministic run engine. No I/O except its SQLite store. |
-| `packages/factory-hub` | Hub HTTP server, persistence, leasing, event log, usage ledger. Mounts workflow engine and messaging. |
-| `packages/factory-node` | Node daemon: enrollment, heartbeats, lease loop, executor registry, CI job runner. |
-| `packages/factory-t3` | Executor that drives a local T3 environment: threads, turns, events, token usage, subagent policy. |
-| `packages/factory-accounts` | Per-machine subscription pool and hot swapping, in the spirit of CCswap. |
-| `packages/factory-delivery` | PR policy, merge queue, CI job definitions, revision-bound evidence. |
-| `packages/design-tokens` | Brand tokens generated from `brand/tokens.css` for CSS and Swift, plus logo assets. |
-| `apps/web` | Perpeto web app. |
-| `apps/apple` | Native SwiftUI app for macOS (iPadOS/iOS later). |
-| `packages/perpeto-cli` | `perpeto` command: install, start hub, enroll node, status. |
+Deployable surfaces live in `apps/`; libraries they compose live in `packages/` and are imported by package name through npm workspaces.
+
+| Path | Package | Purpose |
+| --- | --- | --- |
+| `apps/hub` | `@perpeto/hub` | Hub HTTP server, persistence, leasing, event log, usage ledger. Mounts workflow engine and messaging. |
+| `apps/node` | `@perpeto/node` | Node daemon: enrollment, heartbeats, lease loop, executor registry, CI job runner. |
+| `apps/cli` | `@perpeto/cli` | `perpeto` command: install, start hub, enroll node, status. |
+| `apps/web` | `@perpeto/web` | Perpeto web app. |
+| `apps/apple` | Swift package | Native SwiftUI app for macOS (iPadOS/iOS later). |
+| `packages/workflow` | `@perpeto/workflow` | Workflow graph schema, validation, compilation, and the deterministic run engine. No I/O except its SQLite store. |
+| `packages/delivery` | `@perpeto/delivery` | PR policy, merge queue, CI job definitions, revision-bound evidence. |
+| `packages/accounts` | `@perpeto/accounts` | Per-machine subscription pool and hot swapping, in the spirit of CCswap. |
+| `packages/t3-executor` | `@perpeto/t3-executor` | Executor that drives a local T3 environment: threads, turns, events, token usage, subagent policy. |
+| `packages/messaging` | `@perpeto/messaging` | Existing durable messaging store. Shared by the hub and the T3 environment server. |
+| `packages/sdk` | `@perpeto/sdk` | Messaging HTTP client, `perpeto-messages` CLI and MCP stdio server for agents. |
+| `packages/design-tokens` | `@perpeto/design-tokens` | Brand tokens generated from `brand/tokens.css` for CSS and Swift, plus logo assets. |
+| `tests/e2e` | `@perpeto/e2e` | End-to-end suites across hub, node, delivery and SDK. |
 
 Factory services stay outside `vendor/t3code`. Patch the vendored runtime only when T3 lacks a required hook, and record each patch in `config/upstream-patches.json`.
 
@@ -86,7 +90,7 @@ UsageRecord  { id, projectId, runId?, assignmentId?, machineId, accountId?, prov
 Event        { seq /* hub-global increasing integer */, at, type, projectId?, runId?, subject: { kind, id }, data }
 ```
 
-Messaging keeps the existing `factory-core` model: project channels, stable role IDs, idempotent sends and cursor reads. Each run gets a channel `run-<runId>`. Messages never imply task ownership or a verified result; assignments and jobs carry those.
+Messaging keeps the existing `@perpeto/messaging` model: project channels, stable role IDs, idempotent sends and cursor reads. Each run gets a channel `run-<runId>`. Messages never imply task ownership or a verified result; assignments and jobs carry those.
 
 ## Workflow graph v1
 
@@ -116,7 +120,7 @@ Node config may also set `concurrency`, `policy`, `requirements` and `role` on p
 
 The engine is deterministic: it reads the run's state plus incoming results (assignment finished, job finished, human decision) and emits new work items, assignments, jobs and merge entries. It never calls a harness. A loop counts iterations on the work item and fails it at `maxIterations`.
 
-Default templates live in `packages/factory-workflow/templates/`: `build` (input → planner → agent pool → review loop → CI → merge queue → output) and `improve` (goals → auditor → agent → review → CI → merge queue → output).
+Default templates live in `packages/workflow/templates/`: `build` (input → planner → agent pool → review loop → CI → merge queue → output) and `improve` (goals → auditor → agent → review → CI → merge queue → output).
 
 ## Agent-authored workflows
 
@@ -189,7 +193,7 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
 | `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
 | `GET /events?after=<seq>&limit=` | Event page; `Accept: text/event-stream` streams live |
-| Messaging | Existing routes from [messaging](messaging.md), served by the hub under `/api/v1/messaging/…` |
+| Messaging | Existing routes from [messaging](../guides/messaging.md), served by the hub under `/api/v1/messaging/…` |
 
 ### Node protocol
 
@@ -213,20 +217,20 @@ An expired lease on run work is reported to the engine as a failed attempt, and 
 ## Node executors
 
 ```js
-// packages/factory-node
+// apps/node
 /** @typedef {{ signal: AbortSignal, report: (event) => Promise<void>, workspace: string }} ExecContext */
 /** Executor: { kind: string, canRun(assignment, machine): boolean, run(assignment, ctx): Promise<AssignmentResult> } */
 ```
 
-The node ships a `fake` executor for tests and loads `@perpeto/factory-t3` for real work. CI jobs run in a fresh worktree checked out at `revision`, one directory per job, never in a developer's checkout.
+The node ships a `fake` executor for tests and loads `@perpeto/t3-executor` for real work. CI jobs run in a fresh worktree checked out at `revision`, one directory per job, never in a developer's checkout.
 
-`factory-t3` creates a T3 thread for each assignment on the configured provider and model, sends the prompt, follows the thread's events to completion, forwards token usage as `usage` events, and enforces `AgentPolicy`: subagent creation beyond `maxSubagents` or to a provider outside `allowedSubagentProviders` is refused.
+`@perpeto/t3-executor` creates a T3 thread for each assignment on the configured provider and model, sends the prompt, follows the thread's events to completion, forwards token usage as `usage` events, and enforces `AgentPolicy`: subagent creation beyond `maxSubagents` or to a provider outside `allowedSubagentProviders` is refused.
 
-`factory-accounts` chooses which subscription account a T3 provider instance uses. When a harness reports a rate limit, the account cools down and new assignments and retries go to the next eligible account. A running conversation is not moved between accounts. It never copies credentials between machines.
+`@perpeto/accounts` chooses which subscription account a T3 provider instance uses. When a harness reports a rate limit, the account cools down and new assignments and retries go to the next eligible account. A running conversation is not moved between accounts. It never copies credentials between machines.
 
 ## Clients and brand
 
-Both clients follow the Workshop system strictly: [brand.md](../brand.md), [brand/tokens.css](../brand/tokens.css) and the Spindle identity in `brand/identity/`. `packages/design-tokens` is the only place clients read colors, type scale, spacing and radii from. No ad-hoc colors, no uppercase microcopy, no numbered eyebrows or tracked-out kickers, no decorative node meshes or gradients. The workflow editor is the one place nodes and edges appear, and it should look like a precise ruled drawing, not a sci-fi network.
+Both clients follow the Workshop system strictly: [brand/README.md](../../brand/README.md), [brand/tokens.css](../../brand/tokens.css) and the Spindle identity in `brand/identity/`. `packages/design-tokens` is the only place clients read colors, type scale, spacing and radii from. No ad-hoc colors, no uppercase microcopy, no numbered eyebrows or tracked-out kickers, no decorative node meshes or gradients. The workflow editor is the one place nodes and edges appear, and it should look like a precise ruled drawing, not a sci-fi network.
 
 Primary navigation: Projects → Project (Overview, Workflows, Runs, Work, Messages, Merge queue) and Factory (Machines, Accounts, Usage). Usage and agent counts are always visible at the project level.
 
@@ -236,4 +240,4 @@ Design for many machines: leases, a global event sequence, idempotent writes and
 
 ## Verification
 
-Each package has `node --test` coverage of its contract, including restart and lease-expiry cases where relevant. `npm test` discovers tests under `packages/` and `scripts/`. End-to-end: one hub, one node, fake executor, a `build` workflow run from input to merged output against a local bare Git repository. Live T3 and harness runs are separate, explicitly reported checks.
+Each package has `node --test` coverage of its contract, including restart and lease-expiry cases where relevant. `npm test` discovers Node tests under `apps/` (hub, node, cli), `packages/`, `tests/` and `scripts/`; each workspace also runs its own suite with `npm test -w <package>`. The web app uses Vitest and the Apple app uses `swift test`. End-to-end: one hub, one node, fake executor, a `build` workflow run from input to merged output against a local bare Git repository. Live T3 and harness runs are separate, explicitly reported checks.

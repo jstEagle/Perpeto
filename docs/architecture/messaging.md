@@ -1,6 +1,6 @@
-# Factory messaging transport
+# Messaging transport
 
-Perpeto's messaging routes run inside the inherited T3 environment server. `src/storage.js` and its type declarations connect that server to the single SQLite implementation in `packages/factory-core`; they introduce no separate datastore or inference client.
+Perpeto's messaging routes run inside the inherited T3 environment server. `vendor/t3code/apps/server/src/perpeto/Messaging.ts` imports the single SQLite implementation in `packages/messaging/src/messaging-store.js`, typed by its adjacent `.d.ts`; there is no separate datastore or inference client.
 
 The server opens `perpeto-messaging.sqlite` under its configured `stateDir` and closes it with the server route layer. The launcher supplies a separate Perpeto data directory. WAL files stay on the environment owner's local disk.
 

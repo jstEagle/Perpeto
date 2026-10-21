@@ -1,10 +1,10 @@
-# Factory end-to-end tests
+# End-to-end tests
 
 `node:test` suites that run the factory pieces together in one process tree: a real hub on an ephemeral port with temporary SQLite and secrets, a real node daemon enrolled with a one-time code, and a temporary bare Git repository standing in for the project remote. Nothing calls a model; a test executor registered on the node plays every role.
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24
-node --test packages/factory-e2e/test/*.test.js   # all integration and crash suites
+node --test tests/e2e/test/*.test.js   # all integration and crash suites
 npm run test:e2e   # original build and architect suites
 npm test           # also discovers them
 ```

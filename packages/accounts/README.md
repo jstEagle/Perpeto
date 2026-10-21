@@ -1,4 +1,4 @@
-# Factory accounts
+# Accounts
 
 A dependency-free, per-machine account pool for Node 24. Credentials remain on the execution machine. `snapshot()` returns the architecture's `Account[]` allowlist for node heartbeats. No credentials, credential fingerprints, local paths, usage payloads or source profiles appear in that snapshot.
 
@@ -129,7 +129,8 @@ Only fixture and local process tests are claimed. No real account enrollment, li
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24
-node --test packages/factory-accounts/test/accounts.test.js
+node --test packages/accounts/test/accounts.test.js
+npm test -w @perpeto/accounts       # same suite through the workspace script
 # Repository checks also discover this package:
 npm test
 ```

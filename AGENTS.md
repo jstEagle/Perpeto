@@ -1,6 +1,6 @@
 # Repository guidance
 
-Perpeto is in early implementation, with brand exploration still provisional. Read README.md, brand.md, docs/vision.md, and docs/status.md before changing project direction. Keep proposals clearly distinguished from approved decisions and implemented features. The approved foundation reuses T3 Code's orchestrator and all provider integrations under vendor/t3code. Preserve upstream notices and provenance; keep new factory services outside that directory unless a change to the inherited runtime is necessary. Do not describe planned capabilities as shipped without supporting work.
+Perpeto is in early implementation, with brand exploration still provisional. Read README.md, brand/README.md, docs/product/vision.md, and docs/product/status.md before changing project direction. Keep proposals clearly distinguished from approved decisions and implemented features. The approved foundation reuses T3 Code's orchestrator and all provider integrations under vendor/t3code. Preserve upstream notices and provenance; keep new factory services outside that directory unless a change to the inherited runtime is necessary. Do not describe planned capabilities as shipped without supporting work.
 
 ## Challenge plans and assumptions
 

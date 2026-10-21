@@ -1,5 +1,5 @@
 /**
- * Hub API v1 entities, transcribed from docs/architecture.md.
+ * Hub API v1 entities, transcribed from docs/architecture/README.md.
  * Response envelopes the contract leaves open (overview, usage, list
  * wrappers) are marked "assumed" and normalised in client.ts.
  */
@@ -325,7 +325,7 @@ export interface EnrollmentCode {
   expiresAt?: IsoTime;
 }
 
-/* Messaging, served under /api/v1/messaging (packages/factory-core). */
+/* Messaging, served under /api/v1/messaging (packages/messaging). */
 
 export interface Channel {
   id: string;
@@ -373,7 +373,7 @@ export interface HumanDecision {
   note?: string;
 }
 
-/* Observing runs (docs/architecture.md "Observing runs"). */
+/* Observing runs (docs/architecture/README.md "Observing runs"). */
 
 export type MetricsWindow = '1h' | '24h' | '7d';
 

@@ -1,6 +1,6 @@
-# Factory workflow
+# Workflow engine
 
-Workflow graphs, their validation and compilation, the deterministic run engine, a SQLite run store, graph diffs, workflow-architect support and run metrics. It implements the workflow parts of [the architecture contract](../../docs/architecture.md). It never calls a harness or the network. The only I/O is the store's SQLite file and reading the bundled build template for architect prompts.
+Workflow graphs, their validation and compilation, the deterministic run engine, a SQLite run store, graph diffs, workflow-architect support and run metrics. It implements the workflow parts of [the architecture contract](../../docs/architecture/README.md). It never calls a harness or the network. The only I/O is the store's SQLite file and reading the bundled build template for architect prompts.
 
 Requires Node 24. No dependencies or environment variables.
 
@@ -8,7 +8,7 @@ Requires Node 24. No dependencies or environment variables.
 import {
   validateGraph, compileGraph, step, RunStore, diffGraphs,
   buildArchitectPrompt, evaluateArchitectResult, computeRunMetrics, classifyInteraction,
-} from '@perpeto/factory-workflow';
+} from '@perpeto/workflow';
 ```
 
 ## Graphs
@@ -212,5 +212,5 @@ Both validate without warnings. Their provider and model choices are defaults fo
 ## Tests
 
 ```sh
-cd packages/factory-workflow && node --test
+npm test -w @perpeto/workflow
 ```

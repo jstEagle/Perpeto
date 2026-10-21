@@ -1,6 +1,6 @@
 # Hub wiring and crash recovery
 
-Branch: `t3/hub-delivery-recovery`, based on Perpeto main `9881b7b`. Changes stay within `packages/factory-hub/**`, `packages/factory-client/**`, `packages/factory-e2e/**`, `config/hub.example.json` and this handoff. **No factory-delivery fixes were needed.** Nothing was pushed or merged; no real GitHub repository was accessed or mutated.
+Branch: `t3/hub-delivery-recovery`, based on Perpeto main `9881b7b`. Changes stay within `apps/hub/**`, `packages/sdk/**`, `tests/e2e/**`, `config/hub.example.json` and this handoff. **No factory-delivery fixes were needed.** Nothing was pushed or merged; no real GitHub repository was accessed or mutated.
 
 ## Implemented
 
@@ -35,8 +35,8 @@ source ~/.nvm/nvm.sh && nvm use 24
 | Exact command from repository root | Result |
 | --- | --- |
 | `npm test` | 271 passed, 0 failed |
-| `node --test packages/factory-e2e/test/*.test.js` | 9 passed, 0 failed |
-| `node --test packages/factory-hub/test/*.test.js packages/factory-client/test/*.test.js` | 38 passed, 0 failed |
+| `node --test tests/e2e/test/*.test.js` | 9 passed, 0 failed |
+| `node --test apps/hub/test/*.test.js packages/sdk/test/*.test.js` | 38 passed, 0 failed |
 | `git diff --check` | Passed |
 
 The original root `npm run test:e2e` still names only the build/architect files; use the glob above (or package-local `node --test`) for the new wiring/crash suites. Root `npm test` discovers every new suite automatically.
@@ -49,4 +49,4 @@ All Git pushes target temporary local bare origins. `gh` is a PATH-injected exec
 - Candidate jobs currently clone the hub's mirror path. The executing node must be on the same machine or have equivalent filesystem access. Transferring candidate objects to independent machines remains an integration requirement; these tests do not establish that capability.
 - Fast-forward publication inherits factory-delivery's documented limitations: non-force remote ref advancement is atomic, but it is not an exact old-SHA CAS or atomic PR-head check. Native mode delegates final ordering, method and required checks to GitHub. Squash/rebase publication closes PRs with evidence rather than creating a GitHub MERGED record. A real crash inside separate gh comment/close operations can still duplicate a comment.
 - Messaging and delivery use separate SQLite databases from the hub. Reconciliation repairs the tested queue projection gaps, but cross-database atomic commits are not claimed. Hard crashes can leave a temporary mirror clone or candidate worktree for cleanup; no retention policy was added.
-- `docs/architecture.md` was not edited. Please record `deliveryRepositoriesPath`, `deliveryLeaseDurationMs`, merge-node `publication`, and optional MergeEntry `testedRevision`. The shared workflow graph schema still reports publication as an unknown optional configuration warning; hub validation accepts and validates it. The workflow owner should add the field to the shared schema. Assignment.repo, the MergeEntry delivery fields, lease-loss retries and the new project runs route are already binding upstream contracts.
+- `docs/architecture/README.md` was not edited. Please record `deliveryRepositoriesPath`, `deliveryLeaseDurationMs`, merge-node `publication`, and optional MergeEntry `testedRevision`. The shared workflow graph schema still reports publication as an unknown optional configuration warning; hub validation accepts and validates it. The workflow owner should add the field to the shared schema. Assignment.repo, the MergeEntry delivery fields, lease-loss retries and the new project runs route are already binding upstream contracts.

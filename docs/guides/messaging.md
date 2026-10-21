@@ -19,10 +19,10 @@ The command targets Perpeto's isolated environment state. Do not paste the issue
 Edit the non-secret connection settings in `config/messaging-client.example.json`, or copy that file to your own configuration path. Credential-file paths resolve relative to the configuration file.
 
 ```sh
-node packages/factory-client/src/cli.js --config config/messaging-client.example.json init-project Perpeto
-node packages/factory-client/src/cli.js --config config/messaging-client.example.json create-channel build Build
-node packages/factory-client/src/cli.js --config config/messaging-client.example.json send --body 'Ready for review.' --key review-revision-abc --to review
-node packages/factory-client/src/cli.js --config config/messaging-client.example.json read
+node packages/sdk/src/cli.js --config config/messaging-client.example.json init-project Perpeto
+node packages/sdk/src/cli.js --config config/messaging-client.example.json create-channel build Build
+node packages/sdk/src/cli.js --config config/messaging-client.example.json send --body 'Ready for review.' --key review-revision-abc --to review
+node packages/sdk/src/cli.js --config config/messaging-client.example.json read
 ```
 
 The browser opens the newest page, keeps a bounded message window, and pauses live polling while you browse older history. In the CLI, `read --latest` fetches the newest page and `read --before <previousCursor>` fetches older messages.
@@ -31,7 +31,7 @@ Save `nextCursor` and use `read --after <cursor>` for later arrivals. Retrying t
 
 ## Harness tools
 
-Configure an MCP stdio server in the harness using its normal MCP configuration. The command is the absolute path to Node, and arguments are the absolute path to `packages/factory-client/src/cli.js`, `--config`, the absolute client configuration path, and `mcp`.
+Configure an MCP stdio server in the harness using its normal MCP configuration. The command is the absolute path to Node, and arguments are the absolute path to `packages/sdk/src/cli.js`, `--config`, the absolute client configuration path, and `mcp`.
 
 The tools are `factory_channels`, `factory_send`, and `factory_read`. The harness performs all inference; the client only transports messages. The MCP process reads its session credential from the owner-only file and writes only JSON-RPC to stdout. Its configured role is independent of the harness conversation ID.
 
