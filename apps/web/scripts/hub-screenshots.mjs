@@ -30,6 +30,19 @@ const screens = [
   ['hub-usage', '/usage'],
 ];
 
+/**
+ * Full-page capture with the viewport grown to the page, so sticky elements
+ * (the sidebar, the floating tab bar) sit where a person scrolling would see them.
+ */
+async function fullPage(page, path) {
+  const size = page.viewportSize();
+  const height = await page.evaluate(() => document.documentElement.scrollHeight);
+  await page.setViewportSize({ width: size.width, height: Math.max(size.height, height) });
+  await page.waitForTimeout(150);
+  await page.screenshot({ path });
+  await page.setViewportSize(size);
+}
+
 const browser = await chromium.launch();
 const errors = [];
 for (const [size, viewport] of [
@@ -66,7 +79,7 @@ for (const [size, viewport] of [
     await page.goto(app + path, { waitUntil: 'load' });
     await page.locator('main h1').first().waitFor();
     await page.waitForTimeout(2500);
-    await page.screenshot({ path: `${out}${name}-${size}.png`, fullPage: true });
+    await fullPage(page, `${out}${name}-${size}.png`);
     console.log(`${name}-${size}.png`);
   }
   // A reload keeps the session without the token; Disconnect ends it on the hub.

@@ -1,39 +1,36 @@
 /*
- * Spindle symbol and wordmark, rendered from the unchanged identity SVGs in
- * brand/identity (copied here until packages/design-tokens/assets lands).
- * Black fills become currentColor so the mark takes the surrounding ink.
+ * Spindle symbol and lockup from packages/design-tokens/assets, never
+ * redrawn. Ink fills become currentColor so the mark takes the surrounding
+ * ink; in the product it is always ink on canvas.
  */
-import symbolSvg from './perpeto-symbol.svg?raw';
-import wordmarkSvg from './perpeto-wordmark.svg?raw';
+import symbolSvg from '@perpeto/design-tokens/assets/perpeto-symbol-ink.svg?raw';
+import lockupSvg from '@perpeto/design-tokens/assets/perpeto-lockup-ink.svg?raw';
 
 function recolor(svg: string) {
   return svg
-    .replace(/#000000/g, 'currentColor')
+    .replace(/#161615/gi, 'currentColor')
     .replace(/<title>[^<]*<\/title>/, '')
-    .replace(/\swidth="[^"]*"\s+height="[^"]*"/, ' width="100%" height="100%"')
+    .replace(/\swidth="[^"]*"/, ' width="100%"')
+    .replace(/\sheight="[^"]*"/, ' height="100%"')
     .replace('<svg ', '<svg aria-hidden="true" focusable="false" ');
 }
 
 const SYMBOL = recolor(symbolSvg);
-const WORDMARK = recolor(wordmarkSvg);
+const LOCKUP = recolor(lockupSvg);
+/** The lockup asset is 888 × 248 including clearspace. */
+const LOCKUP_RATIO = 887.96 / 248;
 
 export function Spindle({ size = 24, className }: { size?: number; className?: string }) {
   return <span className={`spindle ${className ?? ''}`} style={{ width: size, height: size }} dangerouslySetInnerHTML={{ __html: SYMBOL }} />;
 }
 
-export function Lockup({ height = 22 }: { height?: number }) {
-  // Wordmark viewBox is 3530 × 903; the symbol sits at the wordmark's cap height.
-  const wordWidth = (height * 3530) / 903;
-  return (
-    <span className="lockup" role="img" aria-label="perpeto">
-      <Spindle size={Math.round(height * 1.1)} />
-      <span className="wordmark" style={{ width: wordWidth, height }} dangerouslySetInnerHTML={{ __html: WORDMARK }} />
-    </span>
-  );
+/** `height` is the asset's full height, clearspace included. */
+export function Lockup({ height = 34 }: { height?: number }) {
+  return <span className="lockup" role="img" aria-label="perpeto" style={{ width: height * LOCKUP_RATIO, height }} dangerouslySetInnerHTML={{ __html: LOCKUP }} />;
 }
 
-/** Relay loader from brand/motion: arms pulse in sequence; static under reduced motion. */
-export function SpindleLoader({ size = 20, label = 'Loading' }: { size?: number; label?: string }) {
+/** Relay loader from brand/motion: arms fade in sequence; static under reduced motion. */
+export function SpindleLoader({ size = 32, label = 'Loading' }: { size?: number; label?: string }) {
   return (
     <span className="spindle-loader" style={{ width: size, height: size }} role="status">
       <span className="visually-hidden">{label}</span>

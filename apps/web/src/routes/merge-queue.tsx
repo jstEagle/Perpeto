@@ -3,6 +3,7 @@ import { useResource } from '../app/hub-context';
 import { Async, Empty, Mono, PageHeader } from '../components/ui';
 import { JobStatusLabel, MergeStatusLabel } from '../components/status';
 import { prNumber, shortSha } from '../lib/format';
+import { IconMerge } from '../components/icons';
 
 export function MergeQueuePage() {
   const { projectId } = useParams({ from: '/projects/$projectId/merge-queue' });
@@ -15,11 +16,14 @@ export function MergeQueuePage() {
       <Async resource={queue} what="the merge queue">
         {(entries) =>
           entries.length === 0 ? (
-            <div className="panel">
-              <Empty title="The merge queue is empty.">Pull requests join the queue after they pass review and CI.</Empty>
-            </div>
+            <section className="card">
+              <Empty title="The merge queue is empty" icon={<IconMerge />}>
+                Pull requests join the queue after they pass review and CI.
+              </Empty>
+            </section>
           ) : (
-            <div className="panel panel-flush table-wrap">
+            <section className="card">
+              <div className="table-wrap">
               <table className="table">
                 <caption className="visually-hidden">Merge queue entries</caption>
                 <thead>
@@ -37,10 +41,10 @@ export function MergeQueuePage() {
                     return (
                       <tr key={e.id}>
                         <td>
-                          <a className="link" href={e.prUrl} target="_blank" rel="noreferrer">
-                            {prNumber(e.prUrl)}
+                          <a className="cell-title" href={e.prUrl} target="_blank" rel="noreferrer">
+                            Pull request {prNumber(e.prUrl)}
                           </a>
-                          {e.reason && <p className="note queue-reason">{e.reason}</p>}
+                          {e.reason && <span className="cell-sub cell-wrap">{e.reason}</span>}
                         </td>
                         <td>
                           <Mono title={e.headSha}>{shortSha(e.headSha)}</Mono>
@@ -53,9 +57,9 @@ export function MergeQueuePage() {
                         </td>
                         <td className="hide-sm">
                           {job ? (
-                            <span className="row" style={{ gap: 8 }}>
-                              <Mono>{job.id}</Mono>
+                            <span className="row">
                               <JobStatusLabel status={job.status} />
+                              <span className="muted mono">{job.id}</span>
                             </span>
                           ) : (
                             <span className="muted">—</span>
@@ -66,7 +70,8 @@ export function MergeQueuePage() {
                   })}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </section>
           )
         }
       </Async>

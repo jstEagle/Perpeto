@@ -23,14 +23,14 @@ import type { GraphEdge, GraphNode } from '../api/types';
  * worker for routing the app would then override.
  */
 
-export const NODE_W = 240;
+export const NODE_W = 208;
 export const COL_GAP = 64;
 export const COL_PITCH = NODE_W + COL_GAP;
-export const GRID = 16;
+export const GRID = 8;
 /** Minimum space above a side lane; vertical role links run here. */
-export const SIDE_GAP = 64;
+export const SIDE_GAP = 72;
 /** Minimum space between rows of the main line, when it branches. */
-export const BAND_GAP = 64;
+export const BAND_GAP = 72;
 
 export type Size = { w: number; h: number };
 export type Point = { x: number; y: number };
@@ -294,20 +294,39 @@ export function layer(nodes: GraphNode[], edges: GraphEdge[]): Layering {
 }
 
 /**
- * Positions for every node. `gaps[k]` is the minimum space above row k, so
- * routed lanes fit (see Routing.gutterNeeds). Each row is as tall as its
- * tallest node.
+ * Positions for every node. `gaps[k]` is the minimum space above row k
+ * (rows counted top to bottom, as the router clusters them), so routed lanes
+ * fit; see Routing.gutterNeeds. Each row is as tall as its tallest node.
+ *
+ * `maxColumns` keeps the map readable at full size: a main line with more
+ * columns wraps into balanced bands, each with its own side lane, and the
+ * last band is right-aligned so the wrap runs back under the end of the
+ * band above, as one short connector.
  */
-export function autoLayout(nodes: GraphNode[], edges: GraphEdge[], size: (id: string) => Size, gaps: number[] = []): Map<string, Point> {
+export function autoLayout(nodes: GraphNode[], edges: GraphEdge[], size: (id: string) => Size, gaps: number[] = [], maxColumns = Infinity): Map<string, Point> {
   const { rank, row, mainRows } = layer(nodes, edges);
-  const rows = Math.max(0, ...row.values()) + 1;
-  const height = (r: number) => Math.max(0, ...nodes.filter((n) => row.get(n.id) === r).map((n) => size(n.id).h));
+  const columns = Math.max(0, ...rank.values()) + 1;
+  const bands = Math.max(1, Math.ceil(columns / Math.max(2, maxColumns)));
+  const perBand = Math.ceil(columns / bands);
+  const bandOf = (id: string) => Math.floor(rank.get(id)! / perBand);
+  const lastBandColumns = columns - (bands - 1) * perBand;
+  const column = (id: string) => {
+    const band = bandOf(id);
+    return rank.get(id)! - band * perBand + (bands > 1 && band === bands - 1 ? perBand - lastBandColumns : 0);
+  };
+
+  // Rows in use, top to bottom: each band's main rows, then its side rows.
+  const used = [...new Set(nodes.map((n) => bandOf(n.id) * 1000 + row.get(n.id)!))].sort((a, b) => a - b);
+  const index = new Map(used.map((key, i) => [key, i]));
   const top: number[] = [];
   let y = 0;
-  for (let r = 0; r < rows; r++) {
-    if (r > 0) y = snap(y + Math.max(gaps[r] ?? 0, r >= mainRows ? SIDE_GAP : BAND_GAP));
+  used.forEach((key, k) => {
+    if (k > 0) {
+      const newBand = Math.floor(key / 1000) !== Math.floor(used[k - 1] / 1000);
+      y = snap(y + Math.max(gaps[k] ?? 0, newBand ? BAND_GAP : key % 1000 >= mainRows ? SIDE_GAP : BAND_GAP));
+    }
     top.push(y);
-    y += height(r);
-  }
-  return new Map(nodes.map((n) => [n.id, { x: rank.get(n.id)! * COL_PITCH, y: top[row.get(n.id)!] }]));
+    y += Math.max(0, ...nodes.filter((n) => bandOf(n.id) * 1000 + row.get(n.id)! === key).map((n) => size(n.id).h));
+  });
+  return new Map(nodes.map((n) => [n.id, { x: column(n.id) * COL_PITCH, y: top[index.get(bandOf(n.id) * 1000 + row.get(n.id)!)!] }]));
 }

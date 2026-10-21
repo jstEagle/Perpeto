@@ -4,9 +4,9 @@ import type { Assignment, HubEvent, Workflow } from '../api/types';
 import { Button } from '../components/ui';
 import { StatusLabel } from '../components/status';
 import { SpindleLoader } from '../brand/logo';
-import { IconCheck } from '../components/icons';
+import { IconCheckCircle, IconXCircle } from '../components/icons';
 import { clock } from '../lib/format';
-import { providerLabel } from './registry';
+import { modelName, providerLabel } from './registry';
 
 const SUGGESTIONS = [
   'Plan from the goals, build in parallel, review every change with a second model, run CI on my Mac, then merge.',
@@ -58,12 +58,12 @@ export function ArchitectPrompt({
 
   return (
     <form className="prompt-box" onSubmit={submit} aria-labelledby={`${id}-title`}>
-      <label id={`${id}-title`} htmlFor={`${id}-prompt`} className={compact ? 'label' : 'prompt-title'}>
+      <label id={`${id}-title`} htmlFor={`${id}-prompt`} className={compact ? 'field-label' : 'prompt-title'}>
         {title}
       </label>
       <textarea
         id={`${id}-prompt`}
-        className="input"
+        className="input prompt-input"
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
         placeholder={base ? 'What should change, and why?' : 'Who does the work, how it gets checked, and when it can merge.'}
@@ -73,7 +73,7 @@ export function ArchitectPrompt({
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit(e);
         }}
       />
-      <p id={`${id}-hint`} className="field-hint">
+      <p id={`${id}-hint`} className="field-help">
         A workflow architect agent drafts the graph from your project’s docs, goals, machines and providers. Nothing runs until you activate it.
       </p>
       <div className="prompt-suggestions" aria-label="Examples">
@@ -88,11 +88,11 @@ export function ArchitectPrompt({
           {error}
         </p>
       )}
-      <div className="row">
-        <Button variant="primary" type="submit" busy={busy}>
+      <div className="row prompt-actions">
+        <Button variant={compact ? 'secondary' : 'primary'} type="submit" busy={busy}>
           {base ? 'Ask for changes' : 'Draft workflow'}
         </Button>
-        <span className="note">⌘ Enter to send</span>
+        <span className="note hide-sm">⌘ Enter to send</span>
       </div>
     </form>
   );
@@ -208,50 +208,67 @@ export function ArchitectProgress({ assignmentId, projectId, onDone, onDismiss }
   if (succeeded && last?.draftVersion) steps.push({ key: 'saved', text: `Saved as draft version ${last.draftVersion}. Nothing runs until you activate it.` });
 
   return (
-    <section className="panel" aria-labelledby={`arch-${assignmentId}`} aria-live="polite">
-      <div className="panel-header">
-        <h2 id={`arch-${assignmentId}`}>Workflow architect</h2>
-        <div className="panel-actions">
-          {failed ? <StatusLabel tone="error">Failed</StatusLabel> : succeeded ? <StatusLabel tone="success">Draft ready</StatusLabel> : <StatusLabel tone="accent">Working</StatusLabel>}
+    <section className="card" aria-labelledby={`arch-${assignmentId}`} aria-live="polite">
+      <div className="card-head">
+        <h2 className="card-title" id={`arch-${assignmentId}`}>
+          Workflow architect
+        </h2>
+        <div className="card-aside">
+          {failed ? <StatusLabel tone="failed">Failed</StatusLabel> : succeeded ? <StatusLabel tone="done">Draft ready</StatusLabel> : <StatusLabel tone="live">Working</StatusLabel>}
           {onDismiss && (failed || succeeded) && (
-            <Button size="sm" variant="ghost" onClick={onDismiss}>
+            <button type="button" className="text-btn" onClick={onDismiss}>
               Dismiss
-            </Button>
+            </button>
           )}
         </div>
       </div>
-      <div className="panel-body stack-sm">
-        <p className="note">
-          {last ? (
-            <>
-              {providerLabel(last.harness.provider)} · <code className="mono">{last.harness.model}</code>
-              {machine ? ` · ${machine}` : ' · waiting for a machine'}
-              {chain.length > 1 ? ` · attempt ${chain.length} of 3` : ''} · <code className="mono">{last.id}</code>
-            </>
-          ) : (
-            <code className="mono">{assignmentId}</code>
-          )}
-        </p>
+      <p className="row-meta">
+        {last ? (
+          <>
+            {modelName(last.harness.model)} · {providerLabel(last.harness.provider)}
+            {machine ? (
+              <>
+                {' '}
+                on <span className="mono">{machine}</span>
+              </>
+            ) : (
+              ' · waiting for a machine'
+            )}
+            {chain.length > 1 ? ` · attempt ${chain.length} of 3` : ''}
+          </>
+        ) : (
+          <span className="mono">{assignmentId}</span>
+        )}
+      </p>
+      <div className="card-foot">
         {steps.length === 0 ? (
           <div className="row muted" role="status">
-            <SpindleLoader size={16} label="Waiting for the architect" /> Waiting for the first update
+            <SpindleLoader size={20} label="Waiting for the architect" /> Waiting for the first update
           </div>
         ) : (
-          <ol className="progress-steps">
+          <ol className="rows progress-steps">
             {steps.map((s, i) => {
               const current = i === steps.length - 1 && !succeeded && !failed;
               return (
-                <li key={s.key} className={current ? 'step-current' : s.failed ? 'diff-removed' : 'step-done'}>
-                  {current ? <SpindleLoader size={14} label="In progress" /> : <IconCheck />}
-                  <span>{s.text}</span>
-                  {s.at && <time dateTime={s.at}>{clock(s.at)}</time>}
+                <li key={s.key} className={s.failed ? 'is-failed' : ''}>
+                  <span className="progress-icon">{current ? <span className="dot" role="img" aria-label="In progress" /> : s.failed ? <IconXCircle size={16} /> : <IconCheckCircle size={16} />}</span>
+                  <span className="row-main row-meta-wrap">{s.text}</span>
+                  {s.at && (
+                    <time className="row-end" dateTime={s.at}>
+                      {clock(s.at)}
+                    </time>
+                  )}
                 </li>
               );
             })}
           </ol>
         )}
-        {error && <p className="form-error" role="alert">Progress could not be read. {error}</p>}
-        {failed && <p className="form-error">The architect could not produce a valid workflow. Read its last update above, then ask again with more detail or start from a template.</p>}
+        {error && (
+          <p className="form-error" role="alert">
+            Progress could not be read. {error}
+          </p>
+        )}
+        {failed && <p className="form-error card-foot">The architect could not produce a valid workflow. Read its last update above, then ask again with more detail or start from a template.</p>}
       </div>
     </section>
   );

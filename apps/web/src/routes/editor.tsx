@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useBlocker, useNavigate, useParams } from '@tanstack/react-router';
+import { useBlocker, useNavigate, useParams } from '@tanstack/react-router';
 import { useHub, useResource } from '../app/hub-context';
 import type { NodeType, ValidationIssue, Workflow, WorkflowGraph } from '../api/types';
-import { Async, Button, Segmented } from '../components/ui';
-import { StatusLabel } from '../components/status';
-import { DRAG_MIME, EdgeLegend, GraphCanvas } from '../workflow/graph-canvas';
+import { Async, Button, PageHeader, Segmented } from '../components/ui';
+import { StatusChip } from '../components/status';
+import { DRAG_MIME, GraphCanvas } from '../workflow/graph-canvas';
 import type { Selection } from '../workflow/graph-canvas';
 import { Inspector } from '../workflow/inspector';
 import { NODE_SPECS, PALETTE_ORDER } from '../workflow/registry';
@@ -103,66 +103,60 @@ function Editor({ workflow, projectId, docs }: { workflow: Workflow; projectId: 
   }
 
   return (
-    <div className="editor-page">
-      <div className="editor-bar">
-        <div className="editor-bar-title">
-          <nav className="breadcrumb" aria-label="Breadcrumb">
-            <Link activeOptions={{ exact: true }} to="/projects/$projectId/workflows" params={{ projectId }}>
-              Workflows
-            </Link>
-            <span aria-hidden="true">/</span>
-            <Link activeOptions={{ exact: true }} to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: workflow.id }} search={{}}>
-              {workflow.name}
-            </Link>
-          </nav>
-          <h1>Edit by hand</h1>
-        </div>
-        <div className="editor-bar-actions">
-          <span className="save-state" aria-live="polite">
+    <div className="page page-wide editor-page">
+      <PageHeader
+        back={{ label: workflow.name, to: '/projects/$projectId/workflows/$workflowId', params: { projectId, workflowId: workflow.id } }}
+        title="Edit by hand"
+        status={
+          <span aria-live="polite">
             {errors.length ? (
-              <StatusLabel tone="error">
+              <StatusChip tone="failed">
                 {errors.length} {errors.length === 1 ? 'error' : 'errors'}
-              </StatusLabel>
+              </StatusChip>
             ) : (
-              <StatusLabel tone="success">Valid</StatusLabel>
+              <StatusChip tone="done">Valid</StatusChip>
             )}
           </span>
-          <span className="save-state">Editing from v{workflow.version}. Saving creates a draft version.</span>
-          <span className="select">
-            <select
-              className="input"
-              aria-label="Replace with a template"
-              value=""
-              onChange={(e) => {
-                const t = TEMPLATES.find((x) => x.purpose === e.target.value);
-                if (t && window.confirm(`Replace the graph with the ${t.name} template?`)) {
-                  change(t.graph());
-                  setGeneration((g) => g + 1);
-                  setSelection(null);
-                }
-              }}
-            >
-              <option value="">Template…</option>
-              {TEMPLATES.map((t) => (
-                <option key={t.purpose} value={t.purpose}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </span>
-          <Button variant="primary" onClick={save} busy={saving} disabled={errors.length > 0} title={errors.length ? 'Fix errors before saving.' : undefined}>
-            Save draft
-          </Button>
-        </div>
-      </div>
+        }
+        meta={`Editing from v${workflow.version}. Saving creates a draft version; nothing runs until you activate it.`}
+        actions={
+          <>
+            <span className="select">
+              <select
+                className="input select-pill"
+                aria-label="Replace with a template"
+                value=""
+                onChange={(e) => {
+                  const t = TEMPLATES.find((x) => x.purpose === e.target.value);
+                  if (t && window.confirm(`Replace the graph with the ${t.name} template?`)) {
+                    change(t.graph());
+                    setGeneration((g) => g + 1);
+                    setSelection(null);
+                  }
+                }}
+              >
+                <option value="">Start from a template</option>
+                {TEMPLATES.map((t) => (
+                  <option key={t.purpose} value={t.purpose}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </span>
+            <Button variant="primary" onClick={save} busy={saving} disabled={errors.length > 0} title={errors.length ? 'Fix errors before saving.' : undefined}>
+              Save draft
+            </Button>
+          </>
+        }
+      />
       {saveError && (
-        <p className="form-error" role="alert" style={{ margin: '0 24px 12px' }}>
+        <p className="form-error" role="alert">
           {saveError}
         </p>
       )}
       <div className="editor">
         <aside className="palette" aria-label="Node palette">
-          <h2>Add a node</h2>
+          <h2 className="palette-title">Add a node</h2>
           <ul className="palette-list">
             {PALETTE_ORDER.map((type) => (
               <li key={type}>
@@ -187,7 +181,7 @@ function Editor({ workflow, projectId, docs }: { workflow: Workflow; projectId: 
         </aside>
         <div className="editor-canvas">
           <div className="canvas-toolbar">
-            <div className="row" style={{ gap: 8 }}>
+            <div className="row">
               <span className="note">Role ports create</span>
               <Segmented<'delegates' | 'messages'>
                 label="Connection kind for role ports"
@@ -199,7 +193,6 @@ function Editor({ workflow, projectId, docs }: { workflow: Workflow; projectId: 
                 ]}
               />
             </div>
-            <EdgeLegend />
           </div>
           <GraphCanvas
             key={generation}

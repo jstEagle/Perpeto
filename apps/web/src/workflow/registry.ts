@@ -162,26 +162,44 @@ export function readPolicy(node: GraphNode): PolicyConfig | undefined {
   return p && typeof p === 'object' ? p : undefined;
 }
 
+/**
+ * Display name for a model id: "claude-opus-5-5" reads "Claude Opus 5.5",
+ * "gpt-5.5-codex" reads "GPT 5.5 Codex". Ids stay in mono where exactness matters.
+ */
+export function modelName(id: string): string {
+  const words: string[] = [];
+  for (const part of id.split('-')) {
+    const prev = words.at(-1);
+    if (/^\d+(\.\d+)?$/.test(part) && prev && /^\d+$/.test(prev)) words[words.length - 1] = `${prev}.${part}`;
+    else words.push(/^gpt$/i.test(part) ? 'GPT' : part.charAt(0).toUpperCase() + part.slice(1));
+  }
+  return words.join(' ');
+}
+
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, ' ');
+
 /** Short one-line summary shown on the node card. */
 export function nodeSummary(node: GraphNode): string {
   const c = node.config;
   switch (node.type) {
     case 'input':
-      return `Source: ${String(c.source ?? 'manual')}`;
+      return `${sentence(String(c.source ?? 'manual'))} input`;
     case 'planner':
     case 'agent':
     case 'review': {
       const h = readHarness(node);
-      return h ? `${providerLabel(h.provider)} · ${h.model}` : 'No harness set';
+      if (!h) return 'No harness set';
+      const n = typeof c.concurrency === 'number' && node.type === 'review' ? ` · ${c.concurrency} at a time` : '';
+      return `${modelName(h.model)}${n}`;
     }
     case 'ci': {
       const steps = Array.isArray(c.steps) ? c.steps.length : 0;
       return `${steps} ${steps === 1 ? 'step' : 'steps'}`;
     }
     case 'merge-queue':
-      return `${String(c.strategy ?? 'serial')} · ${String(c.method ?? 'squash')}`;
+      return `${sentence(String(c.strategy ?? 'serial'))} · ${String(c.method ?? 'squash')}`;
     case 'loop':
-      return `Until ${String(c.until ?? 'review-pass')} · max ${String(c.maxIterations ?? '?')}`;
+      return `Until ${String(c.until ?? 'review-pass').replace(/-/g, ' ')} · max ${String(c.maxIterations ?? '?')}`;
     case 'human':
       return 'Waits for a person';
     case 'output':

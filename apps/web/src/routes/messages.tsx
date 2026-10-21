@@ -4,7 +4,7 @@ import { useHub, useResource } from '../app/hub-context';
 import { OWNER_ROLE_ID } from '../api/hub';
 import type { Channel, Message } from '../api/types';
 import { Async, Button, Empty, Loading, ErrorState, PageHeader } from '../components/ui';
-import { IconSend } from '../components/icons';
+import { IconMessages, IconSend } from '../components/icons';
 import { clock, dateTime } from '../lib/format';
 
 export function MessagesPage() {
@@ -20,23 +20,26 @@ export function MessagesPage() {
         {(list) => {
           if (list.length === 0)
             return (
-              <div className="panel">
-                <Empty title="No channels yet.">Each run gets a channel when it starts.</Empty>
-              </div>
+              <section className="card">
+                <Empty title="No channels yet" icon={<IconMessages />}>
+                  Each run gets a channel when it starts.
+                </Empty>
+              </section>
             );
           const current = list.find((c) => c.id === search.channel) ?? list.find((c) => c.id.startsWith('run-')) ?? list[0];
           return (
-            <div className="panel panel-flush messages-layout">
-              <nav className="channel-list" aria-label="Channels">
+            <div className="messages-layout">
+              <nav className="nav channel-list" aria-label="Channels">
+                <h2 className="nav-title">Channels</h2>
                 {list.map((c) => (
                   <button
                     key={c.id}
                     type="button"
-                    className="channel-link"
-                    aria-current={c.id === current.id ? 'true' : undefined}
+                    className="nav-link"
+                    aria-current={c.id === current.id ? 'page' : undefined}
                     onClick={() => void navigate({ to: '/projects/$projectId/messages', params: { projectId }, search: { channel: c.id } })}
                   >
-                    {channelLabel(c)}
+                    <span className="channel-name">{channelLabel(c)}</span>
                   </button>
                 ))}
               </nav>
@@ -124,33 +127,40 @@ function Thread({ projectId, channel }: { projectId: string; channel: Channel })
         ) : !messages ? (
           <Loading label="Loading messages" />
         ) : messages.length === 0 ? (
-          <Empty title="No messages in this channel yet." />
+          <Empty title="No messages yet" icon={<IconMessages />}>
+            Agents and you post here while the work runs.
+          </Empty>
         ) : (
           <>
             {older?.hasMore && (
-              <div className="row" style={{ justifyContent: 'center', padding: 12 }}>
-                <Button size="sm" variant="ghost" onClick={() => void loadOlder()}>
-                  Load older messages
-                </Button>
+              <div className="thread-older">
+                <button type="button" className="text-btn" onClick={() => void loadOlder()}>
+                  Show older messages
+                </button>
               </div>
             )}
             {messages.map((m) => (
               <article key={m.id} className={`message ${m.senderRoleId === OWNER_ROLE_ID ? 'message-owner' : ''}`}>
-                <div className="message-head">
-                  <span className="message-sender">{m.senderRoleId}</span>
-                  {m.recipientRoleId && <span className="message-to">to {m.recipientRoleId}</span>}
+                <span className="avatar" aria-hidden="true">
+                  {m.senderRoleId.slice(0, 2).toUpperCase()}
+                </span>
+                <div className="message-main">
+                  <div className="message-head">
+                    <span className="message-sender">{m.senderRoleId === OWNER_ROLE_ID ? 'You' : m.senderRoleId}</span>
+                    {m.recipientRoleId && <span className="message-to">to {m.recipientRoleId}</span>}
+                    <time className="message-time" dateTime={m.createdAt} title={dateTime(m.createdAt)}>
+                      {clock(m.createdAt)}
+                    </time>
+                  </div>
+                  <p className="message-body">{m.body}</p>
                 </div>
-                <time className="feed-time" dateTime={m.createdAt} title={dateTime(m.createdAt)}>
-                  {clock(m.createdAt)}
-                </time>
-                <p className="message-body">{m.body}</p>
               </article>
             ))}
           </>
         )}
       </div>
       <form className="composer" onSubmit={send}>
-        <div className="stack-sm" style={{ flex: 1, gap: 8 }}>
+        <div className="composer-main">
           <label className="visually-hidden" htmlFor="msg-body">
             Message
           </label>
@@ -165,7 +175,7 @@ function Thread({ projectId, channel }: { projectId: string; channel: Channel })
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send(e);
             }}
           />
-          <div className="row" style={{ gap: 8 }}>
+          <div className="row composer-meta">
             <label className="note" htmlFor="msg-to">
               To role
             </label>

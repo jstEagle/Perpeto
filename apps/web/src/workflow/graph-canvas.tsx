@@ -9,9 +9,7 @@ import type { RuledEdgeType } from './ruled-edge';
 import { changedKeys } from './diff';
 import { graphPort } from './registry';
 import { IconFit, IconMinus, IconPlus } from '../components/icons';
-import { Button } from '../components/ui';
-import { Segmented } from '../components/ui';
-import { autoLayout, hasUsablePositions } from './layout';
+import { autoLayout, backEdges, COL_GAP, COL_PITCH, GRID, hasUsablePositions } from './layout';
 import type { Size } from './layout';
 import { routeEdges } from './router';
 
@@ -57,10 +55,17 @@ type EdgeMeta = {
 export type Connections = 'selected' | 'all';
 
 /** Height before React Flow has measured a node; close to the real one so the first frame barely moves. */
-const ESTIMATED_HEIGHT = { edit: 88, view: 88, live: 172 } as const;
+const ESTIMATED_HEIGHT = { edit: 64, view: 64, live: 120 } as const;
 /** The editor never opens below this zoom; a longer graph opens at its start instead. */
 const EDIT_MIN_ZOOM = 0.6;
-const GRID = 16;
+/** Space kept clear around the graph inside the canvas when choosing how many columns fit. */
+const PANE_PAD = 16;
+/** Height limits for view and live canvases, and the room kept for padding, legend and toolbar. */
+const MIN_HEIGHT = 360;
+const MAX_HEIGHT = 900;
+const CANVAS_CHROME = 160;
+/** Space under the graph for the legend and toolbar when fitting. */
+const FIT_BOTTOM = 72;
 /** Above this many nodes, only nodes and edges in view are rendered, and far-out zoom draws compact nodes. */
 export const LARGE_GRAPH = 60;
 const TRAFFIC_WORD: Record<EdgeKind, [string, string]> = {
@@ -95,7 +100,9 @@ function sameNode(a: StepNodeType, b: StepNodeType): boolean {
 function CanvasInner(props: GraphCanvasProps) {
   const { graph, mode, diff, live, issuesByNode, selection, onSelect, onGraphChange, roleKind = 'delegates', label } = props;
   const flow = useReactFlow();
-  const [connections, setConnections] = useState<Connections>(props.connections ?? (mode === 'live' ? 'selected' : 'all'));
+  // Delegates and messages show for the selected node only, unless the editor needs them or a proposal changes them.
+  const roleChanged = !!diff && [...diff.diff.edges.added, ...diff.diff.edges.removed].some((id) => [...diff.base.edges, ...graph.edges].find((e) => e.id === id)?.kind !== 'flow');
+  const [connections, setConnections] = useState<Connections>(props.connections ?? (mode === 'edit' || roleChanged ? 'all' : 'selected'));
 
   const bottlenecks = useMemo(() => new Map<string, Bottleneck>((live?.metrics.bottlenecks ?? []).map((b) => [b.nodeId, b])), [live]);
   const metricsByNode = useMemo(() => new Map((live?.metrics.nodes ?? []).map((m) => [m.nodeId, m])), [live]);
@@ -218,17 +225,30 @@ function CanvasInner(props: GraphCanvasProps) {
   // Keyed on structure, so live traffic updates do not recompute it.
   const structureKey = allEdges.map((m) => `${m.edge.id}:${m.edge.kind}:${m.edge.from.node}:${m.edge.from.port ?? ''}:${m.edge.to.node}`).join('|');
   const layoutEdges = useMemo(() => allEdges.map((m) => m.edge), [structureKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Columns that fit the canvas at full size; longer main lines wrap into bands.
+  const paneRef = useRef<HTMLDivElement>(null);
+  const [columns, setColumns] = useState(Infinity);
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = () => setColumns(Math.max(3, Math.floor((el.clientWidth - 2 * PANE_PAD + COL_GAP) / COL_PITCH)));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const returns = useMemo(() => backEdges(allNodes, layoutEdges), [allNodes, layoutEdges]);
   const tidyPositions = useMemo(() => {
     const layoutSize = (): Size => ({ w: NODE_WIDTH, h: slotHeight });
     const toRoute = (pos: Map<string, { x: number; y: number }>) =>
       routeEdges(
         allNodes.map((n) => ({ id: n.id, ...pos.get(n.id)!, ...layoutSize() })),
-        layoutEdges.map((e) => ({ id: e.id, kind: e.kind, from: e.from.node, to: e.to.node, port: e.from.port })),
+        layoutEdges.map((e) => ({ id: e.id, kind: e.kind, from: e.from.node, to: e.to.node, port: e.from.port, back: returns.has(e.id) })),
       );
     // Twice: the first pass finds how many lanes each gap needs.
-    const first = autoLayout(allNodes, layoutEdges, layoutSize);
-    return autoLayout(allNodes, layoutEdges, layoutSize, toRoute(first).gutterNeeds);
-  }, [allNodes, layoutEdges, slotHeight]);
+    const first = autoLayout(allNodes, layoutEdges, layoutSize, [], columns);
+    return autoLayout(allNodes, layoutEdges, layoutSize, toRoute(first).gutterNeeds, columns);
+  }, [allNodes, layoutEdges, slotHeight, columns, returns]);
 
   // Stored positions are kept when they fit at this node size. View and
   // live screens can show the tidy layout over them on request; the editor
@@ -253,10 +273,11 @@ function CanvasInner(props: GraphCanvasProps) {
   const { onLayout } = props;
   const laidOut = useRef(false);
   useEffect(() => {
-    if (mode !== 'edit' || usableAtMount || laidOut.current || !onLayout) return;
+    // Wait for the canvas width, so the layout wraps to it.
+    if (mode !== 'edit' || usableAtMount || laidOut.current || !onLayout || !Number.isFinite(columns)) return;
     laidOut.current = true;
     onLayout(withPositions(tidyPositions));
-  }, [mode, usableAtMount, onLayout, withPositions, tidyPositions]);
+  }, [mode, usableAtMount, onLayout, withPositions, tidyPositions, columns]);
   const tidy = () => {
     if (mode === 'edit') onGraphChange?.(withPositions(tidyPositions));
     else setTidied((t) => !t);
@@ -344,9 +365,10 @@ function CanvasInner(props: GraphCanvasProps) {
         port: m.edge.from.port,
         label: labelFor(m, !!live),
         priority: priority(m),
+        back: returns.has(m.edge.id),
       })),
     );
-  }, [nodes, visible, size, selection, live]);
+  }, [nodes, visible, size, selection, live, returns]);
 
   // Like nodes, edges whose route and state did not change keep their object.
   const edgeCache = useRef(new Map<string, { key: string; edge: RuledEdgeType }>());
@@ -386,7 +408,6 @@ function CanvasInner(props: GraphCanvasProps) {
   // including the return channel and lanes outside the node boxes.
   const layoutKey = useMemo(() => [...positions.entries()].map(([id, p]) => `${id}:${p.x}:${p.y}`).join('|'), [positions]);
   const [narrow] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches);
-  const paneRef = useRef<HTMLDivElement>(null);
   const routingRef = useRef(routing);
   routingRef.current = routing;
   const nodesRef = useRef(nodes);
@@ -419,11 +440,15 @@ function CanvasInner(props: GraphCanvasProps) {
       // the start of the flow instead of shrinking a long main line out of reach.
       if (pane && mode === 'edit' && !whole && fitted < EDIT_MIN_ZOOM) {
         const zoom = EDIT_MIN_ZOOM;
-        const top = Math.max(GRID * 3, (pane.height - (y2 - y1) * zoom) / 2);
-        void flow.setViewport({ x: GRID * 3 - x1 * zoom, y: top - y1 * zoom, zoom }, { duration });
+        const top = Math.max(GRID * 6, (pane.height - (y2 - y1) * zoom) / 2);
+        void flow.setViewport({ x: GRID * 6 - x1 * zoom, y: top - y1 * zoom, zoom }, { duration });
         return;
       }
-      void flow.fitBounds({ x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, { padding: 0.06, duration });
+      if (!pane) return void flow.fitBounds({ x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, { padding: 0.06, duration });
+      // Never above 100 %: a small graph sits centred at full size. Room is kept below for the legend and toolbar.
+      const room = { w: pane.width - 2 * PANE_PAD, h: pane.height - FIT_BOTTOM - PANE_PAD };
+      const zoom = Math.max(0.3, Math.min(1, room.w / (x2 - x1), room.h / (y2 - y1)));
+      void flow.setViewport({ x: (pane.width - (x2 - x1) * zoom) / 2 - x1 * zoom, y: PANE_PAD + Math.max(0, (room.h - (y2 - y1) * zoom) / 2) - y1 * zoom, zoom }, { duration });
     },
     [flow, mode],
   );
@@ -543,56 +568,32 @@ function CanvasInner(props: GraphCanvasProps) {
   );
 
   const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  const tidyButton = (mode === 'edit' || usable) && (
-    <Button
-      size="sm"
-      variant="ghost"
-      onClick={tidy}
-      aria-pressed={mode === 'edit' ? undefined : tidied}
-      title={mode === 'edit' ? 'Arrange nodes along the main flow' : 'Show the automatic layout instead of the saved positions'}
-    >
-      Tidy layout
-    </Button>
-  );
+  // View and live canvases are as tall as the graph at full size (within
+  // limits), with room below for the legend and toolbar.
+  const height = useMemo(() => {
+    if (mode === 'edit' || narrow) return undefined;
+    let y1 = Infinity;
+    let y2 = -Infinity;
+    for (const n of nodes) {
+      y1 = Math.min(y1, n.position.y);
+      y2 = Math.max(y2, n.position.y + size(n.id).h);
+    }
+    for (const r of routing.routes.values()) for (const [, y] of r.points) (y1 = Math.min(y1, y)), (y2 = Math.max(y2, y));
+    return Number.isFinite(y1) ? Math.round(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, y2 - y1 + CANVAS_CHROME))) : undefined;
+  }, [mode, narrow, nodes, routing, size]);
   const showToggle = mode !== 'edit' && roleCount > 0;
-  // View and live canvases get a toolbar strip so zoom controls never sit on top of nodes.
-  const showBar = mode !== 'edit';
-  const zoom = (
-    <div className={showBar ? 'graph-zoom' : 'graph-controls'} role="toolbar" aria-label="Canvas zoom">
-      <button className="icon-btn" aria-label="Zoom in" onClick={() => flow.zoomIn({ duration: reduced ? 0 : 120 })}>
-        <IconPlus />
-      </button>
-      <button className="icon-btn" aria-label="Zoom out" onClick={() => flow.zoomOut({ duration: reduced ? 0 : 120 })}>
-        <IconMinus />
-      </button>
-      <button className="icon-btn" aria-label="Fit graph to view" onClick={() => fit(reduced ? 0 : 160, true)}>
-        <IconFit />
-      </button>
-    </div>
-  );
+  const legend = {
+    flowing: mode === 'live' && edges.some((e) => e.data?.kind === 'flow' && (e.data.traffic ?? 0) > 0),
+    unreached: mode === 'live' && edges.some((e) => e.data?.kind === 'flow' && e.data.traffic === 0),
+    delegates: edges.some((e) => e.data?.kind === 'delegates' && !e.data.unplanned),
+    messages: edges.some((e) => e.data?.kind === 'messages' && !e.data.unplanned),
+    unplanned: edges.some((e) => e.data?.unplanned),
+    live: mode === 'live' && nodes.some((n) => (n.data.metrics?.active ?? 0) > 0),
+    diff: !!diff,
+  };
 
   return (
-    <div ref={paneRef} className={`graph ${props.className ?? ''} graph-${mode} ${showBar ? 'has-bar' : ''}`} role="group" aria-label={label}>
-      {showBar && (
-        <div className="graph-bar">
-          {zoom}
-          {tidyButton}
-          {showToggle && (
-            <>
-              <span className="graph-bar-label">{connections === 'selected' && !selection ? 'Select a node to show its delegates and messages' : 'Delegates and messages'}</span>
-              <Segmented<Connections>
-                label="Delegates and messages"
-                value={connections}
-                onChange={setConnections}
-                options={[
-                  { value: 'selected', label: 'Selected node' },
-                  { value: 'all', label: `All ${roleCount}` },
-                ]}
-              />
-            </>
-          )}
-        </div>
-      )}
+    <div ref={paneRef} className={`graph ${props.className ?? ''} graph-${mode}`} style={height ? { height } : undefined} role="group" aria-label={label}>
       <ReactFlow<StepNodeType, RuledEdgeType>
         nodes={nodes}
         edges={edges}
@@ -617,8 +618,8 @@ function CanvasInner(props: GraphCanvasProps) {
           e.preventDefault();
           const p = flow.screenToFlowPosition({ x: e.clientX, y: e.clientY });
           props.onDropNode(type, {
-            x: Math.round((p.x - NODE_WIDTH / 2) / 16) * 16,
-            y: Math.round((p.y - 20) / 16) * 16,
+            x: Math.round((p.x - NODE_WIDTH / 2) / GRID) * GRID,
+            y: Math.round((p.y - 32) / GRID) * GRID,
           });
         }}
         nodesDraggable={mode === 'edit'}
@@ -634,19 +635,62 @@ function CanvasInner(props: GraphCanvasProps) {
         minZoom={0.3}
         maxZoom={1.6}
         snapToGrid
-        snapGrid={[16, 16]}
+        snapGrid={[GRID, GRID]}
         connectionLineStyle={{ strokeWidth: 1.5 }}
         proOptions={{ hideAttribution: false }}
         ariaLabelConfig={{
           'node.a11yDescription.default': 'Press Enter to select this node. Use arrow keys to move a selected node in the editor.',
         }}
       >
-        <Background id="minor" variant={BackgroundVariant.Lines} gap={16} lineWidth={1} className="graph-grid-minor" />
-        <Background id="major" variant={BackgroundVariant.Lines} gap={64} lineWidth={1} className="graph-grid-major" />
+        <Background id="dots" variant={BackgroundVariant.Dots} gap={24} size={1.5} className="graph-dots" />
       </ReactFlow>
-      {!showBar && zoom}
-      {!showBar && tidyButton && <div className="graph-tidy">{tidyButton}</div>}
+      {mode !== 'edit' && <EdgeLegend {...legend} />}
+      <div className="map-tools" role="toolbar" aria-label="Map">
+        {showToggle && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            aria-pressed={connections === 'all'}
+            onClick={() => setConnections((c) => (c === 'all' ? 'selected' : 'all'))}
+            title={connections === 'all' ? 'Show only the selected node’s delegates and messages' : 'Show every delegate and message'}
+          >
+            {connections === 'all' ? 'All links' : 'Selected links'}
+          </button>
+        )}
+        {(mode === 'edit' || usable) && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={tidy}
+            aria-pressed={mode === 'edit' ? undefined : tidied}
+            title={mode === 'edit' ? 'Arrange nodes along the main flow' : 'Show the automatic layout instead of the saved positions'}
+          >
+            Tidy layout
+          </button>
+        )}
+        {(showToggle || mode === 'edit' || usable) && <span className="map-tools-rule" aria-hidden="true" />}
+        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom out" onClick={() => flow.zoomOut({ duration: reduced ? 0 : 140 })}>
+          <IconMinus />
+        </button>
+        <ZoomLevel />
+        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom in" onClick={() => flow.zoomIn({ duration: reduced ? 0 : 140 })}>
+          <IconPlus />
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fit graph to view" onClick={() => fit(reduced ? 0 : 220, true)}>
+          <IconFit />
+        </button>
+      </div>
     </div>
+  );
+}
+
+/** The zoom level, subscribed on its own so the canvas does not re-render as it changes. */
+function ZoomLevel() {
+  const zoom = useStore((s: ReactFlowState) => Math.round(s.transform[2] * 100));
+  return (
+    <span className="map-zoom" aria-live="off">
+      {zoom}%
+    </span>
   );
 }
 
@@ -658,45 +702,27 @@ export function GraphCanvas(props: GraphCanvasProps) {
   );
 }
 
-export function EdgeLegend({ live }: { live?: boolean }) {
+/** Only the styles on screen, bottom left in 12 px muted. */
+export function EdgeLegend({ flowing, unreached, delegates, messages, unplanned, live, diff }: { flowing?: boolean; unreached?: boolean; delegates?: boolean; messages?: boolean; unplanned?: boolean; live?: boolean; diff?: boolean }) {
+  const line = (cls: string) => (
+    <svg width="20" height="8" aria-hidden="true">
+      <path d="M1 4h18" className={`gedge ${cls}`} />
+    </svg>
+  );
   return (
-    <ul className="edge-legend" aria-label="Connection kinds">
-      <li>
-        <svg width="28" height="8" aria-hidden="true">
-          <path d="M0 4h28" className="gedge gedge-flow" />
-        </svg>
-        Flow
-      </li>
+    <ul className="map-legend" aria-label="Legend">
+      <li>{line('gedge-flow')}Flow</li>
+      {flowing && <li>{line('gedge-flow gedge-active')}Flowing now</li>}
+      {unreached && <li>{line('gedge-flow gedge-unreached')}Not reached</li>}
+      {delegates && <li>{line('gedge-delegates')}Delegates</li>}
+      {messages && <li>{line('gedge-messages')}Messages</li>}
+      {unplanned && <li>{line('gedge-messages gedge-unplanned')}Unplanned</li>}
+      {diff && <li>{line('gedge-flow gedge-added')}Added</li>}
+      {diff && <li>{line('gedge-flow gedge-removed')}Removed</li>}
       {live && (
         <li>
-          <svg width="28" height="8" aria-hidden="true">
-            <path d="M0 4h28" className="gedge gedge-flow gedge-unreached" />
-          </svg>
-          Not reached yet
-        </li>
-      )}
-      <li>
-        <svg width="28" height="8" aria-hidden="true">
-          <rect x="0.5" y="1" width="6" height="6" rx="1" className="gedge-end gedge-end-delegates gedge-end-source" />
-          <path d="M6 4h16" className="gedge gedge-delegates" />
-          <rect x="21.5" y="1" width="6" height="6" rx="1" className="gedge-end gedge-end-delegates gedge-end-target" />
-        </svg>
-        Delegates, from the filled end
-      </li>
-      <li>
-        <svg width="28" height="8" aria-hidden="true">
-          <rect x="0.5" y="1" width="6" height="6" rx="1" className="gedge-end gedge-end-messages" />
-          <path d="M6 4h16" className="gedge gedge-messages" />
-          <rect x="21.5" y="1" width="6" height="6" rx="1" className="gedge-end gedge-end-messages" />
-        </svg>
-        Messages
-      </li>
-      {live && (
-        <li>
-          <svg width="28" height="8" aria-hidden="true">
-            <path d="M0 4h28" className="gedge gedge-messages gedge-unplanned" />
-          </svg>
-          Unplanned
+          <span className="dot dot-legend" aria-hidden="true" />
+          Live
         </li>
       )}
     </ul>

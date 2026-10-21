@@ -51,7 +51,7 @@ await page.locator('.react-flow__node[data-id="reviewer"]').click();
 await page.getByLabel('Concurrency').fill('2');
 await page.getByRole('button', { name: 'Save draft' }).click();
 await page.waitForURL(/version=5/);
-await page.getByText('Changed: concurrency').first().waitFor();
+await page.getByText('Changed concurrency').first().waitFor();
 step('inspector edit saves a new draft version with a diff');
 
 // 4. Run controls and live map selection.
@@ -76,15 +76,15 @@ const roleEdges = () => page.locator('.react-flow__edge .gedge-delegates, .react
 assert.equal(await roleEdges(), 0, 'live map hides delegates and messages until a node is selected');
 const before = await labelCollisions();
 assert.ok(before.labels > 5 && before.collisions === 0, `labels collide: ${JSON.stringify(before)}`);
-await page.getByRole('radio', { name: /^All/ }).click();
+await page.getByRole('button', { name: 'Selected links' }).click();
 assert.ok((await roleEdges()) >= 2, 'All shows every delegate and message');
 const all = await labelCollisions();
 assert.equal(all.collisions, 0, `labels collide with all links shown: ${JSON.stringify(all)}`);
-await page.getByRole('radio', { name: 'Selected node' }).click();
+await page.getByRole('button', { name: 'All links' }).click();
 step('live map routes labels without collisions and toggles delegates and messages');
 await page.locator('.react-flow__node[data-id="reviewer"]').click();
 assert.ok((await roleEdges()) >= 1, "selecting the reviewer shows its messages");
-await page.getByRole('heading', { name: 'Interactions: Reviewer' }).waitFor();
+await page.getByRole('heading', { name: 'Activity at Reviewer' }).waitFor();
 await page.screenshot({ path: `${shots}run-node-selected-desktop.png`, fullPage: false });
 step('selecting a node filters the interaction feed and shows its assignments');
 await page.getByRole('button', { name: 'Pause' }).click();
@@ -144,7 +144,8 @@ await page.waitForTimeout(300);
 const tidied = await boxes();
 assert.ok(!overlapping(tidied), 'tidy layout removes the overlap');
 const line = ['input', 'planner', 'loop', 'builder', 'reviewer', 'ci', 'merge', 'done'].map((id) => tidied.find((b) => b.id === id));
-assert.ok(line.every((b, i) => b && Math.abs(b.top - line[0].top) < 1 && (i === 0 || b.left > line[i - 1].left)), 'the main line runs left to right in one row');
+// Left to right within a band; a longer line wraps to the next band below.
+assert.ok(line.every((b, i) => b && (i === 0 || (Math.abs(b.top - line[i - 1].top) < 1 ? b.left > line[i - 1].left : b.top > line[i - 1].bottom))), 'the main line runs left to right, wrapping into bands');
 step('editor keeps moved nodes and tidies on request');
 
 // 9. No owner token in localStorage.

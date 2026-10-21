@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import buildGraph from '../../../../packages/workflow/templates/build.json';
 import type { GraphEdge, GraphNode, WorkflowGraph } from '../api/types';
-import { autoLayout, hasUsablePositions, layer, mainLine, nodesOverlap } from './layout';
+import { autoLayout, COL_PITCH, hasUsablePositions, layer, mainLine, nodesOverlap } from './layout';
 import { routeEdges } from './router';
 import type { Route, RouteNode } from './router';
 import { buildTemplate } from './templates';
@@ -87,7 +87,7 @@ describe('edge router', () => {
     expect(nodesOverlap(laid, size)).toBe(false);
     // One row, one column per step.
     const top = positions.get('ideas')!.y;
-    line.forEach((id, i) => expect(positions.get(id)).toEqual({ x: i * 304, y: top }));
+    line.forEach((id, i) => expect(positions.get(id)).toEqual({ x: i * COL_PITCH, y: top }));
     const { nodes, routes } = routed(g, positions);
     expectCleanLabels(nodes, routes);
     expectSeparateLanes(routes);
@@ -133,6 +133,29 @@ describe('auto layout', () => {
     for (const id of ['senior-reviewer', 'triage']) expect(p.get(id)!.y).toBe(lane);
     expect(p.get('senior-reviewer')!.x).toBe(p.get('reviewer')!.x);
     expect(p.get('triage')!.x).toBe(p.get('ci')!.x);
+  });
+
+  it('wraps a long main line into balanced bands that fit the width', () => {
+    const g = buildGraph as unknown as WorkflowGraph;
+    const line = ['ideas', 'planner', 'delivery-loop', 'review-loop', 'builder', 'reviewer', 'ci', 'merge', 'shipped'];
+    const first = autoLayout(g.nodes, g.edges, size, [], 4);
+    const p = autoLayout(g.nodes, g.edges, size, routed(g, first).gutterNeeds, 4);
+    // Nine steps at four columns: three bands of three, each below the last.
+    line.forEach((id, i) => expect(p.get(id)!.x).toBe((i % 3) * COL_PITCH));
+    const bandTop = [0, 3, 6].map((i) => p.get(line[i])!.y);
+    expect(bandTop[1]).toBeGreaterThan(bandTop[0]);
+    expect(bandTop[2]).toBeGreaterThan(bandTop[1]);
+    const laid = g.nodes.map((n) => ({ id: n.id, position: p.get(n.id)! }));
+    expect(nodesOverlap(laid, size)).toBe(false);
+    // The wrap from one band to the next leaves the bottom of the step and enters the top of the next.
+    const { nodes, routes } = routed(g, p);
+    const wrap = routes.get(g.edges.find((e) => e.from.node === 'delivery-loop' && e.to.node === 'review-loop')!.id)!.points;
+    const from = nodes.find((n) => n.id === 'delivery-loop')!;
+    const to = nodes.find((n) => n.id === 'review-loop')!;
+    expect(wrap[0][1]).toBe(from.y + from.h);
+    expect(wrap.at(-1)![1]).toBe(to.y);
+    expectCleanLabels(nodes, routes);
+    expectSeparateLanes(routes);
   });
 
   it('orders nodes within a column to remove crossings', () => {

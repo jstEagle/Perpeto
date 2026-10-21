@@ -11,6 +11,7 @@ import '../styles/tokens.css';
 import '@xyflow/react/dist/base.css';
 import '../styles/app.css';
 import '../styles/graph.css';
+import '../styles/screens.css';
 
 const params = new URLSearchParams(location.search);
 const graph = syntheticGraph(Number(params.get('n') ?? 200));

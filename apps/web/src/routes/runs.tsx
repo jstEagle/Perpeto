@@ -1,8 +1,8 @@
 import { Link, useParams } from '@tanstack/react-router';
 import { useResource } from '../app/hub-context';
-import { Async, Empty, Mono, PageHeader } from '../components/ui';
+import { Async, btn, Empty, PageHeader } from '../components/ui';
 import { RunStatusLabel } from '../components/status';
-import { IconChevronRight } from '../components/icons';
+import { IconRuns } from '../components/icons';
 import { dateTime, duration, relative } from '../lib/format';
 
 export function RunsPage() {
@@ -17,14 +17,15 @@ export function RunsPage() {
       <Async resource={runs} what="runs">
         {(list) =>
           list.length === 0 ? (
-            <div className="panel">
-              <Empty title="No runs yet." action={<Link to="/projects/$projectId/workflows" params={{ projectId }} className="btn btn-primary btn-md">Open workflows</Link>}>
+            <section className="card">
+              <Empty title="No runs yet" icon={<IconRuns />} action={<Link to="/projects/$projectId/workflows" params={{ projectId }} className={btn('primary')}>Open workflows</Link>}>
                 Activate a workflow version, then start a run from it.
               </Empty>
-            </div>
+            </section>
           ) : (
-            <div className="panel panel-flush table-wrap">
-              <table className="table table-rows-link">
+            <section className="card">
+              <div className="table-wrap">
+              <table className="table">
                 <caption className="visually-hidden">Runs</caption>
                 <thead>
                   <tr>
@@ -33,7 +34,7 @@ export function RunsPage() {
                     <th scope="col">Status</th>
                     <th scope="col" className="hide-sm">Started</th>
                     <th scope="col" className="num hide-sm">Duration</th>
-                    <th scope="col" className="col-chevron"><span className="visually-hidden">Open</span></th>
+
                   </tr>
                 </thead>
                 <tbody>
@@ -42,12 +43,12 @@ export function RunsPage() {
                     return (
                       <tr key={r.id}>
                         <td>
-                          <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: r.id }} className="row-link">
-                            <Mono>{r.id}</Mono>
+                          <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: r.id }} className="cell-title mono">
+                            {r.id}
                           </Link>
                         </td>
                         <td>
-                          {name(r.workflowId)} <span className="mono muted">v{r.workflowVersion}</span>
+                          {name(r.workflowId)} <span className="muted">v{r.workflowVersion}</span>
                         </td>
                         <td>
                           <RunStatusLabel status={r.status} />
@@ -56,15 +57,14 @@ export function RunsPage() {
                           {relative(r.startedAt)}
                         </td>
                         <td className="num hide-sm">{duration((end - new Date(r.startedAt).getTime()) / 1000)}</td>
-                        <td className="col-chevron" aria-hidden="true">
-                          <IconChevronRight />
-                        </td>
+
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </section>
           )
         }
       </Async>

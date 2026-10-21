@@ -7,6 +7,7 @@ import './styles/tokens.css';
 import '@xyflow/react/dist/base.css';
 import './styles/app.css';
 import './styles/graph.css';
+import './styles/screens.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

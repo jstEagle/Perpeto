@@ -1,102 +1,140 @@
+import type { ReactNode } from 'react';
 import type { AccountStatus, AssignmentStatus, JobStatus, MachineStatus, MergeStatus, RunStatus, WorkItemStatus, WorkflowStatus } from '../api/types';
-
-export type Tone = 'neutral' | 'accent' | 'success' | 'warning' | 'error' | 'info' | 'approval';
+import { IconAlert, IconApproval, IconBlocked, IconCheckCircle, IconCircle, IconClock, IconPause, IconStop, IconXCircle } from './icons';
 
 /**
- * Status shapes from the design system: open circle (planned), half-filled
- * circle (running), circle with bar (blocked), circle with cross (failed),
- * circle with check (verified), triangle with mark (approval needed).
- * Leased work uses a ringed dot.
+ * Perpeto Mono status: an icon plus a word, told by shape and weight, not
+ * hue. Orange is only the live dot; red only failure.
+ *
+ * - live: work happening now (orange dot)
+ * - attention: a person should look (filled circle)
+ * - approval: a person must decide (filled triangle)
+ * - blocked: waiting on something else
+ * - quiet: accepted, idle, not reached
+ * - paused / stopped: stopped by a person
+ * - done: checks passed, completed, merged
+ * - waiting: leased or cooling, will move on its own
+ * - failed: name the operation and the recovery
  */
-export function StatusIcon({ tone }: { tone: Tone }) {
-  return (
-    <svg className={`status-icon status-icon-${tone}`} width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      {tone === 'approval' ? (
-        <path d="M8 1.9 14.6 13.75H1.4z M8 6.25v3.5 M8 11.1v1.15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-      ) : (
-        <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      )}
-      {tone === 'accent' && <path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor" />}
-      {tone === 'info' && <circle cx="8" cy="8" r="2.5" fill="currentColor" />}
-      {tone === 'warning' && <path d="M4.75 8h6.5" stroke="currentColor" strokeWidth="1.5" />}
-      {tone === 'error' && <path d="m5.75 5.75 4.5 4.5m0-4.5-4.5 4.5" stroke="currentColor" strokeWidth="1.5" />}
-      {tone === 'success' && <path d="m5.25 8.25 1.9 1.9 3.6-3.9" fill="none" stroke="currentColor" strokeWidth="1.5" />}
-    </svg>
-  );
+export type Tone = 'live' | 'attention' | 'approval' | 'blocked' | 'quiet' | 'paused' | 'stopped' | 'done' | 'waiting' | 'failed';
+
+/** The orange live dot. Static; it never pulses. */
+export function LiveDot({ label = 'Live', className }: { label?: string; className?: string }) {
+  return <span className={`dot ${className ?? ''}`} role="img" aria-label={label} />;
 }
 
-/** Explicit status label: a shape plus a word, never colour alone. */
-export function StatusLabel({ tone, children, title }: { tone: Tone; children: React.ReactNode; title?: string }) {
+export function StatusIcon({ tone }: { tone: Tone }) {
+  switch (tone) {
+    case 'live':
+      return <span className="dot" aria-hidden="true" />;
+    case 'attention':
+      return <IconAlert size={16} />;
+    case 'approval':
+      return <IconApproval size={16} />;
+    case 'blocked':
+      return <IconBlocked size={16} />;
+    case 'paused':
+      return <IconPause size={16} />;
+    case 'stopped':
+      return <IconStop size={16} />;
+    case 'done':
+      return <IconCheckCircle size={16} />;
+    case 'waiting':
+      return <IconClock size={16} />;
+    case 'failed':
+      return <IconXCircle size={16} />;
+    default:
+      return <IconCircle size={16} />;
+  }
+}
+
+/** Inline status: 16 px icon, 8 px gap, 13 px word. */
+export function StatusLabel({ tone, children, title }: { tone: Tone; children: ReactNode; title?: string }) {
   return (
     <span className={`status status-${tone}`} title={title}>
       <StatusIcon tone={tone} />
+      <span>{children}</span>
+    </span>
+  );
+}
+
+/** Header form: a white pill for live objects, a quiet grey one for versions and counts. */
+export function StatusChip({ tone, children, quiet }: { tone?: Tone; children: ReactNode; quiet?: boolean }) {
+  return (
+    <span className={`chip ${quiet ? 'chip-quiet' : ''} ${tone ? `status-${tone}` : ''}`}>
+      {tone && <StatusIcon tone={tone} />}
       {children}
     </span>
   );
 }
 
 const RUN: Record<RunStatus, [Tone, string]> = {
-  running: ['accent', 'Running'],
-  paused: ['warning', 'Paused'],
-  stopped: ['neutral', 'Stopped'],
-  completed: ['success', 'Completed'],
-  failed: ['error', 'Failed'],
+  running: ['live', 'Running'],
+  paused: ['paused', 'Paused'],
+  stopped: ['stopped', 'Stopped'],
+  completed: ['done', 'Completed'],
+  failed: ['failed', 'Failed'],
 };
 const WORK: Record<WorkItemStatus, [Tone, string]> = {
-  queued: ['neutral', 'Queued'],
-  active: ['accent', 'Active'],
-  blocked: ['warning', 'Blocked'],
-  done: ['success', 'Done'],
-  failed: ['error', 'Failed'],
+  queued: ['quiet', 'Queued'],
+  active: ['live', 'Active'],
+  blocked: ['blocked', 'Blocked'],
+  done: ['done', 'Done'],
+  failed: ['failed', 'Failed'],
 };
 const ASSIGNMENT: Record<AssignmentStatus, [Tone, string]> = {
-  queued: ['neutral', 'Queued'],
-  leased: ['info', 'Leased'],
-  running: ['accent', 'Running'],
-  succeeded: ['success', 'Succeeded'],
-  failed: ['error', 'Failed'],
-  cancelled: ['neutral', 'Cancelled'],
+  queued: ['quiet', 'Queued'],
+  leased: ['waiting', 'Leased'],
+  running: ['live', 'Running'],
+  succeeded: ['done', 'Succeeded'],
+  failed: ['failed', 'Failed'],
+  cancelled: ['stopped', 'Cancelled'],
 };
 const JOB: Record<JobStatus, [Tone, string]> = {
-  queued: ['neutral', 'Queued'],
-  leased: ['info', 'Leased'],
-  running: ['accent', 'Running'],
-  passed: ['success', 'Passed'],
-  failed: ['error', 'Failed'],
-  cancelled: ['neutral', 'Cancelled'],
-  error: ['error', 'Error'],
+  queued: ['quiet', 'Queued'],
+  leased: ['waiting', 'Leased'],
+  running: ['live', 'Running'],
+  passed: ['done', 'Passed'],
+  failed: ['failed', 'Failed'],
+  cancelled: ['stopped', 'Cancelled'],
+  error: ['failed', 'Error'],
 };
 const MERGE: Record<MergeStatus, [Tone, string]> = {
-  queued: ['neutral', 'Queued'],
-  testing: ['accent', 'Testing'],
-  merging: ['accent', 'Merging'],
-  merged: ['success', 'Merged'],
-  rejected: ['error', 'Rejected'],
+  queued: ['quiet', 'Queued'],
+  testing: ['live', 'Testing'],
+  merging: ['live', 'Merging'],
+  merged: ['done', 'Merged'],
+  rejected: ['failed', 'Rejected'],
 };
 const MACHINE: Record<MachineStatus, [Tone, string]> = {
-  online: ['success', 'Online'],
-  offline: ['error', 'Offline'],
-  draining: ['warning', 'Draining'],
+  online: ['done', 'Online'],
+  offline: ['attention', 'Offline'],
+  draining: ['paused', 'Draining'],
 };
 const ACCOUNT: Record<AccountStatus, [Tone, string]> = {
-  active: ['success', 'Active'],
-  cooling: ['warning', 'Cooling down'],
-  disabled: ['neutral', 'Disabled'],
-  invalid: ['error', 'Invalid'],
+  active: ['done', 'Active'],
+  cooling: ['waiting', 'Cooling down'],
+  disabled: ['stopped', 'Disabled'],
+  invalid: ['failed', 'Invalid'],
 };
 const WORKFLOW: Record<WorkflowStatus, [Tone, string]> = {
-  draft: ['info', 'Draft'],
-  active: ['success', 'Active'],
-  paused: ['neutral', 'Paused'],
+  draft: ['quiet', 'Draft'],
+  active: ['done', 'Active'],
+  paused: ['paused', 'Paused'],
 };
 
 function make<T extends string>(map: Record<T, [Tone, string]>) {
   return function Status({ status, title }: { status: T; title?: string }) {
-    const [tone, label] = map[status] ?? ['neutral', status];
-    return <StatusLabel tone={tone} title={title}>{label}</StatusLabel>;
+    const [tone, label] = map[status] ?? ['quiet', status];
+    return (
+      <StatusLabel tone={tone} title={title}>
+        {label}
+      </StatusLabel>
+    );
   };
 }
 
+export const runTone = (status: RunStatus) => RUN[status]?.[0] ?? 'quiet';
 export const RunStatusLabel = make(RUN);
 export const WorkStatusLabel = make(WORK);
 export const AssignmentStatusLabel = make(ASSIGNMENT);

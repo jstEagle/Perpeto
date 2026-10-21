@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { Link, useParams } from '@tanstack/react-router';
 import { useHub, useResource } from '../app/hub-context';
-import type { MergeEntry, Project, Run } from '../api/types';
-import { Async, Button, Dialog, Empty, Field, Mono, PageHeader, Panel, Stat } from '../components/ui';
-import { MergeStatusLabel, RunStatusLabel, StatusLabel } from '../components/status';
-import { IconArrowRight } from '../components/icons';
-import { BOTTLENECK_LABEL } from '../workflow/step-node';
+import type { MergeEntry, MetricsSnapshot, Overview as OverviewData, Project, Run, Workflow } from '../api/types';
+import { Async, Button, btn, Dialog, Disclosure, Empty, Field, Mono, PageHeader, Panel, Stat } from '../components/ui';
+import { LiveDot, MergeStatusLabel, RunStatusLabel } from '../components/status';
+import { IconAlert, IconArrowRight, IconChevronRight, IconDoc, IconWorkflow } from '../components/icons';
+import { bottleneckTitle, byUrgency } from '../run/issues';
 import { duration, plural, rate, relative, repoName, tokens } from '../lib/format';
 
 export function OverviewPage() {
@@ -33,9 +33,8 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
   const cutoff = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
   const tokens7d = week.data?.rows.filter((r) => r.key >= cutoff).reduce((s, r) => s + r.inputTokens + r.outputTokens, 0);
   const activeRun = runs.data?.find((r) => r.status === 'running') ?? runs.data?.find((r) => r.status === 'paused');
-  const bottleneck = metrics.data?.bottlenecks.slice().sort((a, b) => ['critical', 'warning', 'info'].indexOf(a.severity) - ['critical', 'warning', 'info'].indexOf(b.severity))[0];
-  const draft = workflows.data?.find((w) => w.status === 'draft');
   const noWorkflows = workflows.data && workflows.data.length === 0;
+  const runWorkflow = workflows.data?.find((w) => w.id === activeRun?.workflowId);
 
   return (
     <>
@@ -43,7 +42,7 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
         title={project.name}
         description={
           <>
-            <a className="link mono" href={project.repo.url} target="_blank" rel="noreferrer">
+            <a className="mono row-link" href={project.repo.url} target="_blank" rel="noreferrer">
               {repoName(project.repo.url)}
             </a>{' '}
             on <Mono>{project.repo.defaultBranch}</Mono>
@@ -51,126 +50,68 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
         }
         actions={
           activeRun ? (
-            <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: activeRun.id }} className="btn btn-primary btn-md">
+            <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: activeRun.id }} className={btn('primary')}>
               Open live map <IconArrowRight />
             </Link>
           ) : (
-            !noWorkflows && (
-              <Link to="/projects/$projectId/workflows" params={{ projectId }} className="btn btn-secondary btn-md">
-                Workflows
+            noWorkflows === false && (
+              <Link to="/projects/$projectId/workflows" params={{ projectId }} className={btn('primary')}>
+                Start a run <IconArrowRight />
               </Link>
             )
           )
         }
       />
 
-      <dl className="stats" aria-live="polite">
-        <Stat label="Agents working" value={overview.data?.activeAgents ?? '—'} detail={activeRun ? 'in the active run' : undefined} />
-        <Stat label="Queued work" value={overview.data?.queuedWork ?? '—'} detail="items" />
-        <Stat label="Tokens today" value={overview.data ? tokens(overview.data.tokensToday) : '—'} detail="input, output and cache" />
-        <Stat label="Tokens, 7 days" value={tokens7d !== undefined ? tokens(tokens7d) : '—'} />
-      </dl>
-
-      {noWorkflows && (
-        <Panel title="Describe how this project should be built">
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <p className="muted">A workflow architect agent drafts the workflow from your goals and docs. You review it before anything runs.</p>
-            <Link to="/projects/$projectId/workflows" params={{ projectId }} className="btn btn-primary btn-md">
-              Draft a workflow
-            </Link>
-          </div>
+      {noWorkflows ? (
+        <Panel>
+          <Empty
+            title="No workflows yet"
+            icon={<IconWorkflow />}
+            action={
+              <Link to="/projects/$projectId/workflows" params={{ projectId }} className={btn('primary')}>
+                Draft a workflow
+              </Link>
+            }
+          >
+            Describe how this project should be built. An architect agent drafts the workflow from your goals and docs, and you review it before anything runs.
+          </Empty>
         </Panel>
+      ) : (
+        <LiveCard run={activeRun} workflow={runWorkflow} overview={overview.data} metrics={metrics.data} tokens7d={tokens7d} />
       )}
 
-      {(bottleneck || metrics.data) && activeRun && (
-        <div className="grid-2">
-          <Panel title="Top bottleneck" actions={<Link className="link" to="/projects/$projectId/runs/$runId" params={{ projectId, runId: activeRun.id }}>Show on map</Link>}>
-            {bottleneck ? (
-              <div className="stack-sm">
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <span className="bottleneck-name">{workflows.data?.flatMap((w) => w.graph.nodes).find((n) => n.id === bottleneck.nodeId)?.label ?? bottleneck.nodeId}</span>
-                  <StatusLabel tone={bottleneck.severity === 'critical' ? 'error' : bottleneck.severity === 'warning' ? 'warning' : 'neutral'}>{BOTTLENECK_LABEL[bottleneck.reason]}</StatusLabel>
-                </div>
-                <p>{bottleneck.evidence}</p>
-                {draft && (
-                  <p className="note">
-                    {draft.name} version {draft.version} proposes a change.{' '}
-                    <Link className="link" to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: draft.id }} search={{ version: draft.version }}>
-                      Review the proposal
-                    </Link>
-                  </p>
-                )}
-              </div>
-            ) : (
-              <p className="muted">Nothing is holding work up.</p>
-            )}
+      <div className="cols">
+        <div className="stack">
+          {activeRun && metrics.data && <AttentionCard projectId={projectId} run={activeRun} metrics={metrics.data} workflows={workflows.data ?? []} />}
+          <GoalsCard project={project} onEdit={() => setEditingGoals(true)} />
+        </div>
+        <div className="stack">
+          <Panel
+            title="Runs"
+            actions={
+              <Link className="card-link" to="/projects/$projectId/runs" params={{ projectId }}>
+                All <IconChevronRight />
+              </Link>
+            }
+          >
+            <Async resource={runs} what="runs">
+              {(list) => (list.length === 0 ? <p className="muted">Activate a workflow, then start a run.</p> : <RunList runs={list.slice(0, 3)} projectId={projectId} />)}
+            </Async>
           </Panel>
-          <Panel title="Velocity" actions={<span className="note">Last 24 h</span>}>
-            {metrics.data && (
-              <dl className="kv kv-figures">
-                <dt>Items done per day</dt>
-                <dd>
-                  <span className="figure-lg">{rate(metrics.data.run.velocity.itemsDonePerDay)}</span>
-                  {metrics.data.run.velocity.trend.length > 1 && <TrendNote trend={metrics.data.run.velocity.trend} />}
-                </dd>
-                <dt>Cycle time</dt>
-                <dd>
-                  {duration(metrics.data.run.cycleTimeSec.avg)} avg · {duration(metrics.data.run.cycleTimeSec.p90)} p90
-                </dd>
-                <dt>Work in progress</dt>
-                <dd>{plural(metrics.data.run.wip, 'item')}</dd>
-                <dt>Tokens per item</dt>
-                <dd>{tokens(metrics.data.run.tokensPerItem)}</dd>
-              </dl>
-            )}
+          <Panel
+            title="Merge queue"
+            actions={
+              <Link className="card-link" to="/projects/$projectId/merge-queue" params={{ projectId }}>
+                Open <IconChevronRight />
+              </Link>
+            }
+          >
+            <Async resource={queue} what="merge queue">
+              {(entries) => <QueueHealth entries={entries} />}
+            </Async>
           </Panel>
         </div>
-      )}
-
-      <div className="grid-2">
-        <Panel title="Goals" actions={<Button size="sm" variant="ghost" onClick={() => setEditingGoals(true)}>Edit goals</Button>} flush>
-          {project.goals.length === 0 ? (
-            <Empty title="No goals yet." action={<Button variant="primary" onClick={() => setEditingGoals(true)}>Add a goal</Button>}>
-              Add a goal to start planning work.
-            </Empty>
-          ) : (
-            <ol className="ruled-list goals">
-              {project.goals.map((g) => (
-                <li key={g}>{g}</li>
-              ))}
-            </ol>
-          )}
-        </Panel>
-        <Panel title="Docs and requirements" flush>
-          {project.docs.length === 0 ? (
-            <Empty title="No docs attached.">Agents plan from the repository alone until you add requirements or a spec.</Empty>
-          ) : (
-            <ul className="ruled-list">
-              {project.docs.map((d) => (
-                <li key={d.id} className="row" style={{ justifyContent: 'space-between' }}>
-                  <span className="cell-stack">
-                    <span>{d.title}</span>
-                    <Mono>{d.path ?? d.url}</Mono>
-                  </span>
-                  <span className="tag">{d.kind}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Panel>
-      </div>
-
-      <div className="grid-2">
-        <Panel title="Runs" actions={<Link className="link" to="/projects/$projectId/runs" params={{ projectId }}>All runs</Link>} flush>
-          <Async resource={runs} what="runs">
-            {(list) => (list.length === 0 ? <Empty title="No runs yet.">Activate a workflow, then start a run.</Empty> : <RunList runs={list.slice(0, 4)} projectId={projectId} />)}
-          </Async>
-        </Panel>
-        <Panel title="Merge queue" actions={<Link className="link" to="/projects/$projectId/merge-queue" params={{ projectId }}>Open queue</Link>} flush>
-          <Async resource={queue} what="merge queue">
-            {(entries) => <QueueHealth entries={entries} />}
-          </Async>
-        </Panel>
       </div>
 
       <GoalsDialog open={editingGoals} onClose={() => setEditingGoals(false)} project={project} onSaved={onChanged} />
@@ -178,31 +119,163 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
   );
 }
 
-
-/** The overview reads the 24 h window, which the hub splits into hourly buckets. */
-function TrendNote({ trend }: { trend: number[] }) {
-  const prev = trend.slice(0, -1);
-  const avg = prev.reduce((a, b) => a + b, 0) / prev.length;
-  const last = trend.at(-1)!;
-  const diff = last - avg;
+/** What is live, three numbers, and the rest behind "More metrics". */
+function LiveCard({ run, workflow, overview, metrics, tokens7d }: { run?: Run; workflow?: Workflow; overview?: OverviewData; metrics?: MetricsSnapshot; tokens7d?: number }) {
+  const name = workflow?.name ?? 'Workflow';
   return (
-    <span className="note">
-      {' '}
-      · last hour {last}, {Math.abs(diff) < 0.5 ? 'level with' : diff > 0 ? `${rate(diff)} above` : `${rate(-diff)} below`} the hourly average
-    </span>
+    <section className="card live-card" aria-label="Live state">
+      <div className="live-card-top">
+        <div className="live-card-text">
+          <h2 className="live-title">
+            {run?.status === 'running' && <LiveDot />}
+            {run ? (run.status === 'running' ? `${name} run is live` : `${name} run is paused`) : 'Nothing is running'}
+          </h2>
+          <p className="row-meta">
+            {run ? (
+              <>
+                <Mono>{run.id}</Mono> · Workflow v{run.workflowVersion} · Started {relative(run.startedAt)}
+              </>
+            ) : (
+              'Start a run from an active workflow.'
+            )}
+          </p>
+        </div>
+        <dl className="metrics live-metrics" aria-live="polite">
+          <Stat label="Agents working" value={overview?.activeAgents ?? '—'} />
+          <Stat label="Queued work" value={overview?.queuedWork ?? '—'} />
+          <Stat label="Tokens today" value={overview ? tokens(overview.tokensToday) : '—'} />
+        </dl>
+      </div>
+      <Disclosure summary="More metrics" className="live-more">
+        <dl className="metrics metrics-small">
+          <Stat label="Items done per day" value={metrics ? rate(metrics.run.velocity.itemsDonePerDay) : '—'} />
+          <Stat label="Cycle time" value={metrics ? duration(metrics.run.cycleTimeSec.avg) : '—'} />
+          <Stat label="Work in progress" value={metrics ? plural(metrics.run.wip, 'item') : '—'} />
+          <Stat label="Tokens, 7 days" value={tokens7d !== undefined ? tokens(tokens7d) : '—'} />
+        </dl>
+      </Disclosure>
+    </section>
+  );
+}
+
+function AttentionCard({ projectId, run, metrics, workflows }: { projectId: string; run: Run; metrics: MetricsSnapshot; workflows: Workflow[] }) {
+  const graph = workflows.find((w) => w.id === run.workflowId)?.graph;
+  const draft = workflows.find((w) => w.status === 'draft');
+  const issues = byUrgency(metrics.bottlenecks.filter((b) => b.severity !== 'info'));
+  return (
+    <Panel title="Needs attention" actions={issues.length ? `${issues.length} open` : undefined}>
+      {issues.length === 0 ? (
+        <p className="muted">Nothing is holding work up.</p>
+      ) : (
+        <>
+          <Issue projectId={projectId} run={run} title={bottleneckTitle(issues[0], graph)} text={issues[0].evidence} draft={draft} />
+          {issues.length > 1 && (
+            <div className="card-foot">
+              <Disclosure summary={issues.length === 2 ? '1 more issue' : `${issues.length - 1} more issues`}>
+                {issues.slice(1).map((b) => (
+                  <Issue key={b.nodeId + b.reason} projectId={projectId} run={run} title={bottleneckTitle(b, graph)} text={b.evidence} />
+                ))}
+              </Disclosure>
+            </div>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function Issue({ projectId, run, title, text, draft }: { projectId: string; run: Run; title: string; text: string; draft?: Workflow }) {
+  return (
+    <div className="issue">
+      <span className="issue-icon">
+        <IconAlert />
+      </span>
+      <div className="issue-main">
+        <h3 className="issue-title">{title}</h3>
+        <p className="issue-text">
+          {sentence(text)}
+          {draft ? ` Workflow v${draft.version} proposes a change.` : ''}
+        </p>
+        <div className="issue-actions">
+          {draft && (
+            <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: draft.id }} search={{ version: draft.version }} className={btn('secondary')}>
+              Review proposal
+            </Link>
+          )}
+          <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: run.id }} className={btn('ghost')}>
+            Show on map
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Hub evidence arrives as a clause; make it a sentence before adding another. */
+const sentence = (text: string) => {
+  const t = text.trim();
+  return /[.!?]$/.test(t) ? t : `${t.charAt(0).toUpperCase()}${t.slice(1)}.`;
+};
+
+function GoalsCard({ project, onEdit }: { project: Project; onEdit(): void }) {
+  return (
+    <Panel
+      title="Goals"
+      actions={
+        <button type="button" className="text-btn" onClick={onEdit}>
+          {project.goals.length ? 'Edit' : 'Add goals'}
+        </button>
+      }
+    >
+      {project.goals.length === 0 ? (
+        <p className="muted">Add a goal to start planning work. Planners and the workflow architect read them.</p>
+      ) : (
+        <ol className="rows">
+          {project.goals.map((g) => (
+            <li key={g}>{g}</li>
+          ))}
+        </ol>
+      )}
+      <div className="card-foot">
+        <Disclosure summary={`Docs and requirements · ${project.docs.length}`}>
+          {project.docs.length === 0 ? (
+            <p className="muted">Agents plan from the repository alone until you add requirements or a spec.</p>
+          ) : (
+            <ul className="rows">
+              {project.docs.map((d) => (
+                <li key={d.id}>
+                  <span className="tile tile-sm" aria-hidden="true">
+                    <IconDoc />
+                  </span>
+                  <span className="row-main">
+                    <span className="row-title">{d.title}</span>
+                    <span className="row-meta mono">{d.path ?? d.url}</span>
+                  </span>
+                  <span className="row-end">{d.kind}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Disclosure>
+      </div>
+    </Panel>
   );
 }
 
 function RunList({ runs, projectId }: { runs: Run[]; projectId: string }) {
   return (
-    <ul className="ruled-list">
+    <ul className="rows">
       {runs.map((r) => (
-        <li key={r.id} className="row" style={{ justifyContent: 'space-between' }}>
-          <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: r.id }} className="link mono">
-            {r.id}
-          </Link>
-          <span className="row" style={{ gap: 16 }}>
-            <span className="note">v{r.workflowVersion} · {relative(r.startedAt)}</span>
+        <li key={r.id}>
+          <span className="row-main">
+            <Link to="/projects/$projectId/runs/$runId" params={{ projectId, runId: r.id }} className="row-title mono">
+              {r.id}
+            </Link>
+            <span className="row-meta">
+              v{r.workflowVersion} · {relative(r.startedAt)}
+            </span>
+          </span>
+          <span className="row-end">
             <RunStatusLabel status={r.status} />
           </span>
         </li>
@@ -212,14 +285,14 @@ function RunList({ runs, projectId }: { runs: Run[]; projectId: string }) {
 }
 
 function QueueHealth({ entries }: { entries: MergeEntry[] }) {
-  if (entries.length === 0) return <Empty title="The merge queue is empty.">Changes appear here after they pass their gates.</Empty>;
-  const counts = (['queued', 'testing', 'merging', 'merged', 'rejected'] as const).map((s) => [s, entries.filter((e) => e.status === s).length] as const);
+  if (entries.length === 0) return <p className="muted">Changes appear here after they pass their gates.</p>;
+  const counts = (['testing', 'merging', 'queued', 'merged', 'rejected'] as const).map((s) => [s, entries.filter((e) => e.status === s).length] as const).filter(([, n]) => n > 0);
   return (
-    <ul className="ruled-list">
+    <ul className="rows">
       {counts.map(([status, n]) => (
-        <li key={status} className="row" style={{ justifyContent: 'space-between' }}>
+        <li key={status}>
           <MergeStatusLabel status={status} />
-          <span className="tabular">{n}</span>
+          <span className="row-end tabular">{n}</span>
         </li>
       ))}
     </ul>

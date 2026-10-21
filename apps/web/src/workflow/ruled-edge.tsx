@@ -20,9 +20,9 @@ export interface RuledData extends Record<string, unknown> {
 export type RuledEdgeType = Edge<RuledData, 'ruled'>;
 
 /**
- * Draws one routed edge: an orthogonal path with 6 px elbows, no arrowheads.
- * Direction reads left to right through the ports. Delegates and messages
- * show their attachment points; a delegate's source end is filled.
+ * Draws one routed edge: an orthogonal path with 12 px corners, no arrowheads.
+ * Flow reads left to right; returns arc over the top. Delegates and messages
+ * show small round ends; a delegate's source end is filled.
  */
 function RuledEdgeView({ id, sourceX, sourceY, targetX, targetY, data, selected }: EdgeProps<RuledEdgeType>) {
   const kind = data?.kind ?? 'flow';
@@ -31,7 +31,7 @@ function RuledEdgeView({ id, sourceX, sourceY, targetX, targetY, data, selected 
     [sourceX, sourceY],
     [targetX, targetY],
   ];
-  const path = roundedPath(points, 6);
+  const path = roundedPath(points, 12);
   const unreached = kind === 'flow' && data?.traffic === 0 && !data?.diff;
 
   const classes = [
@@ -39,6 +39,7 @@ function RuledEdgeView({ id, sourceX, sourceY, targetX, targetY, data, selected 
     `gedge-${kind}`,
     data?.port === 'fail' ? 'gedge-fail' : '',
     unreached ? 'gedge-unreached' : '',
+    kind === 'flow' && (data?.traffic ?? 0) > 0 ? 'gedge-active' : '',
     data?.unplanned ? 'gedge-unplanned' : '',
     data?.diff ? `gedge-${data.diff}` : '',
     selected || data?.highlighted ? 'is-selected' : '',
@@ -55,13 +56,11 @@ function RuledEdgeView({ id, sourceX, sourceY, targetX, targetY, data, selected 
         </path>
       )}
       {route?.ends?.map((end) => (
-        <rect
+        <circle
           key={end.end}
-          x={end.x - 3}
-          y={end.y - 3}
-          width={6}
-          height={6}
-          rx={1}
+          cx={end.x}
+          cy={end.y}
+          r={3}
           className={`gedge-end gedge-end-${kind} gedge-end-${end.end} ${data?.unplanned ? 'is-unplanned' : ''} ${data?.diff ? `is-${data.diff}` : ''} ${data?.dimmed ? 'is-dimmed' : ''}`}
         />
       ))}

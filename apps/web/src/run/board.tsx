@@ -6,6 +6,8 @@ import { Button } from '../components/ui';
 import { StatusLabel, WorkStatusLabel } from '../components/status';
 import { prNumber, shortSha } from '../lib/format';
 
+const COLUMN_LIMIT = 6;
+
 const COLUMNS: { status: WorkItemStatus; title: string; empty: string }[] = [
   { status: 'queued', title: 'Queued', empty: 'Nothing waiting.' },
   { status: 'active', title: 'Active', empty: 'No agent is working on an item.' },
@@ -27,12 +29,14 @@ export function WorkBoard({
   /** Reloads the items after the hub refuses a decision because the item moved on. */
   onStale?: () => void;
 }) {
-  const [showAllDone, setShowAllDone] = useState(false);
+  const [expanded, setExpanded] = useState<Set<WorkItemStatus>>(new Set());
   return (
     <div className="board" role="list" aria-label="Work items by status">
       {COLUMNS.map((col) => {
         const all = items.filter((i) => i.status === col.status);
-        const list = col.status === 'done' && !showAllDone ? all.slice(-6).reverse() : all;
+        // A few per column; the rest on request. Done shows the latest first.
+        const ordered = col.status === 'done' ? [...all].reverse() : all;
+        const list = expanded.has(col.status) ? ordered : ordered.slice(0, COLUMN_LIMIT);
         return (
           <section key={col.status} className="board-col" role="listitem" aria-labelledby={`col-${col.status}`}>
             <header className="board-col-header">
@@ -42,9 +46,7 @@ export function WorkBoard({
               </span>
             </header>
             {all.length === 0 ? (
-              <p className="note" style={{ padding: 12 }}>
-                {col.empty}
-              </p>
+              <p className="board-empty">{col.empty}</p>
             ) : (
               <ul className="board-list">
                 {list.map((item) => (
@@ -54,8 +56,8 @@ export function WorkBoard({
             )}
             {all.length > list.length && (
               <div className="board-more">
-                <button type="button" className="chip-button" onClick={() => setShowAllDone(true)}>
-                  Show all {all.length} done
+                <button type="button" className="text-btn" onClick={() => setExpanded((e) => new Set(e).add(col.status))}>
+                  Show all {all.length}
                 </button>
               </div>
             )}
@@ -98,18 +100,18 @@ function WorkCard({ item, graph, runLabel, onStale }: { item: WorkItem; graph?: 
   }
 
   return (
-    <li className="card">
-      <span className="card-title">{item.title}</span>
-      <span className="card-meta">
+    <li className="work-card">
+      <span className="work-title">{item.title}</span>
+      <span className="work-meta">
         <span>At {node?.label ?? item.nodeId}</span>
-        {item.iteration > 1 && <span className={item.iteration >= 3 ? 'diff-removed' : ''}>Iteration {item.iteration}</span>}
+        {item.iteration > 1 && <span>Iteration {item.iteration}</span>}
         {runLabel && <span className="mono">{runLabel}</span>}
       </span>
       {(item.branch || item.prUrl) && (
-        <span className="card-meta">
+        <span className="work-meta">
           {item.branch && <code className="mono">{item.branch}</code>}
           {item.prUrl && (
-            <a className="link" href={item.prUrl} target="_blank" rel="noreferrer">
+            <a className="row-link" href={item.prUrl} target="_blank" rel="noreferrer">
               PR {prNumber(item.prUrl)}
             </a>
           )}
@@ -122,9 +124,9 @@ function WorkCard({ item, graph, runLabel, onStale }: { item: WorkItem; graph?: 
         </p>
       )}
       {atHuman && !result && (
-        <div className="stack-sm" style={{ gap: 8 }}>
+        <div className="stack-sm">
           <StatusLabel tone="approval">Approval needed</StatusLabel>
-          <div className="row" style={{ gap: 8 }}>
+          <div className="row">
             <Button size="sm" variant="primary" busy={busy} onClick={() => decide('approve')}>
               Approve
             </Button>
@@ -134,7 +136,11 @@ function WorkCard({ item, graph, runLabel, onStale }: { item: WorkItem; graph?: 
           </div>
         </div>
       )}
-      {result && <span className="note" role="status">{result}</span>}
+      {result && (
+        <span className="note" role="status">
+          {result}
+        </span>
+      )}
     </li>
   );
 }

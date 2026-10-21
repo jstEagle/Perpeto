@@ -1,7 +1,8 @@
 import { useId, useState } from 'react';
 import type { DocRef, EdgeKind, GraphEdge, GraphNode, ValidationIssue, WorkflowGraph } from '../api/types';
 import { Button } from '../components/ui';
-import { IconAlert, IconCheck, IconPlus, IconTrash } from '../components/icons';
+import { IconPlus, IconTrash, IconXCircle } from '../components/icons';
+import { StatusLabel } from '../components/status';
 import { EDGE_KIND_HINT, EDGE_KIND_LABEL, NODE_SPECS, PROVIDERS, isRole, readHarness, readPolicy } from './registry';
 import type { Selection } from './graph-canvas';
 
@@ -40,20 +41,18 @@ function IssuesSection({ issues, graph, onSelect, selection }: Props) {
         </span>
       </div>
       {scoped.length === 0 ? (
-        <p className="issues-ok">
-          <IconCheck /> {selection ? 'No issues on this item.' : 'Graph is valid.'}
-        </p>
+        <StatusLabel tone="done">{selection ? 'No issues on this item.' : 'Graph is valid.'}</StatusLabel>
       ) : (
-        <ul className="issue-list">
+        <ul className="check-list">
           {scoped.map((issue, i) => (
             <li key={i}>
               <button
                 type="button"
-                className={`issue issue-${issue.severity}`}
+                className={`check-item ${issue.severity === 'error' ? 'is-error' : ''}`}
                 onClick={() => (issue.nodeId ? onSelect({ kind: 'node', id: issue.nodeId }) : issue.edgeId ? onSelect({ kind: 'edge', id: issue.edgeId }) : undefined)}
                 title={issue.nodeId ? `Select ${name(issue.nodeId) ?? 'node'}` : undefined}
               >
-                <IconAlert />
+                <IconXCircle size={16} />
                 <span>
                   <span className="visually-hidden">{issue.severity === 'error' ? 'Error: ' : 'Warning: '}</span>
                   {issue.message}
@@ -84,7 +83,7 @@ function GraphInspector({ graph }: Props) {
         </dd>
       </dl>
       <div className="stack-sm">
-        <span className="label">Connecting</span>
+        <span className="field-label">Connecting</span>
         <p className="note">Flow: drag from a right-side port to a node’s left port. Delegates and messages: drag between the round ports under agent roles; the toolbar picks which.</p>
       </div>
     </section>
@@ -111,7 +110,7 @@ function NodeInspector({ graph, node, onChange, onSelect, docs }: Props & { node
         </div>
         <p className="note">{spec.description}</p>
         <div className="field">
-          <label htmlFor={f('label')}>Label</label>
+          <label className="field-label" htmlFor={f('label')}>Label</label>
           <input id={f('label')} className="input" value={node.label} onChange={(e) => onChange(update(graph, node.id, (n) => ({ ...n, label: e.target.value })))} />
         </div>
 
@@ -119,7 +118,7 @@ function NodeInspector({ graph, node, onChange, onSelect, docs }: Props & { node
           <>
             <SelectField id={f('source')} label="Source" value={String(c.source ?? 'manual')} onChange={(v) => set('source', v)} options={[['manual', 'Manual ideas and input'], ['goals', 'Project goals'], ['issues', 'Issues']]} />
             {docs.length > 0 && (
-              <fieldset className="fieldset">
+              <fieldset className="field-group">
                 <legend>Docs given to agents</legend>
                 {docs.map((d) => {
                   const list = (c.docs as string[] | undefined) ?? [];
@@ -139,14 +138,14 @@ function NodeInspector({ graph, node, onChange, onSelect, docs }: Props & { node
 
         {(node.type === 'planner' || node.type === 'agent' || node.type === 'review' || node.type === 'human') && (
           <div className="field">
-            <label htmlFor={f('prompt')}>{node.type === 'human' ? 'Question for the person' : 'Prompt'}</label>
+            <label className="field-label" htmlFor={f('prompt')}>{node.type === 'human' ? 'Question for the person' : 'Prompt'}</label>
             <textarea id={f('prompt')} className="input" rows={4} value={String(c.prompt ?? '')} onChange={(e) => set('prompt', e.target.value)} />
           </div>
         )}
         {node.type === 'planner' && <NumberField id={f('maxItems')} label="Max work items" value={c.maxItems} min={1} onChange={(v) => set('maxItems', v)} />}
         {node.type === 'review' && (
           <div className="field">
-            <label htmlFor={f('rubric')}>Rubric</label>
+            <label className="field-label" htmlFor={f('rubric')}>Rubric</label>
             <textarea id={f('rubric')} className="input" rows={2} value={String(c.rubric ?? '')} onChange={(e) => set('rubric', e.target.value)} />
           </div>
         )}
@@ -175,7 +174,7 @@ function NodeInspector({ graph, node, onChange, onSelect, docs }: Props & { node
 
       <section className="inspector-section">
         <Button
-          variant="danger"
+          variant="secondary"
           size="sm"
           onClick={() => {
             onChange({ ...graph, nodes: graph.nodes.filter((n) => n.id !== node.id), edges: graph.edges.filter((e) => e.from.node !== node.id && e.to.node !== node.id) });
@@ -193,10 +192,10 @@ function HarnessFields({ id, node, onChange }: { id: string; node: GraphNode; on
   const h = readHarness(node) ?? { provider: '', model: '' };
   const models = PROVIDERS.find((p) => p.id === h.provider)?.models ?? [];
   return (
-    <fieldset className="fieldset">
+    <fieldset className="field-group">
       <legend>Harness</legend>
       <div className="field">
-        <label htmlFor={`${id}-p`}>Provider</label>
+        <label className="field-label" htmlFor={`${id}-p`}>Provider</label>
         <span className="select">
           <select id={`${id}-p`} className="input" value={h.provider} onChange={(e) => onChange({ provider: e.target.value, model: PROVIDERS.find((p) => p.id === e.target.value)?.models[0] ?? '' })}>
             <option value="">Choose a provider</option>
@@ -209,7 +208,7 @@ function HarnessFields({ id, node, onChange }: { id: string; node: GraphNode; on
         </span>
       </div>
       <div className="field">
-        <label htmlFor={`${id}-m`}>Model</label>
+        <label className="field-label" htmlFor={`${id}-m`}>Model</label>
         <input id={`${id}-m`} className="input mono-input" list={`${id}-models`} value={h.model} onChange={(e) => onChange({ ...h, model: e.target.value })} spellCheck={false} />
         <datalist id={`${id}-models`}>
           {models.map((m) => (
@@ -230,7 +229,7 @@ function PolicyFields({ id, node, graph, onChange }: { id: string; node: GraphNo
     <section className="inspector-section">
       <h2>Agent policy</h2>
       <NumberField id={`${id}-sub`} label="Max subagents" hint="0 means this agent cannot spawn subagents or delegate." value={p.maxSubagents} min={0} onChange={(v) => onChange({ ...p, maxSubagents: v })} />
-      <fieldset className="fieldset">
+      <fieldset className="field-group">
         <legend>Subagent providers</legend>
         {PROVIDERS.slice(0, 4).map((prov) => (
           <label key={prov.id} className="checkbox">
@@ -246,7 +245,7 @@ function PolicyFields({ id, node, graph, onChange }: { id: string; node: GraphNo
       <NumberField id={`${id}-turns`} label="Max turns" optional value={p.maxTurns} min={1} onChange={(v) => onChange({ ...p, maxTurns: v })} />
       <NumberField id={`${id}-tokens`} label="Max tokens per assignment" optional value={p.maxTokens} min={1000} onChange={(v) => onChange({ ...p, maxTokens: v })} />
       <div className="stack-sm">
-        <span className="label">Can message</span>
+        <span className="field-label">Can message</span>
         <p className="note">{canMessage.length ? canMessage.join(', ') : 'Nobody.'} Derived from messages connections.</p>
       </div>
     </section>
@@ -259,13 +258,13 @@ function CiFields({ id, node, onChange }: { id: string; node: GraphNode; onChang
   const setStep = (i: number, patch: Partial<{ name: string; run: string }>) => onChange('steps', steps.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   return (
     <>
-      <fieldset className="fieldset">
+      <fieldset className="field-group">
         <legend>Steps</legend>
         {steps.map((s, i) => (
           <div key={i} className="step-row">
             <input className="input" aria-label={`Step ${i + 1} name`} value={s.name} onChange={(e) => setStep(i, { name: e.target.value })} placeholder="Name" />
             <input className="input mono-input" aria-label={`Step ${i + 1} command`} value={s.run} onChange={(e) => setStep(i, { run: e.target.value })} placeholder="Command" spellCheck={false} />
-            <button type="button" className="icon-btn" aria-label={`Remove step ${i + 1}`} onClick={() => onChange('steps', steps.filter((_, j) => j !== i))}>
+            <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label={`Remove step ${i + 1}`} onClick={() => onChange('steps', steps.filter((_, j) => j !== i))}>
               <IconTrash />
             </button>
           </div>
@@ -311,17 +310,17 @@ function ConnectionsSection({ graph, node, onChange, onSelect }: { graph: Workfl
       {mine.length === 0 ? (
         <p className="note">None yet.</p>
       ) : (
-        <ul className="issue-list">
+        <ul className="check-list">
           {mine.map((e) => {
             const out = e.from.node === node.id;
             return (
-              <li key={e.id} className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
-                <button type="button" className="chip-button" onClick={() => onSelect({ kind: 'edge', id: e.id })}>
+              <li key={e.id} className="connection-row">
+                <button type="button" className="cell-button" onClick={() => onSelect({ kind: 'edge', id: e.id })}>
                   {out ? `${e.from.port ? `${e.from.port} ` : ''}→ ${name(e.to.node)}` : `← ${name(e.from.node)}${e.from.port ? ` (${e.from.port})` : ''}`}
                 </button>
-                <span className="row" style={{ flexWrap: 'nowrap', gap: 4 }}>
+                <span className="connection-row-end">
                   <span className="note">{EDGE_KIND_LABEL[e.kind]}</span>
-                  <button type="button" className="icon-btn" aria-label={`Remove connection ${out ? 'to' : 'from'} ${name(out ? e.to.node : e.from.node)}`} onClick={() => onChange({ ...graph, edges: graph.edges.filter((x) => x.id !== e.id) })}>
+                  <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label={`Remove connection ${out ? 'to' : 'from'} ${name(out ? e.to.node : e.from.node)}`} onClick={() => onChange({ ...graph, edges: graph.edges.filter((x) => x.id !== e.id) })}>
                     <IconTrash />
                   </button>
                 </span>
@@ -332,7 +331,7 @@ function ConnectionsSection({ graph, node, onChange, onSelect }: { graph: Workfl
       )}
       {(canAddFlow || spec.role) && (
         <form className="stack-sm" onSubmit={add} aria-label="Add a connection">
-          <span className="label">Add connection</span>
+          <span className="field-label">Add connection</span>
           <SelectField id={`${uid}-kind`} label="Kind" value={kind} onChange={(v) => setKind(v as EdgeKind)} options={kinds.filter((k) => k !== 'flow' || canAddFlow).map((k) => [k, `${EDGE_KIND_LABEL[k]}: ${EDGE_KIND_HINT[k].toLowerCase()}`])} />
           {kind === 'flow' && spec.outputs.length > 1 && <SelectField id={`${uid}-port`} label="From port" value={port} onChange={setPort} options={spec.outputs.map((o) => [o, o])} />}
           <SelectField id={`${uid}-to`} label="To" value={target || targets[0]?.id || ''} onChange={setTarget} options={targets.map((n) => [n.id, n.label || NODE_SPECS[n.type].title])} />
@@ -382,7 +381,7 @@ function EdgeInspector({ graph, edge, onChange, onSelect }: Props & { edge: Grap
       )}
       <div>
         <Button
-          variant="danger"
+          variant="secondary"
           size="sm"
           onClick={() => {
             onChange({ ...graph, edges: graph.edges.filter((e) => e.id !== edge.id) });
@@ -399,7 +398,7 @@ function EdgeInspector({ graph, edge, onChange, onSelect }: Props & { edge: Grap
 function SelectField({ id, label, value, onChange, options }: { id: string; label: string; value: string; onChange(v: string): void; options: [string, string][] }) {
   return (
     <div className="field">
-      <label htmlFor={id}>{label}</label>
+      <label className="field-label" htmlFor={id}>{label}</label>
       <span className="select">
         <select id={id} className="input" value={value} onChange={(e) => onChange(e.target.value)}>
           {options.map(([v, l]) => (
@@ -416,7 +415,7 @@ function SelectField({ id, label, value, onChange, options }: { id: string; labe
 function NumberField({ id, label, hint, value, min, onChange, optional }: { id: string; label: string; hint?: string; value: unknown; min: number; onChange(v: number | undefined): void; optional?: boolean }) {
   return (
     <div className="field">
-      <label htmlFor={id}>
+      <label className="field-label" htmlFor={id}>
         {label}
         {optional && <span className="muted"> (optional)</span>}
       </label>
@@ -429,7 +428,7 @@ function NumberField({ id, label, hint, value, min, onChange, optional }: { id: 
         value={value === undefined || value === null ? '' : String(value)}
         onChange={(e) => onChange(e.target.value === '' ? (optional ? undefined : 0) : Number(e.target.value))}
       />
-      {hint && <p className="field-hint">{hint}</p>}
+      {hint && <p className="field-help">{hint}</p>}
     </div>
   );
 }
@@ -438,7 +437,7 @@ function ListField({ id, label, hint, value, onChange }: { id: string; label: st
   const [text, setText] = useState(value.join(', '));
   return (
     <div className="field">
-      <label htmlFor={id}>{label}</label>
+      <label className="field-label" htmlFor={id}>{label}</label>
       <input
         id={id}
         className="input mono-input"
@@ -447,7 +446,7 @@ function ListField({ id, label, hint, value, onChange }: { id: string; label: st
         onBlur={() => onChange(text.split(',').map((s) => s.trim()).filter(Boolean))}
         spellCheck={false}
       />
-      {hint && <p className="field-hint">{hint}</p>}
+      {hint && <p className="field-help">{hint}</p>}
     </div>
   );
 }

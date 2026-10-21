@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useHub } from '../app/hub-context';
 import type { HubEvent, InteractionData, Machine, WorkItem, WorkflowGraph } from '../api/types';
-import { Empty, Loading } from '../components/ui';
+import { Loading } from '../components/ui';
 import { clock } from '../lib/format';
 import type { Selection } from '../workflow/graph-canvas';
 
@@ -65,14 +65,11 @@ export function describeEvent(e: HubEvent, names: Names): string {
   }
 }
 
-function kindClass(e: HubEvent) {
+/** Failed gates and assignments read in red, the only colour in the feed. */
+function isFailure(e: HubEvent) {
   const d = e.data as InteractionData;
-  if (d.unplanned) return 'feed-kind-unplanned';
-  if (e.type === 'agent.messaged') return 'feed-kind-messages';
-  if (e.type === 'agent.delegated') return 'feed-kind-delegates';
-  if (e.type === 'assignment.state') return 'feed-kind-state';
-  if (e.type === 'gate.result') return GATE_FAILED.has(String(d.result)) ? 'feed-kind-fail' : 'feed-kind-pass';
-  return '';
+  if (e.type === 'gate.result') return GATE_FAILED.has(String(d.result)) && d.source === 'ci';
+  return e.type === 'assignment.state' && d.state === 'failed';
 }
 
 export function matchesSelection(e: HubEvent, selection: Selection, graph: WorkflowGraph): boolean {
@@ -165,52 +162,48 @@ export function InteractionFeed({
   onOlder?(): void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  if (!events) return <Loading label="Loading interactions" />;
+  if (!events) return <Loading label="Loading activity" />;
   const name = (id?: string) => (id ? (graph.nodes.find((n) => n.id === id)?.label ?? id) : '');
   const matching = events.filter((e) => (!onlyInteractions || INTERACTION_TYPES.has(e.type)) && matchesSelection(e, selection, graph));
   const shown = expanded ? matching : matching.slice(0, limit);
   const older = hasOlder && onOlder && (expanded || matching.length <= limit) && (
-    <div className="feed-more">
-      <button type="button" className="chip-button" onClick={onOlder} disabled={loadingOlder}>
-        {loadingOlder ? 'Loading older events…' : 'Show older events'}
-      </button>
-    </div>
+    <button type="button" className="text-btn" onClick={onOlder} disabled={loadingOlder}>
+      {loadingOlder ? 'Loading older events…' : 'Show older events'}
+    </button>
   );
   if (shown.length === 0 && older) return older;
   if (shown.length === 0)
-    return <Empty title={selection ? 'No interactions here yet.' : 'No interactions yet.'}>{selection ? 'Clear the selection to see the whole run.' : 'Agents report moves, delegation and messages as they work.'}</Empty>;
+    return <p className="muted">{selection ? 'No activity here yet. Clear the selection to see the whole run.' : 'Agents report moves, delegation and messages as they work.'}</p>;
   return (
     <>
-    <ol className="feed">
-      {shown.map((e) => {
-        const d = e.data as InteractionData;
-        const route = d.sourceNodeId && d.targetNodeId ? `${name(d.sourceNodeId)} → ${name(d.targetNodeId)}` : d.nodeId ? name(d.nodeId) : '';
-        return (
-          <li key={e.seq} className={`feed-item ${fresh.has(e.seq) ? 'feed-new' : ''}`}>
-            <time className="feed-time" dateTime={e.at}>
-              {clock(e.at)}
-            </time>
-            <span className={`feed-kind ${kindClass(e)}`} aria-hidden="true" />
-            <div className="feed-body">
-              <span>{describeEvent(e, { node: name, item: (id) => items.find((i) => i.id === id)?.title, machine: (id) => machines.find((m) => m.id === id)?.name })}</span>
-              <span className="feed-route">
-                {d.unplanned ? <span className="feed-unplanned">Unplanned · </span> : null}
-                {TYPE_LABEL[e.type] ?? e.type}
-                {route ? ` · ${route}` : ''}
+      <ol className="rows feed">
+        {shown.map((e) => {
+          const d = e.data as InteractionData;
+          const route = d.sourceNodeId && d.targetNodeId ? `${name(d.sourceNodeId)} to ${name(d.targetNodeId)}` : d.nodeId ? name(d.nodeId) : '';
+          const kind = d.unplanned ? `Unplanned ${(TYPE_LABEL[e.type] ?? e.type).toLowerCase()}` : e.type === 'workitem.moved' || e.type === 'assignment.state' ? '' : TYPE_LABEL[e.type];
+          return (
+            <li key={e.seq} className={`feed-item ${fresh.has(e.seq) ? 'feed-new' : ''} ${isFailure(e) ? 'feed-failed' : ''}`}>
+              <time className="feed-time" dateTime={e.at}>
+                {clock(e.at)}
+              </time>
+              <span className="row-main">
+                <span className="feed-text">{describeEvent(e, { node: name, item: (id) => items.find((i) => i.id === id)?.title, machine: (id) => machines.find((m) => m.id === id)?.name })}</span>
+                <span className="row-meta">{[kind, route].filter(Boolean).join(' · ')}</span>
               </span>
-            </div>
-          </li>
-        );
-      })}
-    </ol>
-    {matching.length > shown.length && (
-      <div className="feed-more">
-        <button type="button" className="chip-button" onClick={() => setExpanded(true)}>
-          Show all {matching.length} interactions
-        </button>
-      </div>
-    )}
-    {older}
+            </li>
+          );
+        })}
+      </ol>
+      {(matching.length > shown.length || older) && (
+        <div className="card-foot row">
+          {matching.length > shown.length && (
+            <button type="button" className="text-btn" onClick={() => setExpanded(true)}>
+              Show all {matching.length}
+            </button>
+          )}
+          {older}
+        </div>
+      )}
     </>
   );
 }

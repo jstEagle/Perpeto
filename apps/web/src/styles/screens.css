@@ -1,0 +1,476 @@
+/* Screen-specific layouts, built from the components in app.css. */
+
+/* ---------- Overview ---------- */
+.live-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-10);
+  align-items: flex-start;
+}
+.live-card-text {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.live-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-20);
+}
+.live-metrics {
+  flex: 0 1 34rem;
+}
+.live-more {
+  margin-top: var(--space-8);
+}
+@media (max-width: 960px) {
+  .live-card-top {
+    flex-direction: column;
+    gap: var(--space-6);
+  }
+  .live-metrics {
+    flex: none;
+    width: 100%;
+  }
+}
+
+/* ---------- Lists of projects, runs and queue entries ---------- */
+.project-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.cell-wrap {
+  white-space: normal;
+  max-width: 48ch;
+}
+
+/* ---------- Work board ---------- */
+.board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(208px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+  overflow-x: auto;
+  padding: var(--space-1) var(--space-1) var(--space-4);
+  margin: calc(var(--space-1) * -1);
+}
+.board-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  min-width: 0;
+}
+.board-list > li {
+  min-width: 0;
+}
+.board-col-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-2);
+  height: var(--control-height-sm);
+}
+.board-col-count {
+  font-size: var(--text-13);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.board-list {
+  display: grid;
+  gap: var(--space-2);
+}
+.board-empty {
+  padding: var(--space-4) var(--space-2);
+  font-size: var(--text-13);
+  color: var(--muted);
+}
+.board-more {
+  padding: 0 var(--space-2);
+}
+.work-card {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-node);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  transition: box-shadow var(--duration-base) var(--ease-out);
+}
+.work-card:hover {
+  box-shadow: var(--shadow-raised);
+}
+.work-title {
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-compact);
+}
+.work-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--text-12);
+  color: var(--muted);
+}
+.work-meta a {
+  text-decoration: none;
+}
+.work-meta a:hover {
+  color: var(--ink);
+}
+.work-card > *,
+.work-meta > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.work-meta .mono {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 720px) {
+  .board {
+    grid-template-columns: repeat(5, minmax(240px, 82vw));
+    scroll-snap-type: x mandatory;
+  }
+  .board-col {
+    scroll-snap-align: start;
+  }
+}
+
+/* ---------- Messages ---------- */
+.messages-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+.channel-list {
+  position: sticky;
+  top: var(--space-6);
+}
+.channel-list .nav-link {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.channel-list .nav-link[aria-current='page'] {
+  background: var(--surface);
+}
+.channel-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: min(calc(100vh - 220px), 720px);
+  min-height: 480px;
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.thread-scroll {
+  overflow-y: auto;
+  padding: var(--card-padding);
+  display: grid;
+  align-content: start;
+  gap: var(--space-6);
+}
+.thread-older {
+  display: flex;
+  justify-content: center;
+}
+.message {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+.message .avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 11px;
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.02em;
+}
+.message-owner .avatar {
+  background: var(--ink);
+  color: var(--on-action);
+}
+.message-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+.message-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.message-sender {
+  font-weight: var(--weight-medium);
+}
+.message-to,
+.message-time {
+  font-size: var(--text-13);
+  color: var(--muted);
+}
+.message-body {
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 72ch;
+}
+.composer {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-end;
+  padding: var(--space-4) var(--card-padding) var(--card-padding);
+  border-top: var(--stroke-hairline) solid var(--border);
+}
+.composer-main {
+  flex: 1;
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.composer-to {
+  width: 12rem;
+}
+@media (max-width: 720px) {
+  .messages-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+  .channel-list {
+    position: static;
+    display: flex;
+    overflow-x: auto;
+    gap: var(--space-2);
+  }
+  .channel-list .nav-title {
+    display: none;
+  }
+  .channel-list .nav-link {
+    width: auto;
+    flex: none;
+    border-radius: var(--radius-pill);
+  }
+  .thread {
+    height: 70vh;
+    border-radius: var(--radius-node);
+  }
+  .composer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* ---------- Machines ---------- */
+.meter-cell {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 96px;
+  font-size: var(--text-13);
+  color: var(--ink-soft);
+}
+.code-once {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+}
+.code-once code {
+  font-size: var(--text-20);
+  letter-spacing: 0.08em;
+}
+
+/* ---------- Usage ---------- */
+.bars-tall {
+  height: 160px;
+  gap: var(--space-3);
+}
+.bars-tall > span {
+  border-radius: var(--radius-small) var(--radius-small) 2px 2px;
+}
+.table tfoot th,
+.table tfoot td {
+  padding: var(--space-4);
+  border-top: var(--stroke-hairline) solid var(--border);
+  text-align: left;
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+  font-size: var(--text-14);
+}
+.table tfoot .num {
+  text-align: right;
+}
+.table tfoot th:first-child {
+  padding-left: var(--space-3);
+}
+
+/* ---------- Settings ---------- */
+.settings-page {
+  max-width: calc(var(--reading-max) + 2 * var(--card-padding));
+}
+.form-actions {
+  margin-top: var(--space-2);
+}
+.reading {
+  max-width: var(--reading-max);
+}
+
+/* ---------- Workflows: prompt first ---------- */
+.architect-card {
+  display: grid;
+  gap: var(--space-6);
+}
+.prompt-box {
+  display: grid;
+  gap: var(--space-4);
+}
+.prompt-title {
+  font-size: var(--text-24);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-display);
+  line-height: var(--leading-heading);
+}
+.prompt-input {
+  min-height: 132px;
+  font-size: var(--text-16);
+  padding: var(--space-4) var(--space-5);
+  border-color: var(--grey-200);
+  border-radius: var(--radius-node);
+  background: var(--canvas);
+}
+.prompt-input:hover {
+  border-color: var(--grey-300);
+}
+.prompt-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.suggestion {
+  max-width: 100%;
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-subtle);
+  color: var(--ink-soft);
+  font-size: var(--text-13);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+.suggestion:hover {
+  background: var(--canvas-strong);
+  color: var(--ink);
+}
+.prompt-actions {
+  gap: var(--space-4);
+}
+.architect-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-5);
+  border-top: var(--stroke-hairline) solid var(--border);
+  font-size: var(--text-13);
+}
+.progress-steps > li {
+  align-items: flex-start;
+}
+.progress-icon {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 20px;
+  color: var(--ink-soft);
+}
+.progress-steps .is-failed {
+  color: var(--error);
+}
+.progress-steps .is-failed .progress-icon {
+  color: var(--error);
+}
+.template-options {
+  display: grid;
+  gap: var(--space-2);
+}
+.template-option {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-4);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+  cursor: pointer;
+  transition: box-shadow var(--duration-fast) var(--ease-standard);
+}
+.template-option input {
+  margin-top: 3px;
+  accent-color: var(--ink);
+}
+.template-option.is-selected {
+  background: var(--surface);
+  box-shadow: 0 0 0 var(--stroke-selection) var(--ink);
+}
+
+/* ---------- Workflow and proposal ---------- */
+.prompt-quote {
+  margin: 0;
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: var(--text-16);
+  line-height: var(--leading-body);
+}
+.rationale {
+  color: var(--ink-soft);
+  max-width: var(--reading-max);
+}
+.version-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  min-width: 0;
+  margin: calc(var(--space-2) * -1) calc(var(--space-3) * -1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  color: inherit;
+  text-decoration: none;
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+.version-row:hover {
+  background: var(--surface-hover);
+}
+.version-row[aria-current='true'] {
+  background: var(--surface-subtle);
+}
+.cell-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: var(--weight-medium);
+  text-align: left;
+  cursor: pointer;
+}
+.cell-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

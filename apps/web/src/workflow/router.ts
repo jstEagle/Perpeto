@@ -5,8 +5,9 @@ import type { EdgeKind } from '../api/types';
  *
  * Flow edges run along the main line: straight between neighbours in a row,
  * and through a gap between rows (a gutter) otherwise. Returns along the top
- * row run in one channel above it, so loops read as arcs over the line they
- * repeat; returns from lower rows run below their row. An edge into another
+ * row leave the top of a node and come down into the top of the earlier one,
+ * nested in one channel above the line they repeat; returns from lower rows
+ * run below their row. An edge into another
  * row takes one elbow through the column gap when that gap is clear.
  * Delegates and messages never share the main line. They leave from the top
  * or bottom of a node and run in their own lanes: below a row when both ends
@@ -37,6 +38,8 @@ export interface RouteEdge {
   label?: string;
   /** Placed before lower priorities when labels compete for room. */
   priority?: number;
+  /** A flow edge that returns to an earlier step (layout.ts backEdges). Guessed from geometry when absent. */
+  back?: boolean;
 }
 
 export interface PlacedLabel {
@@ -62,11 +65,13 @@ export interface Routing {
   gutterNeeds: number[];
 }
 
-export const PORT_Y: Record<string, number> = { in: 20, out: 20, pass: 20, fail: 56 };
+export const PORT_Y: Record<string, number> = { in: 32, out: 32, pass: 32, fail: 48 };
 export const LANE = 20;
 export const STUB = 12;
+/** Top and bottom attachments of flow edges: leaving right of centre, arriving left of it, so they never share a line. */
+const ATTACH = 20;
 const CLEAR = 24;
-const LABEL_H = 18;
+const LABEL_H = 20;
 const BUNDLE_STEP = 5;
 const SLOTS = [0, -32, 32, -64, 64, -96, 96];
 
@@ -133,11 +138,39 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
     const rt = rowOf.get(t.id)!;
     const x1 = sp[0] + STUB;
     const x2 = tp[0] - STUB;
+    // Without layering, guess: a return goes left within its row or up to an earlier one.
+    const back = e.back ?? (tp[0] <= sp[0] && rt <= rs);
+    const outX = Math.round(s.x + s.w / 2 + ATTACH);
+    const inX = Math.round(t.x + t.w / 2 - ATTACH);
     const blocked = nodes.some((n) => n !== s && n !== t && rowOf.get(n.id) === rs && n.x + n.w > sp[0] && n.x < tp[0] && n.y < Math.max(sp[1], tp[1]) && n.y + n.h > Math.min(sp[1], tp[1]));
     if (rs === rt && tp[0] > sp[0] + 2 * STUB && !blocked) {
       const midX = Math.round((sp[0] + tp[0]) / 2);
       plans.set(e.id, { type: 'fixed', points: Math.abs(sp[1] - tp[1]) < 1 ? [sp, tp] : [sp, [midX, sp[1]], [midX, tp[1]], tp] });
       continue;
+    }
+    // Wrapping to the next band (target below and to the left): leave the
+    // bottom of the step and come down into the top of the next one.
+    if (!back && rt > rs && tp[0] < sp[0] && clear({ x1: outX, y1: s.y + s.h, x2: outX, y2: t.y }, [s, t]) && clear({ x1: inX, y1: s.y + s.h, x2: inX, y2: t.y }, [s, t])) {
+      const sx = outX;
+      const tx = inX;
+      plans.set(e.id, { type: 'lane', gutter: rt, dir: 'up', span: [Math.min(sx, tx), Math.max(sx, tx)], build: (y) => [[sx, s.y + s.h], [sx, y], [tx, y], [tx, t.y]] });
+      continue;
+    }
+    // Back up to an earlier band: rise from the top of the step through the
+    // gap above its row and come up into the bottom of the earlier step.
+    if (back && rs > rt) {
+      const sx = outX;
+      const tx = inX;
+      const gap = rows[rs].top - CLEAR;
+      if (clear({ x1: tx, y1: t.y + t.h, x2: tx, y2: gap }, [t]) && clear({ x1: Math.min(sx, tx), y1: gap, x2: Math.max(sx, tx), y2: gap }, [])) {
+        plans.set(e.id, { type: 'lane', gutter: rs, dir: 'up', span: [Math.min(sx, tx), Math.max(sx, tx)], build: (y) => [[sx, s.y], [sx, y], [tx, y], [tx, t.y + t.h]] });
+        continue;
+      }
+      // Something sits under the earlier step: rise through the column gap into its input instead.
+      if (clear({ x1: x2, y1: tp[1], x2, y2: gap }, [t]) && clear({ x1: Math.min(sx, x2), y1: gap, x2: Math.max(sx, x2), y2: gap }, [])) {
+        plans.set(e.id, { type: 'lane', gutter: rs, dir: 'up', span: [Math.min(sx, x2), Math.max(sx, x2)], build: (y) => [[sx, s.y], [sx, y], [x2, y], [x2, tp[1]], tp] });
+        continue;
+      }
     }
     // Into another row, forward: one elbow in the column gap just before the target.
     if (rs !== rt && x2 > x1 && clear({ x1: sp[0], y1: sp[1], x2, y2: sp[1] }, [s]) && clear({ x1: x2, y1: sp[1], x2, y2: tp[1] }, [])) {
@@ -151,6 +184,14 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
       span: [Math.min(x1, x2), Math.max(x1, x2)],
       build: (y) => [sp, [x1, sp[1]], [x1, y], [x2, y], [x2, tp[1]], tp],
     });
+    if (rs === rt && back && tp[0] <= sp[0]) {
+      // A return within a row leaves the top of the node and comes back
+      // down into the top of the earlier one, so loops read as arcs.
+      const sx = outX;
+      const tx = inX;
+      plans.set(e.id, { type: 'lane', gutter: rs, dir: 'up', span: [Math.min(sx, tx), Math.max(sx, tx)], build: (y) => [[sx, s.y], [sx, y], [tx, y], [tx, t.y]] });
+      continue;
+    }
     if (rs === rt) {
       plans.set(e.id, rs === 0 ? lane(0, 'up') : lane(rs + 1, 'down'));
       continue;
