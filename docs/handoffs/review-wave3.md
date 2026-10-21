@@ -103,7 +103,7 @@ Batch jobs carry no `runId` (`factory-delivery/src/jobs.js:45`, `queue.js:99`), 
 
 `factory-hub/src/hub.js:381-385` and the engine (`engine.js:185-215`) only check that the item is `blocked`, not which gate the decision is for. The engine event id is random (`workflow-adapter.js:131`). A client retry without an idempotency key, or two people answering the same gate, applies the second `pass` to the next gate, so it passes without anyone seeing its prompt. Confirmed: two `pass` posts on a design gate followed by a release gate both returned 200, and the run completed. **Fix:** require the gate `nodeId` (or a visit token) and reject it if it doesn't match `item.waiting.nodeId`.
 
-Fixed in 634703b for the engine: every wait has a `decisionId`, and a decision naming another one throws `STALE_DECISION`. The hub adapter still has to send `decisionId` (and map `STALE_DECISION` to 409) before hub clients are protected.
+Fixed in 634703b for the engine: every wait has a `decisionId`, and a decision naming another one throws `STALE_DECISION`. The hub adapter still has to send `decisionId` (and map `STALE_DECISION` to 409) before hub clients are protected. **Hub side: Fixed in `5fedb31`.** `POST /work-items/:id/decision` passes `decisionId` to the engine, refuses one for an earlier wait with `409 STALE_DECISION`, maps the engine's `STALE_DECISION` to 409, and exposes `decisionId` on work items, `human.requested` and the human `gate.result`.
 
 ### The node ignores heartbeat cancellations and never acknowledges them (M5)
 
@@ -167,7 +167,7 @@ Every select, release and observe adds a permanent receipt (`factory-accounts/sr
 
 `factory-workflow/src/engine.js:58` clones the full state, `563-566` and `300` scan every assignment and item, `workflow-adapter.js:51-55` stringifies every item and merge twice, and `factory-hub/src/hub.js:199-206` parses and rewrites the state. Closed assignments keep their full prompt and result. Measured with 4 KB bodies: 100 finished items gave a 1.2 MB state and 1.1 ms per event, and 2,000 items gave 24.8 MB and 40-72 ms per event, before the SQLite write. Cost per run grows quadratically. **Fix:** store entities in their own rows, keep closed work out of the hot state, and diff from effects instead of whole-state comparisons.
 
-Fixed in 8eb08d0 for `factory-workflow` (now `packages/workflow`): `step` is copy-on-write, and `RunStore` writes only changed rows with a flat per-event cost. The hub-side costs (`workflow-adapter.js` diffing, `hub.js` parsing and rewriting the state) remain.
+Fixed in 8eb08d0 for `factory-workflow` (now `packages/workflow`): `step` is copy-on-write, and `RunStore` writes only changed rows with a flat per-event cost. The hub-side costs (`workflow-adapter.js` diffing, `hub.js` parsing and rewriting the state) remain. **Hub side: Fixed in `05cab73`.** The adapter steps runs in a `RunStore` at `workflowDatabasePath`; the hub keeps only the applied sequence per run, builds its entities from engine effects and reads work items from the store. With 60 items of 4 KB the hub's per-run row is now `{id, seq}` instead of 276 KB. A hub rollback after the engine committed is repaired by replaying the run's stored events after its applied sequence.
 
 ### Merge-queue receipts store the full state on every tick, and an unmirrored cancel keeps the queue ticking forever (M16)
 
