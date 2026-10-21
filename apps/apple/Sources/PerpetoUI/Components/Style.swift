@@ -85,6 +85,7 @@ public struct ScreenHeader<Trailing: View>: View {
     var title: String
     var subtitle: String?
     var trailing: Trailing
+    @Environment(\.compactLayout) private var compact
 
     public init(_ title: String, subtitle: String? = nil, @ViewBuilder trailing: () -> Trailing = { EmptyView() }) {
         self.title = title
@@ -93,20 +94,78 @@ public struct ScreenHeader<Trailing: View>: View {
     }
 
     public var body: some View {
-        HStack(alignment: .bottom, spacing: PerpetoSpacing.x(4)) {
-            VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
-                Text(title)
-                    .font(PerpetoFont.display(PerpetoType.text24))
-                    .displayTracking(PerpetoType.text24)
-                    .foregroundStyle(PerpetoColor.ink)
-                if let subtitle {
-                    Text(subtitle).font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
-                }
+        if compact {
+            VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
+                titles
+                HStack(spacing: PerpetoSpacing.x(2)) { trailing }
             }
-            Spacer(minLength: 0)
-            trailing
+        } else {
+            HStack(alignment: .bottom, spacing: PerpetoSpacing.x(4)) {
+                titles
+                Spacer(minLength: 0)
+                trailing
+            }
         }
     }
+
+    private var titles: some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
+            Text(title)
+                .font(PerpetoFont.display(PerpetoType.text24))
+                .displayTracking(PerpetoType.text24)
+                .foregroundStyle(PerpetoColor.ink)
+            if let subtitle {
+                Text(subtitle).font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+// MARK: Adaptive layout
+
+extension EnvironmentValues {
+    /// True on iPhone and narrow iPad windows. Wide layouts stack instead of
+    /// compressing; set once by `RootView` from the horizontal size class.
+    @Entry public var compactLayout = false
+}
+
+/// A main column with a fixed-width side column. Stacks when compact.
+public struct AdaptiveColumns<Main: View, Side: View>: View {
+    var sideWidth: CGFloat
+    var main: Main
+    var side: Side
+    @Environment(\.compactLayout) private var compact
+
+    public init(sideWidth: CGFloat = 360, @ViewBuilder main: () -> Main, @ViewBuilder side: () -> Side) {
+        self.sideWidth = sideWidth
+        self.main = main()
+        self.side = side()
+    }
+
+    public var body: some View {
+        if compact {
+            VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
+                main
+                side
+            }
+        } else {
+            HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
+                main.frame(maxWidth: .infinity)
+                side.frame(width: sideWidth)
+            }
+        }
+    }
+}
+
+extension View {
+    /// Page padding: 24 pt, or 16 pt when compact.
+    public func screenPadding() -> some View { modifier(ScreenPadding()) }
+}
+
+struct ScreenPadding: ViewModifier {
+    @Environment(\.compactLayout) private var compact
+    func body(content: Content) -> some View { content.padding(compact ? PerpetoSpacing.x(4) : PerpetoSpacing.x(6)) }
 }
 
 // MARK: Buttons

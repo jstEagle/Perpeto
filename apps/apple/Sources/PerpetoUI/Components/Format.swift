@@ -87,3 +87,14 @@ public enum Format {
 extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
+
+/// Words that differ between the Mac and iPhone or iPad.
+enum Platform {
+    #if os(macOS)
+    static let device = "this Mac"
+    static let isPhoneOrPad = false
+    #else
+    static let device = "this device"
+    static let isPhoneOrPad = true
+    #endif
+}

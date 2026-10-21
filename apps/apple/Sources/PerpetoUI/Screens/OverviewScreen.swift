@@ -17,25 +17,24 @@ struct OverviewScreen: View {
                 FigureStrip([
                     Figure("Active agents", value: "\(state.activeAgents)", detail: "across \(Format.plural(Set(state.assignments.filter(\.isWorking).compactMap(\.machineId)).count, "machine"))"),
                     Figure("Queued work", value: "\(state.queuedWork)", detail: "\(state.workItems.filter { $0.status == .active }.count) items active"),
-                    Figure("Tokens today", value: Format.tokens(state.usage.today), detail: Format.tokens(state.usage.total) + " in 14 days"),
+                    Figure("Tokens today", value: Format.tokens(state.usage.today), detail: Format.tokens(state.usage.total) + " in \(Format.plural(state.usage.byDay.count, "day"))"),
                     Figure("Items done per day", value: state.metrics.map { String(format: "%.1f", $0.run.velocity.itemsDonePerDay) } ?? "—", detail: state.metrics.map { "WIP \($0.run.wip)" } ?? "No run measured yet"),
                     Figure("Cycle time p90", value: state.metrics.map { Format.duration($0.run.cycleTimeSec.p90) } ?? "—", detail: state.metrics.map { "avg " + Format.duration($0.run.cycleTimeSec.avg) } ?? " "),
                 ])
-                HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
+                AdaptiveColumns {
                     VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
                         bottleneckPanel
                         agentsPanel
                     }
-                    .frame(maxWidth: .infinity)
+                } side: {
                     VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
                         velocityPanel
                         usagePanel
                     }
-                    .frame(width: 360)
                 }
                 activityPanel
             }
-            .padding(PerpetoSpacing.x(6))
+            .screenPadding()
             .frame(maxWidth: 1240, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -47,13 +46,10 @@ struct OverviewScreen: View {
                 .font(PerpetoFont.display())
                 .displayTracking()
                 .foregroundStyle(PerpetoColor.ink)
-            HStack(spacing: PerpetoSpacing.x(3)) {
-                Mono(Format.repoName(project.repo.url))
-                Tag(project.repo.defaultBranch, systemImage: "arrow.triangle.branch")
-                if let run = liveRun {
-                    StatusLabel(run.status.label)
-                    Mono(run.id)
-                }
+            // Wraps onto two lines rather than widening the page on a phone.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: PerpetoSpacing.x(3)) { repoLine; runLine }
+                VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) { repoLine; runLine }
             }
             if !project.goals.isEmpty {
                 VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
@@ -64,6 +60,23 @@ struct OverviewScreen: View {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private var repoLine: some View {
+        HStack(spacing: PerpetoSpacing.x(3)) {
+            Mono(Format.repoName(project.repo.url)).lineLimit(1)
+            Tag(project.repo.defaultBranch, systemImage: "arrow.triangle.branch")
+        }
+    }
+
+    @ViewBuilder
+    private var runLine: some View {
+        if let run = liveRun {
+            HStack(spacing: PerpetoSpacing.x(3)) {
+                StatusLabel(run.status.label)
+                Mono(run.id).lineLimit(1).truncationMode(.middle)
             }
         }
     }
@@ -180,7 +193,27 @@ struct AgentRow: View {
     var item: WorkItem?
     var machine: Machine?
 
+    @Environment(\.compactLayout) private var compact
+
     var body: some View {
+        if compact {
+            // Stacked: role and status, then the item, then model and machine.
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(assignment.role).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
+                    Spacer()
+                    StatusLabel(assignment.status.label)
+                }
+                Text(item?.title ?? assignment.workItemId ?? assignment.nodeId)
+                    .font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(1)
+                Mono("\(assignment.harness.model) · \(machine?.name ?? "unassigned")").lineLimit(1)
+            }
+        } else {
+            wide
+        }
+    }
+
+    private var wide: some View {
         HStack(spacing: PerpetoSpacing.x(3)) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(assignment.role).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
@@ -317,7 +350,9 @@ struct VelocityChart: View {
 
     private var axisLabels: [String] {
         let step = trend.count > 12 ? 6 : trend.count > 7 ? 3 : 1
-        return trend.indices.filter { (trend.count - 1 - $0) % step == 0 }.map(dayLabel)
+        // The newest bucket is labelled only for a week; at the edge of an
+        // hourly chart its label would be clipped.
+        return trend.indices.filter { (trend.count - 1 - $0) % step == 0 && (step == 1 || $0 != trend.count - 1) }.map(dayLabel)
     }
 
     private func dayLabel(_ index: Int) -> String {

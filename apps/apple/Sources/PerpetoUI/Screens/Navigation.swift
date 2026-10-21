@@ -91,6 +91,8 @@ public final class Navigator {
     public var editWorkflowRequest = 0
     /// Node to select on the run map, for deep links.
     public var selectedNodeId: String?
+    /// Sidebar visibility of the main split view.
+    public var columnVisibility: NavigationSplitViewVisibility = .automatic
 
     public init(route: Route? = nil) {
         self.route = route

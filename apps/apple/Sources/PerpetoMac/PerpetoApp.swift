@@ -30,7 +30,7 @@ struct PerpetoApp: App {
         .commands { PerpetoCommands(store: store, navigator: navigator) }
 
         Settings {
-            SettingsView(store: store)
+            HubConnectionView(store: store)
                 .preferredColorScheme(.light)
         }
     }
