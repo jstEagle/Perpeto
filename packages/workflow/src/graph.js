@@ -19,6 +19,10 @@ const PORTED = new Set([...GATE_TYPES, 'merge-queue']);
 /** Node types that accept a `retry` policy for infrastructure and agent errors. */
 const RETRY_TYPES = Object.freeze([...ROLE_TYPES, 'ci']);
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
+/** Ids become keys of plain objects in plans and run state, so they must not shadow `Object.prototype` members. */
+const RESERVED_IDS = new Set(Object.getOwnPropertyNames(Object.prototype));
+const isId = value => typeof value === 'string' && ID.test(value) && !RESERVED_IDS.has(value);
+const reservedNote = value => RESERVED_IDS.has(value) ? ` "${value}" is reserved.` : '';
 const PROVIDER = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
 
 // Config field checkers return null when valid, or [code, message].
@@ -99,8 +103,8 @@ function retry(value) {
   return null;
 }
 
-const role = value => typeof value === 'string' && ID.test(value) ? null : invalid('must be a role id of letters, digits, ".", "_", ":" or "-".');
-const nodeRef = value => typeof value === 'string' && ID.test(value) ? null : invalid('must be a node id.', 'INVALID_ESCALATION');
+const role = value => isId(value) ? null : invalid(`must be a role id of letters, digits, ".", "_", ":" or "-".${reservedNote(value)}`);
+const nodeRef = value => isId(value) ? null : invalid('must be a node id.', 'INVALID_ESCALATION');
 const optional = check => ({ required: false, check });
 const required = check => ({ required: true, check });
 const agentRole = {
@@ -162,8 +166,8 @@ function analyse(graph, { providers } = {}) {
   /** @type {Map<string, any>} */
   const nodes = new Map();
   for (const node of graph.nodes) {
-    if (!isPlainObject(node) || typeof node.id !== 'string' || !ID.test(node.id)) {
-      error('INVALID_NODE', 'Each node needs an id of letters, digits, ".", "_", ":" or "-" (at most 100 characters).');
+    if (!isPlainObject(node) || !isId(node.id)) {
+      error('INVALID_NODE', `Each node needs an id of letters, digits, ".", "_", ":" or "-" (at most 100 characters).${reservedNote(node?.id)}`);
       continue;
     }
     const at = { nodeId: node.id };
@@ -185,7 +189,7 @@ function analyse(graph, { providers } = {}) {
       if (problem) error(problem[0], `${node.type} node "${node.id}" config.${key} ${problem[1]}`, at);
     }
     for (const key of Object.keys(config)) {
-      if (!(key in spec)) warn('UNKNOWN_CONFIG_KEY', `${node.type} node "${node.id}" has unknown config key "${key}".`, at);
+      if (!Object.hasOwn(spec, key)) warn('UNKNOWN_CONFIG_KEY', `${node.type} node "${node.id}" has unknown config key "${key}".`, at);
     }
     if (node.type === 'loop' && typeof config.expectedIterations === 'number' && Number.isSafeInteger(config.maxIterations) &&
         config.expectedIterations > config.maxIterations) {
@@ -205,7 +209,7 @@ function analyse(graph, { providers } = {}) {
   for (const node of nodes.values()) {
     for (const key of ['onExhausted', 'onBlocked']) {
       const target = node.config[key];
-      if (typeof target !== 'string' || !ID.test(target)) continue;
+      if (!isId(target)) continue;
       const to = nodes.get(target), at = { nodeId: node.id };
       if (!to) error('INVALID_ESCALATION', `${node.type} node "${node.id}" config.${key} names missing node "${target}".`, at);
       else if (to.id === node.id) error('INVALID_ESCALATION', `${node.type} node "${node.id}" config.${key} cannot name the node itself.`, at);
@@ -229,8 +233,8 @@ function analyse(graph, { providers } = {}) {
   const flow = [], delegates = [], messages = [];
   const seen = new Set();
   for (const edge of graph.edges) {
-    if (!isPlainObject(edge) || typeof edge.id !== 'string' || !ID.test(edge.id)) {
-      error('INVALID_EDGE', 'Each edge needs an id of letters, digits, ".", "_", ":" or "-" (at most 100 characters).');
+    if (!isPlainObject(edge) || !isId(edge.id)) {
+      error('INVALID_EDGE', `Each edge needs an id of letters, digits, ".", "_", ":" or "-" (at most 100 characters).${reservedNote(edge?.id)}`);
       continue;
     }
     const at = { edgeId: edge.id };
@@ -386,7 +390,7 @@ function analyse(graph, { providers } = {}) {
     const backSources = incoming.get(node.id).filter(isBackEdge).map(edge => edge.from.node);
     const body = [...reach(backSources.filter(id => id !== node.id), id => id === node.id ? [] : predecessors(id))].filter(id => id !== node.id);
     if (!backSources.length) warn('LOOP_NEVER_REPEATS', `loop "${node.id}" has no flow edge returning from its body.`, { nodeId: node.id });
-    const gateType = UNTIL_GATE[node.config.until];
+    const gateType = Object.hasOwn(UNTIL_GATE, node.config.until) ? UNTIL_GATE[node.config.until] : undefined;
     if (gateType) {
       const ok = body.some(id => {
         const candidate = nodes.get(id);
@@ -504,7 +508,7 @@ export function compileGraph(graph, options = {}) {
  * @returns {{ kind: string, from: string, to: string, edgeId: string | null, unplanned: boolean }}
  */
 export function classifyInteraction(plan, { kind, from, to }) {
-  const nodeFor = id => plan.nodes[id] ? id : plan.roles[id]?.nodeId ?? id;
+  const nodeFor = id => Object.hasOwn(plan.nodes, id) ? id : Object.hasOwn(plan.roles, id) ? plan.roles[id].nodeId : id;
   const a = nodeFor(from), b = nodeFor(to);
   const edge = plan.edges.find(candidate => candidate.kind === kind &&
     ((candidate.from === a && candidate.to === b) || (kind === 'messages' && candidate.from === b && candidate.to === a)));

@@ -18,7 +18,7 @@ import {
 | Code | Meaning |
 | --- | --- |
 | `INVALID_GRAPH`, `INVALID_SCHEMA`, `LIMIT_EXCEEDED` | Not a `perpeto.workflow/1` object, or over 500 nodes or 2000 edges |
-| `INVALID_NODE`, `INVALID_EDGE`, `DUPLICATE_ID`, `UNKNOWN_NODE_TYPE`, `INVALID_EDGE_KIND` | Malformed nodes and edges |
+| `INVALID_NODE`, `INVALID_EDGE`, `DUPLICATE_ID`, `UNKNOWN_NODE_TYPE`, `INVALID_EDGE_KIND` | Malformed nodes and edges. Node, edge and role ids may not be `Object.prototype` names such as `constructor` |
 | `DANGLING_EDGE` | Edge points at a missing node |
 | `MISSING_CONFIG`, `INVALID_CONFIG`, `INVALID_HARNESS`, `INVALID_POLICY`, `INVALID_RETRY`, `LOOP_BOUNDS` | Node config is missing or has the wrong shape. `maxIterations` is 1 to 100, `retry.maxAttempts` 1 to 10 and `retry.backoffSec` 0 to 86400 |
 | `INVALID_ESCALATION` | `onExhausted` doesn't name another human, agent or review node, or `onBlocked` doesn't name a human node |

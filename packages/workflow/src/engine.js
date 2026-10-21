@@ -401,7 +401,7 @@ function enter(ctx, item, nodeId, fromNodeId) {
   delete item.retryAt;
   if (node.type === 'loop') {
     const loop = s.plan.loops[nodeId];
-    const count = loop.backSources.includes(fromNodeId) ? (item.loopCounts[nodeId] ?? 0) + 1 : 1;
+    const count = loop.backSources.includes(fromNodeId) ? ownCount(item.loopCounts, nodeId) + 1 : 1;
     item.loopCounts[nodeId] = count;
     item.iteration = count;
     emit(ctx, 'loop.iteration', item, { workItemId: item.id, nodeId, iteration: count, maxIterations: loop.maxIterations });
@@ -464,6 +464,8 @@ function finish(ctx, item, status, failure) {
   else finish(ctx, parent, 'done');
 }
 
+/** A count from a JSON-backed table. Older plans may name nodes after `Object.prototype` members, so never read inherited keys. */
+const ownCount = (table, key) => Object.hasOwn(table, key) ? table[key] : 0;
 const visitRef = visit => Object.fromEntries(['assignmentId', 'jobId', 'mergeId'].filter(key => visit[key]).map(key => [key, visit[key]]));
 const addSeconds = (iso, seconds) => new Date(Date.parse(iso) + seconds * 1000).toISOString();
 
@@ -568,9 +570,9 @@ function planned(ctx, item, node, items) {
 
 function dispatch(ctx) {
   const { s } = ctx;
-  const open = {};
+  const open = new Map();
   for (const assignment of Object.values(s.assignments)) {
-    if (OPEN_ASSIGNMENT.has(assignment.status)) open[assignment.nodeId] = (open[assignment.nodeId] ?? 0) + 1;
+    if (OPEN_ASSIGNMENT.has(assignment.status)) open.set(assignment.nodeId, (open.get(assignment.nodeId) ?? 0) + 1);
   }
   const queued = Object.values(s.workItems).filter(item => item.status === 'queued').sort((a, b) => a.queuedSeq - b.queuedSeq);
   for (const item of queued) {
@@ -578,8 +580,8 @@ function dispatch(ctx) {
     const node = s.plan.nodes[item.nodeId];
     if (node.role) {
       const role = s.plan.roles[node.role];
-      if ((open[node.id] ?? 0) >= role.concurrency) continue;
-      open[node.id] = (open[node.id] ?? 0) + 1;
+      if ((open.get(node.id) ?? 0) >= role.concurrency) continue;
+      open.set(node.id, (open.get(node.id) ?? 0) + 1);
       createAssignment(ctx, item, node, role);
     } else if (node.type === 'ci') {
       if (!item.headSha) { failItem(ctx, item, 'missing_head_sha', `${node.label} needs a head commit; no agent reported one.`); continue; }
