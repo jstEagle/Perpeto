@@ -8,8 +8,8 @@ It talks only to the hub. This round connected it to the real `apps/hub` and che
 
 | Area | Implemented |
 | --- | --- |
-| Hub client | `src/api/client.ts` matches `apps/hub` response shapes (see [Contract](#contract-as-implemented)). Bearer header or session cookie, `idempotencyKey` on every write, hub error bodies surfaced as `HubError`. Events stream over `fetch` + SSE, starting from the newest event and resuming from the last `seq`, with backoff and a polling fallback. |
-| Owner token | Never written to `localStorage`. The client asks the hub for an HttpOnly session cookie behind a feature check. Until the hub serves that route, the token lives in `sessionStorage` for the tab only, with a visible warning in Settings. Tokens left in the old `perpeto.hub.v1` key are moved out on first load. See [Token storage](#token-storage). |
+| Hub client | `src/api/client.ts` matches `apps/hub` response shapes (see [Contract](#contract-as-implemented)). Session cookie (bearer only for hubs without `/session`), `idempotencyKey` on every write, hub error bodies surfaced as `HubError`. Events stream over `fetch` + SSE from the newest `seq` (`GET /events?latest=true&limit=1`), resuming from the last `seq`, with backoff and a polling fallback. The run feed reads `latest=true&runId=` 200 at a time, newest first, and "Show older events" pages back with `before=`. The architect panel reads the project's newest page. Nothing is cached client-side any more. |
+| Owner token | Never stored by a hub that has `/session`: the client exchanges it for the hub's HttpOnly cookie and keeps only `{ baseUrl, auth: 'cookie' }`. Only a hub without the route (404/405) gets the old fallback, the token in `sessionStorage` for this tab with a warning in Settings. Tokens left in the old `perpeto.hub.v1` key are moved out on first load. See [Token storage](#token-storage). |
 | Live refresh | `useResource` refetches on matching events with a debounce and a ceiling (`maxWaitMs`), keeping data on screen. Run metrics refresh on any event for the run (1 s debounce, at most every 4 s); project metrics, usage and merge queue refresh on their events too. |
 | Graph routing | `src/workflow/router.ts` routes every edge for the whole graph at once. Flow runs straight along the main line. Returns along the top row run as nested arcs in one channel above it; returns from lower rows run below their row. An edge into another row takes one elbow through the column gap when it is clear. Delegates and messages leave node tops and bottoms into their own lanes below the main line. Edges between the same two nodes are bundled into one cable with one label. Every horizontal run gets its own lane. Labels are placed only where they touch no node, label or other edge (checked through a grid index); one that cannot fit becomes a tooltip. |
 | Layout | `src/workflow/layout.ts`, hand-written layered layout, left to right. A DFS that follows `out`/`pass` first sets loop back edges aside; the main line (reachable from inputs along primary ports) is ranked by longest path into one column per step. Fail branches go in a lane below, one column after their gate; delegate helpers and escalation targets go below the node they serve. Barycenter sweeps order shared columns to cut crossings, keeping the main line on the top row. Gaps widen until the lanes fit. dagre would only supply the layering and elkjs adds about 1.4 MB and a worker for routing the router already owns, so neither earns a dependency. |
@@ -35,7 +35,9 @@ Run on this Mac with Node 24.22:
 - **Real hub.** I started `apps/hub` from a temporary config (loopback 4320, CORS for `http://localhost:5180`) and seeded it with `node apps/web/scripts/seed-web-demo-hub.mjs <hubUrl> <owner.secret> --hold`. The script acts as the owner and two simulated machines over HTTP. It creates a project. It answers the architect, first with an invalid graph so the hub retries, then valid; that version is activated, and a v2 proposal follows. It starts a run, and the machines play planner, builder, reviewer and CI. `node apps/web/scripts/hub-screenshots.mjs <hubUrl> <owner.secret>` connects through the Settings form and checks that the token is absent from `localStorage`. It captures `hub-*` screenshots at 1440 and 390 with no browser errors. They show real hub data: 24 work items, builder and reviewer saturation, a high reviewer failure rate, hub diffs and validation.
 - `node apps/web/scripts/screenshots.mjs` regenerated the 17 demo screens at both widths. I inspected the live map, proposal, editor, overview and the mobile live map against the brand rules.
 
-Not verified: a real node daemon or harness, real Git or merge delivery (seeded items stop before merge), the session-cookie path against a hub (it needs the route below), Safari or Firefox, screen readers, touch editing.
+- **Session and events round** (main at 1986ea7): 32 Vitest tests (new: cookie proven without the token, `COOKIE_BLOCKED` with no fallback, `latest`/`before`/`runId` paging). Against a real hub (`localhost:4329`, `corsOrigins` `http://localhost:5181`, `longPollMs` 1000) in Chromium, `hub-screenshots.mjs` now checks that connecting leaves `auth: 'cookie'` and no token in local or session storage, that `document.cookie` cannot see `perpeto_session`, that the cookie authenticates, that a reload keeps it and that Disconnect makes the hub answer `401`. A separate probe confirmed `127.0.0.1` from a `localhost` app fails with the fix and stores nothing, cookie-authenticated Pause and Resume pass the CSRF check (200), the feed requests `latest=true&limit=200&runId=` and lists newest first, and "Show older events" pages from 202 to 396 rows.
+
+Not verified: a real node daemon or harness, real Git or merge delivery (seeded items stop before merge), the bearer fallback against a real pre-session hub (unit tests only), cookie expiry after the 12 h TTL, Safari or Firefox, screen readers, touch editing.
 
 ## Live map at 200 nodes
 
@@ -52,19 +54,14 @@ Layout of the same graph takes about 1 ms (two passes 30–40 ms cold, in Vitest
 
 ## Token storage
 
-**Choice:** prefer an HttpOnly cookie set by the hub, with `sessionStorage` as the fallback until the hub has the route. An HttpOnly cookie is the only option that keeps the owner credential away from scripts on the app's origin. `sessionStorage` is still readable by those scripts, but it is limited to one tab and gone when the tab closes, which is strictly better than `localStorage`. Settings says so plainly whenever the fallback is in use.
+**Choice:** the hub's HttpOnly session cookie, the only option that keeps the owner credential away from scripts on the app's origin. `sessionStorage` remains only for hubs without `/session`; Settings says so whenever it is in use.
 
-**Client flow (implemented):** on connect, `GET /api/v1/session` with the bearer token and no credentials. A 404 or 405 means the hub has no route, so the client uses the fallback. Otherwise it sends `POST /api/v1/session` with `credentials: 'include'`, then makes every request with the cookie and no `Authorization` header. Only `{ baseUrl, auth: 'cookie' }` is stored. On load, cookie mode checks `GET /session` and asks for the token again on 401. Disconnect sends `DELETE /api/v1/session`.
+**Client flow (implemented, checked against `apps/hub` on main):**
 
-**Hub contract request** (for the hub owner; not implemented in `apps/hub`):
-
-| Route | Auth | Response |
-| --- | --- | --- |
-| `GET /api/v1/session` | bearer or cookie | `200 { kind: 'owner', expiresAt }` when valid, `401` otherwise |
-| `POST /api/v1/session` | owner bearer, idempotency key allowed | `201 { expiresAt }` plus `Set-Cookie: perpeto_session=<opaque>; HttpOnly; SameSite=Strict; Path=/api/v1; Max-Age=<ttl>`, and `Secure` for any non-loopback origin |
-| `DELETE /api/v1/session` | cookie | `204`, clears the cookie and revokes the session server-side |
-
-Session IDs should be random and stored as hashes, like node tokens, with a configurable TTL (suggested 12 h, sliding). The cookie must authenticate exactly like the owner bearer on every owner route and SSE. CORS must answer `Access-Control-Allow-Credentials: true` for the configured exact origins only, add `DELETE` to the allowed methods and never use `*`. Mutations that use the cookie should require a non-simple header (the client already sends `Content-Type: application/json`, which forces a preflight). The hub should also reject requests whose `Origin` is not allowed. `SameSite=Strict` needs the app and hub on the same site (`localhost:5180` with `localhost:4320` works; `localhost` with `127.0.0.1` does not), or the hub could serve the built app itself.
+1. `GET /api/v1/session` with the bearer token and no credentials. A 404 or 405 means the hub predates sessions: keep the token for this tab only.
+2. Otherwise `POST /api/v1/session` with the bearer and `credentials: 'include'`; the hub answers `201` and sets `perpeto_session` (HttpOnly, SameSite=Strict, `Path=/api/v1`).
+3. A credentialed `GET /session` with no token proves the browser kept the cookie. If it gets `401`, connecting fails with the fix, and nothing is stored. `SameSite=Strict` drops the cookie when the app and hub are on different sites; on one machine that means mixing `localhost` and `127.0.0.1`, so the message names the URL to use. Settings now defaults to the app's own loopback name (`http://localhost:4320` when the app is on `localhost`).
+4. Every request then uses the cookie with no `Authorization` header. POSTs carry a JSON body, which the hub's CSRF check requires along with an allowed `Origin`. On load, cookie mode checks `GET /session` and asks for the token again on `401`. Disconnect sends `DELETE /session`, which ends the session on the hub.
 
 ## Contract as implemented
 
@@ -76,18 +73,20 @@ All gaps listed in the previous handoff are closed against `apps/hub`:
 4. Interaction data: `sourceNodeId`, `targetNodeId`, `edgeId`, `kind`, `unplanned`, `nodeId`, `role`, `machineId`, `workItemId`; gate `result`/`source`/`decision`. The feed writes sentences from node, item and machine names, because hub events carry no summary.
 5. Version status: version records always say `draft`, so the client marks the head's `activeVersion` as active, older versions as previous and newer ones as proposals.
 6. Run input is sent as `{ items: [{ title, body? }] }`, and returns 202 with no work item. Human decisions are sent as `pass` (approve) or `fail` (return).
-7. Messages are still sent as role `owner` to `/api/v1/messaging`, assuming messaging project IDs equal hub project IDs (true for hub-created projects).
+7. Events: `latest=true` and `before=` pages come back oldest first with `previousCursor` (exclusive); the client reverses them. `before=` cursors are contiguous with no overlap, checked against the hub.
+8. Messages are still sent as role `owner` to `/api/v1/messaging`, assuming messaging project IDs equal hub project IDs (true for hub-created projects).
 
 ## Found in the hub and workflow engine (for their owners)
 
-- **Unplanned edges have no endpoints.** `computeRunMetrics` reads `event.data.from`/`to`, but the hub records interactions with `sourceNodeId`/`targetNodeId`. Every unplanned interaction is therefore reported as `unplanned:messages:?->?` with `from: null, to: null`, and the map cannot draw it. The feed still shows these interactions, flagged unplanned.
-- **No latest or per-run event query.** `/events` only pages forward from a cursor. The client reads forward once and keeps the newest 5,000 events in memory, which gets slow on a long-lived hub. Suggested: `GET /events?runId=&before=&limit=` or `latest=true`.
 - **Version records have no timestamp**, so version history shows no dates against a real hub.
-- **CORS has no `DELETE`**, which the session route will need.
+- **`/nodes/lease` always long-polls.** With the example config (`longPollMs` 25 s), a lease call that finds nothing waits 25 s, so a single-threaded simulator such as `seed-web-demo-hub.mjs` lets its other leases expire. The seed now drops lost leases and continues, but a test hub needs `longPollMs` around 1000. A per-request opt-out (`wait: 0`) would help simulators and tests.
+
+Closed since the last handoff: unplanned edges now carry endpoints, `/events` has `latest`, `before` and `runId`, and CORS allows `DELETE` with credentials.
 
 ## Risks and follow-ups
 
-- Until the session route exists, a script injected into the app's origin can read the token while the tab is open. Serve the app only from a trusted origin.
+- Against a hub without `/session`, a script injected into the app's origin can read the token while the tab is open. Serve the app only from a trusted origin.
+- The app and hub must share a site for the cookie. A remote hub on another domain needs the hub to serve the app (or a shared parent site); until then connecting fails with an explanation rather than falling back.
 - The architect harness and providers come from hub config; `src/config/providers.json` still lists illustrative models for the editor.
 - The router minimises crossings but does not eliminate them: a return arc from a gate's `fail` port crosses that gate's own `pass` edge right beside it, and delegate or message lanes below the main line can cross a return from the side lane. Labels never overlap.
 - **Width.** One column per step makes long main lines wide: the nine-step build template fits a 1440 px live map at about 40 % zoom, which is hard to read without zooming in. Wrapping rows was the old answer and caused the doubling back. The coming restyle should decide how the live map frames long graphs (taller canvas, a readable minimum zoom like the editor's, or compact nodes for small graphs too).
