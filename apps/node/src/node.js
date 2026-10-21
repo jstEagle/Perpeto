@@ -8,6 +8,7 @@ import { detectProviders, loadIntegrations } from './executors.js';
 import { loadRedaction, runJob } from './job.js';
 import { createRuntimeSupervisor } from './runtime.js';
 import { FINGERPRINT } from './transport.js';
+import { sanitizeFailure } from './failure.js';
 
 import { processIdentity } from './lock.js';
 
@@ -331,16 +332,32 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         await report(record, { type: 'started', data: {} });
         const executor = registry.find(record.item, machine);
         if (!executor) result = { outcome: 'failure', summary: 'No compatible executor is installed.' };
-        else { record.executed = true; result = await executor.run(record.item, ctx); }
+        else {
+          record.executed = true;
+          record.executorKind = executor.kind;
+          try { result = await executor.run(record.item, ctx); }
+          catch (error) { record.executorThrew = true; throw error; }
+        }
         if (!['success', 'failure', 'blocked'].includes(result?.outcome) || typeof result.summary !== 'string') throw new Error('Invalid executor result.');
       }
       record.work.signal.throwIfAborted();
       if (!record.lost) await report(record, { type: record.kind === 'assignment' && result.outcome === 'failure' ? 'failed' : 'completed', data: result });
     } catch (error) {
+      let failureReason;
+      if (record.kind === 'assignment' && record.executorThrew && !record.work.signal.aborted) {
+        try {
+          const redaction = await loadRedaction(config);
+          const environmentSecrets = Object.entries(process.env).filter(([name]) => /token|secret|password|credential|api_?key/i.test(name)).map(([, value]) => value);
+          failureReason = sanitizeFailure(error, { ...redaction, literals: [...redaction.literals, token, record.item.messaging?.token, ...environmentSecrets] });
+        } catch { failureReason = 'Executor failed; diagnostic redaction is unavailable.'; }
+        // The daemon launcher captures stderr in node.log. Logging cannot prevent lease settlement.
+        try { console.error(JSON.stringify({ event: 'executor.failed', assignmentId: record.item.id, attempt: record.attempt,
+          executorKind: sanitizeFailure(String(record.executorKind)).slice(0, 100), failureReason })); } catch { /* Continue reporting. */ }
+      }
       if (!record.lost) {
         const data = record.kind === 'job'
           ? { status: record.work.signal.aborted ? 'cancelled' : 'error', revision: record.item.revision, configHash: record.item.configHash, steps: [], artifacts: [] }
-          : { outcome: 'failure', summary: record.work.signal.aborted ? 'Node execution was cancelled.' : 'Executor failed.' };
+          : { outcome: 'failure', summary: record.work.signal.aborted ? 'Node execution was cancelled.' : failureReason ?? 'Executor failed.', ...(failureReason ? { failureReason } : {}) };
         await report(record, { type: record.cancelRequested ? 'cancelled' : record.kind === 'job' ? 'completed' : 'failed', data }).catch(() => lose(record));
       }
     } finally {

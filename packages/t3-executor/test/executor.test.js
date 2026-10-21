@@ -252,3 +252,30 @@ test('prompt requires text and credential files must be owner-only', async t => 
   await chmod(file, 0o600);
   assert.equal(await readCredentialFile(file), 'abc');
 });
+
+for (const nodeType of ['agent', 'review']) {
+  test(`${nodeType} summary falls back to the last assistant message`, async t => {
+    const { fake, executor, ctx } = await harness(t);
+    fake.state.onLaunch = ({ threadId }) => {
+      fake.emit(threadId, 'run.updated', build.run(threadId, 1, 'running'));
+      fake.emit(threadId, 'turn-item.updated', build.assistant(threadId, 1, "I'll inspect the library first.", 'opening'));
+      fake.emit(threadId, 'turn-item.updated', build.assistant(threadId, 1,
+        nodeType === 'review' ? 'Verdict: pass. Tests cover all edge cases.' : 'Added slugify. All 17 tests pass.', 'closing'));
+      fake.emit(threadId, 'run.updated', build.run(threadId, 1, 'completed'));
+    };
+    const result = await executor.run(assignment({ nodeType }), ctx);
+    assert.equal(result.summary, nodeType === 'review' ? 'Verdict: pass. Tests cover all edge cases.' : 'Added slugify. All 17 tests pass.');
+  });
+}
+
+test('a structured outcome survives later narration within the same turn', async t => {
+  const { fake, executor, ctx } = await harness(t);
+  fake.state.onLaunch = ({ threadId }) => {
+    fake.emit(threadId, 'run.updated', build.run(threadId, 1, 'running'));
+    fake.emit(threadId, 'turn-item.updated', build.assistant(threadId, 1, '```json\n{"summary":"Added slugify; all tests pass."}\n```', 'result'));
+    fake.emit(threadId, 'turn-item.updated', build.assistant(threadId, 1, 'Closing the workspace.', 'closing'));
+    fake.emit(threadId, 'run.updated', build.run(threadId, 1, 'completed'));
+  };
+  const result = await executor.run(assignment(), ctx);
+  assert.equal(result.summary, 'Added slugify; all tests pass.');
+});

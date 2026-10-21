@@ -65,3 +65,15 @@ test('rebase steps are their own kind and never trust the model about scope', ()
   assert.match(prompt, /how you resolved the conflicts/);
   assert.doesNotMatch(prompt, /pull request URL/);
 });
+
+test('work and review answer formats ask for a final one-line outcome summary', () => {
+  for (const kind of ['work', 'review']) {
+    assert.match(outputInstructions(kind), /one-line outcome summary/);
+    assert.match(outputInstructions(kind), /"summary"/);
+  }
+});
+
+test('builder results prefer the final result block over narration', () => {
+  const parsed = parseRoleResult('work', 'I will investigate.\n' + fenced({ summary: 'Added slugify and passed all tests.' }));
+  assert.deepEqual(parsed, { fields: {}, summary: 'Added slugify and passed all tests.' });
+});

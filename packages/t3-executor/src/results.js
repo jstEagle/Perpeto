@@ -25,10 +25,11 @@ export function outputKind(assignment) {
 
 /** Answer-format instructions appended to the prompt for structured roles. */
 export function outputInstructions(kind) {
-  if (kind === 'review') return 'End your final message with exactly one fenced json block: {"verdict": "pass" | "fail", "summary": "…"}. Use "fail" with actionable feedback in summary when the work needs changes. If you could not complete the review, say so and omit the block.';
+  if (kind === 'review') return 'End your final message with exactly one fenced json block: {"verdict": "pass" | "fail", "summary": "…"}. Write a final one-line outcome summary describing the review result. Use "fail" with actionable feedback in summary when the work needs changes. If you could not complete the review, say so and omit the block.';
   if (kind === 'planner') return 'End your final message with exactly one fenced json block: {"items": [{"title": "…", "body": "…", "touches": ["src/module", "package.json"]}], "summary": "…"}. ' +
     'touches lists the repository-relative files or module directories each item will edit (at most 100, no absolute paths or ".."); overlapping items are built one after another. ' +
     'Use an empty items list when the work item is already small enough to build as one pull request, and put its contract and acceptance criteria in summary.';
+  if (kind === 'work') return 'End your final message with exactly one fenced json block: {"summary": "…"}. Write a final one-line outcome summary describing what changed and the validation result.';
   return null; // The architect prompt carries its own answer format.
 }
 
@@ -93,7 +94,7 @@ function architectExtras(block) {
  * @returns {{ fields: object, summary?: string, error?: string }} `summary` overrides
  * the default summary; `error` turns a successful turn into a failure to retry.
  */
-export function parseRoleResult(kind, text) {
+export function parseRoleResult(kind, text, { fallbackText = text } = {}) {
   const body = typeof text === 'string' ? text : '';
   if (kind === 'review') {
     const block = lastBlock(body, value => isObject(value) && typeof value.verdict === 'string' && /^(pass|fail)$/i.test(value.verdict.trim()));
@@ -102,7 +103,7 @@ export function parseRoleResult(kind, text) {
     // No verdict leaves the result without one; the engine treats that as an error to retry.
     if (!verdict) return { fields: {} };
     const feedback = [block?.summary, block?.feedback].find(value => nonblank(value, 100000));
-    return { fields: { verdict }, summary: feedback?.trim() || prose(body) || `Review verdict: ${verdict}.` };
+    return { fields: { verdict }, summary: feedback?.trim() || prose(typeof fallbackText === 'string' ? fallbackText : '') || `Review verdict: ${verdict}.` };
   }
   if (kind === 'planner') {
     const block = lastBlock(body, value => isObject(value) && Array.isArray(value.items));
@@ -127,6 +128,10 @@ export function parseRoleResult(kind, text) {
     if (extras) return { fields: { graph: block.graph, rationale: block.rationale.trim(), ...extras }, summary: block.rationale.trim() };
     // Let the hub's parser report what is wrong (or accept a bare graph with prose).
     return { fields: {}, summary: body.slice(0, MAX_ARCHITECT_TEXT), unclipped: true };
+  }
+  if (kind === 'work') {
+    const block = lastBlock(body, value => isObject(value) && nonblank(value.summary, 100000));
+    if (block) return { fields: {}, summary: block.summary.trim() };
   }
   return { fields: {} };
 }

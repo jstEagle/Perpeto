@@ -660,6 +660,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       const checkout = thread.worktreePath ?? workspace.workspaceStrategy?.worktreePath ?? (workspace.mode === 'worktree' ? null : workspace.workspaceRoot);
       const revision = await revisionOf(checkout);
       const text = latest ? root.assistantText(latest.id) : '';
+      const finalText = latest ? root.lastAssistantText(latest.id) : '';
       const prUrl = pullRequestUrl(root.allAssistantText());
       const evidence = {
         ...(revision.branch ?? thread.branch ? { branch: revision.branch ?? thread.branch } : {}),
@@ -674,15 +675,16 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         const reason = failure?.message ? `${failure.class ?? 'error'}: ${failure.message}` : `Turn ended with status ${latest?.status ?? 'unknown'}.`;
         return { outcome: 'failure', summary: clip(text ? `${reason}\n\n${text}` : reason), ...evidence };
       }
-      let parsed = parseRoleResult(kind, text);
+      let parsed = parseRoleResult(kind, text, { fallbackText: finalText });
       // A message can add a turn after a structured answer; the answer stands unless a later turn gives a new one.
       if (steered && !BUILDS.has(kind) && (parsed.error || (kind === 'review' && !parsed.fields.verdict))) {
         const earlier = root.orderedRuns().filter(run => run.status === 'completed').map(run => root.assistantText(run.id)).join('\n\n');
-        const fallback = parseRoleResult(kind, earlier);
+        const earlierFinal = root.orderedRuns().filter(run => run.status === 'completed').map(run => root.lastAssistantText(run.id)).filter(Boolean).at(-1) ?? '';
+        const fallback = parseRoleResult(kind, earlier, { fallbackText: earlierFinal });
         if (!fallback.error && (kind !== 'review' || fallback.fields.verdict)) parsed = fallback;
       }
       if (parsed.error) return { outcome: 'failure', summary: clip(`${parsed.error}\n\n${text}`), ...evidence };
-      const summary = parsed.summary ?? (text || 'The agent finished without a written summary.');
+      const summary = parsed.summary ?? (finalText || 'The agent finished without a written summary.');
       signal.throwIfAborted();
       const fields = { ...parsed.fields };
       if (rebase) {
