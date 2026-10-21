@@ -1016,6 +1016,10 @@
 }
 
 .progress-steps .step-done {
+  color: var(--ink);
+}
+
+.progress-steps .step-done svg {
   color: var(--success);
 }
 

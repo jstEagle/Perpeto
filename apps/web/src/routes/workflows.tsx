@@ -71,33 +71,15 @@ export function WorkflowsPage() {
                   <thead>
                     <tr>
                       <th scope="col">Workflow</th>
-                      <th scope="col">Latest version</th>
-                      <th scope="col" className="hide-sm">Authored by</th>
+                      <th scope="col">Versions</th>
+                      <th scope="col" className="hide-sm">Latest by</th>
                       <th scope="col" className="hide-sm">Saved</th>
                       <th scope="col" className="col-chevron"><span className="visually-hidden">Open</span></th>
                     </tr>
                   </thead>
                   <tbody>
                     {list.map((w) => (
-                      <tr key={w.id}>
-                        <td>
-                          <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: w.id }} search={{}} className="row-link">
-                            <span className="cell-title">{w.name}</span>
-                          </Link>
-                          <span className="muted">{PURPOSE[w.purpose]}</span>
-                        </td>
-                        <td>
-                          <div className="cell-stack">
-                            <span className="mono">v{w.version}</span>
-                            <WorkflowStatusLabel status={w.status} />
-                          </div>
-                        </td>
-                        <td className="hide-sm">{w.authoredBy?.kind === 'agent' ? 'Workflow architect' : 'You'}</td>
-                        <td className="hide-sm muted">{relative(w.createdAt)}</td>
-                        <td className="col-chevron" aria-hidden="true">
-                          <IconChevronRight />
-                        </td>
-                      </tr>
+                      <WorkflowRow key={w.id} workflow={w} projectId={projectId} />
                     ))}
                   </tbody>
                 </table>
@@ -108,6 +90,41 @@ export function WorkflowsPage() {
       </Async>
       <ManualDialog open={manual} onClose={() => setManual(false)} projectId={projectId} />
     </div>
+  );
+}
+
+function WorkflowRow({ workflow: w, projectId }: { workflow: Workflow; projectId: string }) {
+  const versions = useResource((api) => api.listVersions(w.id), [w.id], (e) => e.subject.kind === 'workflow' && e.subject.id === w.id);
+  const active = versions.data?.find((v) => v.status === 'active');
+  const draft = versions.data?.find((v) => v.status === 'draft' && v.version > (active?.version ?? 0));
+  return (
+    <tr>
+      <td>
+        <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: w.id }} search={{}} className="row-link">
+          <span className="cell-title">{w.name}</span>
+        </Link>
+        {PURPOSE[w.purpose] !== w.name && <span className="muted">{PURPOSE[w.purpose]}</span>}
+      </td>
+      <td>
+        <div className="cell-stack">
+          {active ? (
+            <WorkflowStatusLabel status="active" title={`Version ${active.version} is active`} />
+          ) : (
+            <span className="muted">No active version</span>
+          )}
+          <span className="note">
+            {active && <>Active <span className="mono">v{active.version}</span></>}
+            {active && draft && ' · '}
+            {draft && <>Draft <span className="mono">v{draft.version}</span> waiting</>}
+          </span>
+        </div>
+      </td>
+      <td className="hide-sm">{w.authoredBy?.kind === 'agent' ? 'Workflow architect' : 'You'}</td>
+      <td className="hide-sm muted">{relative(w.createdAt)}</td>
+      <td className="col-chevron" aria-hidden="true">
+        <IconChevronRight />
+      </td>
+    </tr>
   );
 }
 

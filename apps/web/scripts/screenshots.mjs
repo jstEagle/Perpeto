@@ -37,7 +37,7 @@ const only = process.env.ONLY?.split(',');
 const browser = await chromium.launch();
 const errors = [];
 for (const [size, viewport] of sizes) {
-  const context = await browser.newContext({ viewport, deviceScaleFactor: 2, reducedMotion: 'reduce' });
+  const context = await browser.newContext({ viewport, deviceScaleFactor: Number(process.env.DPR ?? 1), reducedMotion: 'reduce' });
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(`${size} ${page.url()}: ${e.message}`));
   page.on('console', (m) => m.type() === 'error' && errors.push(`${size} ${page.url()}: ${m.text()}`));

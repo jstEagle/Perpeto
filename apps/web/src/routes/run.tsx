@@ -246,7 +246,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
         )}
         {tab === 'timeline' && version && (
           <Panel title="Timeline" flush>
-            <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={null} limit={200} onlyInteractions={false} />
+            <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={null} limit={60} onlyInteractions={false} />
           </Panel>
         )}
       </div>

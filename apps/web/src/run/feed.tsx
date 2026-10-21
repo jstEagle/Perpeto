@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useHub } from '../app/hub-context';
 import type { HubEvent, InteractionData, WorkflowGraph } from '../api/types';
 import { Empty, Loading } from '../components/ui';
@@ -69,7 +69,7 @@ export function InteractionFeed({
   fresh,
   graph,
   selection,
-  limit = 40,
+  limit = 12,
   onlyInteractions = true,
 }: {
   events: HubEvent[] | null;
@@ -79,14 +79,16 @@ export function InteractionFeed({
   limit?: number;
   onlyInteractions?: boolean;
 }) {
-  const listRef = useRef<HTMLOListElement>(null);
+  const [expanded, setExpanded] = useState(false);
   if (!events) return <Loading label="Loading interactions" />;
   const name = (id?: string) => (id ? (graph.nodes.find((n) => n.id === id)?.label ?? id) : '');
-  const shown = events.filter((e) => (!onlyInteractions || INTERACTION_TYPES.has(e.type)) && matchesSelection(e, selection, graph)).slice(0, limit);
+  const matching = events.filter((e) => (!onlyInteractions || INTERACTION_TYPES.has(e.type)) && matchesSelection(e, selection, graph));
+  const shown = expanded ? matching : matching.slice(0, limit);
   if (shown.length === 0)
     return <Empty title={selection ? 'No interactions here yet.' : 'No interactions yet.'}>{selection ? 'Clear the selection to see the whole run.' : 'Agents report moves, delegation and messages as they work.'}</Empty>;
   return (
-    <ol className="feed" ref={listRef}>
+    <>
+    <ol className="feed">
       {shown.map((e) => {
         const d = e.data as InteractionData;
         const route = d.fromNode && d.toNode ? `${name(d.fromNode)} → ${name(d.toNode)}` : d.nodeId ? name(d.nodeId) : '';
@@ -108,5 +110,13 @@ export function InteractionFeed({
         );
       })}
     </ol>
+    {matching.length > shown.length && (
+      <div className="feed-more">
+        <button type="button" className="chip-button" onClick={() => setExpanded(true)}>
+          Show all {matching.length} interactions
+        </button>
+      </div>
+    )}
+    </>
   );
 }

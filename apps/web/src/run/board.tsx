@@ -15,19 +15,21 @@ const COLUMNS: { status: WorkItemStatus; title: string; empty: string }[] = [
 
 /** Work items by status. Items waiting at a human gate can be decided here. */
 export function WorkBoard({ items, graph, runLabel }: { items: WorkItem[]; graph?: WorkflowGraph; runLabel?: (item: WorkItem) => string | undefined }) {
+  const [showAllDone, setShowAllDone] = useState(false);
   return (
     <div className="board" role="list" aria-label="Work items by status">
       {COLUMNS.map((col) => {
-        const list = items.filter((i) => i.status === col.status);
+        const all = items.filter((i) => i.status === col.status);
+        const list = col.status === 'done' && !showAllDone ? all.slice(-6).reverse() : all;
         return (
           <section key={col.status} className="board-col" role="listitem" aria-labelledby={`col-${col.status}`}>
             <header className="board-col-header">
               <WorkStatusLabel status={col.status} />
-              <span className="board-col-count" id={`col-${col.status}`} aria-label={`${col.title}: ${list.length} items`}>
-                {list.length}
+              <span className="board-col-count" id={`col-${col.status}`} aria-label={`${col.title}: ${all.length} items`}>
+                {all.length}
               </span>
             </header>
-            {list.length === 0 ? (
+            {all.length === 0 ? (
               <p className="note" style={{ padding: 12 }}>
                 {col.empty}
               </p>
@@ -37,6 +39,13 @@ export function WorkBoard({ items, graph, runLabel }: { items: WorkItem[]; graph
                   <WorkCard key={item.id} item={item} graph={graph} runLabel={runLabel?.(item)} />
                 ))}
               </ul>
+            )}
+            {all.length > list.length && (
+              <div className="board-more">
+                <button type="button" className="chip-button" onClick={() => setShowAllDone(true)}>
+                  Show all {all.length} done
+                </button>
+              </div>
             )}
           </section>
         );

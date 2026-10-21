@@ -313,6 +313,8 @@ function CanvasInner(props: GraphCanvasProps) {
   );
 
   const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  // On phones a fitted graph is too small to read; open at a legible zoom from the start of the flow.
+  const [narrow] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches);
 
   return (
     <div className={`graph ${props.className ?? ''} graph-${mode}`} role="group" aria-label={label}>
@@ -348,7 +350,8 @@ function CanvasInner(props: GraphCanvasProps) {
         deleteKeyCode={mode === 'edit' ? ['Backspace', 'Delete'] : null}
         selectionKeyCode={null}
         multiSelectionKeyCode={null}
-        fitView
+        fitView={!narrow}
+        defaultViewport={narrow ? { x: 16, y: 48, zoom: 0.62 } : undefined}
         fitViewOptions={{ padding: 0.12, maxZoom: 1 }}
         minZoom={0.3}
         maxZoom={1.6}

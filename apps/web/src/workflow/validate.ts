@@ -107,14 +107,15 @@ export function validateGraph(graph: WorkflowGraph): ValidationIssue[] {
     if (node.type !== 'input' && !reached.has(node.id))
       warn(`${name(node)} is not reachable from an input, so work never arrives.`, { nodeId: node.id }, 'unreachable');
 
-  // Every flow cycle must pass through a loop node, which bounds iterations.
-  for (const component of stronglyConnected(graph.nodes.map((n) => n.id), flow.map((e) => [e.from.node, e.to.node]))) {
-    const cyclic = component.length > 1 || flow.some((e) => e.from.node === component[0] && e.to.node === component[0]);
+  // Every flow cycle must pass through a loop node, which bounds iterations:
+  // with loop nodes removed, no cycle may remain.
+  const isLoop = (id: string) => nodes.get(id)?.type === 'loop';
+  const unlooped = flow.filter((e) => !isLoop(e.from.node) && !isLoop(e.to.node));
+  for (const component of stronglyConnected(graph.nodes.filter((n) => n.type !== 'loop').map((n) => n.id), unlooped.map((e) => [e.from.node, e.to.node]))) {
+    const cyclic = component.length > 1 || unlooped.some((e) => e.from.node === component[0] && e.to.node === component[0]);
     if (!cyclic) continue;
-    if (!component.some((id) => nodes.get(id)?.type === 'loop')) {
-      const names = component.map((id) => name(nodes.get(id)!)).join(', ');
-      err(`Work can cycle forever through ${names}. Route the cycle through a loop node.`, { nodeId: component[0] }, 'unbounded_cycle');
-    }
+    const names = component.map((id) => name(nodes.get(id)!)).join(', ');
+    err(`Work can cycle forever through ${names}. Route the cycle through a loop node.`, { nodeId: component[0] }, 'unbounded_cycle');
   }
   for (const node of graph.nodes) {
     if (node.type !== 'loop') continue;

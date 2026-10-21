@@ -630,6 +630,7 @@ code.mono {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-6);
+  align-items: start;
 }
 
 .grid-main-side {
@@ -2148,4 +2149,15 @@ select.input {
 .editor-page {
   display: flex;
   flex-direction: column;
+}
+
+.feed-more {
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-14);
+}
+
+.board-more {
+  padding: 0 var(--space-4) var(--space-3);
+  font-size: var(--text-12);
 }

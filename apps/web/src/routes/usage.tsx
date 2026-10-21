@@ -78,7 +78,7 @@ function DayChart({ rows, today }: { rows: UsageRow[]; today: string }) {
   const top = Math.ceil(max / step) * step;
   const rules = Array.from({ length: Math.round(top / step) }, (_, i) => (i + 1) * step);
   return (
-    <Panel title="Tokens per day" actions={<span className="note">Input and output · last {rows.length} days</span>}>
+    <Panel title="Tokens per day" actions={<span className="note">Input and output · last {rows.length} UTC days</span>}>
       <figure className="chart" aria-label={`Tokens per day: ${rows.map((r) => `${day(r.key)} ${tokens(total(r))}`).join(', ')}`}>
         <div className="bars" aria-hidden="true">
           {rules.map((v) => (
@@ -113,7 +113,7 @@ function UsageTable({ summary }: { summary: UsageSummary }) {
   const grand = summary.rows.reduce((s, r) => s + total(r), 0);
   const label = (k: string) => (summary.groupBy === 'day' ? day(k) : summary.groupBy === 'provider' ? providerLabel(k) : k);
   const mono = summary.groupBy === 'model';
-  const head = { day: 'Day', provider: 'Provider', model: 'Model', machine: 'Machine' }[summary.groupBy];
+  const head = { day: 'Day (UTC)', provider: 'Provider', model: 'Model', machine: 'Machine' }[summary.groupBy];
   return (
     <div className="panel panel-flush table-wrap">
       <table className="table">
@@ -140,11 +140,13 @@ function UsageTable({ summary }: { summary: UsageSummary }) {
               <td className="num">
                 <b>{tokens(total(r))}</b>
               </td>
-              <td className="hide-sm share-cell">
-                <span className="hbar-track" aria-hidden="true">
-                  <span className="hbar" style={{ width: `${(total(r) / grand) * 100}%` }} />
-                </span>
-                <span className="note tabular">{pct(total(r) / grand)}</span>
+              <td className="hide-sm">
+                <div className="share-cell">
+                  <span className="hbar-track" aria-hidden="true">
+                    <span className="hbar" style={{ width: `${(total(r) / grand) * 100}%` }} />
+                  </span>
+                  <span className="note tabular">{pct(total(r) / grand)}</span>
+                </div>
               </td>
             </tr>
           ))}
