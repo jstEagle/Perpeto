@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off
+// Synchronous filesystem helpers manage the SQLite test fixture outside Effect.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +20,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
-import { afterEach, beforeEach } from "vitest";
+import { afterEach, beforeEach } from "vite-plus/test";
 
 import { AgentPolicyStore } from "../../../../../../packages/t3-executor/src/policy-store.js";
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
