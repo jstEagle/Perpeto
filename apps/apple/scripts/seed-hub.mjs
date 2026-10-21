@@ -180,6 +180,24 @@ for (let turn = 0; turn < 40 && idle < 4; turn++) {
   }
 }
 
+// Messages in the run channel: agents use their assignment's message event,
+// the owner the messaging route. One delivery is reported, as an executor would.
+{
+  const holding = nodeId => [...held.values()].find(h => h.assignment.nodeId === nodeId);
+  const builder = holding('builder'), reviewer = holding('reviewer');
+  const say = async (h, recipientRoleId, body) => (await post(h.machine, h.assignment, 'message', { recipientRoleId, body })).message;
+  let fix;
+  if (builder) fix = await say(builder, 'reviewer', 'Pushed the fix for the empty window; ready for another look.');
+  if (reviewer) {
+    await say(reviewer, 'owner', 'Two items touch the API contract. Should I hold them for you?');
+    await say(reviewer, 'planner', 'Item 4 is really two changes. Can you split it?');
+    if (fix) await post(reviewer.machine, reviewer.assignment, 'delivered', { messageIds: [fix.id], via: 'steer' });
+  }
+  await call('POST', `/messaging/projects/${project.id}/channels/run-${run.id}/messages`, {
+    senderRoleId: 'owner', recipientRoleId: 'builder', body: 'Keep the change behind the flag until review passes.',
+  }).catch(error => console.warn(error.message));
+}
+
 console.log(JSON.stringify({ projectId: project.id, workflowId: workflow.id, runId: run.id, held: held.size }));
 
 // Stay alive for the requested time, then let leases lapse.

@@ -194,12 +194,52 @@ public actor DemoDataSource: FactoryDataSource {
         projects[projectId]?.workItems[index].status = .blocked
     }
 
-    public func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message {
+    public func sendMessage(projectId: String, channelId: String, body: String, to recipient: MessageRecipient, parentId: String?) async throws -> Message {
         var state = try project(projectId)
-        let message = Message(id: "msg_\(UUID().uuidString.prefix(8))", projectId: projectId, channelId: channelId, senderRoleId: "owner", body: body, createdAt: now())
+        let parent = parentId.flatMap { id in state.messages[channelId]?.first { $0.id == id } }
+        let recipientRole: String? = switch recipient {
+        case .role(let role): role
+        case .everyone: nil
+        case .parentSender: parent.map { $0.senderRoleId == "owner" ? $0.recipientRoleId : $0.senderRoleId } ?? nil
+        }
+        let id = "msg_\(UUID().uuidString.prefix(8))"
+        let message = Message(id: id, projectId: projectId, channelId: channelId, senderRoleId: "owner", recipientRoleId: recipientRole, body: body,
+                              createdAt: now(), threadId: parent?.threadId ?? id, parentId: parentId, senderKind: .owner,
+                              receipt: recipientRole == nil ? nil : Receipt(state: .stored))
         state.messages[channelId, default: []].append(message)
         projects[projectId] = state
         return message
+    }
+
+    public func ackMessage(projectId: String, channelId: String, messageId: String) async throws -> Message {
+        var state = try project(projectId)
+        guard let index = state.messages[channelId]?.firstIndex(where: { $0.id == messageId }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "That message no longer exists.")
+        }
+        var message = state.messages[channelId]![index]
+        guard message.recipientRoleId == "owner" else {
+            throw HubError.http(status: 403, code: "NOT_RECIPIENT", message: "Only messages addressed to you can be acknowledged.")
+        }
+        var receipt = message.receipt ?? Receipt(state: .stored)
+        if receipt.state != .acked {
+            if receipt.deliveredAt == nil { receipt.deliveredAt = now(); receipt.deliveredVia = .read }
+            receipt.state = .acked
+            receipt.ackedAt = now()
+        }
+        message.receipt = receipt
+        state.messages[channelId]![index] = message
+        projects[projectId] = state
+        return message
+    }
+
+    public func markRead(projectId: String, channelId: String, messageId: String) async throws -> UnreadState {
+        var state = try project(projectId)
+        let messages = state.messages[channelId] ?? []
+        let position = messages.firstIndex { $0.id == messageId } ?? (messages.count - 1)
+        let remaining = messages.suffix(from: min(position + 1, messages.count)).filter { $0.senderRoleId != "owner" && ($0.recipientRoleId == nil || $0.recipientRoleId == "owner") }.count
+        state.unread[channelId] = remaining
+        projects[projectId] = state
+        return UnreadState(roleId: "owner", unreadCount: remaining, lastReadMessageId: messageId)
     }
 
     public func enrollmentCode() async throws -> EnrollmentCode {

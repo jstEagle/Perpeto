@@ -158,3 +158,15 @@ struct GraphLayoutTests {
         #expect(points.allSatisfy { $0.x >= 0 && $0.y >= 0 && $0.x <= layout.contentSize.width && $0.y <= layout.contentSize.height })
     }
 }
+
+@Suite("Compact map")
+struct CompactLayoutTests {
+    @Test func compactCardsFitMoreAndStillNeverCross() throws {
+        let graph = try #require(GraphLayoutTests.template())
+        let full = GraphLayout(graph: graph, nodeHeight: 120)
+        let compact = GraphLayout(graph: graph, nodeHeight: 84, nodeWidth: GraphLayout.compactNodeWidth, gapX: GraphLayout.compactGapX)
+        #expect(compact.contentSize.width < full.contentSize.width * 0.85)
+        let flow = graph.edges.filter { $0.kind == .flow }.compactMap { compact.route($0) }
+        for (i, a) in flow.enumerated() { for b in flow[(i + 1)...] { #expect(GraphLayoutTests.crossings(a, b) == 0) } }
+    }
+}

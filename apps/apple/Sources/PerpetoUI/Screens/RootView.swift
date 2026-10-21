@@ -180,6 +180,8 @@ struct Sidebar: View {
         case .mergeQueue:
             let open = state.mergeQueue.filter { $0.status == .queued || $0.status == .testing || $0.status == .merging }.count
             return open > 0 ? .count(open) : nil
+        case .messages:
+            return state.unreadTotal > 0 ? .count(state.unreadTotal) : nil
         case .workflows:
             let drafts = state.workflows.filter { state.pendingDraft(of: $0.id) != nil }.count
             return drafts > 0 ? .count(drafts) : nil

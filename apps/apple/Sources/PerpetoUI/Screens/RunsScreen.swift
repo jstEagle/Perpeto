@@ -97,6 +97,10 @@ struct RunDetail: View {
     @State private var moreIssues = false
     @State private var showAllActivity = false
     @State private var nodeDetails = false
+    /// Bumped by "Show on map" to pan to and highlight a step.
+    @State private var focusToken = 0
+    @State private var focusNodeId: String?
+    @State private var mapWidth: CGFloat = 960
     @Environment(\.compactLayout) private var compact
 
     private var workflow: Workflow? {
@@ -180,10 +184,7 @@ struct RunDetail: View {
         let label = workflow?.graph.node(top.nodeId)?.label ?? top.nodeId
         let draft = state.pendingDraft(of: run.workflowId)
         let actions = HStack(spacing: PerpetoSpacing.x(2)) {
-            Button("Show on map") {
-                tab = .map
-                selection = .node(top.nodeId)
-            }
+            Button("Show on map") { showOnMap(top.nodeId) }
             .buttonStyle(.perpetoGhost)
             if let draft {
                 Button("Review proposal") {
@@ -245,6 +246,14 @@ struct RunDetail: View {
         }
     }
 
+    /// Pans the map to the step and selects it, which highlights it.
+    private func showOnMap(_ nodeId: String) {
+        tab = .map
+        focusNodeId = nodeId
+        withAnimation(PerpetoMotion.easeOut()) { selection = .node(nodeId) }
+        focusToken += 1
+    }
+
     private func setWindow(_ window: MetricsWindow) {
         Task { await store.setMetricsWindow(window) }
     }
@@ -258,8 +267,10 @@ struct RunDetail: View {
             if compact {
                 StepList(graph: workflow.graph, live: metrics.map { LiveOverlay(metrics: $0, workItems: runItems, events: runEvents) }, selection: $selection)
             } else {
-                GraphViewport(graph: workflow.graph, mode: mode, selection: $selection, initialRoleScope: .selected)
-                    .frame(height: mapHeight(workflow.graph, mode: mode))
+                GraphViewport(graph: workflow.graph, mode: mode, selection: $selection, initialRoleScope: .selected,
+                              fitWithCompactCards: true, focusNodeId: focusNodeId ?? selection?.nodeId ?? bottlenecks.first?.nodeId, focusToken: focusToken)
+                    .frame(height: GraphViewport.idealHeight(graph: workflow.graph, mode: mode, width: mapWidth, compactCards: true))
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { mapWidth = $0 }
                     .overlay(alignment: .top) {
                         if metrics == nil {
                             Text(run.status == .running ? "Waiting for the first measurements from the hub." : "This run has ended. Live measurements are kept only while a run is active.")
@@ -289,11 +300,6 @@ struct RunDetail: View {
             }
             .card()
         }
-    }
-
-    /// Tall enough for the drawing at 100%, within reason.
-    private func mapHeight(_ graph: WorkflowGraph, mode: GraphMode) -> CGFloat {
-        min(720, max(400, GraphCanvas.layout(graph: graph, mode: mode, include: { _ in false }).contentSize.height + 24))
     }
 
     // MARK: Work

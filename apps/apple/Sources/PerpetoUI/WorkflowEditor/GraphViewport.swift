@@ -11,11 +11,18 @@ struct GraphViewport: View {
     var connectKind: GraphEdge.Kind = .messages
     /// Initial role-edge scope; the legend toggles it.
     var initialRoleScope: RoleEdgeScope = .selected
+    /// Live map: switch to compact cards when the drawing would not fit.
+    var fitWithCompactCards = false
+    /// A step to keep in view: centred when the map opens (if the drawing is
+    /// wider than the view) and whenever `focusToken` changes.
+    var focusNodeId: String?
+    var focusToken = 0
 
     @State private var zoom: CGFloat?
     @State private var roleScope: RoleEdgeScope?
     /// Zoom when a pinch began, so the gesture scales from where it started.
     @State private var pinchBase: CGFloat?
+    @State private var position = ScrollPosition()
     @Environment(\.compactLayout) private var compact
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -26,16 +33,27 @@ struct GraphViewport: View {
         GeometryReader { proxy in
             let scope = roleScope ?? initialRoleScope
             let probe = GraphCanvas(graph: graph, mode: mode, selection: $selection, roleScope: scope)
-            let content = GraphCanvas.layout(graph: graph, mode: mode, include: probe.isVisible).contentSize
-            // Fit the whole drawing, but never below 60%; past that the
-            // drawing pans instead of shrinking cards to illegible sizes.
-            let fit = min(1, max(0.6, min(proxy.size.width / content.width, (proxy.size.height - 56) / content.height)))
+            let room = CGSize(width: proxy.size.width, height: proxy.size.height - 56)
+            let full = GraphCanvas.layout(graph: graph, mode: mode, include: probe.isVisible)
+            let fullFit = min(room.width / full.contentSize.width, room.height / full.contentSize.height)
+            // Fit all steps by default: switch to compact cards when the full
+            // drawing would need shrinking, and allow them smaller.
+            let compact = fitWithCompactCards && fullFit < 0.85
+            let layout = compact ? GraphCanvas.layout(graph: graph, mode: mode, compact: true, include: probe.isVisible) : full
+            let content = layout.contentSize
+            let fit = min(1, max(compact ? 0.45 : 0.6, min(room.width / content.width, room.height / content.height)))
             let scale = zoom ?? fit
             let canvas = GraphCanvas(graph: graph, mode: mode, selection: $selection, zoom: scale,
                                      minSize: CGSize(width: proxy.size.width / scale, height: proxy.size.height / scale),
-                                     editable: editable, connectKind: connectKind, roleScope: scope, onMove: onMove, onConnect: onConnect)
+                                     editable: editable, connectKind: connectKind, roleScope: scope, compact: compact, onMove: onMove, onConnect: onConnect)
             ScrollView([.horizontal, .vertical]) { canvas }
                 .scrollIndicators(.hidden)
+                .scrollPosition($position)
+                .onAppear {
+                    // Keep the step that needs attention in view when the drawing is wider than the map.
+                    if content.width * scale > proxy.size.width + 1 { reveal(focusNodeId, layout: layout, scale: scale, in: proxy.size, animated: false) }
+                }
+                .onChange(of: focusToken) { _, _ in reveal(focusNodeId, layout: layout, scale: scale, in: proxy.size, animated: true) }
                 .background(PerpetoColor.editorCanvas)
                 .simultaneousGesture(
                     MagnifyGesture()
@@ -59,6 +77,28 @@ struct GraphViewport: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: PerpetoRadius.panel, style: .continuous))
         .perpetoElevation(.card, cornerRadius: PerpetoRadius.panel)
+    }
+
+    /// The card height that shows the fitted drawing without empty space,
+    /// for a map of the given width. Mirrors the fitting in `body`.
+    static func idealHeight(graph: WorkflowGraph, mode: GraphMode, width: CGFloat, compactCards: Bool, minHeight: CGFloat = 320, maxHeight: CGFloat = 720) -> CGFloat {
+        let hideRoles: (GraphEdge) -> Bool = { _ in false }
+        let full = GraphCanvas.layout(graph: graph, mode: mode, include: hideRoles).contentSize
+        let compact = compactCards && width / full.width < 0.85
+        let content = compact ? GraphCanvas.layout(graph: graph, mode: mode, compact: true, include: hideRoles).contentSize : full
+        let scale = min(1, max(compact ? 0.45 : 0.6, width / content.width))
+        return min(maxHeight, max(minHeight, content.height * scale + 56))
+    }
+
+    /// Pans so the step is centred, as far as the drawing allows.
+    private func reveal(_ nodeId: String?, layout: GraphLayout, scale: CGFloat, in size: CGSize, animated: Bool) {
+        guard let nodeId, let frame = layout.frame(id: nodeId) else { return }
+        let content = CGSize(width: max(layout.contentSize.width, size.width / scale) * scale, height: max(layout.contentSize.height, size.height / scale) * scale)
+        let x = min(max(0, frame.midX * scale - size.width / 2), max(0, content.width - size.width))
+        let y = min(max(0, frame.midY * scale - size.height / 2), max(0, content.height - size.height))
+        withAnimation(animated ? PerpetoMotion.easeOut(PerpetoMotion.slow, reduceMotion: reduceMotion) : nil) {
+            position.scrollTo(point: CGPoint(x: x, y: y))
+        }
     }
 }
 

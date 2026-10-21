@@ -320,7 +320,11 @@ actor CountingSource: FactoryDataSource {
     func control(runId: String, _ action: HubClient.RunControl) async throws -> Run { try await demo.control(runId: runId, action) }
     func startRun(workflowId: String) async throws -> Run { try await demo.startRun(workflowId: workflowId) }
     func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws { try await demo.decide(workItemId: workItemId, decision, decisionId: decisionId) }
-    func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message { try await demo.sendMessage(projectId: projectId, channelId: channelId, body: body) }
+    func sendMessage(projectId: String, channelId: String, body: String, to recipient: MessageRecipient, parentId: String?) async throws -> Message {
+        try await demo.sendMessage(projectId: projectId, channelId: channelId, body: body, to: recipient, parentId: parentId)
+    }
+    func ackMessage(projectId: String, channelId: String, messageId: String) async throws -> Message { try await demo.ackMessage(projectId: projectId, channelId: channelId, messageId: messageId) }
+    func markRead(projectId: String, channelId: String, messageId: String) async throws -> UnreadState { try await demo.markRead(projectId: projectId, channelId: channelId, messageId: messageId) }
     func enrollmentCode() async throws -> EnrollmentCode { try await demo.enrollmentCode() }
     func drain(machineId: String) async throws -> Machine { try await demo.drain(machineId: machineId) }
     nonisolated func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> { AsyncThrowingStream { _ in } }
@@ -358,5 +362,70 @@ struct DecisionTests {
         item.decisionId = "hd_new"
         await store.decide(projectId: project, item: item, .pass)
         #expect(store.lastError == nil)
+    }
+}
+
+@Suite("Controlled messaging")
+struct MessagingTests {
+    static let v2 = """
+    { "id": "m2", "projectId": "p", "channelId": "run-r", "senderRoleId": "planner", "recipientRoleId": "builder", "body": "Split it.",
+      "createdAt": "2026-10-21T09:00:00Z", "threadId": "m1", "parentId": "m1", "senderKind": "agent", "senderAssignmentId": "asg_1",
+      "unplanned": true, "receipt": { "state": "delivered", "deliveredAt": "2026-10-21T09:00:20Z", "deliveredVia": "steer", "deliveredTo": "asg_2",
+      "ackedAt": null, "ackNote": null } }
+    """
+
+    @Test func decodesThreadsReceiptsAndOldMessages() throws {
+        let m = try HubCoding.decoder().decode(Message.self, from: Data(Self.v2.utf8))
+        #expect(m.threadId == "m1")
+        #expect(!m.isRoot)
+        #expect(m.unplanned)
+        #expect(m.receipt?.state == .delivered)
+        #expect(m.receipt?.deliveredVia == .steer)
+        let old = try HubCoding.decoder().decode(Message.self, from: Data("""
+        { "id": "m9", "projectId": "p", "channelId": "c", "senderRoleId": "owner", "recipientRoleId": null, "body": "Hi", "createdAt": "2026-10-21T09:00:00Z" }
+        """.utf8))
+        #expect(old.threadId == "m9")
+        #expect(old.isRoot)
+        #expect(old.receipt == nil)
+    }
+
+    @Test func repliesAckAndReadCursorUseTheContract() async throws {
+        let stub = StubTransport { request in
+            let path = request.url!.path()
+            if path.hasSuffix("/ack") { return (200, #"{"message":"# + MessagingTests.v2 + #","changed":true}"#) }
+            if path.hasSuffix("/unread") { return (200, #"{"roleId":"owner","messages":[],"unreadCount":3,"lastReadMessageId":"m1"}"#) }
+            if path.hasSuffix("/read-cursor") { return (200, #"{"roleId":"owner","lastReadMessageId":"m2","unreadCount":0}"#) }
+            return (200, #"{"message":"# + MessagingTests.v2 + #","duplicate":false}"#)
+        }
+        let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: "t", transport: stub)
+        _ = try await client.sendMessage(projectId: "p", channelId: "run-r", senderRoleId: "owner", to: .parentSender, parentId: "m1", body: "Thanks")
+        _ = try await client.sendMessage(projectId: "p", channelId: "run-r", senderRoleId: "owner", to: .everyone, parentId: "m1", body: "All of you")
+        let reply = try JSONSerialization.jsonObject(with: stub.requests[0].httpBody!) as! [String: Any]
+        #expect(reply["parentId"] as? String == "m1")
+        #expect(reply.keys.contains("recipientRoleId") == false, "a reply without a recipient answers the parent's sender")
+        let everyone = try JSONSerialization.jsonObject(with: stub.requests[1].httpBody!) as! [String: Any]
+        #expect(everyone["recipientRoleId"] is NSNull, "an explicit null addresses the channel")
+        _ = try await client.ackMessage(projectId: "p", channelId: "run-r", messageId: "m2", roleId: "owner")
+        #expect(stub.requests[2].url?.path() == "/api/v1/messaging/projects/p/channels/run-r/messages/m2/ack")
+        #expect(try await client.unread(projectId: "p", channelId: "run-r", roleId: "owner").unreadCount == 3)
+        #expect(stub.requests[3].url?.query()?.contains("roleId=owner") == true)
+        #expect(try await client.markRead(projectId: "p", channelId: "run-r", messageId: "m2", roleId: "owner").unreadCount == 0)
+    }
+
+    @MainActor @Test func ownerAcksAndReadsInTheDemo() async throws {
+        let store = FactoryStore(source: DemoDataSource(stageDelay: .zero))
+        await store.refresh()
+        let project = DemoFixtures.primaryProjectId
+        let channel = "run-\(DemoFixtures.liveRunId)"
+        #expect(store.state(project).unread[channel] == 1)
+        let question = try #require(store.state(project).messages[channel]?.first { $0.recipientRoleId == "owner" })
+        await store.acknowledge(question)
+        #expect(store.state(project).messages[channel]?.first { $0.id == question.id }?.receipt?.state == .acked)
+        await store.markRead(projectId: project, channelId: channel)
+        #expect(store.state(project).unread[channel] == 0)
+        await store.send(projectId: project, channelId: channel, body: "Looking now.", to: .parentSender, parentId: question.id)
+        let reply = try #require(store.state(project).messages[channel]?.last)
+        #expect(reply.threadId == question.threadId)
+        #expect(reply.recipientRoleId == question.senderRoleId)
     }
 }

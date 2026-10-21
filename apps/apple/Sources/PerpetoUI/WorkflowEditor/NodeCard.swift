@@ -10,6 +10,8 @@ struct NodeCard: View {
     var mode: GraphMode
     var selected: Bool
     var lifted = false
+    /// Name and stat line only, for fitting a whole run on screen.
+    var compact = false
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -43,7 +45,7 @@ struct NodeCard: View {
                     .help(error.message)
             }
         }
-        .padding(PerpetoSpacing.x(4))
+        .padding(PerpetoSpacing.x(compact ? 3 : 4))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.node, style: .continuous))
         .overlay {
@@ -56,7 +58,7 @@ struct NodeCard: View {
         .selectionOutline(selected)
         .overlay(alignment: .topTrailing) {
             if isLiveNow {
-                LiveDot(size: PerpetoIndicator.dot).padding(PerpetoSpacing.x(4) - PerpetoIndicator.halo / 2)
+                LiveDot(size: PerpetoIndicator.dot).padding(PerpetoSpacing.x(compact ? 3 : 4) - PerpetoIndicator.halo / 2)
             } else if let change, change != .unchanged {
                 Tag(change.title).offset(y: -11).padding(.trailing, PerpetoSpacing.x(4))
             }
@@ -69,17 +71,19 @@ struct NodeCard: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: PerpetoSpacing.x(3)) {
-            IconTile(node.type.systemImage, size: 32)
+        HStack(alignment: compact ? .center : .top, spacing: PerpetoSpacing.x(compact ? 2 : 3)) {
+            IconTile(node.type.systemImage, size: compact ? 24 : 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(node.label)
-                    .font(PerpetoFont.bodyMedium)
+                    .font(compact ? PerpetoFont.captionMedium : PerpetoFont.bodyMedium)
                     .foregroundStyle(PerpetoColor.ink)
                     .lineLimit(1)
-                Text(meta)
-                    .font(PerpetoFont.small)
-                    .foregroundStyle(PerpetoColor.muted)
-                    .lineLimit(1)
+                if !compact {
+                    Text(meta)
+                        .font(PerpetoFont.small)
+                        .foregroundStyle(PerpetoColor.muted)
+                        .lineLimit(1)
+                }
             }
             .padding(.trailing, isLiveNow ? PerpetoSpacing.x(3) : 0)
         }
@@ -116,7 +120,7 @@ struct NodeCard: View {
 
     private func stat(_ text: String, strong: Bool) -> some View {
         Text(text)
-            .font(PerpetoFont.caption.monospacedDigit())
+            .font((compact ? PerpetoFont.small : PerpetoFont.caption).monospacedDigit())
             .foregroundStyle(strong ? PerpetoColor.ink : PerpetoColor.muted)
             .lineLimit(1)
     }

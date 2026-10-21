@@ -57,16 +57,20 @@ public struct HubDataSource: FactoryDataSource {
 
         let channels = await channelsCall
         var messages: [String: [Message]] = [:]
+        var unread: [String: Int] = [:]
         for channel in channels {
             messages[channel.id] = (try? await client.messages(projectId: projectId, channelId: channel.id))?.messages ?? []
+            unread[channel.id] = (try? await client.unread(projectId: projectId, channelId: channel.id, roleId: ownerRoleId, limit: 1))?.unreadCount
         }
         // Newest first, like the live feed.
         let events = (await eventsCall)?.events.reversed() ?? []
 
-        return try await ProjectState(
+        var state = try await ProjectState(
             workflows: workflows, versions: versions, runs: runs, workItems: items,
             assignments: assignments, mergeQueue: mergeQueue, channels: channels, messages: messages, usage: usage,
             metrics: metrics, runMetrics: runMetrics, events: Array(events))
+        state.unread = unread
+        return state
     }
 
     public func loadRun(_ runId: String, window: MetricsWindow) async throws -> RunSnapshot {
@@ -156,8 +160,14 @@ public struct HubDataSource: FactoryDataSource {
     public func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws {
         try await client.decide(workItemId: workItemId, decision, decisionId: decisionId)
     }
-    public func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message {
-        try await client.sendMessage(projectId: projectId, channelId: channelId, senderRoleId: ownerRoleId, recipientRoleId: nil, body: body)
+    public func sendMessage(projectId: String, channelId: String, body: String, to recipient: MessageRecipient, parentId: String?) async throws -> Message {
+        try await client.sendMessage(projectId: projectId, channelId: channelId, senderRoleId: ownerRoleId, to: recipient, parentId: parentId, body: body)
+    }
+    public func ackMessage(projectId: String, channelId: String, messageId: String) async throws -> Message {
+        try await client.ackMessage(projectId: projectId, channelId: channelId, messageId: messageId, roleId: ownerRoleId)
+    }
+    public func markRead(projectId: String, channelId: String, messageId: String) async throws -> UnreadState {
+        try await client.markRead(projectId: projectId, channelId: channelId, messageId: messageId, roleId: ownerRoleId)
     }
     public func enrollmentCode() async throws -> EnrollmentCode { try await client.createEnrollmentCode() }
     public func drain(machineId: String) async throws -> Machine { try await client.drain(machineId: machineId) }
