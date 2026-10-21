@@ -1,0 +1,10 @@
+{
+  "name": "@perpeto/factory-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.js", "./engine": "./src/engine/workflow-adapter.js" },
+  "bin": { "perpeto-hub": "./bin/perpeto-hub.js" },
+  "engines": { "node": ">=24.13.1 <25" },
+  "scripts": { "test": "node --test" }
+}
