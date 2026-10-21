@@ -1,5 +1,6 @@
 import { useResource } from '../app/hub-context';
-import { Async, Empty, PageHeader } from '../components/ui';
+import { Async, Disclosure, Empty, PageHeader } from '../components/ui';
+import { IconAccounts } from '../components/icons';
 import { AccountStatusLabel } from '../components/status';
 import { providerLabel } from '../workflow/registry';
 import { clock, relative } from '../lib/format';
@@ -15,12 +16,15 @@ export function AccountsPage() {
       <Async resource={accounts} what="accounts">
         {(list) =>
           list.length === 0 ? (
-            <div className="panel">
-              <Empty title="No accounts reported.">Machines report their harness accounts with each heartbeat.</Empty>
-            </div>
+            <section className="card">
+              <Empty title="No accounts reported" icon={<IconAccounts />}>
+                Machines report their harness accounts with each heartbeat.
+              </Empty>
+            </section>
           ) : (
             <>
-              <div className="panel panel-flush table-wrap">
+              <section className="card">
+                <div className="table-wrap">
                 <table className="table">
                   <caption className="visually-hidden">Accounts by machine</caption>
                   <thead>
@@ -39,31 +43,38 @@ export function AccountsPage() {
                         <tr key={a.id}>
                           <td>
                             <span className="cell-title">{a.label}</span>
-                            <span className="mono muted">{a.id}</span>
+                            <span className="cell-sub mono">{a.id}</span>
                           </td>
                           <td>{providerLabel(a.provider)}</td>
-                          <td className="hide-sm">{name(a.machineId)}</td>
+                          <td className="hide-sm mono">{name(a.machineId)}</td>
                           <td>
-                            <div className="cell-stack">
-                              <AccountStatusLabel status={a.status} />
-                              {a.status === 'cooling' && a.cooldownUntil && <span className="note">Until {clock(a.cooldownUntil)}, {relative(a.cooldownUntil)}</span>}
-                              {a.status === 'invalid' && <span className="note">Sign in again on {name(a.machineId)}.</span>}
-                            </div>
+                            <AccountStatusLabel status={a.status} />
+                            {a.status === 'cooling' && a.cooldownUntil && (
+                              <span className="cell-sub">
+                                Until {clock(a.cooldownUntil)}, {relative(a.cooldownUntil)}
+                              </span>
+                            )}
+                            {a.status === 'invalid' && <span className="cell-sub">Sign in again on {name(a.machineId)}.</span>}
                           </td>
                           <td className="hide-sm muted">{relative(a.lastUsedAt)}</td>
                         </tr>
                       ))}
                   </tbody>
                 </table>
-              </div>
-              <dl className="kv legend-kv">
-                <dt>Cooling down</dt>
-                <dd>The harness reported a rate limit. The account is skipped until the time shown.</dd>
-                <dt>Invalid</dt>
-                <dd>The machine could not authenticate with this account.</dd>
-                <dt>Disabled</dt>
-                <dd>Turned off on the machine.</dd>
-              </dl>
+                </div>
+                <div className="card-foot">
+                  <Disclosure summary="What the statuses mean">
+                    <dl className="kv">
+                      <dt>Cooling down</dt>
+                      <dd>The harness reported a rate limit. The account is skipped until the time shown.</dd>
+                      <dt>Invalid</dt>
+                      <dd>The machine could not authenticate with this account.</dd>
+                      <dt>Disabled</dt>
+                      <dd>Turned off on the machine.</dd>
+                    </dl>
+                  </Disclosure>
+                </div>
+              </section>
             </>
           )
         }

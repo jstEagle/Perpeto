@@ -51,7 +51,7 @@ await page.locator('.react-flow__node[data-id="reviewer"]').click();
 await page.getByLabel('Concurrency').fill('2');
 await page.getByRole('button', { name: 'Save draft' }).click();
 await page.waitForURL(/version=5/);
-await page.getByText('Changed: concurrency').first().waitFor();
+await page.getByText('Changed concurrency').first().waitFor();
 step('inspector edit saves a new draft version with a diff');
 
 // 4. Run controls and live map selection.
@@ -76,15 +76,15 @@ const roleEdges = () => page.locator('.react-flow__edge .gedge-delegates, .react
 assert.equal(await roleEdges(), 0, 'live map hides delegates and messages until a node is selected');
 const before = await labelCollisions();
 assert.ok(before.labels > 5 && before.collisions === 0, `labels collide: ${JSON.stringify(before)}`);
-await page.getByRole('radio', { name: /^All/ }).click();
+await page.getByRole('button', { name: 'Selected links' }).click();
 assert.ok((await roleEdges()) >= 2, 'All shows every delegate and message');
 const all = await labelCollisions();
 assert.equal(all.collisions, 0, `labels collide with all links shown: ${JSON.stringify(all)}`);
-await page.getByRole('radio', { name: 'Selected node' }).click();
+await page.getByRole('button', { name: 'All links' }).click();
 step('live map routes labels without collisions and toggles delegates and messages');
 await page.locator('.react-flow__node[data-id="reviewer"]').click();
 assert.ok((await roleEdges()) >= 1, "selecting the reviewer shows its messages");
-await page.getByRole('heading', { name: 'Interactions: Reviewer' }).waitFor();
+await page.getByRole('heading', { name: 'Activity at Reviewer' }).waitFor();
 await page.screenshot({ path: `${shots}run-node-selected-desktop.png`, fullPage: false });
 step('selecting a node filters the interaction feed and shows its assignments');
 await page.getByRole('button', { name: 'Pause' }).click();
@@ -124,7 +124,31 @@ for (const path of ['/projects/prj_perpeto/workflows/wf_k3build?version=4', '/pr
 }
 step('proposal and editor labels never overlap');
 
-// 8. No owner token in localStorage.
+// 8. Editor: a node dragged onto another stays put until "Tidy layout" lays the graph out again.
+page.on('dialog', (d) => d.accept());
+await page.goto(`${base}/projects/prj_perpeto/workflows/wf_k3build/edit`);
+await page.locator('.react-flow__node').first().waitFor();
+await page.waitForTimeout(400);
+const boxes = async () => page.locator('.react-flow__node').evaluateAll((els) => els.map((e) => ({ id: e.dataset.id, ...e.getBoundingClientRect().toJSON() })));
+const overlapping = (list) => list.some((a, i) => list.some((b, j) => j > i && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom));
+assert.ok(!overlapping(await boxes()), 'the editor opens without overlapping nodes');
+const [from, to] = await page.locator('.react-flow__node .gnode-head').evaluateAll((els) => els.slice(0, 2).map((e) => e.getBoundingClientRect().toJSON()));
+await page.mouse.move(from.x + 20, from.y + 10);
+await page.mouse.down();
+await page.mouse.move(to.x + 30, to.y + 20, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(300);
+assert.ok(overlapping(await boxes()), 'a dragged node keeps the position it was dropped at');
+await page.getByRole('button', { name: 'Tidy layout' }).click();
+await page.waitForTimeout(300);
+const tidied = await boxes();
+assert.ok(!overlapping(tidied), 'tidy layout removes the overlap');
+const line = ['input', 'planner', 'loop', 'builder', 'reviewer', 'ci', 'merge', 'done'].map((id) => tidied.find((b) => b.id === id));
+// Left to right within a band; a longer line wraps to the next band below.
+assert.ok(line.every((b, i) => b && (i === 0 || (Math.abs(b.top - line[i - 1].top) < 1 ? b.left > line[i - 1].left : b.top > line[i - 1].bottom))), 'the main line runs left to right, wrapping into bands');
+step('editor keeps moved nodes and tidies on request');
+
+// 9. No owner token in localStorage.
 assert.ok(!(await page.evaluate(() => Object.keys(localStorage).some((k) => k === 'perpeto.hub.v1'))), 'legacy token key is gone');
 step('owner token is not kept in localStorage');
 

@@ -9,12 +9,14 @@ npm run typecheck -w @perpeto/web
 npm run build:web
 node apps/web/scripts/screenshots.mjs   # with the dev server running; writes apps/web/screenshots/
 node apps/web/scripts/smoke.mjs         # browser smoke test of the main flows
+node apps/web/scripts/perf.mjs http://localhost:5180 200   # live map frame rates and latencies, synthetic graph
 
-# Against a real hub (see apps/hub/README.md; allow http://localhost:5180 in corsOrigins)
-node apps/web/scripts/seed-web-demo-hub.mjs http://localhost:4320 path/to/owner.secret --hold
+# Against a real hub (see apps/hub/README.md). In its config: corsOrigins ["http://localhost:5180"],
+# and longPollMs 1000 so the seed's simulated machines keep their leases.
+node apps/web/scripts/seed-web-demo-hub.mjs http://127.0.0.1:4320 path/to/owner.secret --hold
 node apps/web/scripts/hub-screenshots.mjs http://localhost:4320 path/to/owner.secret
 ```
 
-Connect in Settings with the hub URL and owner token. Address the hub by the same host name as the app (`localhost` with `localhost`, or `127.0.0.1` with `127.0.0.1`): the hub's session cookie is `SameSite=Strict`, so a `localhost` app talking to `127.0.0.1` never sends it, and the app falls back to demo data after reporting that the session ended. The app asks the hub for an HttpOnly session cookie; until the hub serves that route, the token stays in this tab's session storage only.
+Connect in Settings with the hub URL and owner token. The app exchanges the token for the hub's HttpOnly session cookie and stores no token. The cookie is SameSite=Strict, so use the same host name for the app and the hub (`localhost` for both, not `localhost` and `127.0.0.1`). Only a hub without the session route falls back to keeping the token in this tab's session storage.
 
 Brand values come only from `src/styles/tokens.css`. See [the handoff](../../docs/handoffs/web-app.md) for scope, verification and contract assumptions.

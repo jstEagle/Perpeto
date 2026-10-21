@@ -80,7 +80,11 @@ async function lease(m, kinds = ['assignment', 'job']) {
   return work;
 }
 const path = (w) => `/${w.kind === 'job' ? 'jobs' : 'assignments'}/${w.value.id}/events`;
-const report = (w, type, data) => w.machine.api('POST', path(w), { type, attempt: w.value.attempt, data });
+const report = (w, type, data) =>
+  w.machine.api('POST', path(w), { type, attempt: w.value.attempt, data }).catch((error) => {
+    error.message = `${type}: ${error.message}`;
+    throw error;
+  });
 const release = (w) => (w.machine.held = w.machine.held.filter((x) => x !== w));
 
 /** Act as the workflow architect for one draft request. */
@@ -123,9 +127,17 @@ const v2 = await architect(
 );
 console.log(`proposal v${v2.draftVersion} saved`);
 
-// Run.
+// Run. Inputs name the goal they serve, so goal progress counts their work items (hubs that read goals as objects).
+const goalIds = ((await hub('GET', `/projects/${project.id}`)).goals ?? []).map((g) => (typeof g === 'string' ? undefined : g.id));
+const forGoal = (i) => (goalIds[i] ? { goalId: goalIds[i] } : {});
 const run = await hub('POST', `/workflows/${v1.draftWorkflowId}/runs`, {
-  input: { items: [{ title: 'Web: connect to a real hub', body: 'Use the hub response shapes and follow assignments.' }, { title: 'Hub: session cookie for the web app' }, { title: 'Node: drain mode' }] },
+  input: {
+    items: [
+      { title: 'Web: connect to a real hub', body: 'Use the hub response shapes and follow assignments.', ...forGoal(0) },
+      { title: 'Hub: session cookie for the web app', ...forGoal(0) },
+      { title: 'Node: drain mode', ...forGoal(1) },
+    ],
+  },
 });
 console.log(`run ${run.id}`);
 
@@ -175,7 +187,14 @@ for (let round = 0; round < 9; round++) {
   for (const m of machines) await heartbeat(m);
   const earlier = machines.flatMap((m) => m.held);
   for (const m of machines) await lease(m);
-  for (const w of earlier) if (Math.random() < 0.85 || round < 2) await finish(w);
+  for (const w of earlier)
+    if (Math.random() < 0.85 || round < 2)
+      await finish(w).catch((error) => {
+        // The hub may have reassigned work this script held (for example after an escalation); drop it and carry on.
+        if (!String(error.message).includes('lease_lost')) throw error;
+        console.log(`dropped ${w.kind} ${w.value.id} (${w.value.nodeId ?? 'job'}): ${error.message}`);
+        release(w);
+      });
   await sleep(150);
 }
 

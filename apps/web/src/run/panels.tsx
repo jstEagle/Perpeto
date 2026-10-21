@@ -1,140 +1,59 @@
-import type { Assignment, Bottleneck, Machine, MetricsSnapshot, MetricsWindow, WorkflowGraph } from '../api/types';
-import { Empty, Panel } from '../components/ui';
-import { MachineStatusLabel, StatusLabel } from '../components/status';
-import { duration, rate, tokens } from '../lib/format';
-import { BOTTLENECK_LABEL } from '../workflow/step-node';
-import type { Selection } from '../workflow/graph-canvas';
+import type { Machine, MetricsSnapshot, MetricsWindow } from '../api/types';
+import { Meter, Mono, Panel, Stat } from '../components/ui';
+import { duration, rate } from '../lib/format';
 
-const WINDOW_MS: Record<MetricsWindow, number> = { '1h': 3_600_000, '24h': 86_400_000, '7d': 604_800_000 };
+const WINDOW_TEXT: Record<MetricsWindow, string> = { '1h': '1 h', '24h': '24 h', '7d': '7 d' };
 
-/**
- * The hub splits the window into equal buckets (12 for 1 h, 24 for 24 h, one
- * per day for 7 d). Label each by its start time, thinned to about six.
- */
-function bucketLabels(window: MetricsWindow, count: number, end = Date.now()) {
-  const span = WINDOW_MS[window] / count;
-  const every = Math.ceil(count / 6);
-  return Array.from({ length: count }, (_, i) => {
-    const start = new Date(end - (count - i) * span);
-    const text = span >= 86_400_000 ? start.toLocaleDateString('en-GB', { weekday: 'short' }) : start.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-    return { text, shown: (count - 1 - i) % every === 0 };
-  });
-}
-
+/** Two numbers and the trend as grey bars, the current period in ink. */
 export function VelocityPanel({ metrics }: { metrics: MetricsSnapshot }) {
   const v = metrics.run;
   const trend = v.velocity.trend;
   const max = Math.max(1, ...trend);
-  const labels = bucketLabels(metrics.window, trend.length);
-  const counts = trend.length <= 12;
+  const cycle = duration(v.cycleTimeSec.avg);
+  const [cycleValue, cycleUnit] = cycle === '—' ? ['—', undefined] : cycle.split(' ');
   return (
-    <Panel title="Velocity" actions={<span className="note">Last {metrics.window}</span>}>
-      <div className="stack-sm">
-        <div className="velocity-head">
-          <div>
-            <span className="velocity-value">{rate(v.velocity.itemsDonePerDay)}</span>
-            <span className="muted"> items done per day</span>
+    <Panel title="Velocity" actions={`Last ${WINDOW_TEXT[metrics.window]}`}>
+      <dl className="metrics">
+        <Stat label="Items done per day" value={rate(v.velocity.itemsDonePerDay)} />
+        <Stat label="Cycle time" value={cycleValue} unit={cycleUnit} />
+      </dl>
+      {trend.length > 0 && (
+        <figure className="velocity-chart" aria-label={`Items finished in each of ${trend.length} periods over the last ${WINDOW_TEXT[metrics.window]}: ${trend.join(', ')}`}>
+          <div className="bars" aria-hidden="true">
+            {trend.map((n, i) => (
+              <span key={i} className={i === trend.length - 1 ? 'now' : n === 0 ? 'zero' : ''} style={{ height: n === 0 ? undefined : `${(n / max) * 100}%` }} />
+            ))}
           </div>
-        </div>
-        {trend.length > 0 && (
-          <figure className="velocity-trend" aria-label={`Items finished in each of ${trend.length} periods over the last ${metrics.window}: ${trend.join(', ')}`}>
-            <div className="spark" aria-hidden="true">
-              {trend.map((n, i) => (
-                <span key={i} style={{ height: `${(n / max) * 100}%` }} title={`${labels[i].text}: ${n}`} />
-              ))}
-            </div>
-            <div className="spark-axis" aria-hidden="true">
-              {trend.map((n, i) => (
-                <span key={i}>
-                  {counts && <b>{n}</b>}
-                  {labels[i].shown ? labels[i].text : ''}
-                </span>
-              ))}
-            </div>
-          </figure>
-        )}
-        <dl className="kv kv-figures">
-          <dt>Cycle time</dt>
-          <dd>
-            {duration(v.cycleTimeSec.avg)} avg · {duration(v.cycleTimeSec.p90)} p90
-          </dd>
-          <dt>Work in progress</dt>
-          <dd>{v.wip} items</dd>
-          <dt>Tokens per item</dt>
-          <dd>{tokens(v.tokensPerItem)}</dd>
-          <dt>Agents working</dt>
-          <dd>{v.activeAgents}</dd>
-        </dl>
-      </div>
-    </Panel>
-  );
-}
-
-export function BottlenecksPanel({ bottlenecks, graph, onSelect }: { bottlenecks: Bottleneck[]; graph: WorkflowGraph; onSelect(s: Selection): void }) {
-  const order = { critical: 0, warning: 1, info: 2 } as const;
-  const sorted = [...bottlenecks].sort((a, b) => order[a.severity] - order[b.severity]);
-  return (
-    <Panel title="Bottlenecks" flush>
-      {sorted.length === 0 ? (
-        <Empty title="Nothing is holding work up.">Bottlenecks appear here when measured queues, utilization or failures cross their limits.</Empty>
-      ) : (
-        <ul className="ruled-list">
-          {sorted.map((b) => (
-            <li key={`${b.nodeId}-${b.reason}`} className="bottleneck-row">
-              <div className="row" style={{ justifyContent: 'space-between' }}>
-                <button type="button" className="chip-button" onClick={() => onSelect({ kind: 'node', id: b.nodeId })}>
-                  {graph.nodes.find((n) => n.id === b.nodeId)?.label ?? b.nodeId}
-                </button>
-                <StatusLabel tone={b.severity === 'critical' ? 'error' : b.severity === 'warning' ? 'warning' : 'neutral'}>{BOTTLENECK_LABEL[b.reason]}</StatusLabel>
-              </div>
-              <p className="note">{b.evidence}</p>
-            </li>
-          ))}
-        </ul>
+          <div className="bars-axis" aria-hidden="true">
+            <span>{WINDOW_TEXT[metrics.window]} ago</span>
+            <span>Now</span>
+          </div>
+        </figure>
       )}
     </Panel>
   );
 }
 
-export function WhereRunningPanel({ metrics, machines, assignments, graph, onSelect }: { metrics: MetricsSnapshot; machines: Machine[]; assignments: Assignment[]; graph: WorkflowGraph; onSelect(s: Selection): void }) {
+/** Machines with agents on this run, and how full each one is. */
+export function WhereRunningPanel({ metrics, machines }: { metrics: MetricsSnapshot; machines: Machine[] }) {
   const entries = metrics.run.machines;
   return (
-    <Panel title="Where work is running" flush>
+    <Panel title="Where work is running">
       {entries.length === 0 ? (
-        <Empty title="No agents are running for this run.">Work starts when a machine with a matching provider leases it.</Empty>
+        <p className="muted">Work starts when a machine with a matching provider leases it.</p>
       ) : (
-        <ul className="machine-tree">
+        <ul className="rows">
           {entries.map((entry) => {
             const m = machines.find((x) => x.id === entry.machineId);
-            const running = assignments.filter((a) => a.machineId === entry.machineId && a.status === 'running');
+            const used = m?.running.agents ?? entry.activeAgents;
+            const max = m?.capacity.maxAgents ?? 0;
             return (
-              <li key={entry.machineId}>
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <span className="cell-title">{m?.name ?? entry.machineId}</span>
-                  {m && <MachineStatusLabel status={m.status} />}
-                </div>
-                <div className="row note">
-                  <span className="meter-cell">
-                    <span className="meter" aria-hidden="true">
-                      <span className="meter-fill" style={{ width: `${m ? Math.min(100, (m.running.agents / Math.max(1, m.capacity.maxAgents)) * 100) : 0}%` }} />
-                    </span>
-                    {entry.activeAgents} agents here{m ? ` · ${m.running.agents} of ${m.capacity.maxAgents} slots in use` : ''}
-                  </span>
-                </div>
-                <ul className="machine-tree-nodes">
-                  {entry.nodes.map((nodeId) => {
-                    const n = graph.nodes.find((x) => x.id === nodeId);
-                    const here = running.filter((a) => a.nodeId === nodeId).length;
-                    return (
-                      <li key={nodeId}>
-                        <button type="button" className="chip-button" onClick={() => onSelect({ kind: 'node', id: nodeId })}>
-                          {n?.label ?? nodeId}
-                        </button>
-                        <span className="muted tabular">{n?.type === 'ci' ? `${m?.running.jobs ?? 0} job` : `${here} ${here === 1 ? 'agent' : 'agents'}`}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
+              <li key={entry.machineId} className="meter-row">
+                <span className="meter-row-head">
+                  <Mono>{m?.name ?? entry.machineId}</Mono>
+                  <span>{max ? `${used} of ${max} slots` : `${entry.activeAgents} agents`}</span>
+                </span>
+                <Meter value={used} max={Math.max(1, max)} label={`${m?.name ?? entry.machineId} slots in use`} />
               </li>
             );
           })}

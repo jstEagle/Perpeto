@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { useHub, useResource } from '../app/hub-context';
 import type { Project } from '../api/types';
-import { Async, Button, Dialog, Empty, Field, Mono, PageHeader } from '../components/ui';
+import { Async, Button, Dialog, Empty, Field, PageHeader } from '../components/ui';
 import { RunStatusLabel } from '../components/status';
-import { IconChevronRight, IconPlus } from '../components/icons';
+import { IconPlus } from '../components/icons';
 import { plural, relative, repoName, tokens } from '../lib/format';
 
 export function ProjectsPage() {
@@ -25,14 +25,15 @@ export function ProjectsPage() {
       <Async resource={projects} what="projects">
         {(list) =>
           list.length === 0 ? (
-            <div className="panel">
-              <Empty title="No projects yet." action={<Button variant="primary" onClick={() => setCreating(true)}>Create project</Button>}>
+            <section className="card">
+              <Empty title="No projects yet" action={<Button variant="primary" onClick={() => setCreating(true)}>Create project</Button>}>
                 Add a repository to start planning work.
               </Empty>
-            </div>
+            </section>
           ) : (
-            <div className="table-wrap panel panel-flush">
-              <table className="table table-rows-link">
+            <section className="card">
+              <div className="table-wrap">
+              <table className="table">
                 <caption className="visually-hidden">Projects</caption>
                 <thead>
                   <tr>
@@ -41,7 +42,7 @@ export function ProjectsPage() {
                     <th scope="col">Activity</th>
                     <th scope="col" className="num hide-sm">Tokens today</th>
                     <th scope="col" className="hide-sm">Updated</th>
-                    <th scope="col" className="col-chevron"><span className="visually-hidden">Open</span></th>
+
                   </tr>
                 </thead>
                 <tbody>
@@ -50,7 +51,8 @@ export function ProjectsPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </section>
           )
         }
       </Async>
@@ -67,32 +69,38 @@ function ProjectRow({ project }: { project: Project }) {
   return (
     <tr>
       <td>
-        <Link to="/projects/$projectId" params={{ projectId: project.id }} className="row-link">
-          <span className="cell-title">{project.name}</span>
-        </Link>
-        <Mono>{repoName(project.repo.url)}</Mono>
+        <span className="project-cell">
+          <span className="switcher-tile" aria-hidden="true">
+            {project.name.slice(0, 1).toLowerCase()}
+          </span>
+          <span>
+            <Link to="/projects/$projectId" params={{ projectId: project.id }} className="cell-title">
+              {project.name}
+            </Link>
+            <span className="cell-sub mono">{repoName(project.repo.url)}</span>
+          </span>
+        </span>
       </td>
       <td className="hide-sm">
         {project.goals.length ? (
           <>
-            <span className="cell-line">{project.goals[0]}</span>
-            {project.goals.length > 1 && <span className="muted"> and {project.goals.length - 1} more</span>}
+            <span>{project.goals[0].title}</span>
+            <span className="cell-sub">
+              {project.goals[0].total ? `${project.goals[0].done} of ${project.goals[0].total} done` : 'No work yet'}
+              {project.goals.length > 1 ? ` · ${project.goals.length - 1} more` : ''}
+            </span>
           </>
         ) : (
           <span className="muted">No goals yet</span>
         )}
       </td>
       <td>
-        <div className="cell-stack">
-          {latest ? <RunStatusLabel status={latest.status} /> : <span className="muted">No runs</span>}
-          {agents !== undefined && agents > 0 && <span className="muted">{plural(agents, 'agent')} working</span>}
-        </div>
+        {latest ? <RunStatusLabel status={latest.status} /> : <span className="muted">No runs</span>}
+        {agents !== undefined && agents > 0 && <span className="cell-sub">{plural(agents, 'agent')} working</span>}
       </td>
       <td className="num hide-sm">{overview.data ? tokens(overview.data.tokensToday) : '—'}</td>
       <td className="hide-sm muted">{relative(project.updatedAt)}</td>
-      <td className="col-chevron" aria-hidden="true">
-        <IconChevronRight />
-      </td>
+
     </tr>
   );
 }

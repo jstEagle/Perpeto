@@ -34,6 +34,19 @@ const sizes = [
 ];
 
 const only = process.env.ONLY?.split(',');
+/**
+ * Full-page capture with the viewport grown to the page, so sticky elements
+ * (the sidebar, the floating tab bar) sit where a person scrolling would see them.
+ */
+async function fullPage(page, path) {
+  const size = page.viewportSize();
+  const height = await page.evaluate(() => document.documentElement.scrollHeight);
+  await page.setViewportSize({ width: size.width, height: Math.max(size.height, height) });
+  await page.waitForTimeout(150);
+  await page.screenshot({ path });
+  await page.setViewportSize(size);
+}
+
 const browser = await chromium.launch();
 const errors = [];
 for (const [size, viewport] of sizes) {
@@ -45,7 +58,7 @@ for (const [size, viewport] of sizes) {
     if (only && !only.includes(name)) continue;
     await page.goto(base + path, { waitUntil: 'networkidle' });
     await page.waitForTimeout(900);
-    await page.screenshot({ path: `${out}${name}-${size}.png`, fullPage: true });
+    await fullPage(page, `${out}${name}-${size}.png`);
     console.log(`${name}-${size}.png`);
   }
   await context.close();

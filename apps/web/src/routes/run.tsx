@@ -3,19 +3,21 @@ import { Link, useParams } from '@tanstack/react-router';
 import { useHub, useResource } from '../app/hub-context';
 import type { Resource } from '../app/hub-context';
 import type { Assignment, Machine, MetricsSnapshot, MetricsWindow, Run, WorkItem, WorkflowGraph } from '../api/types';
-import { Async, Button, Dialog, Empty, Field, Mono, PageHeader, Panel, Segmented } from '../components/ui';
-import { AssignmentStatusLabel, RunStatusLabel, StatusLabel } from '../components/status';
-import { IconPause, IconPlay, IconPlus, IconStop } from '../components/icons';
-import { EdgeLegend, GraphCanvas } from '../workflow/graph-canvas';
+import { Async, btn, Button, Dialog, Disclosure, Field, Menu, Mono, PageHeader, Panel, Segmented, Stat } from '../components/ui';
+import { AssignmentStatusLabel, runTone, StatusChip, StatusLabel, WorkStatusLabel } from '../components/status';
+import { IconAlert, IconPause, IconPlay, IconPlus, IconStop } from '../components/icons';
+import { GraphCanvas } from '../workflow/graph-canvas';
 import type { Selection } from '../workflow/graph-canvas';
 import { BOTTLENECK_LABEL } from '../workflow/step-node';
+import { StepList } from '../workflow/step-list';
 import { NODE_SPECS, providerLabel } from '../workflow/registry';
-import { InteractionFeed, useRunEvents } from '../run/feed';
-import { BottlenecksPanel, VelocityPanel, WhereRunningPanel } from '../run/panels';
+import { INTERACTION_TYPES, InteractionFeed, useRunEvents } from '../run/feed';
+import { VelocityPanel, WhereRunningPanel } from '../run/panels';
+import { bottleneckTitle, byUrgency } from '../run/issues';
 import { WorkBoard } from '../run/board';
-import { duration, pct, rate, relative, tokens } from '../lib/format';
+import { duration, pct, plural, rate, relative, tokens } from '../lib/format';
 
-type Tab = 'map' | 'work' | 'assignments' | 'timeline';
+type Tab = 'map' | 'work' | 'timeline';
 
 /** Metrics are recomputed by the hub per request; coalesce bursts of events into one fetch a second, at most every 4 s. */
 const METRICS_REFRESH = { debounceMs: 1000, maxWaitMs: 4000 };
@@ -24,7 +26,7 @@ export function RunPage() {
   const { projectId, runId } = useParams({ from: '/projects/$projectId/runs/$runId' });
   const run = useResource((api) => api.getRun(runId), [runId], (e) => e.subject.kind === 'run' && e.subject.id === runId);
   return (
-    <div className="page page-wide">
+    <div className="page">
       <Async resource={run} what="run">
         {(r) => <RunView run={r} projectId={projectId} onChanged={run.reload} />}
       </Async>
@@ -48,7 +50,8 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
   const items = useResource((a) => a.listWorkItems(run.id), [run.id], (e) => isRunEvent(e) && (e.type.startsWith('workitem') || e.type === 'gate.result'));
   const assignments = useResource((a) => a.listAssignments(run.id), [run.id], (e) => isRunEvent(e) && e.type.startsWith('assignment'));
   const machines = useResource((a) => a.listMachines(), [], (e) => e.subject.kind === 'machine');
-  const { events, fresh } = useRunEvents(run.id);
+  const { events, fresh, hasOlder, loadingOlder, loadOlder } = useRunEvents(run.id);
+  const olderProps = { hasOlder, loadingOlder, onOlder: () => void loadOlder() };
 
   const version = versions.data?.find((v) => v.version === run.workflowVersion);
   const draft = versions.data?.find((v) => v.status === 'draft' && v.version > run.workflowVersion);
@@ -68,47 +71,45 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
   }
 
   const live = run.status === 'running' || run.status === 'paused';
-  const top = metrics.data?.bottlenecks.filter((b) => b.severity !== 'info') ?? [];
+  const issues = byUrgency(metrics.data?.bottlenecks.filter((b) => b.severity !== 'info') ?? []);
+  const today = events?.filter((e) => INTERACTION_TYPES.has(e.type) && e.at.slice(0, 10) === new Date().toISOString().slice(0, 10)).length;
+  const showOnMap = (nodeId: string) => {
+    setTab('map');
+    setSelection({ kind: 'node', id: nodeId });
+  };
 
   return (
     <>
-      <nav className="breadcrumb" aria-label="Breadcrumb">
-        <Link activeOptions={{ exact: true }} to="/projects/$projectId/runs" params={{ projectId }}>
-          Runs
-        </Link>
-        <span aria-hidden="true">/</span>
-        <Mono>{run.id}</Mono>
-      </nav>
       <PageHeader
+        back={{ label: 'Runs', to: '/projects/$projectId/runs', params: { projectId } }}
         title={version ? `${version.name} run` : 'Run'}
+        status={
+          <StatusChip tone={runTone(run.status)}>
+            <RunStatusText status={run.status} />
+          </StatusChip>
+        }
         meta={
           <>
-            <RunStatusLabel status={run.status} />
-            <span>
-              Workflow version <span className="mono">v{run.workflowVersion}</span>
-            </span>
-            <span>Started {relative(run.startedAt)}</span>
-            {run.stoppedAt && <span>Ended {relative(run.stoppedAt)}</span>}
+            <Mono>{run.id}</Mono> · Workflow v{run.workflowVersion} · Started {relative(run.startedAt)}
+            {run.stoppedAt && ` · Ended ${relative(run.stoppedAt)}`}
           </>
         }
         actions={
           live && (
             <>
-              <Button onClick={() => setAdding(true)}>
-                <IconPlus /> Add input
-              </Button>
               {run.status === 'running' ? (
                 <Button onClick={() => act(() => api.pauseRun(run.id), 'pause')} busy={busy}>
                   <IconPause /> Pause
                 </Button>
               ) : (
-                <Button variant="primary" onClick={() => act(() => api.resumeRun(run.id), 'resume')} busy={busy}>
+                <Button variant={issues.length && draft ? 'secondary' : 'primary'} onClick={() => act(() => api.resumeRun(run.id), 'resume')} busy={busy}>
                   <IconPlay /> Resume
                 </Button>
               )}
-              <Button variant="danger" onClick={() => setStopping(true)}>
+              <Button onClick={() => setStopping(true)}>
                 <IconStop /> Stop
               </Button>
+              <Menu label="More run actions" items={[{ label: 'Add input', icon: <IconPlus />, onSelect: () => setAdding(true) }]} />
             </>
           )
         }
@@ -119,52 +120,78 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
         </p>
       )}
       {run.status === 'paused' && (
-        <div className="callout callout-warning">
+        <div className="callout" role="status">
+          <IconPause />
           <div className="callout-body">
             <span className="callout-title">Paused. No new assignments start until you resume.</span>
-            <span className="muted">Work already leased to a machine may still report its result.</span>
+            <span>Work already leased to a machine may still report its result.</span>
           </div>
         </div>
       )}
-      {top.map((b, i) => (
-        <div key={`${b.nodeId}-${b.reason}`} className={`callout callout-${b.severity}`}>
-          <div className="callout-body">
-            <span className="callout-title">
-              {version?.graph.nodes.find((n) => n.id === b.nodeId)?.label ?? b.nodeId}: {BOTTLENECK_LABEL[b.reason].toLowerCase()}
-            </span>
-            <span>{b.evidence}</span>
+      {issues.length > 0 && (
+        <section className="card" aria-label="Needs attention">
+          <div className="issue-card">
+            <div className="issue">
+              <span className="issue-icon">
+                <IconAlert />
+              </span>
+              <div className="issue-main">
+                <h2 className="issue-title">{bottleneckTitle(issues[0], version?.graph)}</h2>
+                <p className="issue-text">{issues[0].evidence.charAt(0).toUpperCase() + issues[0].evidence.slice(1)}</p>
+              </div>
+            </div>
+            <div className="issue-actions">
+              <Button variant="ghost" onClick={() => showOnMap(issues[0].nodeId)}>
+                Show on map
+              </Button>
+              {draft && (
+                <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: run.workflowId }} search={{ version: draft.version }} className={btn('primary')}>
+                  Review proposal
+                </Link>
+              )}
+            </div>
           </div>
-          <div className="callout-actions">
-            <Button size="sm" variant="ghost" onClick={() => setSelection({ kind: 'node', id: b.nodeId })}>
-              Show on map
-            </Button>
-            {draft && b.severity === 'critical' && top.findIndex((x) => x.severity === 'critical') === i && (
-              <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: run.workflowId }} search={{ version: draft.version }} className="btn btn-secondary btn-sm">
-                Review proposed v{draft.version}
-              </Link>
-            )}
-          </div>
-        </div>
-      ))}
+          {issues.length > 1 && (
+            <div className="issue-more">
+              <Disclosure summary={issues.length === 2 ? '1 more issue' : `${issues.length - 1} more issues`}>
+                {issues.slice(1).map((b) => (
+                  <div className="issue" key={`${b.nodeId}-${b.reason}`}>
+                    <span className="issue-icon">
+                      <IconAlert />
+                    </span>
+                    <div className="issue-main">
+                      <h3 className="issue-title">{bottleneckTitle(b, version?.graph)}</h3>
+                      <p className="issue-text">{b.evidence}</p>
+                      <div className="issue-actions">
+                        <Button variant="ghost" size="sm" onClick={() => showOnMap(b.nodeId)}>
+                          Show on map
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </Disclosure>
+            </div>
+          )}
+        </section>
+      )}
 
-      <div className="tabs-bar">
-        <div role="tablist" aria-label="Run views" className="tabs">
-          {(
-            [
-              ['map', 'Live map'],
-              ['work', `Work items${items.data ? ` · ${items.data.length}` : ''}`],
-              ['assignments', `Assignments${assignments.data ? ` · ${assignments.data.length}` : ''}`],
-              ['timeline', 'Timeline'],
-            ] as [Tab, string][]
-          ).map(([value, label]) => (
-            <button key={value} role="tab" id={`tab-${value}`} aria-selected={tab === value} aria-controls={`panel-${value}`} className="tab" onClick={() => setTab(value)}>
-              {label}
-            </button>
-          ))}
-        </div>
+      <div className="toolbar">
+        <Segmented<Tab>
+          label="Run views"
+          className="seg-fill"
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'map', label: 'Live map' },
+            { value: 'work', label: 'Work', count: items.data?.length },
+            { value: 'timeline', label: 'Timeline' },
+          ]}
+        />
         {tab === 'map' && (
           <Segmented<MetricsWindow>
             label="Metrics window"
+            className="hide-sm"
             value={metricsWindow}
             onChange={setMetricsWindow}
             options={[
@@ -176,83 +203,67 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
         )}
       </div>
 
-      <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
-        {tab === 'map' &&
-          (version && metrics.data ? (
-            <div className="stack">
-              <div className="stack-sm">
-                <GraphCanvas
-                  graph={version.graph}
-                  mode="live"
-                  label={`Live map of ${version.name} run`}
-                  live={{ metrics: metrics.data, items: items.data ?? [] }}
-                  selection={selection}
-                  onSelect={setSelection}
-                  className="graph-map"
-                />
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <EdgeLegend live />
-                  <ul className="edge-legend" aria-label="Work item markers">
-                    <li>
-                      <span className="marker marker-active" aria-hidden="true" /> Active
-                    </li>
-                    <li>
-                      <span className="marker" aria-hidden="true" /> Queued
-                    </li>
-                    <li>
-                      <span className="marker marker-failed" aria-hidden="true" /> Failed
-                    </li>
-                  </ul>
-                </div>
+      {tab === 'map' &&
+        (version && metrics.data ? (
+          <>
+            <div className="hide-sm">
+              <GraphCanvas
+                graph={version.graph}
+                mode="live"
+                label={`Live map of ${version.name} run`}
+                live={{ metrics: metrics.data, items: items.data ?? [] }}
+                selection={selection}
+                onSelect={setSelection}
+                className="graph-map"
+              />
+            </div>
+            <StepList graph={version.graph} metrics={metrics.data} selection={selection} onSelect={setSelection} className="only-mobile" />
+            <div className="cols">
+              <div className="stack">
+                {selection && (
+                  <SelectionPanel selection={selection} graph={version.graph} metrics={metrics.data} assignments={assignments.data ?? []} items={items.data ?? []} machines={machines.data ?? []} onClear={() => setSelection(null)} />
+                )}
+                <Panel title={selection ? `Activity at ${selectionName(selection, version.graph, metrics.data)}` : 'Activity'} actions={!selection && today !== undefined ? `${plural(today, 'event')} today` : undefined}>
+                  <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={selection} limit={5} items={items.data} machines={machines.data} {...olderProps} />
+                </Panel>
               </div>
-              <div className="live-layout">
-                <div className="stack">
-                  {selection && (
-                    <SelectionPanel selection={selection} graph={version.graph} metrics={metrics.data} assignments={assignments.data ?? []} items={items.data ?? []} machines={machines.data ?? []} onClear={() => setSelection(null)} />
-                  )}
-                  <Panel
-                    title={selection ? `Interactions: ${selectionName(selection, version.graph, metrics.data)}` : 'Interactions'}
-                    actions={
-                      selection && (
-                        <Button size="sm" variant="ghost" onClick={() => setSelection(null)}>
-                          Show all
-                        </Button>
-                      )
-                    }
-                    flush
-                  >
-                    <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={selection} items={items.data} machines={machines.data} />
-                  </Panel>
-                  <NodeTable graph={version.graph} metrics={metrics.data} selection={selection} onSelect={setSelection} />
-                </div>
-                <div className="live-side">
-                  <BottlenecksPanel bottlenecks={metrics.data.bottlenecks} graph={version.graph} onSelect={setSelection} />
-                  <VelocityPanel metrics={metrics.data} />
-                  <WhereRunningPanel metrics={metrics.data} machines={machines.data ?? []} assignments={assignments.data ?? []} graph={version.graph} onSelect={setSelection} />
-                </div>
+              <div className="stack">
+                <VelocityPanel metrics={metrics.data} />
+                <WhereRunningPanel metrics={metrics.data} machines={machines.data ?? []} />
               </div>
             </div>
-          ) : (
-            <Async<unknown> resource={(metrics.error ? metrics : versions.error ? versions : { ...metrics, data: undefined }) as Resource<unknown>} what="the live map">
-              {() => null}
-            </Async>
-          ))}
-        {tab === 'work' && (
-          <Async resource={items} what="work items">
-            {(list) => <WorkBoard items={list} graph={version?.graph} />}
+            <section className="card" aria-label="Node details">
+              <Disclosure summary="Node details">
+                <NodeTable graph={version.graph} metrics={metrics.data} selection={selection} onSelect={setSelection} />
+              </Disclosure>
+            </section>
+          </>
+        ) : (
+          <Async<unknown> resource={(metrics.error ? metrics : versions.error ? versions : { ...metrics, data: undefined }) as Resource<unknown>} what="the live map">
+            {() => null}
           </Async>
-        )}
-        {tab === 'assignments' && (
-          <Async resource={assignments} what="assignments">
-            {(list) => <AssignmentsTable assignments={list} items={items.data ?? []} machines={machines.data ?? []} graph={version?.graph} />}
-          </Async>
-        )}
-        {tab === 'timeline' && version && (
-          <Panel title="Timeline" flush>
-            <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={null} limit={60} onlyInteractions={false} items={items.data} machines={machines.data} />
-          </Panel>
-        )}
-      </div>
+        ))}
+      {tab === 'work' && (
+        <Async resource={items} what="work items">
+          {(list) => (
+            <>
+              <WorkBoard items={list} graph={version?.graph} onStale={items.reload} />
+              <section className="card" aria-label="Assignments">
+                <Disclosure summary={`Assignments${assignments.data ? ` · ${assignments.data.length}` : ''}`}>
+                  <Async resource={assignments} what="assignments">
+                    {(rows) => <AssignmentsTable assignments={rows} items={list} machines={machines.data ?? []} graph={version?.graph} />}
+                  </Async>
+                </Disclosure>
+              </section>
+            </>
+          )}
+        </Async>
+      )}
+      {tab === 'timeline' && version && (
+        <Panel title="Timeline" actions={events ? `${plural(events.length, 'event')} loaded` : undefined}>
+          <InteractionFeed events={events} fresh={fresh} graph={version.graph} selection={null} limit={60} onlyInteractions={false} items={items.data} machines={machines.data} {...olderProps} />
+        </Panel>
+      )}
 
       <AddInputDialog open={adding} onClose={() => setAdding(false)} runId={run.id} />
       <Dialog
@@ -264,16 +275,20 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
             <Button variant="ghost" onClick={() => setStopping(false)}>
               Keep running
             </Button>
-            <Button variant="danger" busy={busy} onClick={() => act(() => api.stopRun(run.id), 'stop')}>
+            <Button variant="primary" busy={busy} onClick={() => act(() => api.stopRun(run.id), 'stop')}>
               Stop run
             </Button>
           </>
         }
       >
-        <p>A stopped run cannot be resumed. Pause instead if you want to continue later. Branches and pull requests already opened stay where they are.</p>
+        <p className="muted">A stopped run cannot be resumed. Pause instead if you want to continue later. Branches and pull requests already opened stay where they are.</p>
       </Dialog>
     </>
   );
+}
+
+function RunStatusText({ status }: { status: Run['status'] }) {
+  return <>{{ running: 'Running', paused: 'Paused', stopped: 'Stopped', completed: 'Completed', failed: 'Failed' }[status]}</>;
 }
 
 /** The map's numbers as a table: readable at any width and by screen readers. */
@@ -281,45 +296,46 @@ function NodeTable({ graph, metrics, selection, onSelect }: { graph: WorkflowGra
   const rows = graph.nodes.filter((n) => n.type !== 'input' && n.type !== 'output');
   const bottleneck = new Map(metrics.bottlenecks.map((b) => [b.nodeId, b]));
   return (
-    <Panel title="Nodes" flush>
-      <div className="table-wrap">
-        <table className="table table-compact">
-          <caption className="visually-hidden">Live node metrics</caption>
-          <thead>
-            <tr>
-              <th scope="col">Node</th>
-              <th scope="col" className="num">Active</th>
-              <th scope="col" className="num">Queued</th>
-              <th scope="col" className="num">Utilization</th>
-              <th scope="col" className="num hide-sm">Wait p90</th>
-              <th scope="col" className="num hide-sm">Per hour</th>
-              <th scope="col" className="hide-sm">Bottleneck</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((n) => {
-              const m = metrics.nodes.find((x) => x.nodeId === n.id);
-              const b = bottleneck.get(n.id);
-              return (
-                <tr key={n.id} className={selection?.kind === 'node' && selection.id === n.id ? 'is-selected' : ''}>
-                  <th scope="row" style={{ fontWeight: 400, color: 'inherit', fontSize: 'inherit' }}>
-                    <button type="button" className="chip-button" onClick={() => onSelect({ kind: 'node', id: n.id })}>
-                      {n.label}
-                    </button>
-                  </th>
-                  <td className="num">{m?.active ?? 0}{m?.concurrency ? <span className="muted"> / {m.concurrency}</span> : null}</td>
-                  <td className="num">{m?.queued ?? 0}</td>
-                  <td className="num">{m?.concurrency && n.type !== 'loop' ? pct(m.utilization) : '—'}</td>
-                  <td className="num hide-sm">{m && n.type !== 'loop' ? duration(m.waitSec.p90) : '—'}</td>
-                  <td className="num hide-sm">{m ? rate(m.throughputPerHour) : '—'}</td>
-                  <td className="hide-sm">{b ? <StatusLabel tone={b.severity === 'critical' ? 'error' : b.severity === 'warning' ? 'warning' : 'neutral'}>{BOTTLENECK_LABEL[b.reason]}</StatusLabel> : <span className="muted">None</span>}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </Panel>
+    <div className="table-wrap">
+      <table className="table">
+        <caption className="visually-hidden">Live node metrics</caption>
+        <thead>
+          <tr>
+            <th scope="col">Node</th>
+            <th scope="col" className="num">Active</th>
+            <th scope="col" className="num">Queued</th>
+            <th scope="col" className="num">Utilization</th>
+            <th scope="col" className="num">Wait p90</th>
+            <th scope="col" className="num">Per hour</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((n) => {
+            const m = metrics.nodes.find((x) => x.nodeId === n.id);
+            const b = bottleneck.get(n.id);
+            return (
+              <tr key={n.id} aria-selected={selection?.kind === 'node' && selection.id === n.id}>
+                <td>
+                  <button type="button" className="cell-button" onClick={() => onSelect({ kind: 'node', id: n.id })}>
+                    {n.label}
+                  </button>
+                </td>
+                <td className="num">
+                  {m?.active ?? 0}
+                  {m?.concurrency ? <span className="muted"> / {m.concurrency}</span> : null}
+                </td>
+                <td className="num">{m?.queued ?? 0}</td>
+                <td className="num">{m?.concurrency && n.type !== 'loop' ? pct(m.utilization) : '—'}</td>
+                <td className="num">{m && n.type !== 'loop' ? duration(m.waitSec.p90) : '—'}</td>
+                <td className="num">{m ? rate(m.throughputPerHour) : '—'}</td>
+                <td>{b ? <StatusLabel tone={b.severity === 'info' ? 'quiet' : 'attention'}>{BOTTLENECK_LABEL[b.reason]}</StatusLabel> : m?.active ? <StatusLabel tone="live">Working</StatusLabel> : <StatusLabel tone="quiet">Idle</StatusLabel>}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -354,7 +370,7 @@ function SelectionPanel({
     const m = metrics.edges.find((x) => x.edgeId === selection.id);
     const name = (id?: string | null) => graph.nodes.find((n) => n.id === id || n.config?.role === id)?.label ?? id ?? '—';
     return (
-      <Panel title="Connection" actions={<Button size="sm" variant="ghost" onClick={onClear}>Clear</Button>}>
+      <Panel title="Connection" actions={<button type="button" className="text-btn" onClick={onClear}>Clear</button>}>
         <dl className="kv">
           <dt>Kind</dt>
           <dd>{m?.unplanned ? `${m.kind}, unplanned` : (e?.kind ?? m?.kind)}</dd>
@@ -370,7 +386,7 @@ function SelectionPanel({
             {m?.count ?? 0} in {metrics.window}
           </dd>
         </dl>
-        {m?.unplanned && <p className="note" style={{ marginTop: 12 }}>No edge in the workflow connects these roles. The interaction was recorded rather than blocked. Add a messages connection if it should be allowed, or tighten the agents’ prompts.</p>}
+        {m?.unplanned && <p className="note card-foot">No edge in the workflow connects these roles. The interaction was recorded rather than blocked. Add a messages connection if it should be allowed, or tighten the agents’ prompts.</p>}
       </Panel>
     );
   }
@@ -380,91 +396,85 @@ function SelectionPanel({
   const machineName = (id?: string) => machines.find((x) => x.id === id)?.name ?? id ?? 'Not leased';
   const nodeItems = items.filter((i) => i.nodeId === selection.id && i.status !== 'done');
   return (
-    <Panel title={node?.label ?? selection.id} actions={<Button size="sm" variant="ghost" onClick={onClear}>Clear</Button>} flush>
+    <Panel title={node?.label ?? selection.id} actions={<button type="button" className="text-btn" onClick={onClear}>Clear</button>}>
       {m && (
-        <dl className="figures">
-          <div>
-            <dt>Active</dt>
-            <dd>
-              {m.active}
-              {m.concurrency ? <span className="muted"> of {m.concurrency}</span> : null}
-            </dd>
+        <>
+          <dl className="metrics metrics-small">
+            <Stat label="Active" value={m.concurrency ? `${m.active} of ${m.concurrency}` : m.active} />
+            <Stat label="Queued" value={m.queued} />
+            <Stat label="Utilization" value={m.concurrency ? pct(m.utilization) : '—'} />
+          </dl>
+          <div className="card-foot">
+            <Disclosure summary="More numbers">
+              <dl className="kv">
+                <dt>Wait avg, p90</dt>
+                <dd>
+                  {duration(m.waitSec.avg)}, {duration(m.waitSec.p90)}
+                </dd>
+                <dt>Service avg, p90</dt>
+                <dd>
+                  {duration(m.serviceSec.avg)}, {duration(m.serviceSec.p90)}
+                </dd>
+                <dt>Throughput</dt>
+                <dd>{rate(m.throughputPerHour)} per hour</dd>
+                <dt>Failure rate</dt>
+                <dd>{pct(m.failureRate)}</dd>
+                <dt>Tokens</dt>
+                <dd>{tokens(m.tokens)}</dd>
+              </dl>
+            </Disclosure>
           </div>
-          <div>
-            <dt>Queued</dt>
-            <dd>{m.queued}</dd>
-          </div>
-          <div>
-            <dt>Utilization</dt>
-            <dd>{m.concurrency ? pct(m.utilization) : '—'}</dd>
-          </div>
-          <div>
-            <dt>Wait avg / p90</dt>
-            <dd>
-              {duration(m.waitSec.avg)} <span className="muted">/ {duration(m.waitSec.p90)}</span>
-            </dd>
-          </div>
-          <div>
-            <dt>Service avg / p90</dt>
-            <dd>
-              {duration(m.serviceSec.avg)} <span className="muted">/ {duration(m.serviceSec.p90)}</span>
-            </dd>
-          </div>
-          <div>
-            <dt>Throughput</dt>
-            <dd>{rate(m.throughputPerHour)}/h</dd>
-          </div>
-          <div>
-            <dt>Failure rate</dt>
-            <dd>{pct(m.failureRate)}</dd>
-          </div>
-          <div>
-            <dt>Tokens</dt>
-            <dd>{tokens(m.tokens)}</dd>
-          </div>
-        </dl>
+        </>
       )}
+      <div className="card-foot">
       {node && NODE_SPECS[node.type].role ? (
         here.length === 0 ? (
-          <p className="panel-body muted">No assignments are queued or running here.</p>
+          <p className="muted">No assignments are queued or running here.</p>
         ) : (
-          <ul className="ruled-list">
+          <ul className="rows">
             {here.map((a) => (
-              <li key={a.id} className="stack-sm" style={{ gap: 4 }}>
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <span className="cell-title">{items.find((i) => i.id === a.workItemId)?.title ?? a.workItemId}</span>
+              <li key={a.id}>
+                <span className="row-main">
+                  <span className="row-title">{items.find((i) => i.id === a.workItemId)?.title ?? a.workItemId}</span>
+                  <span className="row-meta">
+                    <span className="mono">{machineName(a.machineId)}</span> · {providerLabel(a.harness.provider)} · <span className="mono">{a.harness.model}</span>
+                    {a.attempt > 1 ? ` · attempt ${a.attempt}` : ''}
+                  </span>
+                </span>
+                <span className="row-end">
                   <AssignmentStatusLabel status={a.status} />
-                </div>
-                <span className="note">
-                  {machineName(a.machineId)} · {providerLabel(a.harness.provider)} · <code className="mono">{a.harness.model}</code>
-                  {a.attempt > 1 ? ` · attempt ${a.attempt}` : ''}
                 </span>
               </li>
             ))}
           </ul>
         )
       ) : nodeItems.length ? (
-        <ul className="ruled-list">
+        <ul className="rows">
           {nodeItems.map((i) => (
-            <li key={i.id} className="row" style={{ justifyContent: 'space-between' }}>
-              <span>{i.title}</span>
-              <StatusLabel tone={i.status === 'failed' ? 'error' : i.status === 'active' ? 'accent' : 'neutral'}>{i.status === 'failed' ? `Failed at iteration ${i.iteration}` : i.status}</StatusLabel>
+            <li key={i.id}>
+              <span className="row-main">
+                <span className="row-title">{i.title}</span>
+              </span>
+              <span className="row-end">
+                {i.status === 'failed' ? <StatusLabel tone="failed">Failed at iteration {i.iteration}</StatusLabel> : <WorkStatusLabel status={i.status} />}
+              </span>
             </li>
           ))}
         </ul>
       ) : (
-        <p className="panel-body muted">No work items are waiting here.</p>
+        <p className="muted">No work items are waiting here.</p>
       )}
+      </div>
     </Panel>
   );
 }
 
 function AssignmentsTable({ assignments, items, machines, graph }: { assignments: Assignment[]; items: WorkItem[]; machines: Machine[]; graph?: WorkflowGraph }) {
-  if (assignments.length === 0) return <Empty title="No assignments yet.">The engine creates assignments as work items reach agent roles.</Empty>;
+  if (assignments.length === 0) return <p className="muted">The engine creates assignments as work items reach agent roles.</p>;
   const order = { running: 0, leased: 1, queued: 2, failed: 3, succeeded: 4, cancelled: 5 } as const;
   const sorted = [...assignments].sort((a, b) => order[a.status] - order[b.status]);
   return (
-    <div className="panel panel-flush table-wrap">
+    <div className="table-wrap">
       <table className="table">
         <caption className="visually-hidden">Assignments</caption>
         <thead>
@@ -482,10 +492,10 @@ function AssignmentsTable({ assignments, items, machines, graph }: { assignments
             <tr key={a.id}>
               <td>
                 <span className="cell-title">{items.find((i) => i.id === a.workItemId)?.title ?? a.workItemId}</span>
-                {a.result?.summary && <span className="note">{a.result.summary}</span>}
+                {a.result?.summary && <span className="cell-sub">{a.result.summary}</span>}
               </td>
               <td>{graph?.nodes.find((n) => n.id === a.nodeId)?.label ?? a.role}</td>
-              <td>{machines.find((m) => m.id === a.machineId)?.name ?? <span className="muted">Not leased</span>}</td>
+              <td>{machines.find((m) => m.id === a.machineId) ? <Mono>{machines.find((m) => m.id === a.machineId)!.name}</Mono> : <span className="muted">Not leased</span>}</td>
               <td className="hide-sm">
                 {providerLabel(a.harness.provider)} <Mono>{a.harness.model}</Mono>
               </td>
@@ -565,7 +575,7 @@ function AddInputDialog({ open, onClose, runId }: { open: boolean; onClose(): vo
         )}
         {done && (
           <p role="status">
-            <StatusLabel tone="success">{done}</StatusLabel>
+            <StatusLabel tone="done">{done}</StatusLabel>
           </p>
         )}
       </form>

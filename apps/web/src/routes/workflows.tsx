@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { useHub, useResource } from '../app/hub-context';
 import type { Workflow } from '../api/types';
-import { Async, Button, Dialog, Field, PageHeader, Panel } from '../components/ui';
-import { WorkflowStatusLabel } from '../components/status';
-import { IconChevronRight } from '../components/icons';
+import { Async, btn, Button, Dialog, Field, PageHeader, Panel } from '../components/ui';
+import { StatusLabel, WorkflowStatusLabel } from '../components/status';
+import { IconApproval, IconWorkflow } from '../components/icons';
 import { ArchitectProgress, ArchitectPrompt } from '../workflow/architect';
 import { TEMPLATES } from '../workflow/templates';
 import { relative } from '../lib/format';
@@ -23,23 +23,7 @@ export function WorkflowsPage() {
 
   return (
     <div className="page">
-      <PageHeader title="Workflows" description="An agent drafts each workflow from your description. You review the graph, then activate it. Edit by hand whenever you want." />
-
-      {drafts.map((d) => (
-        <div key={`${d.id}-${d.version}`} className="callout callout-info">
-          <div className="callout-body">
-            <span className="callout-title">
-              {d.name} version {d.version} is waiting for review
-            </span>
-            <span className="muted">
-              {d.authoredBy?.kind === 'agent' ? 'Proposed by an agent' : 'Saved by you'}{d.createdAt ? ` ${relative(d.createdAt)}` : ''}. The active version keeps running until you activate this one.
-            </span>
-          </div>
-          <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: d.id }} search={{ version: d.version }} className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }}>
-            Review draft
-          </Link>
-        </div>
-      ))}
+      <PageHeader title="Workflows" description="Describe how this project should be built. An agent drafts the workflow, you review it, then activate it." />
 
       {following && (
         <ArchitectProgress
@@ -50,40 +34,51 @@ export function WorkflowsPage() {
         />
       )}
 
-      <section className={`panel architect-panel ${hasWorkflows ? '' : 'architect-panel-primary'}`} aria-label="Ask the workflow architect">
-        <div className="panel-body">
-          <ArchitectPrompt projectId={projectId} onStarted={setFollowing} title={hasWorkflows ? 'Describe a new workflow' : 'Describe how this project should be built'} />
-        </div>
-        <div className="panel-footer">
+      <section className="card architect-card" aria-label="Ask the workflow architect">
+        <ArchitectPrompt projectId={projectId} onStarted={setFollowing} title={hasWorkflows ? 'Describe a new workflow' : 'How should this project be built?'} />
+        <div className="architect-foot">
           <span className="muted">Prefer to draw it yourself?</span>
-          <button type="button" className="chip-button" onClick={() => setManual(true)}>
-            Start from a template or a blank canvas
+          <button type="button" className="text-btn" onClick={() => setManual(true)}>
+            Start from a template
           </button>
         </div>
       </section>
 
+      {drafts.map((d) => (
+        <section key={`${d.id}-${d.version}`} className="card" aria-label="Draft waiting for review">
+          <div className="issue-card">
+            <div className="issue">
+              <span className="issue-icon">
+                <IconApproval />
+              </span>
+              <div className="issue-main">
+                <h2 className="issue-title">
+                  {d.name} v{d.version} is waiting for review
+                </h2>
+                <p className="issue-text">
+                  {d.authoredBy?.kind === 'agent' ? 'Proposed by the workflow architect' : 'Saved by you'}
+                  {d.createdAt ? ` ${relative(d.createdAt)}` : ''}. The active version keeps running until you activate this one.
+                </p>
+              </div>
+            </div>
+            <div className="issue-actions">
+              <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: d.id }} search={{ version: d.version }} className={btn('secondary')}>
+                Review draft
+              </Link>
+            </div>
+          </div>
+        </section>
+      ))}
+
       <Async resource={workflows} what="workflows">
         {(list) =>
           list.length > 0 && (
-            <Panel title="Workflows in this project" flush>
-              <div className="table-wrap">
-                <table className="table table-rows-link">
-                  <thead>
-                    <tr>
-                      <th scope="col">Workflow</th>
-                      <th scope="col">Versions</th>
-                      <th scope="col" className="hide-sm">Latest by</th>
-                      <th scope="col" className="hide-sm">Saved</th>
-                      <th scope="col" className="col-chevron"><span className="visually-hidden">Open</span></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {list.map((w) => (
-                      <WorkflowRow key={w.id} workflow={w} projectId={projectId} />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            <Panel title="Workflows in this project" actions={`${list.length}`}>
+              <ul className="rows">
+                {list.map((w) => (
+                  <WorkflowRow key={w.id} workflow={w} projectId={projectId} />
+                ))}
+              </ul>
             </Panel>
           )
         }
@@ -98,33 +93,25 @@ function WorkflowRow({ workflow: w, projectId }: { workflow: Workflow; projectId
   const active = versions.data?.find((v) => v.status === 'active');
   const draft = versions.data?.find((v) => v.status === 'draft' && v.version > (active?.version ?? 0));
   return (
-    <tr>
-      <td>
-        <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: w.id }} search={{}} className="row-link">
-          <span className="cell-title">{w.name}</span>
+    <li>
+      <span className="tile" aria-hidden="true">
+        <IconWorkflow />
+      </span>
+      <span className="row-main">
+        <Link to="/projects/$projectId/workflows/$workflowId" params={{ projectId, workflowId: w.id }} search={{}} className="row-title">
+          {w.name}
         </Link>
-        {PURPOSE[w.purpose] !== w.name && <span className="muted">{PURPOSE[w.purpose]}</span>}
-      </td>
-      <td>
-        <div className="cell-stack">
-          {active ? (
-            <WorkflowStatusLabel status="active" title={`Version ${active.version} is active`} />
-          ) : (
-            <span className="muted">No active version</span>
-          )}
-          <span className="note">
-            {active && <>Active <span className="mono">v{active.version}</span></>}
-            {active && draft && ' · '}
-            {draft && <>Draft <span className="mono">v{draft.version}</span> waiting</>}
-          </span>
-        </div>
-      </td>
-      <td className="hide-sm">{w.authoredBy?.kind === 'agent' ? 'Workflow architect' : 'You'}</td>
-      <td className="hide-sm muted">{relative(w.createdAt)}</td>
-      <td className="col-chevron" aria-hidden="true">
-        <IconChevronRight />
-      </td>
-    </tr>
+        <span className="row-meta">
+          {PURPOSE[w.purpose] !== w.name ? `${PURPOSE[w.purpose]} · ` : ''}
+          {w.authoredBy?.kind === 'agent' ? 'Drafted by the workflow architect' : 'Drawn by you'} · {relative(w.createdAt)}
+        </span>
+      </span>
+      <span className="row-end">
+        {draft && <span className="chip-quiet">Draft v{draft.version}</span>}
+        {active ? <WorkflowStatusLabel status="active" title={`Version ${active.version} is active`} /> : <StatusLabel tone="quiet">Not active</StatusLabel>}
+        {active && <span className="tabular">v{active.version}</span>}
+      </span>
+    </li>
   );
 }
 
@@ -169,14 +156,14 @@ function ManualDialog({ open, onClose, projectId }: { open: boolean; onClose(): 
       }
     >
       <form id="manual-workflow" className="form" onSubmit={create}>
-        <fieldset className="fieldset">
+        <fieldset className="template-options">
           <legend>Start from</legend>
           {TEMPLATES.map((t) => (
             <label key={t.purpose} className={`template-option ${template === t.purpose ? 'is-selected' : ''}`}>
               <input type="radio" name="template" value={t.purpose} checked={template === t.purpose} onChange={() => setTemplate(t.purpose)} />
-              <span>
-                <span className="cell-title">{t.name}</span>
-                <span className="muted">{t.description}</span>
+              <span className="row-main">
+                <span className="row-title">{t.name}</span>
+                <span className="row-meta row-meta-wrap">{t.description}</span>
               </span>
             </label>
           ))}

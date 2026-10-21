@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useHub, useResource } from '../app/hub-context';
 import type { EnrollmentCode, Machine } from '../api/types';
-import { Async, Button, Dialog, Empty, Meter, Mono, PageHeader, Stat } from '../components/ui';
+import { Async, Button, Dialog, Empty, Meter, PageHeader, Stat } from '../components/ui';
 import { MachineStatusLabel } from '../components/status';
-import { IconCopy, IconPlus } from '../components/icons';
+import { IconCopy, IconMachines, IconPlus } from '../components/icons';
 import { providerLabel } from '../workflow/registry';
 import { relative } from '../lib/format';
 
@@ -26,20 +26,22 @@ export function MachinesPage() {
       <Async resource={machines} what="machines">
         {(list) =>
           list.length === 0 ? (
-            <div className="panel">
-              <Empty title="No machines enrolled." action={<Button variant="primary" onClick={() => setEnrolling(true)}>Enroll machine</Button>}>
+            <section className="card">
+              <Empty title="No machines enrolled" icon={<IconMachines />} action={<Button variant="primary" onClick={() => setEnrolling(true)}>Enroll machine</Button>}>
                 Enroll a machine so agents and CI jobs have somewhere to run.
               </Empty>
-            </div>
+            </section>
           ) : (
             <>
-              <dl className="stats">
-                <Stat label="Online" value={`${list.filter((m) => m.status === 'online').length} of ${list.length}`} />
-                <Stat label="Agent slots in use" value={`${sum(list, (m) => m.running.agents)} of ${sum(list, (m) => m.capacity.maxAgents)}`} />
-                <Stat label="Job slots in use" value={`${sum(list, (m) => m.running.jobs)} of ${sum(list, (m) => m.capacity.maxJobs)}`} />
-                <Stat label="Draining" value={list.filter((m) => m.status === 'draining').length} />
-              </dl>
-              <div className="panel panel-flush table-wrap">
+              <section className="card" aria-label="Capacity">
+                <dl className="metrics">
+                  <Stat label="Machines online" value={list.filter((m) => m.status === 'online').length} unit={`of ${list.length}`} />
+                  <Stat label="Agent slots in use" value={sum(list, (m) => m.running.agents)} unit={`of ${sum(list, (m) => m.capacity.maxAgents)}`} />
+                  <Stat label="Job slots in use" value={sum(list, (m) => m.running.jobs)} unit={`of ${sum(list, (m) => m.capacity.maxJobs)}`} />
+                </dl>
+              </section>
+              <section className="card">
+                <div className="table-wrap">
                 <table className="table">
                   <caption className="visually-hidden">Machines</caption>
                   <thead>
@@ -59,31 +61,36 @@ export function MachinesPage() {
                     {list.map((m) => (
                       <tr key={m.id}>
                         <td>
-                          <span className="cell-title">{m.name}</span>
-                          <Mono>
-                            {m.os}/{m.arch} · v{m.version}
-                          </Mono>
-                          <div className="tags hide-sm" style={{ marginTop: 4 }}>
-                            {m.labels.map((l) => (
-                              <span key={l} className="tag">
-                                {l}
+                          <span className="project-cell">
+                            <span className="tile tile-sm" aria-hidden="true">
+                              <IconMachines />
+                            </span>
+                            <span>
+                              <span className="cell-title mono">{m.name}</span>
+                              <span className="cell-sub">
+                                {m.os} {m.arch} · v{m.version}
+                                {m.labels.length ? ` · ${m.labels.join(', ')}` : ''}
                               </span>
-                            ))}
-                          </div>
+                            </span>
+                          </span>
                         </td>
                         <td>
                           <MachineStatusLabel status={m.status} />
                         </td>
                         <td>
                           <span className="meter-cell">
+                            <span className="tabular">
+                              {m.running.agents} of {m.capacity.maxAgents}
+                            </span>
                             <Meter value={m.running.agents} max={m.capacity.maxAgents} label={`${m.name} agents`} />
-                            {m.running.agents} of {m.capacity.maxAgents}
                           </span>
                         </td>
                         <td className="hide-sm">
                           <span className="meter-cell">
+                            <span className="tabular">
+                              {m.running.jobs} of {m.capacity.maxJobs}
+                            </span>
                             <Meter value={m.running.jobs} max={m.capacity.maxJobs} label={`${m.name} jobs`} />
-                            {m.running.jobs} of {m.capacity.maxJobs}
                           </span>
                         </td>
                         <td className="hide-sm">{m.providers.map(providerLabel).join(', ')}</td>
@@ -99,7 +106,8 @@ export function MachinesPage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </section>
             </>
           )
         }
@@ -163,7 +171,7 @@ function EnrollDialog({ open, onClose }: { open: boolean; onClose(): void }) {
     >
       {code ? (
         <div className="stack-sm">
-          <p>Enter this code when you enroll the node on the new machine. It works once{code.expiresAt ? ` and expires ${relative(code.expiresAt)}` : ''}.</p>
+          <p className="muted">Enter this code when you enroll the node on the new machine. It works once{code.expiresAt ? ` and expires ${relative(code.expiresAt)}` : ''}.</p>
           <div className="code-once">
             <code>{code.code}</code>
             <Button
@@ -182,7 +190,7 @@ function EnrollDialog({ open, onClose }: { open: boolean; onClose(): void }) {
         </div>
       ) : (
         <div className="stack-sm">
-          <p>A one-time code lets a machine exchange it for its own node token. The machine then appears here and starts leasing work it can run.</p>
+          <p className="muted">A one-time code lets a machine exchange it for its own node token. The machine then appears here and starts leasing work it can run.</p>
           {error && (
             <p className="form-error" role="alert">
               {error}
@@ -228,7 +236,7 @@ function DrainDialog({ machine, onClose, onDone }: { machine: Machine | null; on
         </>
       }
     >
-      <p>The machine stops leasing new work. Agents and jobs already running on it continue until they finish.</p>
+      <p className="muted">The machine stops leasing new work. Agents and jobs already running on it continue until they finish.</p>
       {error && (
         <p className="form-error" role="alert">
           {error}

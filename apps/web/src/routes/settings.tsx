@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import { HttpHub } from '../api/client';
-import { checkBaseUrl } from '../api/settings';
+import { checkBaseUrl, defaultHubUrl } from '../api/settings';
 import { useHub } from '../app/hub-context';
 import { Button, Field, PageHeader, Panel } from '../components/ui';
 import { StatusLabel } from '../components/status';
+import { IconAlert } from '../components/icons';
 
 export function SettingsPage() {
   const { api, settings, reconnect, connect } = useHub();
-  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? reconnect ?? 'http://127.0.0.1:4320');
+  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? reconnect ?? defaultHubUrl());
   const [token, setToken] = useState('');
   const [show, setShow] = useState(false);
-  const [test, setTest] = useState<{ tone: 'success' | 'error' | 'accent'; text: string } | null>(null);
+  const [test, setTest] = useState<{ tone: 'done' | 'failed' | 'waiting'; text: string } | null>(null);
   const [touched, setTouched] = useState(false);
 
   const urlError = touched ? checkBaseUrl(baseUrl.trim()) : null;
@@ -20,15 +21,15 @@ export function SettingsPage() {
   async function testConnection() {
     setTouched(true);
     if (checkBaseUrl(baseUrl.trim()) || !token.trim()) return false;
-    setTest({ tone: 'accent', text: 'Checking the hub…' });
+    setTest({ tone: 'waiting', text: 'Checking the hub…' });
     const hub = new HttpHub({ baseUrl: baseUrl.trim(), auth: { kind: 'bearer', token: token.trim() } });
     try {
       const health = await hub.health();
       await hub.overview();
-      setTest({ tone: 'success', text: `Connected. Hub version ${health.version}, token accepted.` });
+      setTest({ tone: 'done', text: `Connected. Hub version ${health.version}, token accepted.` });
       return true;
     } catch (err) {
-      setTest({ tone: 'error', text: `Could not connect. ${(err as Error).message}` });
+      setTest({ tone: 'failed', text: `Could not connect. ${(err as Error).message}` });
       return false;
     }
   }
@@ -41,9 +42,11 @@ export function SettingsPage() {
     try {
       const cookie = await HttpHub.startSession(url, token.trim());
       connect({ baseUrl: url, auth: cookie ? { kind: 'cookie' } : { kind: 'bearer', token: token.trim() } });
+      // The token is no longer needed here; an empty field after connecting is not an error.
       setToken('');
+      setTouched(false);
     } catch (err) {
-      setTest({ tone: 'error', text: `Could not start a session. ${(err as Error).message}` });
+      setTest({ tone: 'failed', text: `Could not start a session. ${(err as Error).message}` });
     }
   }
 
@@ -57,7 +60,7 @@ export function SettingsPage() {
   return (
     <div className="page settings-page">
       <PageHeader title="Settings" description="Connect this browser to your factory hub." />
-      <Panel title="Hub connection" actions={api.mode === 'demo' ? <StatusLabel tone="neutral">Showing demo data</StatusLabel> : <StatusLabel tone="success">Connected</StatusLabel>}>
+      <Panel title="Hub connection" actions={api.mode === 'demo' ? <StatusLabel tone="quiet">Showing demo data</StatusLabel> : <StatusLabel tone="done">Connected</StatusLabel>}>
         <form className="form" onSubmit={save} noValidate>
           <Field label="Hub URL" htmlFor="hub-url" error={urlError} hint="The hub’s address. HTTPS is required unless the hub runs on this machine.">
             <input id="hub-url" className="input mono-input" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} spellCheck={false} autoComplete="url" aria-invalid={!!urlError} />
@@ -90,10 +93,11 @@ export function SettingsPage() {
             </p>
           )}
           {tabOnly && (
-            <div className="callout callout-warning" role="note">
+            <div className="callout" role="note">
+              <IconAlert />
               <div className="callout-body">
                 <span className="callout-title">The token is kept in this tab only.</span>
-                <span>This hub cannot set a session cookie yet, so the token sits in session storage until the tab closes. Scripts running on this page’s origin can read it. Serve the app only from an origin you trust.</span>
+                <span>This hub has no session route, so it cannot set a session cookie. The token sits in session storage until the tab closes, and scripts running on this page’s origin can read it. Update the hub, or serve the app only from an origin you trust.</span>
               </div>
             </div>
           )}
@@ -102,7 +106,7 @@ export function SettingsPage() {
               <StatusLabel tone={test.tone}>{test.text}</StatusLabel>
             </p>
           )}
-          <div className="row">
+          <div className="row form-actions">
             <Button variant="primary" type="submit">
               Save and connect
             </Button>
@@ -118,7 +122,7 @@ export function SettingsPage() {
         </form>
       </Panel>
       <Panel title="About demo data">
-        <p className="muted">
+        <p className="muted reading">
           Without a hub, Perpeto shows a built-in example factory: three projects, two machines and a running build whose reviewer is the bottleneck. Changes you make in demo mode stay in this tab and reset on reload. Nothing is sent anywhere.
         </p>
       </Panel>

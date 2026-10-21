@@ -15,12 +15,37 @@ export interface DocRef {
   kind: 'requirements' | 'vision' | 'spec' | 'notes';
 }
 
+/**
+ * A project goal with progress over the leaf work items linked to it.
+ * Older hubs stored goals as plain strings; `decodeGoals` reads those as
+ * active goals with no linked items and marks them `legacy`.
+ */
+export interface Goal {
+  id: string;
+  title: string;
+  status: 'active' | 'done' | 'dropped';
+  workItemIds: Id[];
+  done: number;
+  total: number;
+  /** Read from a plain string; save such goals back as strings. */
+  legacy?: true;
+}
+
+/** Goals as the hub accepts them: a string for a new goal, or an existing one by id. */
+export type GoalInput = string | { id?: string; title: string; status?: Goal['status'] };
+
+/** The person the owner token acts for (GET /owner, /session, /overview). */
+export interface Owner {
+  name: string | null;
+  initials: string | null;
+}
+
 export interface Project {
   id: Id;
   name: string;
   repo: { url: string; defaultBranch: string; localPath?: string };
   docs: DocRef[];
-  goals: string[];
+  goals: Goal[];
   createdAt: IsoTime;
   updatedAt: IsoTime;
 }
@@ -137,6 +162,8 @@ export interface WorkItem {
   headSha?: string;
   iteration: number;
   parentId?: Id;
+  /** Set while the item waits at a human gate; names that one wait. */
+  decisionId?: string;
 }
 
 export interface Harness {
@@ -314,6 +341,8 @@ export interface Overview {
   tokensToday: number;
   machinesOnline: number;
   machinesTotal?: number;
+  /** Hubs from 3af3db0 on. */
+  owner?: Owner;
 }
 
 export interface HubEvent {
@@ -369,7 +398,7 @@ export interface NewProject {
   name: string;
   repo: { url: string; defaultBranch: string; localPath?: string };
   docs?: DocRef[];
-  goals?: string[];
+  goals?: GoalInput[];
 }
 
 export interface NewWorkflow {
@@ -388,6 +417,8 @@ export interface RunInput {
 export interface HumanDecision {
   decision: 'approve' | 'return';
   note?: string;
+  /** The wait being answered. The hub refuses it with 409 STALE_DECISION once the item waits for another decision. */
+  decisionId?: string;
 }
 
 /* Observing runs (docs/architecture/README.md "Observing runs"). */

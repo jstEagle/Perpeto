@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useResource } from '../app/hub-context';
 import type { UsageGroupBy, UsageRow, UsageSummary } from '../api/types';
-import { Async, Empty, PageHeader, Panel, Segmented, Stat } from '../components/ui';
+import { Async, Disclosure, Empty, Meter, PageHeader, Panel, Segmented, Stat } from '../components/ui';
+import { IconUsage } from '../components/icons';
 import { providerLabel } from '../workflow/registry';
 import { count, day, pct, tokens } from '../lib/format';
 
@@ -25,12 +26,21 @@ export function UsagePage() {
   return (
     <div className="page">
       <PageHeader title="Usage" description="Tokens reported by harnesses through T3, across every machine. Input and output are counted; cache reads and writes are shown separately." />
-      <dl className="stats">
-        <Stat label="Tokens today" value={byDay.data ? tokens(todayTokens) : '—'} />
-        <Stat label="Tokens, 7 days" value={byDay.data ? tokens(weekTokens) : '—'} />
-        <Stat label="Daily average, 7 days" value={byDay.data ? tokens(weekTokens / 7) : '—'} />
-        <Stat label="Cache read share, 7 days" value={byDay.data && allInput ? pct(cacheRead / allInput) : '—'} detail="of input" />
-      </dl>
+      <section className="card" aria-label="Totals">
+        <dl className="metrics">
+          <Stat label="Tokens today" value={byDay.data ? tokens(todayTokens) : '—'} />
+          <Stat label="Tokens, 7 days" value={byDay.data ? tokens(weekTokens) : '—'} />
+          <Stat label="Daily average, 7 days" value={byDay.data ? tokens(weekTokens / 7) : '—'} />
+        </dl>
+        <div className="card-foot">
+          <Disclosure summary="Cache">
+            <dl className="metrics metrics-small">
+              <Stat label="Cache reads, share of input, 7 days" value={byDay.data && allInput ? pct(cacheRead / allInput) : '—'} />
+              <Stat label="Cache reads, 7 days" value={byDay.data ? tokens(cacheRead) : '—'} />
+            </dl>
+          </Disclosure>
+        </div>
+      </section>
       <div className="toolbar">
         <Segmented<UsageGroupBy>
           label="Group usage by"
@@ -43,7 +53,7 @@ export function UsagePage() {
             { value: 'machine', label: 'Machine' },
           ]}
         />
-        <span className="select toolbar-select">
+        <span className="select">
           <select className="input" aria-label="Project" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
             <option value="">All projects</option>
             {projects.data?.map((p) => (
@@ -57,9 +67,11 @@ export function UsagePage() {
       <Async resource={usage} what="usage">
         {(summary) =>
           summary.rows.length === 0 ? (
-            <div className="panel">
-              <Empty title="No usage recorded.">Usage appears once agents run and report tokens.</Empty>
-            </div>
+            <section className="card">
+              <Empty title="No usage recorded" icon={<IconUsage />}>
+                Usage appears once agents run and report tokens.
+              </Empty>
+            </section>
           ) : (
             <>
               {summary.groupBy === 'day' && <DayChart rows={summary.rows.slice(-14)} today={today} />}
@@ -72,50 +84,37 @@ export function UsagePage() {
   );
 }
 
+/** Grey bars with today in ink; labels only at the ends. Exact numbers are in the table below. */
 function DayChart({ rows, today }: { rows: UsageRow[]; today: string }) {
-  const max = Math.max(...rows.map(total));
-  const step = niceStep(max / 3);
-  const top = Math.ceil(max / step) * step;
-  const rules = Array.from({ length: Math.round(top / step) }, (_, i) => (i + 1) * step);
+  const max = Math.max(1, ...rows.map(total));
   return (
-    <Panel title="Tokens per day" actions={<span className="note">Input and output · last {rows.length} UTC days</span>}>
-      <figure className="chart" aria-label={`Tokens per day: ${rows.map((r) => `${day(r.key)} ${tokens(total(r))}`).join(', ')}`}>
-        <div className="bars" aria-hidden="true">
-          {rules.map((v) => (
-            <div key={v} className="bars-rule" style={{ bottom: `${(v / top) * 100}%` }}>
-              <span>{tokens(v)}</span>
-            </div>
-          ))}
+    <Panel title="Tokens per day" actions={`Last ${rows.length} days`}>
+      <figure className="usage-chart" aria-label={`Tokens per day: ${rows.map((r) => `${day(r.key)} ${tokens(total(r))}`).join(', ')}`}>
+        <div className="bars bars-tall" aria-hidden="true">
           {rows.map((r) => (
-            <div key={r.key} className={`bar ${r.key === today ? 'is-current' : ''}`} title={`${day(r.key)}: ${count(total(r))} tokens`}>
-              <span className="bar-fill" style={{ height: `${(total(r) / top) * 100}%` }} />
-            </div>
+            <span key={r.key} className={r.key === today ? 'now' : total(r) === 0 ? 'zero' : ''} style={{ height: total(r) ? `${(total(r) / max) * 100}%` : undefined }} title={`${day(r.key)}: ${count(total(r))} tokens`} />
           ))}
         </div>
-        <div className="bar-axis" aria-hidden="true">
-          {rows.map((r, i) => (
-            <span key={r.key}>{i % 2 === rows.length % 2 || r.key === today ? (r.key === today ? 'Today' : day(r.key)) : ''}</span>
-          ))}
+        <div className="bars-axis" aria-hidden="true">
+          <span>{rows[0] ? day(rows[0].key) : ''}</span>
+          <span>{rows.at(-1)?.key === today ? 'Today' : rows.at(-1) ? day(rows.at(-1)!.key) : ''}</span>
         </div>
       </figure>
     </Panel>
   );
 }
 
-function niceStep(raw: number) {
-  const pow = 10 ** Math.floor(Math.log10(Math.max(raw, 1)));
-  const n = raw / pow;
-  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * pow;
-}
-
 function UsageTable({ summary }: { summary: UsageSummary }) {
-  const rows = summary.groupBy === 'day' ? [...summary.rows].reverse() : summary.rows;
+  const [all, setAll] = useState(false);
+  const ordered = summary.groupBy === 'day' ? [...summary.rows].reverse() : summary.rows;
+  const rows = all ? ordered : ordered.slice(0, 7);
   const grand = summary.rows.reduce((s, r) => s + total(r), 0);
   const label = (k: string) => (summary.groupBy === 'day' ? day(k) : summary.groupBy === 'provider' ? providerLabel(k) : k);
   const mono = summary.groupBy === 'model';
   const head = { day: 'Day (UTC)', provider: 'Provider', model: 'Model', machine: 'Machine' }[summary.groupBy];
   return (
-    <div className="panel panel-flush table-wrap">
+    <section className="card">
+      <div className="table-wrap">
       <table className="table">
         <caption className="visually-hidden">Usage by {head.toLowerCase()}</caption>
         <thead>
@@ -137,15 +136,11 @@ function UsageTable({ summary }: { summary: UsageSummary }) {
               <td className="num">{tokens(r.outputTokens)}</td>
               <td className="num hide-sm muted">{tokens(r.cacheReadTokens)}</td>
               <td className="num hide-sm muted">{tokens(r.cacheWriteTokens)}</td>
-              <td className="num">
-                <b>{tokens(total(r))}</b>
-              </td>
+              <td className="num cell-title">{tokens(total(r))}</td>
               <td className="hide-sm">
-                <div className="share-cell">
-                  <span className="hbar-track" aria-hidden="true">
-                    <span className="hbar" style={{ width: `${(total(r) / grand) * 100}%` }} />
-                  </span>
-                  <span className="note tabular">{pct(total(r) / grand)}</span>
+                <div className="meter-cell">
+                  <span className="tabular">{pct(total(r) / grand)}</span>
+                  <Meter value={total(r)} max={grand} label={`${label(r.key)} share`} />
                 </div>
               </td>
             </tr>
@@ -158,13 +153,19 @@ function UsageTable({ summary }: { summary: UsageSummary }) {
             <td className="num">{tokens(summary.rows.reduce((s, r) => s + r.outputTokens, 0))}</td>
             <td className="num hide-sm muted">{tokens(summary.rows.reduce((s, r) => s + r.cacheReadTokens, 0))}</td>
             <td className="num hide-sm muted">{tokens(summary.rows.reduce((s, r) => s + r.cacheWriteTokens, 0))}</td>
-            <td className="num">
-              <b>{tokens(grand)}</b>
-            </td>
+            <td className="num cell-title">{tokens(grand)}</td>
             <td className="hide-sm" />
           </tr>
         </tfoot>
       </table>
-    </div>
+      </div>
+      {ordered.length > rows.length && (
+        <div className="card-foot">
+          <button type="button" className="text-btn" onClick={() => setAll(true)}>
+            Show all {ordered.length}
+          </button>
+        </div>
+      )}
+    </section>
   );
 }

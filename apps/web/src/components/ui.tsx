@@ -1,64 +1,119 @@
-import { forwardRef, useEffect, useId, useRef } from 'react';
+import { forwardRef, useEffect, useId, useRef, useState } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { Link } from '@tanstack/react-router';
 import { HubError } from '../api/hub';
 import { SpindleLoader } from '../brand/logo';
-import { IconClose } from './icons';
+import { IconChevronDown, IconChevronLeft, IconClose, IconInbox, IconMore, IconXCircle } from './icons';
 
-type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
+type Variant = 'primary' | 'secondary' | 'ghost';
+type Size = 'sm' | 'md' | 'lg';
 
-export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: 'sm' | 'md'; busy?: boolean }>(
-  function Button({ variant = 'secondary', size = 'md', busy, className, children, disabled, ...rest }, ref) {
-    return (
-      <button ref={ref} className={`btn btn-${variant} btn-${size} ${className ?? ''}`} disabled={disabled || busy} aria-busy={busy || undefined} {...rest}>
-        {children}
-      </button>
-    );
-  },
-);
-
-export function PageHeader({ title, description, actions, meta }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; meta?: ReactNode }) {
+/** Pills. One primary per view; secondary for other actions; ghost for quiet ones. */
+export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size; busy?: boolean; icon?: boolean }>(function Button(
+  { variant = 'secondary', size = 'md', busy, icon, className, children, disabled, ...rest },
+  ref,
+) {
   return (
-    <header className="page-header">
-      <div className="page-header-text">
-        <h1>{title}</h1>
-        {description && <p className="page-description">{description}</p>}
-        {meta && <div className="page-meta">{meta}</div>}
+    <button ref={ref} className={`btn btn-${variant} btn-${size} ${icon ? 'btn-icon' : ''} ${className ?? ''}`} disabled={disabled || busy} aria-busy={busy || undefined} {...rest}>
+      {children}
+    </button>
+  );
+});
+
+/** Class names for links styled as buttons. */
+export const btn = (variant: Variant = 'secondary', size: Size = 'md', extra = '') => `btn btn-${variant} btn-${size} ${extra}`;
+
+export function PageHeader({
+  title,
+  description,
+  actions,
+  meta,
+  back,
+  status,
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+  meta?: ReactNode;
+  /** A back link above the title, such as "Runs". */
+  back?: { label: string; to: string; params?: Record<string, string> };
+  /** An inline status chip beside the title, for live objects. */
+  status?: ReactNode;
+}) {
+  return (
+    <header className="page-head">
+      <div className="page-head-text">
+        {back && (
+          // Route strings are checked where PageHeader is used; the link only needs the path.
+          <Link to={back.to as any} params={back.params as any} className="page-crumb">
+            <IconChevronLeft size={16} />
+            {back.label}
+          </Link>
+        )}
+        <div className="page-title-row">
+          <h1 className="page-title">{title}</h1>
+          {status}
+        </div>
+        {description && <p className="page-sub">{description}</p>}
+        {meta && <div className="page-sub">{meta}</div>}
       </div>
       {actions && <div className="page-actions">{actions}</div>}
     </header>
   );
 }
 
-export function Panel({ title, actions, children, className, flush, id }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string; flush?: boolean; id?: string }) {
+/** A white card: one idea, a 16 px title and one quiet item on the right. */
+export function Panel({ title, actions, children, className, id, compact }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string; flush?: boolean; id?: string; compact?: boolean }) {
   const headingId = useId();
   return (
-    <section className={`panel ${flush ? 'panel-flush' : ''} ${className ?? ''}`} aria-labelledby={title ? headingId : undefined} id={id}>
+    <section className={`card ${compact ? 'card-compact' : ''} ${className ?? ''}`} aria-labelledby={title ? headingId : undefined} id={id}>
       {(title || actions) && (
-        <div className="panel-header">
-          {title && <h2 id={headingId}>{title}</h2>}
-          {actions && <div className="panel-actions">{actions}</div>}
+        <div className="card-head">
+          {title && (
+            <h2 className="card-title" id={headingId}>
+              {title}
+            </h2>
+          )}
+          {actions && <div className="card-aside">{actions}</div>}
         </div>
       )}
-      <div className="panel-body">{children}</div>
+      {children}
     </section>
+  );
+}
+
+/** Progressive disclosure: name what is hidden and how much. */
+export function Disclosure({ summary, children, className, defaultOpen }: { summary: ReactNode; children: ReactNode; className?: string; defaultOpen?: boolean }) {
+  return (
+    <details className={`disclosure ${className ?? ''}`} open={defaultOpen}>
+      <summary>
+        {summary}
+        <IconChevronDown size={16} />
+      </summary>
+      <div className="disclosure-body">{children}</div>
+    </details>
   );
 }
 
 export function Loading({ label = 'Loading' }: { label?: string }) {
   return (
     <div className="state state-loading">
-      <SpindleLoader size={20} label={label} />
+      <SpindleLoader size={32} label={label} />
       <span aria-hidden="true">{label}</span>
     </div>
   );
 }
 
-export function Empty({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
+/** One sentence on what goes here and one primary action. */
+export function Empty({ title, children, action, icon }: { title: string; children?: ReactNode; action?: ReactNode; icon?: ReactNode }) {
   return (
-    <div className="state state-empty">
-      <p className="state-title">{title}</p>
-      {children && <p className="state-text">{children}</p>}
-      {action && <div className="state-action">{action}</div>}
+    <div className="empty">
+      <span className="tile tile-lg" aria-hidden="true">
+        {icon ?? <IconInbox />}
+      </span>
+      <h3>{title}</h3>
+      {children && <p>{children}</p>}
+      {action && <div className="empty-action">{action}</div>}
     </div>
   );
 }
@@ -71,15 +126,21 @@ export function ErrorState({ what, error, onRetry }: { what: string; error: Erro
         ? 'The hub could not be reached. Check that it is running and that the URL in Settings is right.'
         : error.status === 401 || error.status === 403
           ? 'The hub rejected the owner token. Update it in Settings.'
-          : `${error.message} (${error.code})`
+          : error.message
       : error.message;
   return (
-    <div className="state state-error" role="alert">
-      <p className="state-title">Couldn’t load {what}.</p>
-      <p className="state-text">{detail}</p>
+    <div className="error-state" role="alert">
+      <div className="error-head">
+        <IconXCircle size={20} />
+        <h3>Couldn’t load {what}</h3>
+      </div>
+      <p className="error-text">{detail}</p>
+      {error instanceof HubError && error.code && error.status !== 0 && <pre className="log">{`${error.status} ${error.code}`}</pre>}
       {onRetry && (
-        <div className="state-action">
-          <Button onClick={onRetry}>Try again</Button>
+        <div className="actions">
+          <Button variant="primary" onClick={onRetry}>
+            Try again
+          </Button>
         </div>
       )}
     </div>
@@ -105,7 +166,7 @@ export function Dialog({ open, onClose, title, children, footer, wide }: { open:
   return (
     <dialog
       ref={ref}
-      className={`dialog ${wide ? 'dialog-wide' : ''}`}
+      className={`sheet ${wide ? 'sheet-wide' : ''}`}
       aria-labelledby={titleId}
       onClose={onClose}
       onCancel={(e) => {
@@ -113,14 +174,14 @@ export function Dialog({ open, onClose, title, children, footer, wide }: { open:
         onClose();
       }}
     >
-      <div className="dialog-header">
+      <div className="sheet-head">
         <h2 id={titleId}>{title}</h2>
-        <button className="icon-btn" onClick={onClose} aria-label="Close">
-          <IconClose />
+        <button className="btn btn-ghost btn-sm btn-icon" onClick={onClose} aria-label="Close">
+          <IconClose size={18} />
         </button>
       </div>
-      <div className="dialog-body">{children}</div>
-      {footer && <div className="dialog-footer">{footer}</div>}
+      <div className="sheet-body">{children}</div>
+      {footer && <div className="sheet-foot">{footer}</div>}
     </dialog>
   );
 }
@@ -128,69 +189,85 @@ export function Dialog({ open, onClose, title, children, footer, wide }: { open:
 export function Field({ label, hint, error, children, htmlFor }: { label: string; hint?: ReactNode; error?: string | null; children: ReactNode; htmlFor: string }) {
   return (
     <div className={`field ${error ? 'field-invalid' : ''}`}>
-      <label htmlFor={htmlFor}>{label}</label>
+      <label className="field-label" htmlFor={htmlFor}>
+        {label}
+      </label>
       {children}
       {error ? (
         <p className="field-error" id={`${htmlFor}-error`}>
+          <IconXCircle size={16} />
           {error}
         </p>
       ) : (
-        hint && <p className="field-hint">{hint}</p>
+        hint && <p className="field-help">{hint}</p>
       )}
     </div>
   );
 }
 
-export function Segmented<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: { value: T; label: string }[]; onChange(value: T): void }) {
+/** A pill track; the selected option is a white pill. */
+export function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  className,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: ReactNode; count?: ReactNode }[];
+  onChange(value: T): void;
+  className?: string;
+}) {
   return (
-    <div className="segmented" role="radiogroup" aria-label={label}>
+    <div className={`seg ${className ?? ''}`} role="radiogroup" aria-label={label}>
       {options.map((o) => (
         <button
           key={o.value}
+          type="button"
           role="radio"
           aria-checked={o.value === value}
-          className={o.value === value ? 'is-selected' : ''}
           tabIndex={o.value === value ? 0 : -1}
           onClick={() => onChange(o.value)}
           onKeyDown={(e) => {
             const i = options.findIndex((x) => x.value === value);
-            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-              e.preventDefault();
-              onChange(options[(i + 1) % options.length].value);
-              (e.currentTarget.parentElement?.children[(i + 1) % options.length] as HTMLElement | undefined)?.focus();
-            }
-            if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-              e.preventDefault();
-              const j = (i - 1 + options.length) % options.length;
-              onChange(options[j].value);
-              (e.currentTarget.parentElement?.children[j] as HTMLElement | undefined)?.focus();
-            }
+            const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+            if (!step) return;
+            e.preventDefault();
+            const j = (i + step + options.length) % options.length;
+            onChange(options[j].value);
+            (e.currentTarget.parentElement?.children[j] as HTMLElement | undefined)?.focus();
           }}
         >
           {o.label}
+          {o.count !== undefined && <span className="count">{o.count}</span>}
         </button>
       ))}
     </div>
   );
 }
 
-/** Ruled meter with an explicit number beside it. */
-export function Meter({ value, max, label, tone = 'ink' }: { value: number; max: number; label: string; tone?: 'ink' | 'accent' | 'error' | 'warning' }) {
+/** 4 px pill meter in ink; the number sits beside it. */
+export function Meter({ value, max, label, tone = 'ink' }: { value: number; max: number; label: string; tone?: 'ink' | 'error' }) {
   const ratio = max > 0 ? Math.min(1, value / max) : 0;
   return (
     <span className="meter" role="meter" aria-valuemin={0} aria-valuemax={max} aria-valuenow={value} aria-label={label}>
-      <span className={`meter-fill meter-${tone}`} style={{ width: `${ratio * 100}%` }} />
+      <span className={tone === 'error' ? 'meter-error' : ''} style={{ width: `${ratio * 100}%` }} />
     </span>
   );
 }
 
-export function Stat({ label, value, detail }: { label: string; value: ReactNode; detail?: ReactNode }) {
+/** A headline number: value in 32 semibold, label beneath. Three at most in a row. */
+export function Stat({ label, value, detail, unit }: { label: string; value: ReactNode; detail?: ReactNode; unit?: string }) {
   return (
-    <div className="stat">
-      <dt>{label}</dt>
+    <div className="metric">
+      <dt>
+        {label}
+        {detail && <span className="metric-detail"> · {detail}</span>}
+      </dt>
       <dd>
-        <span className="stat-value">{value}</span>
-        {detail && <span className="stat-detail">{detail}</span>}
+        {value}
+        {unit && <small>{unit}</small>}
       </dd>
     </div>
   );
@@ -201,5 +278,57 @@ export function Mono({ children, title }: { children: ReactNode; title?: string 
     <code className="mono" title={title}>
       {children}
     </code>
+  );
+}
+
+/** An icon tile: 36 px, rounded, on the subtle surface. */
+export function Tile({ children, small }: { children: ReactNode; small?: boolean }) {
+  return (
+    <span className={`tile ${small ? 'tile-sm' : ''}`} aria-hidden="true">
+      {children}
+    </span>
+  );
+}
+
+/** Overflow actions behind a circular "More" button. */
+export function Menu({ label, items }: { label: string; items: { label: string; onSelect(): void; icon?: ReactNode }[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === 'Escape' : !ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, [open]);
+  return (
+    <div className="menu" ref={ref}>
+      <button type="button" className="btn btn-ghost btn-icon" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <IconMore />
+      </button>
+      {open && (
+        <div className="menu-list" role="menu">
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                item.onSelect();
+              }}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

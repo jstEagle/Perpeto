@@ -1,5 +1,6 @@
 import { HubError, newIdempotencyKey, OWNER_ROLE_ID } from './hub';
-import type { HubApi, MessageQuery, StreamState, UsageQuery, WorkflowUpdate } from './hub';
+import { decodeProject } from './goals';
+import type { EventPageResult, EventQuery, HubApi, MessageQuery, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import type {
   Account,
   Assignment,
@@ -92,18 +93,12 @@ function normaliseMetrics(body: MetricsSnapshot & { windowSec?: number }, window
   return { ...body, window };
 }
 
-const EVENT_PAGE = 1000;
-const EVENT_CACHE = 5000;
 
 /** Client for Hub API v1 (docs/architecture/README.md). */
 export class HttpHub implements HubApi {
   readonly mode = 'hub' as const;
   readonly #base: string;
   readonly #auth: HubAuth;
-  /** Recent events, oldest first, and the cursor after the last one. */
-  #events: HubEvent[] = [];
-  #cursor = 0;
-  #loading: Promise<void> | null = null;
 
   constructor(settings: HubSettings) {
     this.#base = settings.baseUrl.replace(/\/+$/, '');
@@ -111,36 +106,40 @@ export class HttpHub implements HubApi {
   }
 
   /**
-   * Ask the hub to set an HttpOnly owner session cookie. Feature check
-   * first: a plain bearer `GET /session` (no credentials, so it passes the
-   * hub's current CORS rules). 404 or 405 means the hub has no session
-   * route yet and this returns false, so the caller keeps the token for this
-   * tab only. A hub that has the route but refuses credentialed CORS also
-   * returns false.
+   * Ask the hub for an HttpOnly owner session cookie. Feature check first: a
+   * plain bearer `GET /session` without credentials. A 404 or 405 means the
+   * hub has no session route, and this returns false so the caller keeps
+   * the token for this tab only. A hub with the route always gets a cookie:
+   * after `POST /session`, a credentialed `GET /session` with no token
+   * proves the browser kept it. SameSite=Strict drops it when the app and
+   * hub are on different sites (`localhost` and `127.0.0.1` count as
+   * different), and that is an error with the fix, not a reason to store
+   * the token.
    */
   static async startSession(baseUrl: string, token: string): Promise<boolean> {
-    const url = `${baseUrl.replace(/\/+$/, '')}/api/v1/session`;
-    let probe: Response;
-    try {
-      probe = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
-    } catch {
-      throw new HubError(0, 'NETWORK', 'The hub could not be reached.');
-    }
+    const base = baseUrl.replace(/\/+$/, '');
+    const url = `${base}/api/v1/session`;
+    const call = async (init: RequestInit) => {
+      try {
+        return await fetch(url, init);
+      } catch {
+        throw new HubError(0, 'NETWORK', 'The hub could not be reached.');
+      }
+    };
+    const probe = await call({ headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
     if (probe.status === 404 || probe.status === 405) return false;
     if (!probe.ok) throw await errorFrom(probe);
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ idempotencyKey: newIdempotencyKey() }),
-      });
-    } catch {
-      return false;
-    }
-    if (!response.ok) throw await errorFrom(response);
-    return true;
+    const created = await call({
+      method: 'POST',
+      credentials: 'include',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ idempotencyKey: newIdempotencyKey() }),
+    });
+    if (!created.ok) throw await errorFrom(created);
+    const check = await call({ credentials: 'include', headers: { Accept: 'application/json' } });
+    if (check.ok) return true;
+    if (check.status !== 401) throw await errorFrom(check);
+    throw new HubError(0, 'COOKIE_BLOCKED', cookieAdvice(base));
   }
 
   /** True while the hub still accepts this browser's session cookie. */
@@ -199,16 +198,16 @@ export class HttpHub implements HubApi {
   }
 
   async listProjects() {
-    return list<Project>(await this.#request('GET', '/projects'), 'projects');
+    return list<Project>(await this.#request('GET', '/projects'), 'projects').map(decodeProject);
   }
   async createProject(input: NewProject) {
-    return await this.#request<Project>('POST', '/projects', { body: input });
+    return decodeProject(await this.#request<Project>('POST', '/projects', { body: input }));
   }
   async getProject(id: string) {
-    return await this.#request<Project>('GET', `/projects/${enc(id)}`);
+    return decodeProject(await this.#request<Project>('GET', `/projects/${enc(id)}`));
   }
   async updateProject(id: string, patch: Partial<NewProject>) {
-    return await this.#request<Project>('PATCH', `/projects/${enc(id)}`, { body: patch });
+    return decodeProject(await this.#request<Project>('PATCH', `/projects/${enc(id)}`, { body: patch }));
   }
 
   async listWorkflows(projectId: string) {
@@ -274,7 +273,9 @@ export class HttpHub implements HubApi {
   }
   /** The engine decides human gates with `pass` or `fail`. */
   async decideWorkItem(id: string, decision: HumanDecision) {
-    await this.#request('POST', `/work-items/${enc(id)}/decision`, { body: { decision: decision.decision === 'approve' ? 'pass' : 'fail', ...(decision.note ? { note: decision.note } : {}) } });
+    await this.#request('POST', `/work-items/${enc(id)}/decision`, {
+      body: { decision: decision.decision === 'approve' ? 'pass' : 'fail', ...(decision.note ? { note: decision.note } : {}), ...(decision.decisionId ? { decisionId: decision.decisionId } : {}) },
+    });
   }
 
   async listMachines() {
@@ -318,33 +319,18 @@ export class HttpHub implements HubApi {
   async events(after = 0, limit = 200) {
     return list<HubEvent>(await this.#request('GET', '/events', { query: { after, limit } }), 'events');
   }
-
-  /**
-   * The hub pages events oldest first and has no "latest" or per-run query,
-   * so this reads forward from the last cursor and keeps the newest
-   * EVENT_CACHE events in memory. Later calls only fetch what is new.
-   */
-  async #catchUp(): Promise<void> {
-    this.#loading ??= (async () => {
-      for (;;) {
-        const page = await this.events(this.#cursor, EVENT_PAGE);
-        this.#events.push(...page);
-        if (this.#events.length > EVENT_CACHE) this.#events.splice(0, this.#events.length - EVENT_CACHE);
-        if (page.length) this.#cursor = page.at(-1)!.seq;
-        if (page.length < EVENT_PAGE) return;
-      }
-    })().finally(() => {
-      this.#loading = null;
-    });
-    return this.#loading;
-  }
   async latestSeq() {
-    await this.#catchUp();
-    return this.#cursor;
+    const body = await this.#request<{ nextCursor?: number }>('GET', '/events', { query: { latest: true, limit: 1 } });
+    return typeof body.nextCursor === 'number' ? body.nextCursor : 0;
   }
-  async recentEvents(limit: number, match: (event: HubEvent) => boolean = () => true) {
-    await this.#catchUp();
-    return this.#events.filter(match).slice(-limit);
+  /** The hub returns each page oldest first; screens want newest first. */
+  async eventPage(query: EventQuery = {}): Promise<EventPageResult> {
+    const { before, limit = 200, runId, projectId } = query;
+    const body = await this.#request<{ previousCursor?: number; hasMore?: boolean }>('GET', '/events', {
+      query: { ...(before ? { before } : { latest: true }), limit, runId, projectId },
+    });
+    const events = list<HubEvent>(body, 'events').reverse();
+    return { events, before: body.previousCursor ?? events.at(-1)?.seq ?? 0, hasMore: !!body.hasMore };
   }
 
   /**
@@ -360,11 +346,6 @@ export class HttpHub implements HubApi {
     const deliver = (event: HubEvent) => {
       if (event.seq <= cursor) return;
       cursor = event.seq;
-      if (event.seq > this.#cursor) {
-        this.#events.push(event);
-        if (this.#events.length > EVENT_CACHE) this.#events.shift();
-        this.#cursor = event.seq;
-      }
       onEvent(event);
     };
 
@@ -426,6 +407,20 @@ export class HttpHub implements HubApi {
     );
     return result.message;
   }
+}
+
+/**
+ * Why a session cookie did not stick, and the fix. The usual cause on one
+ * machine is mixing `localhost` and `127.0.0.1` between the app and the hub.
+ */
+export function cookieAdvice(hubBase: string, appHost = typeof location === 'undefined' ? '' : location.hostname): string {
+  const loopback = ['localhost', '127.0.0.1', '[::1]', '::1'];
+  const hub = new URL(hubBase);
+  const advice =
+    loopback.includes(hub.hostname) && loopback.includes(appHost) && hub.hostname !== appHost
+      ? ` Connect to ${hub.protocol}//${appHost.includes(':') && !appHost.startsWith('[') ? `[${appHost}]` : appHost}${hub.port ? `:${hub.port}` : ''} instead, so the app and hub share a site.`
+      : ' Serve the app and the hub from the same site, or let the hub serve the app.';
+  return `The hub set a session cookie, but this browser did not keep it. Its cookie is limited to the hub's own site.${advice}`;
 }
 
 async function errorFrom(response: Response): Promise<HubError> {

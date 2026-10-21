@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HttpHub, readSse } from './client';
+import { cookieAdvice, HttpHub, readSse } from './client';
 import { HubError } from './hub';
 
 function stream(chunks: string[]) {
@@ -63,6 +63,27 @@ describe('HttpHub', () => {
     expect((fetch.mock.calls[1] as unknown as [string, RequestInit])[1].credentials).toBe('include');
   });
 
+  it('proves the cookie works without the token, and refuses to fall back when it does not', async () => {
+    const calls: RequestInit[] = [];
+    let kept = true;
+    const fetch = vi.fn(async (_: string, init: RequestInit = {}) => {
+      calls.push(init);
+      if (init.method === 'POST') return json({ expiresAt: '2026-10-22T00:00:00Z' }, 201);
+      const bearer = !!(init.headers as Record<string, string>)?.Authorization;
+      return bearer || kept ? json({ kind: 'owner' }) : json({ error: { code: 'UNAUTHORIZED', message: 'Missing credentials.' } }, 401);
+    });
+    vi.stubGlobal('fetch', fetch);
+    expect(await HttpHub.startSession('http://localhost:4320', 'secret-token')).toBe(true);
+    expect(calls[2].credentials).toBe('include');
+    expect((calls[2].headers as Record<string, string>).Authorization).toBeUndefined();
+
+    // SameSite=Strict drops the cookie when the app and hub are on different sites.
+    kept = false;
+    const err = await HttpHub.startSession('http://127.0.0.1:4320', 'secret-token').catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'COOKIE_BLOCKED' });
+    expect(cookieAdvice('http://127.0.0.1:4320', 'localhost')).toContain('Connect to http://localhost:4320 instead');
+  });
+
   it('reads named list envelopes and rejects others', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ machines: [{ id: 'mch_1' }] })));
     expect(await hub.listMachines()).toEqual([{ id: 'mch_1' }]);
@@ -108,18 +129,40 @@ describe('HttpHub', () => {
     expect(bodies[1]).toMatchObject({ decision: 'fail', note: 'Needs tests' });
   });
 
-  it('finds the newest event by paging forward once', async () => {
-    const events = Array.from({ length: 1500 }, (_, i) => ({ seq: i + 1, at: '', type: 'x', subject: { kind: 'run', id: 'r' }, data: {} }));
+  it('binds a human decision to its wait and surfaces a stale one', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(json({ accepted: true, decisionId: 'dec_2' }))
+      .mockResolvedValueOnce(json({ error: { code: 'STALE_DECISION', message: 'This decision answers an earlier wait.' } }, 409));
+    vi.stubGlobal('fetch', fetch);
+    await hub.decideWorkItem('wi_1', { decision: 'approve', decisionId: 'dec_2' });
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [URL, RequestInit])[1].body))).toMatchObject({ decision: 'pass', decisionId: 'dec_2' });
+    const refused = await hub.decideWorkItem('wi_1', { decision: 'approve', decisionId: 'dec_1' }).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(HubError);
+    expect(refused).toMatchObject({ status: 409, code: 'STALE_DECISION' });
+  });
+
+  it('reads the newest events first, per run, and pages back with before', async () => {
+    const urls: URLSearchParams[] = [];
     const fetch = vi.fn(async (url: URL) => {
       const q = new URL(url).searchParams;
-      const after = Number(q.get('after'));
-      return json({ events: events.filter((e) => e.seq > after).slice(0, Number(q.get('limit'))), nextCursor: 0 });
+      urls.push(q);
+      if (q.get('limit') === '1') return json({ events: [{ seq: 1500 }], previousCursor: 1500, nextCursor: 1500, hasMore: true });
+      const top = q.has('before') ? Number(q.get('before')) - 1 : 1500;
+      const events = [top - 1, top].map((seq) => ({ seq, at: '', type: 'x', runId: 'run_1', subject: { kind: 'run', id: 'run_1' }, data: {} }));
+      return json({ events, previousCursor: top - 1, nextCursor: top, hasMore: true });
     });
     vi.stubGlobal('fetch', fetch);
     const fresh = new HttpHub({ baseUrl: 'http://localhost:4320', auth: { kind: 'bearer', token: 't' } });
     expect(await fresh.latestSeq()).toBe(1500);
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect((await fresh.recentEvents(2)).map((e) => e.seq)).toEqual([1499, 1500]);
+    expect(urls[0].get('latest')).toBe('true');
+    const page = await fresh.eventPage({ runId: 'run_1', limit: 2 });
+    expect(page.events.map((e) => e.seq)).toEqual([1500, 1499]);
+    expect(Object.fromEntries(urls[1])).toEqual({ latest: 'true', limit: '2', runId: 'run_1' });
+    const older = await fresh.eventPage({ runId: 'run_1', before: page.before, limit: 2 });
+    expect(urls[2].get('before')).toBe('1499');
+    expect(urls[2].has('latest')).toBe(false);
+    expect(older.events.map((e) => e.seq)).toEqual([1498, 1497]);
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 

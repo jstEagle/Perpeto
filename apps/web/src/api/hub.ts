@@ -30,6 +30,22 @@ import type {
   WorkflowStatus,
 } from './types';
 
+export interface EventQuery {
+  runId?: string;
+  projectId?: string;
+  /** Cursor from a previous page's `before`; omitted for the newest page. */
+  before?: number;
+  limit?: number;
+}
+
+export interface EventPageResult {
+  /** Newest first. */
+  events: HubEvent[];
+  /** Pass back as `before` for the next older page. */
+  before: number;
+  hasMore: boolean;
+}
+
 export type StreamState = 'connecting' | 'live' | 'reconnecting' | 'polling' | 'closed';
 
 export interface UsageQuery {
@@ -107,8 +123,8 @@ export interface HubApi {
   events(after?: number, limit?: number): Promise<HubEvent[]>;
   /** Sequence number of the newest event, to start a live stream without replaying history. */
   latestSeq(): Promise<number>;
-  /** The newest `limit` events that match, oldest first. */
-  recentEvents(limit: number, match?: (event: HubEvent) => boolean): Promise<HubEvent[]>;
+  /** One page of events, newest first: the latest page, or the page before `before`. */
+  eventPage(query?: EventQuery): Promise<EventPageResult>;
   /** Live events after `after`. Returns an unsubscribe function. */
   subscribe(after: number, onEvent: (event: HubEvent) => void, onState: (state: StreamState) => void): () => void;
 

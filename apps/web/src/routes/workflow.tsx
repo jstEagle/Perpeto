@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { useHub, useResource } from '../app/hub-context';
 import type { GraphDiff, Workflow } from '../api/types';
-import { Async, Button, PageHeader, Panel } from '../components/ui';
-import { StatusLabel, WorkflowStatusLabel } from '../components/status';
+import { Async, btn, Button, Disclosure, PageHeader, Panel, Stat } from '../components/ui';
+import { StatusChip, StatusLabel, WorkflowStatusLabel } from '../components/status';
 import { IconEdit, IconPlay } from '../components/icons';
-import { EdgeLegend, GraphCanvas } from '../workflow/graph-canvas';
+import { GraphCanvas } from '../workflow/graph-canvas';
+import { StepList } from '../workflow/step-list';
 import type { Selection } from '../workflow/graph-canvas';
 import { diffGraphs, diffIsEmpty } from '../workflow/diff';
 import { validateGraph } from '../workflow/validate';
@@ -19,7 +20,7 @@ export function WorkflowPage() {
   const versions = useResource((api) => api.listVersions(workflowId), [workflowId], (e) => e.subject.kind === 'workflow' && e.subject.id === workflowId);
 
   return (
-    <div className="page page-wide">
+    <div className="page">
       <Async resource={versions} what="workflow versions">
         {(list) => <WorkflowDetail projectId={projectId} versions={list} requested={search.version} follow={search.follow} reload={versions.reload} />}
       </Async>
@@ -79,27 +80,24 @@ function WorkflowDetail({ projectId, versions, requested, follow, reload }: { pr
 
   return (
     <>
-      <nav className="breadcrumb" aria-label="Breadcrumb">
-        <Link activeOptions={{ exact: true }} to="/projects/$projectId/workflows" params={{ projectId }}>
-          Workflows
-        </Link>
-        <span aria-hidden="true">/</span>
-        <span>{viewing.name}</span>
-      </nav>
       <PageHeader
+        back={{ label: 'Workflows', to: '/projects/$projectId/workflows', params: { projectId } }}
         title={isProposal ? `${viewing.name}: proposed version ${viewing.version}` : viewing.name}
+        status={
+          <StatusChip tone={viewing.status === 'active' ? 'done' : 'quiet'} quiet={viewing.status !== 'active'}>
+            {viewing.status === 'active' ? 'Active' : viewing.status === 'draft' ? 'Draft' : 'Paused'} · v{viewing.version}
+          </StatusChip>
+        }
         meta={
           <>
-            <WorkflowStatusLabel status={viewing.status} />
-            <span className="mono">v{viewing.version}</span>
-            {active && active.version !== viewing.version && <span>Active version is v{active.version}</span>}
-            <span>{viewing.authoredBy?.kind === 'agent' ? 'Drafted by the workflow architect' : 'Saved by you'}</span>
-            {viewing.createdAt && <span>{relative(viewing.createdAt)}</span>}
+            {viewing.authoredBy?.kind === 'agent' ? 'Drafted by the workflow architect' : 'Saved by you'}
+            {viewing.createdAt && ` ${relative(viewing.createdAt)}`}
+            {active && active.version !== viewing.version && ` · Active version is v${active.version}`}
           </>
         }
         actions={
           <>
-            <Link to="/projects/$projectId/workflows/$workflowId/edit" params={{ projectId, workflowId: viewing.id }} className="btn btn-secondary btn-md">
+            <Link to="/projects/$projectId/workflows/$workflowId/edit" params={{ projectId, workflowId: viewing.id }} className={btn('secondary')}>
               <IconEdit /> Edit by hand
             </Link>
             {isProposal ? (
@@ -124,65 +122,43 @@ function WorkflowDetail({ projectId, versions, requested, follow, reload }: { pr
 
       {follow && <ArchitectProgress assignmentId={follow} projectId={projectId} onDone={(_, version) => goVersion(version)} onDismiss={() => goVersion(viewing.version)} />}
 
-      <div className="stack-sm">
-          <GraphCanvas
-            graph={viewing.graph}
-            mode="view"
-            label={`${viewing.name} version ${viewing.version} graph`}
-            diff={diff && base ? { base: base.graph, diff } : undefined}
-            selection={selection}
-            onSelect={setSelection}
-            className="graph-drawing"
-          />
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <EdgeLegend />
-            {diff && (
-              <ul className="edge-legend" aria-label="Diff marks">
-                <li>
-                  <span className="swatch swatch-added" aria-hidden="true" /> Added
-                </li>
-                <li>
-                  <span className="swatch swatch-changed" aria-hidden="true" /> Changed
-                </li>
-                <li>
-                  <span className="swatch swatch-removed" aria-hidden="true" /> Removed
-                </li>
-              </ul>
-            )}
-          </div>
+      <div className="hide-sm">
+        <GraphCanvas
+          graph={viewing.graph}
+          mode="view"
+          label={`${viewing.name} version ${viewing.version} graph`}
+          diff={diff && base ? { base: base.graph, diff } : undefined}
+          selection={selection}
+          onSelect={setSelection}
+          className="graph-drawing"
+        />
       </div>
+      <StepList graph={viewing.graph} selection={selection} onSelect={setSelection} className="only-mobile" />
 
-      <div className="proposal-layout">
-        <div className="stack-sm">
-          <Panel title={isProposal ? 'Proposal' : 'Why it looks like this'}>
-            <div className="stack-sm">
-              {viewing.authoredBy?.prompt && (
-                <div className="stack-sm">
-                  <span className="label">Asked</span>
-                  <p className="prompt-quote">{viewing.authoredBy.prompt}</p>
-                </div>
-              )}
-              <div className="stack-sm">
-                <span className="label">Rationale</span>
-                <p className="rationale">{viewing.rationale ?? 'No rationale was recorded for this version.'}</p>
-              </div>
-              <div>
-                {errors.length === 0 ? (
-                  <StatusLabel tone="success">Validated: 0 errors{issues.length ? `, ${issues.length} ${issues.length === 1 ? 'warning' : 'warnings'}` : ''}</StatusLabel>
-                ) : (
-                  <StatusLabel tone="error">
-                    {errors.length} validation {errors.length === 1 ? 'error' : 'errors'}
-                  </StatusLabel>
-                )}
-              </div>
+      <div className="cols">
+        <div className="stack">
+          <Panel
+            title={isProposal ? 'Proposal' : 'Why it looks like this'}
+            actions={
+              errors.length === 0 ? (
+                <StatusLabel tone="done">Valid{issues.length ? `, ${issues.length} ${issues.length === 1 ? 'warning' : 'warnings'}` : ''}</StatusLabel>
+              ) : (
+                <StatusLabel tone="failed">
+                  {errors.length} validation {errors.length === 1 ? 'error' : 'errors'}
+                </StatusLabel>
+              )
+            }
+          >
+            <div className="stack">
+              {viewing.authoredBy?.prompt && <blockquote className="prompt-quote">{viewing.authoredBy.prompt}</blockquote>}
+              <p className="rationale">{viewing.rationale ?? 'No rationale was recorded for this version.'}</p>
               {isProposal && <p className="note">The running workflow keeps using {active ? `version ${active.version}` : 'no version'} until you activate this one. Runs never change silently.</p>}
             </div>
           </Panel>
 
           {diff && base && <DiffPanel diff={diff} base={base} next={viewing} onSelect={setSelection} />}
         </div>
-        <div className="stack-sm">
-
+        <div className="stack">
           <Panel title={asking ? 'Ask for changes' : 'Change this workflow'}>
             {asking ? (
               <ArchitectPrompt
@@ -197,12 +173,9 @@ function WorkflowDetail({ projectId, versions, requested, follow, reload }: { pr
               />
             ) : (
               <div className="stack-sm">
-                <p className="muted">Describe the change and the architect drafts a new version from this one. Or edit the graph yourself.</p>
+                <p className="muted">Describe the change and the architect drafts a new version from this one.</p>
                 <div className="row">
                   <Button onClick={() => setAsking(true)}>Ask for changes</Button>
-                  <Link to="/projects/$projectId/workflows/$workflowId/edit" params={{ projectId, workflowId: viewing.id }} className="btn btn-ghost btn-md">
-                    Edit by hand
-                  </Link>
                 </div>
               </div>
             )}
@@ -235,39 +208,36 @@ function DiffPanel({ diff, base, next, onSelect }: { diff: GraphDiff; base: Work
   const added = diff.nodes.added.length + diff.edges.added.length;
   const removed = diff.nodes.removed.length + diff.edges.removed.length;
   return (
-    <Panel title={`Changes from version ${base.version}`} flush>
+    <Panel title={`Changes from version ${base.version}`}>
       {diffIsEmpty(diff) ? (
-        <p className="panel-body muted">No structural changes. Node positions may differ.</p>
+        <p className="muted">No structural changes. Node positions may differ.</p>
       ) : (
         <>
-          <dl className="diff-summary">
-            <div>
-              <dt>Added</dt>
-              <dd className="diff-added">{added}</dd>
-            </div>
-            <div>
-              <dt>Changed</dt>
-              <dd className="diff-changed">{diff.nodes.changed.length}</dd>
-            </div>
-            <div>
-              <dt>Removed</dt>
-              <dd className="diff-removed">{removed}</dd>
-            </div>
+          <dl className="metrics metrics-small diff-summary">
+            <Stat label="Added" value={added} />
+            <Stat label="Changed" value={diff.nodes.changed.length} />
+            <Stat label="Removed" value={removed} />
           </dl>
-          <ul className="diff-list">
-            {rows.map((r, i) => (
-              <li key={i}>
-                <span className={`diff-kind diff-${r.kind.toLowerCase()}`}>{r.kind}</span>
-                {r.select ? (
-                  <button type="button" className="chip-button" onClick={() => onSelect(r.select!)}>
-                    {r.text}
-                  </button>
-                ) : (
-                  <span>{r.text}</span>
-                )}
-              </li>
-            ))}
-          </ul>
+          <div className="card-foot">
+            <Disclosure summary={`Show all ${rows.length} changes`}>
+              <ul className="rows">
+                {rows.map((r, i) => (
+                  <li key={i}>
+                    <StatusLabel tone={r.kind === 'Added' ? 'done' : r.kind === 'Removed' ? 'failed' : 'attention'}>{r.kind}</StatusLabel>
+                    <span className="row-main">
+                      {r.select ? (
+                        <button type="button" className="cell-button" onClick={() => onSelect(r.select!)}>
+                          {r.text}
+                        </button>
+                      ) : (
+                        <span>{r.text}</span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Disclosure>
+          </div>
         </>
       )}
     </Panel>
@@ -276,29 +246,30 @@ function DiffPanel({ diff, base, next, onSelect }: { diff: GraphDiff; base: Work
 
 function VersionHistory({ versions, current, projectId }: { versions: Workflow[]; current: number; projectId: string }) {
   return (
-    <Panel title="Version history" flush className="versions">
-      <div>
+    <Panel title="Version history" actions={`${versions.length}`}>
+      <ul className="rows versions">
         {versions.map((v) => (
-          <Link
-            key={v.version}
-            to="/projects/$projectId/workflows/$workflowId"
-            params={{ projectId, workflowId: v.id }}
-            search={{ version: v.version }}
-            className="version-row"
-            aria-current={v.version === current ? 'true' : undefined}
-          >
-            <span className="version-number">v{v.version}</span>
-            <span className="version-meta">
-              <span className="version-author">
-                {v.authoredBy?.kind === 'agent' ? 'Workflow architect' : 'You'}
-                {v.createdAt ? ` · ${dateTime(v.createdAt)}` : ''}
+          <li key={v.version}>
+            <Link
+              to="/projects/$projectId/workflows/$workflowId"
+              params={{ projectId, workflowId: v.id }}
+              search={{ version: v.version }}
+              className="version-row"
+              aria-current={v.version === current ? 'true' : undefined}
+            >
+              <span className="chip-quiet">v{v.version}</span>
+              <span className="row-main">
+                <span className="row-title">{v.authoredBy?.prompt ?? v.rationale ?? 'Edited by hand'}</span>
+                <span className="row-meta">
+                  {v.authoredBy?.kind === 'agent' ? 'Workflow architect' : 'You'}
+                  {v.createdAt ? ` · ${dateTime(v.createdAt)}` : ''}
+                </span>
               </span>
-              <span className="version-prompt">{v.authoredBy?.prompt ?? v.rationale ?? 'Edited by hand'}</span>
-            </span>
-            {v.status === 'active' ? <WorkflowStatusLabel status="active" /> : v.status === 'draft' ? <WorkflowStatusLabel status="draft" /> : <span className="note">Previous</span>}
-          </Link>
+              <span className="row-end">{v.status === 'active' ? <WorkflowStatusLabel status="active" /> : v.status === 'draft' ? <WorkflowStatusLabel status="draft" /> : 'Previous'}</span>
+            </Link>
+          </li>
         ))}
-      </div>
+      </ul>
     </Panel>
   );
 }
