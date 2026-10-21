@@ -55,6 +55,7 @@ public final class FactoryStore {
     public func project(_ id: String) -> Project? { factory.projects.first { $0.id == id } }
     public func state(_ projectId: String) -> ProjectState { projectStates[projectId] ?? .empty }
     public func machine(_ id: String?) -> Machine? { factory.machines.first { $0.id == id } }
+    public var machineNames: [String: String] { Dictionary(factory.machines.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a }) }
 
     public func refresh() async {
         isLoading = true

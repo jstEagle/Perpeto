@@ -42,6 +42,10 @@ public struct GraphLayout: Sendable {
 
     public let graph: WorkflowGraph
     public let nodeHeight: CGFloat
+    /// Horizontal spread applied to stored positions so cards in a row keep a
+    /// gutter between them. Graphs from other clients and templates may be
+    /// laid out for narrower cards. Drags divide by it to store positions.
+    public let xScale: CGFloat
     /// Planned delegates/messages edges plus extra role-style edges, such as
     /// unplanned interactions on the live map.
     public let roleEdges: [GraphEdge]
@@ -64,10 +68,15 @@ public struct GraphLayout: Sendable {
         // Taller live cards stretch rows so the gaps between rows keep their lanes.
         let rowStretch = (nodeHeight + Self.rowGap) / (Self.baseNodeHeight + Self.rowGap)
         let topY = graph.nodes.map(\.position.y).min() ?? 0
+        let xScale = Self.spread(graph)
+        self.xScale = xScale
+        let leftX = graph.nodes.map(\.position.x).min() ?? 0
         let size = CGSize(width: Self.nodeWidth, height: nodeHeight)
         var raw: [String: CGRect] = [:]
         for node in graph.nodes {
-            let origin = overrides[node.id] ?? CGPoint(x: node.position.x, y: topY + (node.position.y - topY) * rowStretch)
+            let stored = overrides[node.id].map { (x: Double($0.x), y: Double($0.y), override: true) } ?? (x: node.position.x, y: node.position.y, override: false)
+            let x = leftX + (stored.x - leftX) * xScale
+            let origin = CGPoint(x: x, y: stored.override ? stored.y : topY + (stored.y - topY) * rowStretch)
             raw[node.id] = CGRect(origin: origin, size: size)
         }
 
@@ -95,7 +104,9 @@ public struct GraphLayout: Sendable {
             }
         }
 
-        func flowPort(_ edge: GraphEdge) -> GraphPort { edge.from.port.flatMap(GraphPort.init(rawValue:)) ?? .out }
+        func flowPort(_ edge: GraphEdge) -> GraphPort {
+            edge.from.port.flatMap(GraphPort.init(rawValue:)) ?? (graph.node(edge.from.node)?.type == .mergeQueue ? .pass : .out)
+        }
 
         // Plan: which flow edges need a lane, and in which channel.
         enum FlowPlan { case direct, lane(Channel) }
@@ -262,6 +273,20 @@ public struct GraphLayout: Sendable {
         let width = max(maxFrameX, allPoints.map(\.x).max() ?? 0) + Self.margin
         let height = max(maxFrameY, allPoints.map(\.y).max() ?? 0) + Self.margin + 48
         contentSize = CGSize(width: max(width, 640), height: max(height, 360))
+    }
+
+    /// The smallest horizontal scale that leaves 40 pt between cards that
+    /// share a row. 1 when the stored layout already fits.
+    static func spread(_ graph: WorkflowGraph) -> CGFloat {
+        let pitch = Double(nodeWidth + 40)
+        var scale = 1.0
+        for (i, a) in graph.nodes.enumerated() {
+            for b in graph.nodes[(i + 1)...] where abs(a.position.y - b.position.y) < Double(baseNodeHeight) {
+                let dx = abs(a.position.x - b.position.x)
+                if dx > 0.5, dx < pitch { scale = max(scale, pitch / dx) }
+            }
+        }
+        return CGFloat(scale)
     }
 
     static func key(_ channel: Channel) -> String {

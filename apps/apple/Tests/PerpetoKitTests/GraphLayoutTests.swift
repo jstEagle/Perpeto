@@ -7,8 +7,15 @@ import Testing
 struct GraphLayoutTests {
     static let unplanned = GraphEdge(id: "unplanned:build>plan", from: .init(node: "build"), to: .init(node: "plan"), kind: .messages)
 
+    /// The hub's build template, laid out for narrower cards than ours.
+    static func template() -> WorkflowGraph? {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../../../packages/workflow/templates/build.json").standardized
+        return (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(WorkflowGraph.self, from: $0) }
+    }
+
     static func layouts() -> [(String, GraphLayout)] {
-        [
+        (template().map { [("hub template live", GraphLayout(graph: $0, nodeHeight: 156))] } ?? []) + [
             ("v3 editor", GraphLayout(graph: DemoFixtures.buildGraphV3(), nodeHeight: 76)),
             ("v3 live", GraphLayout(graph: DemoFixtures.buildGraphV3(), nodeHeight: 156, extraRoleEdges: [unplanned])),
             ("v4 proposal", GraphLayout(graph: DemoFixtures.buildGraphV4(), nodeHeight: 76)),
@@ -74,6 +81,21 @@ struct GraphLayoutTests {
                 for b in rects[(i + 1)...] { #expect(!a.intersects(b), "\(name): labels overlap") }
                 for node in layout.graph.nodes { #expect(!a.intersects(layout.frame(node)), "\(name): label covers \(node.id)") }
             }
+        }
+    }
+
+    @Test func hubTemplateIsValidLocally() throws {
+        let result = WorkflowValidator.validate(try #require(Self.template()))
+        #expect(result.issues.filter { $0.severity == .error }.map(\.message) == [])
+    }
+
+    @Test func crowdedLayoutsSpreadApart() throws {
+        let graph = try #require(Self.template())
+        let layout = GraphLayout(graph: graph, nodeHeight: 76)
+        #expect(layout.xScale > 1)
+        let frames = graph.nodes.map { layout.frame($0) }
+        for (i, a) in frames.enumerated() {
+            for b in frames[(i + 1)...] { #expect(!a.insetBy(dx: -8, dy: 0).intersects(b), "cards collide") }
         }
     }
 

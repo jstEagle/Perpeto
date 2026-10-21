@@ -196,7 +196,7 @@ public struct GraphCanvas: View {
                 let start = dragStart[node.id] ?? CGPoint(x: node.position.x, y: node.position.y)
                 dragStart[node.id] = start
                 selection = .node(node.id)
-                dragOverrides[node.id] = CGPoint(x: max(16, start.x + value.translation.width), y: max(64, start.y + value.translation.height))
+                dragOverrides[node.id] = CGPoint(x: max(0, start.x + value.translation.width / layout.xScale), y: max(0, start.y + value.translation.height))
             }
             .onEnded { _ in
                 if let p = dragOverrides[node.id] {

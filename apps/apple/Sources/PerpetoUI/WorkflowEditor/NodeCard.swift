@@ -88,17 +88,17 @@ struct NodeCard: View {
                 .font(PerpetoFont.caption)
                 .foregroundStyle(PerpetoColor.muted)
                 .lineLimit(1)
-                .padding(.trailing, node.type.isGate ? 26 : 0)
+                .padding(.trailing, node.type.hasPassFail ? 26 : 0)
             if let model = node.harness?.model {
                 Text(model).font(PerpetoFont.mono()).foregroundStyle(PerpetoColor.muted).lineLimit(1)
-                    .padding(.trailing, node.type.isGate ? 26 : 0)
+                    .padding(.trailing, node.type.hasPassFail ? 26 : 0)
             }
         }
     }
 
     @ViewBuilder
     private var gateLabels: some View {
-        if node.type.isGate {
+        if node.type.hasPassFail {
             ZStack(alignment: .topTrailing) {
                 Text("pass").padding(.top, 30 - 8)
                 Text("fail").padding(.top, 52 - 8)

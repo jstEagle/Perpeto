@@ -94,7 +94,7 @@ struct RunDetail: View {
                                 }
                         }
                     }
-                    InteractionFeed(events: runEvents, selection: selection, graph: workflow?.graph, messages: state.messagesById)
+                    InteractionFeed(events: runEvents, selection: selection, graph: workflow?.graph, messages: state.messagesById, machines: store.machineNames)
                         .frame(height: 210)
                 }
                 .padding(.leading, PerpetoSpacing.x(5))
@@ -360,6 +360,7 @@ struct InteractionFeed: View {
     var selection: GraphSelection?
     var graph: WorkflowGraph?
     var messages: [String: Message] = [:]
+    var machines: [String: String] = [:]
 
     private var filtered: [HubEvent] {
         switch selection {
@@ -384,7 +385,7 @@ struct InteractionFeed: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(filtered) { event in
-                            EventRow(event: event, graph: graph, messages: messages).padding(.vertical, PerpetoSpacing.x(2))
+                            EventRow(event: event, graph: graph, messages: messages, machines: machines).padding(.vertical, PerpetoSpacing.x(2))
                             Rule()
                         }
                     }

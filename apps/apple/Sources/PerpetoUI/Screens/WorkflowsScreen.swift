@@ -330,8 +330,11 @@ struct VersionPanel: View {
     var selection: GraphSelection?
     var graph: WorkflowGraph
 
+    /// The hub's workflow package is the authority; local checks show until it answers.
+    @State private var hubValidation: (version: Int, result: ValidationResult)?
+
     var body: some View {
-        let validation = WorkflowValidator.validate(shown.graph)
+        let validation = hubValidation.flatMap { $0.version == shown.version ? $0.result : nil } ?? WorkflowValidator.validate(shown.graph)
         ScrollView {
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
                 HStack(spacing: PerpetoSpacing.x(2)) {
@@ -369,6 +372,10 @@ struct VersionPanel: View {
         }
         .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.panel))
         .overlay(RoundedRectangle(cornerRadius: PerpetoRadius.panel).strokeBorder(PerpetoColor.border))
+        .task(id: "\(shown.id)@\(shown.version)") {
+            let result = await store.validate(shown)
+            hubValidation = (shown.version, result)
+        }
     }
 
     private func statusLabel(_ w: Workflow) -> (String, StatusTone) {

@@ -167,7 +167,7 @@ struct OverviewScreen: View {
             }
             ForEach(Array(state.events.prefix(6).enumerated()), id: \.element.id) { index, event in
                 if index > 0 { Rule() }
-                EventRow(event: event, graph: state.workflows.first?.graph, messages: state.messagesById)
+                EventRow(event: event, graph: state.workflows.first?.graph, messages: state.messagesById, machines: store.machineNames)
                     .padding(.vertical, PerpetoSpacing.x(2))
             }
         }
@@ -206,6 +206,8 @@ struct EventRow: View {
     var graph: WorkflowGraph?
     /// Messages by ID, so an `agent.messaged` row can show what was said.
     var messages: [String: Message] = [:]
+    /// Machine names by ID, so rows say where work ran.
+    var machines: [String: String] = [:]
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: PerpetoSpacing.x(3)) {
@@ -239,7 +241,7 @@ struct EventRow: View {
         }
         switch event.interaction {
         case .assignmentState:
-            return [event.data["machineId"]?.stringValue.map { "on \($0)" }, event.data["attempt"]?.intValue.map { "attempt \($0)" }]
+            return [event.data["machineId"]?.stringValue.map { "on \(machines[$0] ?? $0)" }, event.data["attempt"]?.intValue.map { "attempt \($0)" }]
                 .compactMap { $0 }.joined(separator: ", ").nilIfEmpty
         case .gateResult:
             return event.data["revision"]?.stringValue.map { "At \($0.prefix(7))" }
@@ -283,6 +285,16 @@ struct VelocityChart: View {
     var window: MetricsWindow = .week
 
     var body: some View {
+        if trend.allSatisfy({ $0 == 0 }) {
+            Text("No items finished in this window.")
+                .font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        } else {
+            chart
+        }
+    }
+
+    private var chart: some View {
         Chart {
             ForEach(Array(trend.enumerated()), id: \.offset) { index, value in
                 BarMark(x: .value("Day", dayLabel(index)), y: .value("Items", value), width: .ratio(0.55))

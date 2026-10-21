@@ -10,8 +10,10 @@ struct PerpetoApp: App {
     @State private var navigator = Navigator()
 
     init() {
-        // Snapshots always use demo fixtures, never a configured hub.
-        let (source, error): (FactoryDataSource, String?) = Snapshotter.requestedDirectory == nil ? FactoryStore.makeSource() : (DemoDataSource(), nil)
+        // Snapshots use demo fixtures unless a hub is named for them explicitly.
+        let (source, error): (FactoryDataSource, String?) = Snapshotter.requestedDirectory == nil
+            ? FactoryStore.makeSource()
+            : (Snapshotter.hubSource().map { $0 as FactoryDataSource } ?? DemoDataSource(), nil)
         let store = FactoryStore(source: source)
         store.lastError = error
         _store = State(initialValue: store)

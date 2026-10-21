@@ -193,7 +193,7 @@ struct WorkflowEditorView: View {
                     }
                     Rule()
                     Text("How to edit").font(PerpetoFont.heading).foregroundStyle(PerpetoColor.ink)
-                    Text("Drag nodes to move them; they snap to the 16 pt grid. Drag from a right-side port to another node to add a flow edge. Drag from the diamond under an agent role to add a delegates or messages edge. Press Delete to remove the selection.")
+                    Text("Drag nodes to move them; they snap to the 16 pt grid. Drag from a right-side port to another node to add a flow edge. Drag from the diamond on an agent role to add a delegates or messages edge. Press Delete to remove the selection, and Command-Z to undo.")
                         .font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(PerpetoSpacing.x(4))

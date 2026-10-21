@@ -46,12 +46,15 @@ public enum NodeType: String, LenientEnum {
     /// Gates have `pass` and `fail` output ports.
     public var isGate: Bool { self == .review || self == .ci || self == .human }
 
+    /// Gates and the merge queue route work by `pass` and `fail`.
+    public var hasPassFail: Bool { isGate || self == .mergeQueue }
+
     public var acceptsFlowInput: Bool { self != .input }
 
     public var outputPorts: [GraphPort] {
         switch self {
         case .output, .unknown: []
-        case _ where isGate: [.pass, .fail]
+        case _ where hasPassFail: [.pass, .fail]
         default: [.out]
         }
     }
@@ -231,7 +234,7 @@ public enum WorkflowValidator {
             }
             switch edge.kind {
             case .flow:
-                let port = edge.from.port.flatMap(GraphPort.init(rawValue:)) ?? .out
+                let port = edge.from.port.flatMap(GraphPort.init(rawValue:)) ?? (from.type == .mergeQueue ? .pass : .out)
                 if !from.type.outputPorts.contains(port) {
                     let expected = from.type.outputPorts.map(\.rawValue).joined(separator: " or ")
                     issues.append(.init(
@@ -257,9 +260,20 @@ public enum WorkflowValidator {
             }
         }
 
-        for node in graph.nodes {
+        // Mirrors packages/workflow: agents reached only by delegation need no
+        // flow, a merge queue's fail port is optional, and a human gate that is
+        // an escalation target may leave fail unwired (fail ends the item).
+        let delegateOnly = Set(graph.nodes.filter { node in
+            graph.edges.contains { $0.kind == .delegates && $0.to.node == node.id }
+                && !graph.edges.contains { $0.kind == .flow && ($0.to.node == node.id || $0.from.node == node.id) }
+        }.map(\.id))
+        let escalationTargets = Set(graph.nodes.flatMap { node in
+            ["onExhausted", "onBlocked"].compactMap { node.config[$0]?.stringValue }
+        })
+        for node in graph.nodes where !delegateOnly.contains(node.id) {
             let outgoing = graph.edges.filter { $0.kind == .flow && $0.from.node == node.id }
-            for port in node.type.outputPorts where !outgoing.contains(where: { ($0.from.port ?? "out") == port.rawValue }) {
+            for port in node.type.outputPorts where !outgoing.contains(where: { ($0.from.port ?? (node.type == .mergeQueue ? "pass" : "out")) == port.rawValue }) {
+                if port == .fail, node.type == .mergeQueue || (node.type == .human && escalationTargets.contains(node.id)) { continue }
                 issues.append(.init(code: "UNCONNECTED_PORT", message: "\(node.label) has no edge from its \(port.rawValue) port.", severity: port == .fail ? .warning : .error, nodeId: node.id))
             }
             if node.type.isAgentRole, node.harness == nil {
@@ -285,9 +299,12 @@ public enum WorkflowValidator {
         var seen = Set(graph.nodes.filter { $0.type == .input }.map(\.id))
         var frontier = Array(seen)
         while let id = frontier.popLast() {
-            for edge in graph.edges where edge.kind == .flow && edge.from.node == id && !seen.contains(edge.to.node) {
-                seen.insert(edge.to.node)
-                frontier.append(edge.to.node)
+            // Flow, delegation and escalation links (onExhausted, onBlocked) all reach a node.
+            var next = graph.edges.filter { ($0.kind == .flow || $0.kind == .delegates) && $0.from.node == id }.map(\.to.node)
+            if let node = graph.node(id) { next += ["onExhausted", "onBlocked"].compactMap { node.config[$0]?.stringValue } }
+            for target in next where !seen.contains(target) {
+                seen.insert(target)
+                frontier.append(target)
             }
         }
         return graph.nodes.filter { !seen.contains($0.id) && $0.type != .input }.map {
