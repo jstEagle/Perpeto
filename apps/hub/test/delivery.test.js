@@ -171,7 +171,8 @@ test('one project with an unusable repo URL does not halt merge admission for ot
   assert.ok(events.some(event => event.type === 'merge-entry.blocked' && event.subject.id === blocked.id));
 });
 
-test('cancelled delivery job history the hub never mirrored does not keep a finished queue open (M16)', async t => {
+/** A hub without HTTP or maintenance, and one delivery queue with a prepared speculative job the hub has not mirrored. */
+async function preparedQueue(t) {
   const root = await mkdtemp(join(tmpdir(), 'perpeto-hub-delivery-')); t.after(() => rm(root, { recursive: true, force: true }));
   const repo = await repository(root); const configPath = join(root, 'hub.json'); await writeFile(configPath, JSON.stringify({}));
   const hub = new Hub(loadConfig(configPath), createStubEngine()); t.after(() => hub.close());
@@ -182,6 +183,11 @@ test('cancelled delivery job history the hub never mirrored does not keep a fini
   queue.enqueue({ id: 'mq_test', projectId: 'prj_test', baseBranch: 'main', prUrl: pr.prUrl, headSha: pr.headSha }, { idempotencyKey: 'enqueue' });
   await queue.step({ idempotencyKey: 'start' }); await queue.step({ idempotencyKey: 'prepare' });
   assert.equal(queue.state.jobs[0].status, 'queued');
+  return { hub, queue };
+}
+
+test('cancelled delivery job history the hub never mirrored does not keep a finished queue open (M16)', async t => {
+  const { hub, queue } = await preparedQueue(t);
   // The entry's run closes it and the queue cancels the speculative job before the hub ever registered that job.
   hub.store.put('merge-entry', { id: 'mq_test', projectId: 'prj_test', status: 'rejected', reason: 'Closed by its run.' });
   queue.withdraw({ entryId: 'mq_test', reason: 'Closed by its run.' }, { idempotencyKey: 'withdraw' });
@@ -190,4 +196,15 @@ test('cancelled delivery job history the hub never mirrored does not keep a fini
   // A delivery outcome with no hub entry to mirror into is not pending work either.
   hub.store.remove('merge-entry', 'mq_test');
   assert.deepEqual(await hub.store.transaction(() => hub.delivery.admit()), []);
+});
+
+test('a second, different result for a speculative job keeps the recorded result instead of failing every retry (L2)', async t => {
+  const { hub, queue } = await preparedQueue(t);
+  const job = { ...queue.state.jobs[0], status: 'running', attempt: 1, delivery: { queueId: 'dq_test', mergeEntryIds: ['mq_test'] } };
+  hub.store.put('job', job);
+  hub.delivery.record({ ...job }, { status: 'passed' });
+  // The hub request that sent "passed" rolled back after delivery committed it; the node's retry reports differently.
+  const retry = { ...job, status: 'failed' }; hub.store.put('job', retry);
+  assert.doesNotThrow(() => hub.delivery.record(retry, { status: 'failed' }));
+  assert.equal(hub.store.get('job', job.id).status, 'passed'); assert.equal(queue.state.jobs[0].status, 'passed');
 });

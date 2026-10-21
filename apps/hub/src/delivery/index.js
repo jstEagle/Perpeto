@@ -265,7 +265,11 @@ export class HubDelivery {
         ...(job.logRef ? { logRef: job.logRef } : {}), ...(checks.length ? { checks } : {}) }, { idempotencyKey: `result:${job.id}` });
     } catch (error) {
       // The attempt moved on (base changed or job superseded); the queue already scheduled new work.
-      if (!(error instanceof DeliveryError) || !['STALE_ATTEMPT', 'CONFLICT', 'STALE_EVIDENCE'].includes(error.code)) throw error;
+      if (!(error instanceof DeliveryError) || !['STALE_ATTEMPT', 'CONFLICT', 'STALE_EVIDENCE', 'IDEMPOTENCY_CONFLICT'].includes(error.code)) throw error;
+      // Delivery already holds a different result for this job, from a hub request that rolled back after delivery
+      // committed. Delivery's result decides the queue, so the hub job shows it instead of failing every retry.
+      const recorded = error.code === 'IDEMPOTENCY_CONFLICT' && this.queue(record).state.jobs.find(value => value.id === job.id);
+      if (recorded && recorded.status !== 'queued') { job.status = recorded.status; job.artifacts = recorded.artifacts ?? []; this.hub.store.put('job', job); }
       this.hub.emit('merge-queue.result-ignored', 'job', job, { reason: error.code });
     }
     this.dirty = true;

@@ -556,3 +556,25 @@ test('blank, whitespace-only and NUL CI log lines are stored instead of failing 
   const done = await f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'completed', data: { status: 'passed', revision: job.revision, configHash: 'hash' } }, node.token);
   assert.equal(done.status, 200); assert.equal((await f.request('GET', `/jobs/${job.id}`)).body.status, 'passed');
 });
+
+test('lease max is clamped, a finished lease frees its slot before the next heartbeat, and job results bind configHash (L6, L7, L17)', async t => {
+  const f = await fixture(t); const { run } = await f.run(); await f.seed(run.id, 2); const node = await f.enroll();
+  const first = await f.request('POST', '/nodes/lease', { kinds: ['assignment'], max: 5000 }, node.token);
+  assert.equal(first.status, 200); assert.equal(first.body.assignments.length, 1);
+  const work = first.body.assignments[0];
+  // The node's heartbeat still counts the work as running when its final result arrives.
+  await f.request('POST', '/nodes/heartbeat', { ...heartbeat, running: { agents: 1, jobs: 0 } }, node.token);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type: 'completed', data: { outcome: 'success', summary: 'Done' } }, node.token)).status, 200);
+  assert.equal((await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, node.token)).body.assignments.length, 1, 'the finished slot is free at once');
+
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_hash', revision: 'f'.repeat(40), configHash: 'config-v1', repo: '/tmp/repo', steps: [] }] });
+  const job = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0];
+  const result = data => f.request('POST', `/jobs/${job.id}/events`, { attempt: job.attempt, type: 'completed', data: { status: 'passed', revision: job.revision, ...data } }, node.token);
+  assert.equal((await result({})).status, 400, 'a final job result without configHash is refused');
+  assert.equal((await result({ configHash: 'config-v1' })).status, 200);
+
+  const code = (await f.request('POST', '/machines/enrollment-codes', {})).body.code;
+  const windows = await f.request('POST', '/nodes/enroll', { code, name: 'windows', os: 'win32', arch: 'x64', version: 'test' }, null);
+  assert.equal(windows.status, 201);
+  assert.equal((await f.request('GET', '/machines')).body.machines.find(machine => machine.id === windows.body.machineId).os, 'windows');
+});

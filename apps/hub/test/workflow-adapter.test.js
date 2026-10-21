@@ -169,3 +169,19 @@ test('results the engine would reject become explicit failures the engine retrie
   const retry = await hub.lease('assignment'); assert.equal(retry.retryOf, plan.id);
   assert.equal((await hub.request('GET', `/runs/${planned.id}`)).body.status, 'running');
 });
+
+test('escalations are not logged as unplanned flow moves without endpoints (L4)', async t => {
+  const hub = await engineHub(t);
+  const run = await hub.start({ schema: 'perpeto.workflow/1', nodes: [
+    node('ideas', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build it.', onExhausted: 'senior' }),
+    node('senior', 'agent', { harness, prompt: 'Take over.' }), node('done', 'output'),
+  ], edges: [flow('ideas', 'builder'), flow('builder', 'done'), flow('senior', 'done')] });
+  const build = await hub.lease('assignment');
+  assert.equal((await hub.finish(build, { outcome: 'failure', summary: 'Stuck.' })).status, 200);
+  const senior = await hub.lease('assignment'); assert.equal(senior.nodeId, 'senior');
+  const events = (await hub.request('GET', '/events?limit=1000')).body.events.filter(event => event.runId === run.id);
+  assert.equal(events.filter(event => event.type === 'workitem.escalated').length, 1);
+  assert.deepEqual(events.filter(event => event.type === 'workitem.moved' && event.data.unplanned), []);
+  const metrics = (await hub.request('GET', `/runs/${run.id}/metrics?window=1h`)).body;
+  assert.deepEqual(metrics.edges.filter(edge => edge.unplanned), []);
+});

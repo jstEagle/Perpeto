@@ -214,9 +214,15 @@ export class Hub {
     const cancellation = this.store.get('cancellation', `${kind}:${entityId}:${body.attempt}`);
     if (!cancellation || cancellation.machineId !== auth.machineId || Date.parse(cancellation.leaseExpiresAt) <= Date.now()) return null;
     if (kind === 'job') requireValue(body.data?.revision === this.store.need(kind, entityId).revision, 'Job cancellation must match the leased revision.');
-    this.store.remove('cancellation', cancellation.id);
+    this.store.remove('cancellation', cancellation.id); this.released(kind, cancellation.machineId);
     this.emit(`${kind}.cancellation-acknowledged`, kind, this.store.need(kind, entityId));
     return { status: 200, body: { accepted: true, status: 'cancelled' } };
+  }
+  /** A machine's running count lags until its next heartbeat; free a finished slot now so leasing does not wait for it. */
+  released(kind, machineId) {
+    const machine = machineId && this.store.get('machine', machineId);
+    const resource = kind === 'assignment' ? 'agents' : 'jobs';
+    if (machine?.running?.[resource] > 0) { machine.running[resource] -= 1; this.store.put('machine', machine); }
   }
   async engineEvent(run, event) { this.applyEffects(run, await this.engineStep(run, event)); }
   /** Compute the engine's response to an event without applying it. Engines are pure, so this doubles as validation. */
@@ -229,7 +235,8 @@ export class Hub {
     object(result, 'engine result'); requireValue(Array.isArray(result.effects), 'Engine effects must be an array.');
     this.store.put('engine-state', { id: run.id, state: result.state ?? null });
     // When the engine reports each flow-edge crossing itself, the hub does not derive a coarser move from nodeId changes.
-    const reportedMoves = new Set(result.effects.filter(effect => effect.type === 'event' && effect.value?.type === 'workitem.moved').map(effect => effect.value.data?.workItemId));
+    // Escalations are reported as workitem.escalated: they follow an escalation link, not a flow edge.
+    const reportedMoves = new Set(result.effects.filter(effect => effect.type === 'event' && ['workitem.moved', 'workitem.escalated'].includes(effect.value?.type)).map(effect => effect.value.data?.workItemId));
     for (const effect of result.effects) {
       object(effect.value, 'effect value');
       if (effect.type === 'event') {
@@ -268,7 +275,7 @@ export class Hub {
       }
       this.store.put(kind, value); this.emit(`${kind}.updated`, kind, value, { status: value.status });
       if (kind === 'assignment') this.observation.assignment(value);
-      if (kind === 'work-item' && previous && previous.nodeId !== value.nodeId && !reportedMoves.has(value.id)) this.observation.interaction('workitem.moved', value, { workItemId: value.id, sourceNodeId: previous.nodeId, targetNodeId: value.nodeId });
+      if (kind === 'work-item' && previous && previous.nodeId !== value.nodeId && !reportedMoves.has(value.id)) this.observation.interaction('workitem.moved', value, { workItemId: value.id, sourceNodeId: previous.nodeId, targetNodeId: value.nodeId, from: previous.nodeId, to: value.nodeId });
     }
     if (['stopped', 'completed', 'failed'].includes(run.status)) this.cancelRunWork(run);
   }
@@ -283,7 +290,8 @@ export class Hub {
   lease(machine, body) {
     const kinds = body.kinds ?? ['assignment', 'job'];
     requireValue(Array.isArray(kinds) && kinds.length > 0 && kinds.every(kind => ['assignment', 'job'].includes(kind)), 'Invalid lease kinds.');
-    const max = integer(body.max ?? 1, 'max', 1, 1000);
+    // Large node capacities are served up to 1,000 items per lease rather than refused.
+    const max = Math.min(integer(body.max ?? 1, 'max', 1), 1000);
     const result = { assignments: [], jobs: [] };
     if (machine.status !== 'online' || Date.now() - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) return result;
     let remaining = max;
@@ -429,11 +437,12 @@ export class Hub {
     }
     if (path === '/nodes/enroll' && method === 'POST') {
       nonblank(body.code, 'code'); nonblank(body.name, 'name', 200); nonblank(body.arch, 'arch', 100); nonblank(body.version, 'version', 100);
-      requireValue(['darwin', 'linux', 'windows'].includes(body.os), 'Invalid OS.'); strings(body.labels ?? [], 'labels'); strings(body.providers ?? [], 'providers');
+      const os = body.os === 'win32' ? 'windows' : body.os; // Node's platform() name for Windows.
+      requireValue(['darwin', 'linux', 'windows'].includes(os), 'Invalid OS.'); strings(body.labels ?? [], 'labels'); strings(body.providers ?? [], 'providers');
       const code = this.store.db.prepare('SELECT * FROM enrollment_codes WHERE hash=?').get(hash(body.code));
       if (!code || code.used || Date.parse(code.expires_at) <= Date.now()) fail(401, 'INVALID_ENROLLMENT_CODE', 'Enrollment code is invalid, expired, or already used.');
       this.store.db.prepare('UPDATE enrollment_codes SET used=1 WHERE hash=? AND used=0').run(hash(body.code));
-      const machine = { id: id('mch'), name: body.name, os: body.os, arch: body.arch, version: body.version, labels: body.labels ?? [], providers: body.providers ?? [], capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, status: 'online', lastHeartbeatAt: now() };
+      const machine = { id: id('mch'), name: body.name, os, arch: body.arch, version: body.version, labels: body.labels ?? [], providers: body.providers ?? [], capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, status: 'online', lastHeartbeatAt: now() };
       const token = this.secret('node', machine.id);
       this.store.put('machine', machine); this.store.db.prepare("INSERT INTO tokens VALUES(?,'node',?)").run(hash(token), machine.id); this.emit('machine.enrolled', 'machine', machine);
       return reply({ machineId: machine.id, token }, 201);
@@ -533,10 +542,10 @@ export class Hub {
           } else {
             requireValue(data.revision === value.revision, 'Job result must match the leased revision.');
             requireValue(['passed', 'failed', 'error', 'cancelled'].includes(data.status), 'Invalid final job status.');
-            if (data.configHash !== undefined) requireValue(data.configHash === value.configHash, 'Job result must match configHash.');
+            requireValue(data.configHash === value.configHash, 'Job result must match the leased configHash.');
             value.status = data.status; requireValue(Array.isArray(data.artifacts ?? []), 'Invalid artifacts.'); value.artifacts = data.artifacts ?? [];
           }
-          delete value.leaseExpiresAt;
+          delete value.leaseExpiresAt; this.released(kind, value.machineId);
         }
         // Validate a run result with the engine before acknowledging it. A result the engine refuses (a short SHA, an
         // oversized branch or item) becomes an explicit failure carrying the reason and the agent's summary, which the
