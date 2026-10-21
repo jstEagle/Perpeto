@@ -63,7 +63,7 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 ## Entities
 
 ```ts
-Project      { id, name, repo: { url, defaultBranch, localPath? }, docs: DocRef[], goals: Goal[], createdAt, updatedAt }
+Project      { id, name, repo: { url, defaultBranch, localPath? }, docs: DocRef[], goals: Goal[], gitIdentity?: { name, email }, createdAt, updatedAt }   // gitIdentity is copied onto every new assignment; agents commit under it, falling back to the node's runtime.t3.gitIdentity
 Goal         { id, title, status: 'active'|'done'|'dropped', workItemIds, done, total }   // progress counts leaf work items linked by goalId; legacy string goals are read with title-derived ids
 DocRef       { id, title, path?: string, url?: string, kind: 'requirements'|'vision'|'spec'|'notes' }
 Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
