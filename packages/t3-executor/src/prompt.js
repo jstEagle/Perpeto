@@ -26,14 +26,16 @@ const FINISH = {
   forge: 'When you finish, reply with a short summary of what you did, the branch you used and any pull request URL.',
   local: 'This repository has no forge, so there is no pull request to open or register: the factory publishes your branch and the merge queue takes it from there. ' +
     'When you finish, reply with a short summary of what you did and the branch you used.',
+  // Rebase steps publish the same branch, so delivery keeps its reference; the executor reports the evidence.
+  rebase: 'When you finish, reply with a short summary of how you resolved the conflicts and which tests you ran.',
 };
 
 /**
  * The prompt sent as the thread's first message: the assignment prompt first,
- * then the factory context the agent needs to act without the hub. Only work roles
+ * then the factory context the agent needs to act without the hub. Only work roles and rebase steps
  * get the closing summary request; structured roles answer in their own format.
  * @param {object} assignment
- * @param {{ extra?: string[], kind?: 'work'|'review'|'planner'|'architect', delivery?: 'forge'|'local' }} [options]
+ * @param {{ extra?: string[], kind?: 'work'|'rebase'|'review'|'planner'|'architect', delivery?: 'forge'|'local' }} [options]
  */
 export function buildPrompt(assignment, { extra = [], kind = 'work', delivery = 'forge' } = {}) {
   const prompt = text(assignment?.prompt);
@@ -62,6 +64,7 @@ export function buildPrompt(assignment, { extra = [], kind = 'work', delivery = 
   }
   for (const line of extra) if (text(line)) lines.push(line.trim());
   if (kind === 'work') lines.push(FINISH[delivery] ?? FINISH.forge);
+  if (kind === 'rebase') lines.push(FINISH.rebase);
   const full = `${prompt}\n\n---\nFactory context\n${lines.join('\n')}`;
   return full.length > MAX_PROMPT_CHARS ? full.slice(0, MAX_PROMPT_CHARS) : full;
 }

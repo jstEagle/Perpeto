@@ -1,5 +1,17 @@
 # factory-t3 handoff
 
+## Conflict recovery results, 21 October 2026
+
+Worktree branch `t3/a37ed279` from `main` at `74cb7cb`, for the executor items in the [hub handoff](factory-hub.md#executor-handoff) and [workflow handoff](factory-workflow.md#exact-integration-required-outside-this-workers-scope). Only `packages/t3-executor/**` and this file changed. Not pushed or merged.
+
+- **Planner touches:** `items[].touches` is parsed, normalised and validated to the engine's rules (at most 100 distinct repository-relative paths, no absolute/drive paths, `..`, backslashes or control characters). The engine forbids glob syntax, so a glob widens to the directory it starts in rather than being passed through; a declared scope never shrinks. The planner answer format asks for `touches`.
+- **Architect extras:** `templateId` and up to three `additionalWorkflows` survive the structured parse. Malformed extras return the whole reply in `summary`, so the hub's parser reports the error to the architect.
+- **Rebase steps:** `step: 'rebase'` checks out the published work branch, asks the agent to rebase onto the base, resolve conflicts and run quick tests, then verifies the result with Git and publishes the **same branch** with `--force-with-lease` on the exact previous head. `rebaseTouchedBeyondConflicts` comes from comparing the new head with `git merge-tree`'s three-way merge outside conflict hunks; the agent's own claim is ignored. Unknown evidence is left out, so the engine repeats review. Details in the [executor README](../../packages/t3-executor/README.md#rebase-steps).
+
+Verification on Node v24.22.0: tests were written first and observed failing (11 of 11). `npm test -w @perpeto/t3-executor` now passes 70 of 70, including the rebase tests against real temporary repositories with a real conflict and the fake T3 server. Root `npm test` passes 557 of 557. Changed Markdown anchors resolve and `git diff --check` passes.
+
+Not verified: a live harness resolving a real conflict; local working checkouts (`repo.localPath` worktrees) for rebase steps, which have no test; Git older than 2.40, where `merge-tree --merge-base` is missing and the field is omitted. The comparison is conservative by design: a resolution Git would itself produce differently (for example rename handling across several replayed commits) reports `true` and costs one extra review, never a skipped one.
+
 ## Dedicated Claude config directory, 21 October 2026
 
 Worktree branch `t3/a4959f6c` from `main` at `9c9e43f`, for the "account-level Claude context" finding in [live acceptance run 2](live-acceptance-2.md#findings). Not pushed or merged.

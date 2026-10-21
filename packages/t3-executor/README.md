@@ -24,7 +24,7 @@ The node passes its `runtime` section as `config`. Executor settings can sit at 
 | `runtimeMode` | `full-access` | T3 runtime mode. This is T3's default and suits unattended work. `harness.options.runtimeMode` overrides it per assignment. |
 | `onRuntimeRequest` | `interrupt` | When an agent asks for approval or input: `interrupt` the run and return `blocked`, or `leave` it pending for a person in T3 |
 | `onNativeSubagentViolation` | `interrupt` | `interrupt` or `report` |
-| `publishBranch` | `true` | Push new commits on the work branch to `origin`, without force |
+| `publishBranch` | `true` | Push new commits on the work branch to `origin`, without force. Rebase steps replace the branch with a lease on its previous head (see [rebase steps](#rebase-steps)) |
 | `agentIsolation` | `factory` | `factory` runs agents on an isolated T3 provider instance (see [agent isolation](#agent-isolation)). `inherit` uses the operator's instance as is; keep it for debugging |
 | `gitIdentity` | `{ "name": "Perpeto Agent", "email": "agents@perpeto.local" }` | Author and committer of agent commits. An assignment's `gitIdentity`, or `context.project.gitIdentity`, overrides it per project |
 | `agentHomesDir` | `<baseDir>/perpeto-agent-homes`, else `~/.perpeto/agent-homes` | Where factory Codex and Claude homes live |
@@ -59,8 +59,9 @@ A minted session gets `orchestration:read`, `orchestration:operate` and `provide
 4. **Follow.** The executor subscribes to the thread, plus child threads that it delegates or creates, and reports through `ctx.report`. See [progress events](#progress-and-usage-events).
 5. **Finish.** It waits until every followed thread is idle for `settleMs`: no active run, pending request, active subagent or background task. Then:
    - **Review** (`nodeType: 'review'`): `verdict` comes from the final message's fenced JSON. A missing verdict leaves the field unset, so the engine retries.
-   - **Planner** (`nodeType: 'planner'`): `items` comes from fenced JSON. A missing or invalid block makes the attempt fail rather than plan nothing.
-   - **Workflow architect** (`role: 'workflow-architect'` or `architectRequestId`): `graph` and `rationale` come from fenced JSON. Otherwise the whole reply goes back in `summary`, so the hub's parser can return its errors.
+   - **Planner** (`nodeType: 'planner'`): `items` comes from fenced JSON. A missing or invalid block makes the attempt fail rather than plan nothing. Each item may declare `touches`, the repository-relative files or directories it edits. They are normalised (`./src/a/` becomes `src/a`, duplicates collapse) and a glob widens to the directory it starts in (`src/lib/*.js` becomes `src/lib`, `**/*.md` becomes `.`), so a declared scope never shrinks. Absolute or drive paths, `..`, backslashes, control characters or more than 100 distinct scopes fail the attempt. An empty list is left out, which keeps the engine's old concurrency.
+   - **Workflow architect** (`role: 'workflow-architect'` or `architectRequestId`): `graph` and `rationale` come from fenced JSON, plus optional `templateId` and up to three `additionalWorkflows` (`{ name, rationale, graph, templateId? }`). These are checked for shape only; the hub's parser checks template ids and graphs. When the block or its extras are malformed, the whole reply goes back in `summary`, so the hub's parser can return its errors.
+   - **Rebase step** (`step: 'rebase'`): see [rebase steps](#rebase-steps).
    - **Work**: the executor reports uncommitted changes, pushes new commits on the work branch, and returns `branch`, `headSha`, the last PR URL the agent mentioned, and `threadRef` (`t3-thread://v1/<threadId>`). When it pushed to a local bare origin (an absolute or `file://` path, not GitHub) and the agent named no PR, `prUrl` is `local:<branch>`, the address the merge queue's local adapter expects.
 6. **Cancellation.** When `ctx.signal` aborts, the executor interrupts every active run (`run.interrupt`, `holdQueue: true`), waits briefly, then rejects with the abort reason.
 
@@ -120,6 +121,18 @@ The node adapter owns attempt-qualified pool assignment IDs. The executor passes
 - `observe({ accountId, assignmentId, attempt, reservationId, message, idempotencyKey })` forwards provider failures.
 - `release(selection, { assignmentId, attempt, reservationId, result })` fences cleanup against a replacement reservation. Reservation tokens remain local and never enter hub events.
 
+### Rebase steps
+
+The workflow engine sends a `step: 'rebase'` assignment (with `rebaseOf`, the rejected merge entry) to the builder role when the merge queue rejects a branch for a conflict. The executor:
+
+1. Prepares the existing work branch: the published `origin/<branch>` in a clone, or the existing branch in a local working checkout. With no such branch, or when an assignment `headSha` names a different head, the step is `blocked` before any thread starts. The head it starts from is the **previous head**.
+2. Asks the agent to rebase onto `origin/<defaultBranch>` (or the local default branch), resolve conflicts, change nothing outside conflict hunks, run quick tests, and not push.
+3. Verifies with Git: no rebase, merge or cherry-pick in progress; the new head contains the base; the checkout is still on the work branch; no conflicted file still has conflict markers. Any failure makes the attempt `failure` without publishing.
+4. Computes `rebaseTouchedBeyondConflicts` itself and ignores the agent's claim. The reference is `git merge-tree --write-tree --merge-base=<fork point> <base> <previous head>`, Git's three-way merge of the reviewed work onto the new base. A path differing from that tree is beyond the conflicts unless it is a conflicted text file whose new content keeps every line outside the conflict hunks, in order. New, deleted or cleanly merged files that differ count as beyond. When Git cannot answer (for example Git older than 2.40), the field is left out and the engine repeats review.
+5. Publishes the same branch with `git push --force-with-lease=refs/heads/<branch>:<previous head>`. If the remote branch moved meanwhile, nothing is overwritten and the attempt fails. A local working checkout without `origin` has its branch rewritten in place, with no lease.
+
+A `rebase.verified` progress event records `rebaseOf`, `base`, `previousHead`, `headSha`, the `conflicted` paths and the paths `beyondConflicts`.
+
 ### Progress and usage events
 
 | `type` / `interaction` | Data |
@@ -130,7 +143,8 @@ The node adapter owns attempt-qualified pool assignment IDs. The executor passes
 | `agent.delegated` | `kind` (`delegated_task`, `thread` or `provider_native`), `allowed`, `target: { provider, model, threadRef }`, `from`, `reason?`. Refused attempts are included. |
 | `runtime.request` | Approval or input request: `kind`, `prompt?`, `questions?` |
 | `provider.failure` | `class` (`usage_limit`, `provider_error`, …), `code`, `retryable`, `resetAt?`, `message` |
-| `account.bound`, `branch.published`, `workspace.dirty`, `policy.unenforced` | Diagnostics |
+| `rebase.verified` | Rebase evidence: `rebaseOf`, `branch`, `base`, `previousHead`, `headSha`, `conflicted`, `touchedBeyondConflicts`, `beyondConflicts` |
+| `account.bound`, `branch.published` (`leaseHead` on rebase steps), `workspace.dirty`, `policy.unenforced` | Diagnostics |
 
 T3 counts cache reads and writes inside `inputTokens` ([`TurnTokenUsage`](../../vendor/t3code/packages/contracts/src/providerRuntime.ts) at lines 322 to 347). The executor subtracts them, so the hub's ledger does not double count.
 
@@ -211,6 +225,7 @@ Source: `vendor/t3code` at the pinned commit. Verified live where noted.
 ## Tests
 
 - `node --test packages/t3-executor/test/*.test.js` runs against a fake T3 server ([test/fake-t3.js](test/fake-t3.js)). The fake is real HTTP plus a minimal WebSocket using T3's RPC framing and chunk acknowledgement, and the real policy store backs its policy routes. One test drives the real `@perpeto/node` account provider and pool with a synthetic credential.
+- [Rebase tests](test/rebase.test.js) run real Git in temporary repositories: a published work branch, a base that really conflicts with it, and a scripted agent that rebases in the thread's checkout. They cover conflict-only and beyond-conflict resolutions against the opposite model claims, the lease refusing to overwrite a branch pushed meanwhile, unfinished rebases, a head missing the base, committed conflict markers, several hunks in one file, and an unpublished branch. [Result tests](test/results.test.js) cover touches, architect extras and the rebase kind.
 - [Account lease tests](test/account-leases.test.js) use a real pool with synthetic credentials and short leases to cover repeated renewal, hung/lost renewals, root and child interruption, launch cancellation races, fenced cleanup, token forwarding and exhaustion with a ready default login present.
 - Vendor tests: `apps/server/src/perpeto/AgentPolicy*.test.ts` and `FactoryMcp.test.ts`, plus provider session, Codex/Claude prompt assembly and MCP toolkit tests, run with `vp test run`.
 - **Opt-in live check** (not part of `npm test`; it uses this machine's existing harness logins):
