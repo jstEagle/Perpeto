@@ -25,8 +25,8 @@ struct PerpetoApp: App {
                 .frame(minWidth: 1100, minHeight: 700)
                 .preferredColorScheme(.light)
         }
-        .defaultSize(width: 1600, height: 1000)
-        .windowToolbarStyle(.unified(showsTitle: true))
+        .defaultSize(width: 1440, height: 960)
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands { PerpetoCommands(store: store, navigator: navigator) }
 
         Settings {
@@ -45,7 +45,7 @@ struct MainWindow: View {
         RootView(store: store, navigator: navigator, openSettings: { openSettings() })
             .task {
                 if let directory = Snapshotter.requestedDirectory {
-                    await Snapshotter(store: store, navigator: navigator, directory: directory).run()
+                    await Snapshotter(store: store, navigator: navigator, directory: directory, openSettings: { openSettings() }).run()
                 }
             }
     }

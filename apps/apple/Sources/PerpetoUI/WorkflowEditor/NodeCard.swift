@@ -1,11 +1,17 @@
 import PerpetoKit
 import SwiftUI
 
-/// A node in the ruled drawing. White card, control border, 6 pt radius.
+/// A step on the map: a white card with 16 pt corners and soft elevation.
+/// An icon tile, the name and one line of meta; on the live map a stat line
+/// and a meter at the bottom, and the live dot while the step has work.
+/// The card itself is never tinted: attention reads from the stat line.
 struct NodeCard: View {
     var node: GraphNode
     var mode: GraphMode
     var selected: Bool
+    var lifted = false
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var change: WorkflowDiff.Change? {
         if case .diff(let diff) = mode { return diff.nodes[node.id] }
@@ -17,174 +23,118 @@ struct NodeCard: View {
         return []
     }
 
-    private var live: (NodeMetrics?, [Bottleneck], [WorkItem])? {
+    private var live: (metrics: NodeMetrics?, bottlenecks: [Bottleneck], items: [WorkItem])? {
         if case .live(let overlay) = mode {
             return (overlay.metrics.node(node.id), overlay.metrics.bottlenecks(for: node.id), overlay.workItems.filter { $0.nodeId == node.id && $0.status != .done })
         }
         return nil
     }
 
-    private var bottleneck: Bottleneck? { live?.1.max { $0.severity.rank < $1.severity.rank } }
-
-    private var borderColor: Color {
-        if let bottleneck { return bottleneck.severity.tone == .neutral ? PerpetoColor.controlBorder : bottleneck.severity.tone.color }
-        switch change {
-        case .added: return PerpetoColor.success
-        case .changed: return PerpetoColor.warning
-        case .removed: return PerpetoColor.error
-        default: break
-        }
-        if issues.contains(where: { $0.severity == .error }) { return PerpetoColor.error }
-        return PerpetoColor.controlBorder
-    }
-
-    private var borderWidth: CGFloat {
-        (bottleneck != nil && bottleneck?.severity.tone != .neutral) || (change != nil && change != .unchanged) ? 2 : 1
-    }
+    private var bottleneck: Bottleneck? { live?.bottlenecks.filter { $0.severity != .info }.max { $0.severity.rank < $1.severity.rank } }
+    private var isLiveNow: Bool { (live?.metrics?.active ?? 0) > 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if let live { liveBlock(metrics: live.0, items: live.2) }
             Spacer(minLength: 0)
-        }
-        .padding(.horizontal, PerpetoSpacing.x(2.5))
-        .padding(.top, PerpetoSpacing.x(2.5))
-        .padding(.bottom, PerpetoSpacing.x(2))
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.control, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: PerpetoRadius.control, style: .continuous)
-                .strokeBorder(borderColor, style: StrokeStyle(lineWidth: borderWidth, dash: change == .removed ? [4, 3] : [])))
-        .overlay(alignment: .topTrailing) { gateLabels }
-        .overlay(alignment: .topTrailing) {
-            // Change kind sits on the top rule, like a label on a drawing.
-            if let change, change != .unchanged {
-                Tag(change.title, color: change.color).offset(x: -PerpetoSpacing.x(2), y: -10)
+            if let live { stats(live.metrics) }
+            if let error = issues.first(where: { $0.severity == .error }) {
+                StatusLabel(issues.count > 1 ? Format.plural(issues.count, "problem") : "Needs a fix", tone: .error)
+                    .help(error.message)
             }
         }
-        .opacity(change == .removed ? 0.6 : (change == .unchanged ? 0.75 : 1))
+        .padding(PerpetoSpacing.x(4))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.node, style: .continuous))
+        .overlay {
+            if change == .removed {
+                RoundedRectangle(cornerRadius: PerpetoRadius.node, style: .continuous)
+                    .strokeBorder(PerpetoColor.faint, style: StrokeStyle(lineWidth: PerpetoStroke.edge, dash: [3, 4]))
+            }
+        }
+        .perpetoElevation(lifted ? .overlay : (selected || hovering ? .raised : .card), cornerRadius: PerpetoRadius.node)
         .selectionOutline(selected)
+        .overlay(alignment: .topTrailing) {
+            if isLiveNow {
+                LiveDot(size: PerpetoIndicator.dot).padding(PerpetoSpacing.x(4) - PerpetoIndicator.halo / 2)
+            } else if let change, change != .unchanged {
+                Tag(change.title).offset(y: -11).padding(.trailing, PerpetoSpacing.x(4))
+            }
+        }
+        .opacity(change == .removed ? 0.6 : 1)
+        .offset(y: lifted ? -2 : 0)
+        .onHover { hovering = $0 }
+        .animation(PerpetoMotion.standard(reduceMotion: reduceMotion), value: hovering)
+        .animation(PerpetoMotion.easeOut(reduceMotion: reduceMotion), value: selected)
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: PerpetoSpacing.x(1.5)) {
-                Image(systemName: node.type.systemImage)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(PerpetoColor.muted)
-                    .frame(width: 14)
+        HStack(alignment: .top, spacing: PerpetoSpacing.x(3)) {
+            IconTile(node.type.systemImage, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(node.label)
-                    .font(.system(size: PerpetoType.text14, weight: .semibold))
+                    .font(PerpetoFont.bodyMedium)
                     .foregroundStyle(PerpetoColor.ink)
                     .lineLimit(1)
-                Spacer(minLength: 0)
-                if issues.contains(where: { $0.severity == .error }) {
-                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(PerpetoColor.error).font(.system(size: 12))
-                        .accessibilityLabel("Has validation errors")
+                Text(meta)
+                    .font(PerpetoFont.small)
+                    .foregroundStyle(PerpetoColor.muted)
+                    .lineLimit(1)
+            }
+            .padding(.trailing, isLiveNow ? PerpetoSpacing.x(3) : 0)
+        }
+    }
+
+    /// One stat line in 13 tabular figures and a 4 pt meter.
+    @ViewBuilder
+    private func stats(_ m: NodeMetrics?) -> some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
+            HStack(alignment: .firstTextBaseline) {
+                if let bottleneck {
+                    StatusLabel(bottleneck.reason.title, tone: .warning)
+                } else if node.type == .input {
+                    stat("\(m?.done ?? 0) received", strong: true)
+                } else if node.type == .output {
+                    stat("\(m?.done ?? 0) finished", strong: true)
+                } else if let m, m.active == 0, m.queued == 0 {
+                    StatusLabel("Idle", tone: .neutral)
+                } else if let m {
+                    stat(m.concurrency.map { "\(m.active) of \($0) active" } ?? "\(m.active) active", strong: true)
+                } else {
+                    stat("No measurements", strong: false)
+                }
+                Spacer(minLength: PerpetoSpacing.x(1))
+                if let m, node.type != .input, node.type != .output {
+                    stat("\(m.queued) queued", strong: false)
                 }
             }
-            Text(meta)
-                .font(PerpetoFont.caption)
-                .foregroundStyle(PerpetoColor.muted)
-                .lineLimit(1)
-                .padding(.trailing, node.type.hasPassFail ? 26 : 0)
-            if let model = node.harness?.model {
-                Text(model).font(PerpetoFont.mono()).foregroundStyle(PerpetoColor.muted).lineLimit(1)
-                    .padding(.trailing, node.type.hasPassFail ? 26 : 0)
+            if node.type != .input && node.type != .output {
+                Meter(m?.utilization ?? 0)
             }
         }
     }
 
-    @ViewBuilder
-    private var gateLabels: some View {
-        if node.type.hasPassFail {
-            ZStack(alignment: .topTrailing) {
-                Text("pass").padding(.top, 30 - 8)
-                Text("fail").padding(.top, 52 - 8)
-            }
-            .font(PerpetoFont.caption)
-            .foregroundStyle(PerpetoColor.muted)
-            .padding(.trailing, PerpetoSpacing.x(2))
-            .allowsHitTesting(false)
-        }
+    private func stat(_ text: String, strong: Bool) -> some View {
+        Text(text)
+            .font(PerpetoFont.caption.monospacedDigit())
+            .foregroundStyle(strong ? PerpetoColor.ink : PerpetoColor.muted)
+            .lineLimit(1)
     }
 
     private var meta: String {
         let c = node.config
         switch node.type {
-        case .input: return "From " + (c["source"]?.stringValue ?? "manual")
-        case .planner: return [node.harness.map { Format.provider($0.provider) }, c["maxItems"]?.intValue.map { "up to \($0) items" }].compactMap { $0 }.joined(separator: " · ")
-        case .agent, .review:
-            return [node.harness.map { Format.provider($0.provider) }, "×\(node.concurrency ?? 1)"].compactMap { $0 }.joined(separator: " · ")
-        case .ci: return Format.plural(c["steps"]?.arrayValue?.count ?? 0, "step") + ((c["requirements"]?["os"]?.stringValue).map { " · \($0)" } ?? "")
+        case .input: return (c["source"]?.stringValue ?? "manual") == "goals" ? "From project goals" : "Manual input"
+        case .planner, .agent, .review:
+            // The stat line shows concurrency on the live map; here the model is enough.
+            return node.harness.map { Format.model($0.model) } ?? node.type.title
+        case .ci: return Format.plural(c["steps"]?.arrayValue?.count ?? 0, "step") + ((c["requirements"]?["os"]?.stringValue).map { " on \($0)" } ?? "")
         case .mergeQueue: return [(c["strategy"]?.stringValue ?? "serial").capitalized, c["method"]?.stringValue].compactMap { $0 }.joined(separator: " · ")
-        case .loop: return "Max \(c["maxIterations"]?.intValue ?? 0) · until \((c["until"]?.stringValue ?? "manual").replacingOccurrences(of: "-", with: " "))"
+        case .loop: return "Up to \(c["maxIterations"]?.intValue ?? 0) rounds"
         case .human: return "Waits for a person"
-        case .output: return "Finished work"
-        case .unknown: return "Unrecognised type"
+        case .output: return "Work item finished"
+        case .unknown: return "Unrecognised step"
         }
-    }
-
-    @ViewBuilder
-    private func liveBlock(metrics: NodeMetrics?, items: [WorkItem]) -> some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
-            Rule().padding(.vertical, PerpetoSpacing.x(1))
-            if let m = metrics, node.type != .input, node.type != .output {
-                HStack {
-                    stat(node.type.isAgentRole && m.concurrency != nil ? "\(m.active) of \(m.concurrency!) active" : "\(m.active) active")
-                    Spacer(minLength: 2)
-                    stat("\(m.queued) queued", emphasis: m.queued > 0)
-                }
-                HStack {
-                    stat("Wait " + Format.duration(m.waitSec.avg))
-                    Spacer(minLength: 2)
-                    stat(Format.rate(m.throughputPerHour))
-                }
-                if let utilization = m.utilization {
-                    Meter(utilization, tone: utilization >= 0.9 ? (bottleneck?.severity.tone ?? .warning) : .neutral)
-                        .accessibilityLabel("Utilization")
-                }
-            } else if let m = metrics {
-                stat(node.type == .output ? "\(m.done) finished" : "\(m.done) items in")
-            } else {
-                stat("No measurements")
-            }
-            markers(items)
-            if let bottleneck {
-                HStack(spacing: PerpetoSpacing.x(1)) {
-                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10))
-                    Text(bottleneck.reason.title).font(PerpetoFont.captionMedium).lineLimit(1)
-                }
-                .foregroundStyle(bottleneck.severity.tone == .neutral ? PerpetoColor.muted : bottleneck.severity.tone.color)
-            }
-        }
-    }
-
-    private func stat(_ text: String, emphasis: Bool = false) -> some View {
-        Text(text)
-            .font(PerpetoFont.caption.monospacedDigit())
-            .foregroundStyle(emphasis ? PerpetoColor.ink : PerpetoColor.muted)
-            .lineLimit(1)
-    }
-
-    /// Work items currently at this node: filled for active, outlined for queued.
-    private func markers(_ items: [WorkItem]) -> some View {
-        let shown = items.prefix(12)
-        return HStack(spacing: 3) {
-            ForEach(Array(shown)) { item in
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(item.status == .active ? PerpetoColor.ink : (item.status == .failed ? PerpetoColor.error : PerpetoColor.surface))
-                    .overlay(RoundedRectangle(cornerRadius: 1.5).strokeBorder(item.status == .failed ? PerpetoColor.error : PerpetoColor.ink, lineWidth: 1))
-                    .frame(width: 7, height: 7)
-                    .help(item.title)
-            }
-            if items.count > shown.count {
-                Text("+\(items.count - shown.count)").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-            }
-        }
-        .frame(height: 10)
-        .accessibilityLabel("\(items.count) work items here")
     }
 }
 
@@ -195,15 +145,6 @@ extension WorkflowDiff.Change {
         case .removed: "Removed"
         case .changed: "Changed"
         case .unchanged: "Unchanged"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .added: PerpetoColor.success
-        case .removed: PerpetoColor.error
-        case .changed: PerpetoColor.warning
-        case .unchanged: PerpetoColor.muted
         }
     }
 }

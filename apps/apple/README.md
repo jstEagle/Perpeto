@@ -1,6 +1,8 @@
 # Perpeto for Apple platforms
 
-Native SwiftUI client for the Perpeto hub: macOS 15 or later, and iPhone and iPad on iOS 18 or later. Status: early implementation. It reads a live local hub and falls back to demo fixtures. The visual style is about to be replaced by a new design system; screenshots show the current, provisional look.
+Native SwiftUI client for the Perpeto hub: macOS 15 or later, and iPhone and iPad on iOS 18 or later. Status: early implementation. It reads a live local hub and falls back to demo fixtures. It follows the Perpeto Mono design system ([docs/architecture/design-system.md](../../docs/architecture/design-system.md)).
+
+Screenshots: `screenshots/` (macOS, demo data, including settings, an empty state and an error), `screenshots/hub/` (macOS against a seeded local hub) and `screenshots/ios/` (iPhone 17 Pro and iPad Pro 13-inch simulators, demo data).
 
 ## Build and run
 
@@ -19,7 +21,7 @@ iPhone and iPad:
 
 ```sh
 xcodebuild -project iOS/Perpeto.xcodeproj -scheme Perpeto -destination 'generic/platform=iOS Simulator' build
-NODE=builder WIDE=1 scripts/ios-snapshots.sh <simulator-udid> ipad screenshots/ios [hub-url token-file]
+NODE=review WIDE=1 scripts/ios-snapshots.sh <simulator-udid> ipad screenshots/ios [hub-url token-file]
 ```
 
 `iOS/project.yml` is the XcodeGen spec; the generated `iOS/Perpeto.xcodeproj` is checked in, so building needs only Xcode. Run `xcodegen generate` in `iOS/` after editing the spec. Device signing is not configured.
@@ -44,11 +46,11 @@ SwiftPM builds the Mac app; the iOS app is the only Xcode project. Open `Package
 | Target | Contents |
 | --- | --- |
 | `PerpetoKit` | Codable contract entities, workflow graph v1 with local validation and version diff, run metrics, Hub API v1 client with server-sent events, Keychain token store, demo fixtures, `FactoryStore`. Design tokens and the Spindle and wordmark geometry. |
-| `PerpetoUI` | Screens and components for both platforms. Layouts stack when the detail column is narrower than 760 pt on the Mac or 900 pt on iOS. |
+| `PerpetoUI` | Screens and components for both platforms. Mac and iPad use a split view with the Mono sidebar; iPhone uses five tabs. Layouts stack when the detail column is narrower than 760 pt on the Mac or 900 pt on iOS, and the workflow map becomes a list of steps. |
 | `PerpetoMac` | macOS app: window, menus, keyboard shortcuts, Settings. |
 | `iOS/` | iPhone and iPad app target sharing PerpetoKit and PerpetoUI. |
 
-`Sources/PerpetoKit/Design/PerpetoTokens.swift` is a verbatim copy of `packages/design-tokens/swift/PerpetoTokens.swift`, generated from `brand/tokens.css`. Do not edit it here; regenerate the package and copy it again. Colors come only from it. The logo shapes are parsed at runtime from the identity SVG path data in `LogoPathData.swift`.
+`Sources/PerpetoKit/Design/PerpetoTokens.swift` is a verbatim copy of `packages/design-tokens/swift/PerpetoTokens.swift`, generated from `brand/tokens.css`. Do not edit it here; regenerate the package and copy it again. Colours, spacing, radii, elevation and motion come only from it, and the app uses none of its deprecated aliases. The shared components (cards, pill buttons, status labels, disclosures, the pill segmented control) are in `Sources/PerpetoUI/Components`. The logo shapes are parsed at runtime from the identity SVG path data in `LogoPathData.swift`.
 
 ## Hub connection
 

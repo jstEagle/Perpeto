@@ -22,11 +22,11 @@ public enum ProjectSection: String, CaseIterable, Hashable, Sendable, Identifiab
     public var systemImage: String {
         switch self {
         case .overview: "square.grid.2x2"
-        case .workflows: "point.3.connected.trianglepath.dotted"
-        case .runs: "play.square"
+        case .workflows: "point.topleft.down.to.point.bottomright.curvepath"
+        case .runs: "play.circle"
         case .work: "checklist"
-        case .messages: "bubble.left.and.bubble.right"
-        case .mergeQueue: "arrow.triangle.merge"
+        case .messages: "bubble.left"
+        case .mergeQueue: "arrow.triangle.branch"
         }
     }
 
@@ -52,7 +52,7 @@ public enum FactorySection: String, CaseIterable, Hashable, Sendable, Identifiab
         switch self {
         case .machines: "desktopcomputer"
         case .accounts: "person.2"
-        case .usage: "chart.bar.xaxis"
+        case .usage: "chart.bar"
         }
     }
 

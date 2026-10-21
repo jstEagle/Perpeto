@@ -19,18 +19,16 @@ struct WorkflowEditorView: View {
     private var validation: ValidationResult { hubValidation ?? WorkflowValidator.validate(workflow.graph) }
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: PerpetoGap.cards) {
             toolbar
-            Rule()
-            HStack(spacing: 0) {
+            HStack(alignment: .top, spacing: PerpetoGap.cards) {
                 GraphViewport(
                     graph: workflow.graph, mode: .edit(issues: validation.issues), selection: $selection, editable: true,
-                    connectKind: roleEdgeKind,
+                    connectKind: roleEdgeKind, initialRoleScope: .all,
                     onMove: { id, position in
                         if let i = workflow.graph.nodes.firstIndex(where: { $0.id == id }) { workflow.graph.nodes[i].position = position }
                     },
                     onConnect: connect)
-                    .padding(PerpetoSpacing.x(4))
                     .focusable()
                     .focusEffectDisabled()
                     #if os(macOS)
@@ -38,12 +36,16 @@ struct WorkflowEditorView: View {
                     #else
                     .onKeyPress(.delete) { deleteSelection(); return .handled }
                     #endif
-                Rule(vertical: true)
                 inspector
-                    .frame(width: 320)
-                    .background(PerpetoColor.surface)
+                    .frame(width: 340)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.panel, style: .continuous))
+                    .perpetoElevation(.card, cornerRadius: PerpetoRadius.panel)
             }
         }
+        .padding(.horizontal, PerpetoSpacing.x(8))
+        .padding(.top, PerpetoSpacing.x(8))
+        .padding(.bottom, PerpetoSpacing.x(6))
         .onChange(of: workflow.graph) { old, new in
             hubValidation = nil
             if restoring {
@@ -87,14 +89,14 @@ struct WorkflowEditorView: View {
 
     private var undoButtons: some View {
         HStack(spacing: 0) {
-            Button(action: undo) { Image(systemName: "arrow.uturn.backward").frame(width: 28, height: 28) }
+            Button(action: undo) { Image(systemName: "arrow.uturn.backward").frame(width: 32, height: 32).contentShape(Circle()) }
                 .disabled(!history.canUndo)
                 .help(history.undoName.map { "Undo \($0.lowercased()) (⌘Z)" } ?? "Nothing to undo")
                 .accessibilityLabel(history.undoName.map { "Undo \($0.lowercased())" } ?? "Undo")
                 #if os(iOS)
                 .keyboardShortcut("z", modifiers: .command)
                 #endif
-            Button(action: redo) { Image(systemName: "arrow.uturn.forward").frame(width: 28, height: 28) }
+            Button(action: redo) { Image(systemName: "arrow.uturn.forward").frame(width: 32, height: 32).contentShape(Circle()) }
                 .disabled(!history.canRedo)
                 .help(history.redoName.map { "Redo \($0.lowercased()) (⇧⌘Z)" } ?? "Nothing to redo")
                 .accessibilityLabel(history.redoName.map { "Redo \($0.lowercased())" } ?? "Redo")
@@ -103,37 +105,33 @@ struct WorkflowEditorView: View {
                 #endif
         }
         .buttonStyle(.plain)
-        .foregroundStyle(PerpetoColor.ink)
+        .foregroundStyle(PerpetoColor.inkSoft)
     }
 
     private var toolbar: some View {
-        HStack(spacing: PerpetoSpacing.x(3)) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Editing \(workflow.name)").font(PerpetoFont.heading).foregroundStyle(PerpetoColor.ink)
+        HStack(alignment: .bottom, spacing: PerpetoSpacing.x(3)) {
+            VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
+                Text("Editing \(workflow.name)").font(PerpetoFont.display(PerpetoType.text32)).displayTracking(PerpetoType.text32).foregroundStyle(PerpetoColor.ink)
                 Text("Based on version \(workflow.version). Saving creates version \((store.state(workflow.projectId).versions[workflow.id]?.map(\.version).max() ?? workflow.version) + 1) as a draft.")
-                    .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                    .font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
             }
-            Spacer()
+            Spacer(minLength: PerpetoSpacing.x(4))
+            validationLabel
             undoButtons
             Menu {
                 ForEach(NodeType.palette, id: \.self) { type in
                     Button { add(type) } label: { Label(type.title, systemImage: type.systemImage) }
                 }
             } label: {
-                Label("Add node", systemImage: "plus")
+                Label("Add step", systemImage: "plus")
             }
+            .menuStyle(.button)
+            .buttonStyle(.perpetoSecondary)
+            .menuIndicator(.hidden)
             .fixedSize()
-            .help("Add a node to the graph")
-            Picker("Role edges", selection: $roleEdgeKind) {
-                Text("Delegates").tag(GraphEdge.Kind.delegates)
-                Text("Messages").tag(GraphEdge.Kind.messages)
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
-            .help("Kind of edge created when dragging from a role port")
-            validationLabel
+            .help("Add a step to the workflow")
             Button("Cancel") { onClose(nil) }
-                .buttonStyle(.perpetoSecondary)
+                .buttonStyle(.perpetoGhost)
                 .keyboardShortcut(.cancelAction)
             Button(saving ? "Saving" : "Save as draft") {
                 Task {
@@ -148,23 +146,18 @@ struct WorkflowEditorView: View {
             .keyboardShortcut("s", modifiers: .command)
             .disabled(!validation.valid || saving)
         }
-        .padding(.horizontal, PerpetoSpacing.x(4))
-        .padding(.vertical, PerpetoSpacing.x(3))
-        .background(PerpetoColor.surface)
     }
 
     private var validationLabel: some View {
         let result = validation
         return Group {
-            if result.valid && result.warningCount == 0 {
-                StatusLabel("Valid", tone: .success)
-            } else if result.valid {
-                StatusLabel("Valid, \(Format.plural(result.warningCount, "warning"))", tone: .warning)
+            if result.valid {
+                StatusLabel(result.warningCount == 0 ? "Checks pass" : "Checks pass, \(Format.plural(result.warningCount, "note"))", tone: .success)
             } else {
-                StatusLabel(Format.plural(result.errorCount, "error"), tone: .error)
+                StatusLabel("\(Format.plural(result.errorCount, "problem")) to fix", tone: .error)
             }
         }
-        .frame(minWidth: 110, alignment: .trailing)
+        .padding(.trailing, PerpetoSpacing.x(2))
     }
 
     @ViewBuilder
@@ -192,8 +185,11 @@ struct WorkflowEditorView: View {
                         .buttonStyle(.plain)
                     }
                     Rule()
+                    Text("New role edges").font(PerpetoFont.heading).foregroundStyle(PerpetoColor.ink)
+                    PillPicker([(GraphEdge.Kind.delegates, "Delegates"), (.messages, "Messages")], selection: $roleEdgeKind)
+                    Rule()
                     Text("How to edit").font(PerpetoFont.heading).foregroundStyle(PerpetoColor.ink)
-                    Text("Drag nodes to move them; they snap to the 16 pt grid. Drag from a right-side port to another node to add a flow edge. Drag from the diamond on an agent role to add a delegates or messages edge. Press Delete to remove the selection, and Command-Z to undo.")
+                    Text("Drag steps to move them; they snap to the dot grid. Drag from a port on the right of a step to another step to send work there. Drag from the port on an agent's top or bottom edge to another agent to add a delegates or messages edge. Press Delete to remove the selection, and Command-Z to undo.")
                         .font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(PerpetoSpacing.x(4))
