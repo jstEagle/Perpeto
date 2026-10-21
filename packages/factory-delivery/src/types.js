@@ -33,6 +33,8 @@
  * @property {'queued'|'testing'|'merging'|'merged'|'rejected'} status
  * @property {string} [jobId]
  * @property {string} [reason]
+ * @property {string} [testedRevision] Perpeto speculative candidate.
+ * @property {string} [mergedRevision] Published SHA, potentially different for GitHub native queue.
  */
 
 /**
@@ -40,17 +42,18 @@
  * @property {string} baseSha
  * @property {MergeEntry[]} entries
  * @property {'merge'|'squash'|'rebase'} method
+ * @property {'fast-forward-push'|'github-merge-queue'} [publication]
  * @property {string} idempotencyKey Stable per queue attempt, including across process restart.
  */
 
 /**
  * @typedef {object} GitForgeAdapter
- * @property {boolean} atomicMerge True only when base and heads are guarded atomically.
- * @property {(baseBranch:string) => Promise<string>} getBase
+ * @property {boolean} atomicMerge Atomic publication capability; see adapter-specific guarantees in README (not a universal base/head CAS).
+ * @property {(baseBranch:string,publication?:'fast-forward-push'|'github-merge-queue') => Promise<string>} getBase
  * @property {(entry:MergeEntry) => Promise<string>} getHead
  * @property {(request:CandidateRequest) => Promise<{revision:string}>} prepare
  * @property {(request:{baseBranch:string,revision:string}) => Promise<boolean>} isMerged
- * @property {(request:CandidateRequest & {baseBranch:string,revision:string}) => Promise<{status:'merged',revision:string}|{status:'base_changed'|'head_changed'}>} merge
+ * @property {(request:CandidateRequest & {baseBranch:string,revision:string,evidence?:Job,publicationState?:string}) => Promise<{status:'merged',revision:string,publication?:'github-merge-queue'}|{status:'base_changed'|'head_changed'}|{status:'pending',publicationState:string}|{status:'rejected',reason:string}>} merge
  */
 
 export {};
