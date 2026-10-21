@@ -107,3 +107,24 @@ test('planned work inherits its goal, and progress counts the planned items rath
   assert.deepEqual([current.done, current.total], [1, 3]);
 });
 
+test('the owner has a display name and initials from config, editable with PATCH /owner, on /session and /overview', async t => {
+  const f = await fixture(t, { ownerName: 'Justus Hu' });
+  assert.deepEqual((await f.request('GET', '/session')).body.owner, { name: 'Justus Hu', initials: 'JH' });
+  assert.deepEqual((await f.request('GET', '/overview')).body.owner, { name: 'Justus Hu', initials: 'JH' });
+  const updated = await f.request('PATCH', '/owner', { name: 'Justus', initials: 'JH' });
+  assert.equal(updated.status, 200); assert.deepEqual(updated.body, { name: 'Justus', initials: 'JH' });
+  assert.deepEqual((await f.request('PATCH', '/owner', { name: 'Ada Lovelace' })).body, { name: 'Ada Lovelace', initials: 'JH' }, 'set initials are kept');
+  assert.deepEqual((await f.request('PATCH', '/owner', { initials: null })).body, { name: 'Ada Lovelace', initials: 'AL' }, 'cleared initials derive from the name');
+  await f.restart();
+  assert.deepEqual((await f.request('GET', '/owner')).body, { name: 'Ada Lovelace', initials: 'AL' });
+  assert.deepEqual((await f.request('GET', '/session')).body.owner, { name: 'Ada Lovelace', initials: 'AL' });
+  assert.deepEqual((await f.request('PATCH', '/owner', { name: null })).body, { name: 'Justus Hu', initials: 'JH' }, 'clearing the name falls back to config');
+  for (const body of [{ initials: 'ABCD' }, { initials: '' }, { name: '' }, { name: 'x'.repeat(81) }, { other: 'x' }]) assert.equal((await f.request('PATCH', '/owner', body)).status, 400, JSON.stringify(body));
+  const worker = await f.machine();
+  assert.equal((await f.request('PATCH', '/owner', { name: 'Machine' }, worker.token)).status, 403);
+});
+
+test('without an owner name the profile is empty', async t => {
+  const f = await fixture(t);
+  assert.deepEqual((await f.request('GET', '/session')).body.owner, { name: null, initials: null });
+});

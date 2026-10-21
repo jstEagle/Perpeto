@@ -6,7 +6,7 @@ import { HubStore } from './store.js';
 import { Credentials } from './credentials.js';
 import { HubTls } from './tls.js';
 import { encodeJoinCode } from './join.js';
-import { readGoals, writeGoals } from './goals.js';
+import { readGoals, writeGoals, initialsOf } from './goals.js';
 import { publicOrigin } from './config.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
@@ -877,8 +877,22 @@ export class Hub {
       const status = this.tls.activate(); this.onTlsChange?.(); this.emit('hub.certificate-rotated', 'hub', { id: 'tls' }, { fingerprint: status.fingerprint, previous: status.previous });
       return reply(status);
     }
+    if (path === '/owner') {
+      if (method === 'GET') return reply(this.ownerProfile());
+      if (method === 'PATCH') {
+        requireValue(Object.keys(body).every(key => ['name', 'initials', 'idempotencyKey'].includes(key)), 'The owner profile has name and initials.');
+        const stored = this.store.get('owner-profile', 'owner') ?? { id: 'owner' };
+        if (Object.hasOwn(body, 'name')) stored.name = body.name === null ? null : nonblank(body.name, 'name', 80).trim();
+        if (Object.hasOwn(body, 'initials')) {
+          requireValue(body.initials === null || (typeof body.initials === 'string' && /^[\p{L}\p{N}]{1,3}$/u.test(body.initials)), 'Initials are 1 to 3 letters or digits.');
+          stored.initials = body.initials === null ? null : body.initials.toUpperCase();
+        }
+        this.store.put('owner-profile', stored); this.store.event('owner.updated', { kind: 'owner', id: 'owner' }, this.ownerProfile());
+        return reply(this.ownerProfile());
+      }
+    }
     if (path === '/session') {
-      if (method === 'GET') return reply({ kind: 'owner', expiresAt: auth.session?.expiresAt ?? null });
+      if (method === 'GET') return reply({ kind: 'owner', expiresAt: auth.session?.expiresAt ?? null, owner: this.ownerProfile() });
       if (method === 'POST') {
         if (auth.via === 'cookie') fail(403, 'FORBIDDEN', 'Sessions are created with the owner token.');
         // Session tokens are random and stored as hashes; the response keeps one sealed so a retry re-sends the same cookie.
@@ -916,7 +930,7 @@ export class Hub {
       const projectId = query.get('projectId') ?? undefined;
       const goals = projectId ? this.goalProgress(this.store.need('project', projectId))
         : this.store.list('project').flatMap(project => this.goalProgress(project).map(goal => ({ ...goal, projectId: project.id })));
-      return reply({ goals, activeAgents: this.store.count('assignment', ['leased', 'running'], projectId),
+      return reply({ owner: this.ownerProfile(), goals, activeAgents: this.store.count('assignment', ['leased', 'running'], projectId),
         queuedWork: this.store.count('assignment', ['queued'], projectId) + this.store.count('job', ['queued'], projectId),
         tokensToday: this.store.tokensSince(`${now().slice(0, 10)}T00:00:00.000Z`, projectId),
         machinesOnline: this.store.list('machine', value => value.status === 'online' && Date.now() - Date.parse(value.lastHeartbeatAt) < this.config.heartbeatIntervalMs * 3).length });
@@ -949,6 +963,12 @@ export class Hub {
     });
   }
   projectView(project) { return { ...project, goals: this.goalProgress(project) }; }
+  /** The owner's display name and initials: edited values first, then `ownerName` from config, initials derived from the name. */
+  ownerProfile() {
+    const stored = this.store.get('owner-profile', 'owner') ?? {};
+    const name = stored.name ?? this.config.ownerName ?? null;
+    return { name, initials: stored.initials ?? (name ? initialsOf(name) : null) };
+  }
   /** Work items of runs whose engine keeps run state come from the engine; other runs keep the hub's copies. */
   workItems(runId) {
     const fromEngine = this.engine.listWorkItems && this.store.get('engine-state', runId)?.seq !== undefined;

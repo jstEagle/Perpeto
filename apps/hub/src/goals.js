@@ -31,3 +31,8 @@ export function writeGoals(input) {
   return goals;
 }
 
+/** Owner initials: first letters of the first and last words. */
+export const initialsOf = name => {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  return words.length ? [words[0], ...(words.length > 1 ? [words.at(-1)] : [])].map(word => [...word][0]).join('').toUpperCase() : null;
+};
