@@ -253,18 +253,19 @@ test('H6: daemon protects external credential/redaction/account paths and redact
   const credentialFile = join(dir, 'outside-machine.json');
   const redactionFile = join(dir, 'redaction.json');
   const accountDir = join(dir, 'outside-accounts');
+  await writeFile(`${credentialFile}.rotation.tmp`, 'ROTATION_TEMP_SECRET', { mode: 0o600 });
   await mkdir(accountDir, { mode: 0o700 });
   await writeFile(join(accountDir, 'secret'), 'ACCOUNT_SECRET', { mode: 0o600 });
   await writeFile(redactionFile, JSON.stringify({ literals: ['EXACT_SECRET'] }), { mode: 0o600 });
   await writeFile(configPath, JSON.stringify({ ...config, credentialFile, accounts: { nodeDataDir: accountDir }, jobs: { redactionFile } }));
-  hub.jobs.push(job(repo, [{ name: 'probe', run: `! cat '${credentialFile}' && ! cat '${redactionFile}' && ! cat '${accountDir}/secret' && printf 'private-machine-token\\nEXACT_SECRET\\n'` }]));
+  hub.jobs.push(job(repo, [{ name: 'probe', run: `! cat '${credentialFile}' && ! cat '${credentialFile}.rotation.tmp' && ! cat '${redactionFile}' && ! cat '${accountDir}/secret' && printf 'private-machine-token\\nEXACT_SECRET\\n'` }]));
   const node = await createNode({ configPath });
   addCleanup(t, () => node.stop({ drain: false }));
   await node.start();
   await eventually(() => hub.events.some(e => e.type === 'completed'), 5000);
   assert.equal(hub.events.find(e => e.type === 'completed').data.status, 'passed');
   const output = hub.events.filter(e => e.type === 'log').map(e => e.data.chunk).join('');
-  assert.equal(/private-machine-token|EXACT_SECRET|ACCOUNT_SECRET/.test(output), false);
+  assert.equal(/private-machine-token|EXACT_SECRET|ACCOUNT_SECRET|ROTATION_TEMP_SECRET/.test(output), false);
   assert.match(output, /REDACTED/);
 });
 

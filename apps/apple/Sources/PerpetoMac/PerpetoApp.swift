@@ -10,8 +10,10 @@ struct PerpetoApp: App {
     @State private var navigator = Navigator()
 
     init() {
-        // Snapshots always use demo fixtures, never a configured hub.
-        let (source, error): (FactoryDataSource, String?) = Snapshotter.requestedDirectory == nil ? FactoryStore.makeSource() : (DemoDataSource(), nil)
+        // Snapshots use demo fixtures unless a hub is named for them explicitly.
+        let (source, error): (FactoryDataSource, String?) = Snapshotter.requestedDirectory == nil
+            ? FactoryStore.makeSource()
+            : (Snapshotter.hubSource().map { $0 as FactoryDataSource } ?? DemoDataSource(), nil)
         let store = FactoryStore(source: source)
         store.lastError = error
         _store = State(initialValue: store)
@@ -28,7 +30,7 @@ struct PerpetoApp: App {
         .commands { PerpetoCommands(store: store, navigator: navigator) }
 
         Settings {
-            SettingsView(store: store)
+            HubConnectionView(store: store)
                 .preferredColorScheme(.light)
         }
     }
@@ -71,8 +73,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct PerpetoCommands: Commands {
     var store: FactoryStore
     var navigator: Navigator
+    @FocusedValue(\.editorUndo) private var editorUndo
 
     var body: some Commands {
+        // The graph editor keeps its own history; elsewhere, undo goes to the
+        // first responder as usual (text fields, for example).
+        CommandGroup(replacing: .undoRedo) {
+            Button(editorUndo?.undoName.map { "Undo \($0)" } ?? "Undo") {
+                if let editorUndo, editorUndo.undoName != nil { editorUndo.undo() } else { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) }
+            }
+            .keyboardShortcut("z", modifiers: .command)
+            Button(editorUndo?.redoName.map { "Redo \($0)" } ?? "Redo") {
+                if let editorUndo, editorUndo.redoName != nil { editorUndo.redo() } else { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+        }
         CommandGroup(replacing: .newItem) {
             Button("New workflow draft…") {
                 navigator.show(.workflows, fallbackProject: store.factory.projects.first?.id)

@@ -340,7 +340,7 @@ public enum DemoFixtures {
     static func liveMetrics() -> MetricsSnapshot {
         let p = Percentiles.init(avg:p90:)
         return MetricsSnapshot(
-            window: "24h",
+            window: .day,
             nodes: [
                 NodeMetrics(nodeId: "in", queued: 0, active: 0, done: 25, failed: 0, concurrency: 1, utilization: 0, waitSec: p(0, 0), serviceSec: p(0, 0), throughputPerHour: 0, failureRate: 0, tokens: 0),
                 NodeMetrics(nodeId: "plan", queued: 0, active: 0, done: 25, failed: 0, concurrency: 1, utilization: 0, waitSec: p(20, 45), serviceSec: p(310, 540), throughputPerHour: 0.4, failureRate: 0, tokens: 612_000),
@@ -364,10 +364,11 @@ public enum DemoFixtures {
                 EdgeMetrics(edgeId: "d1", kind: .delegates, count: 25, unplanned: false),
                 EdgeMetrics(edgeId: "m1", kind: .messages, count: 46, unplanned: false),
                 EdgeMetrics(edgeId: "m2", kind: .messages, count: 5, unplanned: false),
-                EdgeMetrics(edgeId: "build>plan", kind: .messages, count: 4, unplanned: true),
+                .unplanned(.messages, from: "build", to: "plan", count: 4),
             ],
             run: RunMetrics(
-                velocity: .init(itemsDonePerDay: 5.5, trend: [2, 4, 6, 7, 5, 4, 3]),
+                // 24 hourly buckets, as the hub returns for the 24h window.
+                velocity: .init(itemsDonePerDay: 5.5, trend: [0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0]),
                 cycleTimeSec: p(15_100, 26_400), wip: 15, tokensPerItem: 1_508_000, activeAgents: 5,
                 machines: [
                     .init(machineId: studioId, activeAgents: 4, nodes: ["build", "review"]),
@@ -379,6 +380,20 @@ public enum DemoFixtures {
             ])
     }
 
+    /// The fixtures describe 24 hours. Other windows scale counts so the
+    /// window picker visibly changes the map in demo mode.
+    public static func scaled(_ snapshot: MetricsSnapshot, to window: MetricsWindow) -> MetricsSnapshot {
+        guard window != .day else { return snapshot }
+        let factor = window == .hour ? 1.0 / 12 : 5.0
+        var s = snapshot
+        s.window = window
+        s.edges = s.edges.map { var e = $0; e.count = max(e.count > 0 ? 1 : 0, Int((Double(e.count) * factor).rounded())); return e }
+        s.nodes = s.nodes.map { var n = $0; n.done = Int((Double(n.done) * factor).rounded()); n.failed = Int((Double(n.failed) * factor).rounded()); return n }
+        // 12 five-minute buckets for 1h, 7 daily buckets for 7d.
+        s.run.velocity.trend = window == .hour ? [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0] : [2, 4, 6, 7, 5, 4, 3]
+        return s
+    }
+
     static func events(now: Date) -> [HubEvent] {
         struct Seed {
             var minutesAgo: Double
@@ -388,24 +403,24 @@ public enum DemoFixtures {
             var data: JSONValue
         }
         let seeds: [Seed] = [
-            .init(minutesAgo: 1, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_b2", data: ["fromNode": "build", "toNode": "review", "edgeId": "m1", "fromRole": "builder-2", "toRole": "reviewer", "summary": "Pushed a fix for the cooldown race; ready for another look."]),
+            .init(minutesAgo: 1, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_b2", data: ["sourceNodeId": "build", "targetNodeId": "review", "edgeId": "m1", "senderRoleId": "builder-2", "recipientRoleId": "reviewer", "summary": "Pushed a fix for the cooldown race; ready for another look."]),
             .init(minutesAgo: 3, type: "assignment.state", subjectKind: "assignment", subjectId: "asg_b4", data: ["nodeId": "build", "state": "running", "machineId": .string(studioId), "accountId": "acct_x1", "summary": "builder-4 started on studio-m4"]),
-            .init(minutesAgo: 4, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_b3", data: ["fromNode": "build", "toNode": "plan", "fromRole": "builder-3", "toRole": "planner", "unplanned": true, "summary": "Asked the planner to split the metrics item; no messages edge connects these roles."]),
-            .init(minutesAgo: 6, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_21", data: ["fromNode": "build", "toNode": "review", "edgeId": "e4", "summary": "Workflow version diff endpoint entered the review queue (position 7)."]),
+            .init(minutesAgo: 4, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_b3", data: ["sourceNodeId": "build", "targetNodeId": "plan", "senderRoleId": "builder-3", "recipientRoleId": "planner", "unplanned": true, "summary": "Asked the planner to split the metrics item; no messages edge connects these roles."]),
+            .init(minutesAgo: 6, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_21", data: ["sourceNodeId": "build", "targetNodeId": "review", "edgeId": "e4", "summary": "Workflow version diff endpoint entered the review queue (position 7)."]),
             .init(minutesAgo: 9, type: "gate.result", subjectKind: "workItem", subjectId: "wi_07", data: ["nodeId": "review", "result": "pass", "edgeId": "e5", "summary": "Review passed CI job runs in a fresh worktree per revision."]),
-            .init(minutesAgo: 9.5, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_07", data: ["fromNode": "review", "toNode": "ci", "edgeId": "e5", "summary": "Moved to CI at 8e41c0d."]),
+            .init(minutesAgo: 9.5, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_07", data: ["sourceNodeId": "review", "targetNodeId": "ci", "edgeId": "e5", "summary": "Moved to CI at 8e41c0d."]),
             .init(minutesAgo: 12, type: "assignment.state", subjectKind: "job", subjectId: "job_91c", data: ["nodeId": "ci", "state": "running", "machineId": .string(linuxId), "summary": "CI job started on build-linux-01 at 8e41c0d."]),
             .init(minutesAgo: 16, type: "gate.result", subjectKind: "workItem", subjectId: "wi_23", data: ["nodeId": "review", "result": "fail", "edgeId": "e6", "summary": "Review failed: unplanned flag not persisted across restart. Iteration 3 of 3."]),
-            .init(minutesAgo: 16.5, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_23", data: ["fromNode": "review", "toNode": "loop", "edgeId": "e6", "summary": "Returned to the loop for iteration 3."]),
-            .init(minutesAgo: 18, type: "agent.delegated", subjectKind: "assignment", subjectId: "asg_b4", data: ["fromNode": "plan", "toNode": "build", "edgeId": "d1", "fromRole": "planner", "toRole": "builder-4", "summary": "Planner assigned Bottleneck rules from measured state."]),
-            .init(minutesAgo: 22, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_rv118", data: ["fromNode": "review", "toNode": "build", "edgeId": "m1", "fromRole": "reviewer", "toRole": "builder-1", "summary": "Requested a test for cooldown expiry before approving."]),
+            .init(minutesAgo: 16.5, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_23", data: ["sourceNodeId": "review", "targetNodeId": "loop", "edgeId": "e6", "summary": "Returned to the loop for iteration 3."]),
+            .init(minutesAgo: 18, type: "agent.delegated", subjectKind: "assignment", subjectId: "asg_b4", data: ["sourceNodeId": "plan", "targetNodeId": "build", "edgeId": "d1", "role": "planner", "summary": "Planner assigned Bottleneck rules from measured state."]),
+            .init(minutesAgo: 22, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_rv118", data: ["sourceNodeId": "review", "targetNodeId": "build", "edgeId": "m1", "senderRoleId": "reviewer", "recipientRoleId": "builder-1", "summary": "Requested a test for cooldown expiry before approving."]),
             .init(minutesAgo: 27, type: "gate.result", subjectKind: "workItem", subjectId: "wi_03", data: ["nodeId": "ci", "result": "fail", "edgeId": "e8", "summary": "CI failed at 3f2a9c1: npm test exited 1."]),
-            .init(minutesAgo: 27.5, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_03", data: ["fromNode": "loop", "toNode": "loop", "summary": "Account pool hot swap failed at maxIterations 3."]),
-            .init(minutesAgo: 31, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_b3", data: ["fromNode": "build", "toNode": "plan", "fromRole": "builder-3", "toRole": "planner", "unplanned": true, "summary": "Reported the metrics item is larger than one PR."]),
-            .init(minutesAgo: 34, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_13", data: ["fromNode": "ci", "toNode": "mq", "edgeId": "e7", "summary": "Enrollment codes expire after 15 minutes queued for merge."]),
+            .init(minutesAgo: 27.5, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_03", data: ["sourceNodeId": "loop", "targetNodeId": "loop", "summary": "Account pool hot swap failed at maxIterations 3."]),
+            .init(minutesAgo: 31, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_b3", data: ["sourceNodeId": "build", "targetNodeId": "plan", "senderRoleId": "builder-3", "recipientRoleId": "planner", "unplanned": true, "summary": "Reported the metrics item is larger than one PR."]),
+            .init(minutesAgo: 34, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_13", data: ["sourceNodeId": "ci", "targetNodeId": "mq", "edgeId": "e7", "summary": "Enrollment codes expire after 15 minutes queued for merge."]),
             .init(minutesAgo: 40, type: "assignment.state", subjectKind: "assignment", subjectId: "asg_rv118", data: ["nodeId": "review", "state": "running", "machineId": .string(studioId), "accountId": "acct_c1", "summary": "Reviewer switched to Claude Max 1 after Claude Max 2 hit a rate limit."]),
-            .init(minutesAgo: 52, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_11", data: ["fromNode": "mq", "toNode": "out", "edgeId": "e9", "summary": "Overview counts endpoint merged to main as PR #224."]),
-            .init(minutesAgo: 58, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_rv118", data: ["fromNode": "plan", "toNode": "review", "edgeId": "m2", "fromRole": "planner", "toRole": "reviewer", "summary": "Flagged items 16 and 19 as contract-sensitive."]),
+            .init(minutesAgo: 52, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_11", data: ["sourceNodeId": "mq", "targetNodeId": "out", "edgeId": "e9", "summary": "Overview counts endpoint merged to main as PR #224."]),
+            .init(minutesAgo: 58, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_rv118", data: ["sourceNodeId": "plan", "targetNodeId": "review", "edgeId": "m2", "senderRoleId": "planner", "recipientRoleId": "reviewer", "summary": "Flagged items 16 and 19 as contract-sensitive."]),
         ]
         return seeds.enumerated().map { index, seed in
             HubEvent(seq: 4800 - index, at: now.addingTimeInterval(-seed.minutesAgo * 60), type: seed.type, projectId: primaryProjectId,

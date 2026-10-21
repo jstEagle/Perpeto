@@ -4,6 +4,7 @@ import PerpetoKit
 /// Number and time formatting for explicit, readable figures.
 public enum Format {
     public static func tokens(_ value: Int) -> String { compact(Double(value)) }
+    public static func tokens(_ value: Double?) -> String { value.map { compact($0) } ?? "n/a" }
 
     public static func compact(_ value: Double) -> String {
         let abs = Swift.abs(value)
@@ -22,6 +23,11 @@ public enum Format {
     }
 
     /// "38 min", "2.4 h", "45 s".
+    /// Null percentiles mean nothing finished in the window.
+    public static func duration(_ seconds: Double?) -> String {
+        seconds.map { duration($0) } ?? "n/a"
+    }
+
     public static func duration(_ seconds: Double) -> String {
         switch seconds {
         case ..<60: return "\(Int(seconds.rounded())) s"
@@ -76,4 +82,19 @@ public enum Format {
     public static func plural(_ count: Int, _ singular: String, _ pluralForm: String? = nil) -> String {
         "\(count) " + (count == 1 ? singular : (pluralForm ?? singular + "s"))
     }
+}
+
+extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// Words that differ between the Mac and iPhone or iPad.
+enum Platform {
+    #if os(macOS)
+    static let device = "this Mac"
+    static let isPhoneOrPad = false
+    #else
+    static let device = "this device"
+    static let isPhoneOrPad = true
+    #endif
 }

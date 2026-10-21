@@ -9,6 +9,23 @@ public struct RootView: View {
     var openSettings: () -> Void
 
     @State private var expanded: Set<String> = []
+    /// Set from the detail column's width, not the size class: an iPad in
+    /// portrait with the sidebar open is as narrow as a large phone.
+    @State private var narrowDetail = false
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var compact: Bool { sizeClass == .compact || narrowDetail }
+    #else
+    private var compact: Bool { narrowDetail }
+    #endif
+
+    /// Below this detail width, layouts stack instead of compressing. The
+    /// Mac window's minimum keeps it above its threshold.
+    #if os(iOS)
+    nonisolated static let compactWidth: CGFloat = 900
+    #else
+    nonisolated static let compactWidth: CGFloat = 760
+    #endif
 
     public init(store: FactoryStore, navigator: Navigator, openSettings: @escaping () -> Void) {
         self.store = store
@@ -17,7 +34,7 @@ public struct RootView: View {
     }
 
     public var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $navigator.columnVisibility) {
             sidebar
                 .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 300)
         } detail: {
@@ -29,10 +46,15 @@ public struct RootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .canvasBackground()
+            .onGeometryChange(for: Bool.self) { $0.size.width < Self.compactWidth } action: { narrowDetail = $0 }
+            .environment(\.compactLayout, compact)
             .toolbar { toolbar }
             .navigationTitle(navigator.route?.title ?? "perpeto")
             #if os(macOS)
             .navigationSubtitle(subtitle)
+            #else
+            // Screens carry their own titles; the bar keeps the vitals.
+            .toolbarTitleDisplayMode(.inline)
             #endif
         }
         .tint(PerpetoColor.action)
@@ -147,11 +169,21 @@ public struct RootView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        #if os(macOS)
         ToolbarItem(placement: .navigation) {
             if let id = navigator.projectId {
                 ProjectVitals(state: store.state(id))
             }
         }
+        #else
+        ToolbarItem(placement: .principal) {
+            if let id = navigator.projectId {
+                ProjectVitals(state: store.state(id), compact: compact)
+            } else {
+                Text(navigator.route?.title ?? "perpeto").font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
+            }
+        }
+        #endif
         ToolbarItem(placement: .primaryAction) {
             Button {
                 Task { await store.refresh() }
@@ -167,11 +199,13 @@ public struct RootView: View {
 /// Active agents and tokens today for the selected project.
 struct ProjectVitals: View {
     var state: ProjectState
+    /// Shorter labels for the iPhone navigation bar.
+    var compact = false
 
     var body: some View {
-        HStack(spacing: PerpetoSpacing.x(4)) {
-            vital(systemImage: "person.2", value: "\(state.activeAgents)", label: state.activeAgents == 1 ? "agent working" : "agents working")
-            vital(systemImage: "number", value: Format.tokens(state.usage.today), label: "tokens today")
+        HStack(spacing: PerpetoSpacing.x(compact ? 3 : 4)) {
+            vital(systemImage: "person.2", value: "\(state.activeAgents)", label: compact ? "working" : state.activeAgents == 1 ? "agent working" : "agents working")
+            vital(systemImage: "number", value: Format.tokens(state.usage.today), label: compact ? "today" : "tokens today")
         }
         .padding(.horizontal, PerpetoSpacing.x(2))
         .accessibilityElement(children: .combine)
@@ -225,7 +259,7 @@ struct ConnectionFooter: View {
                     Text(isDemo ? "Demo data" : "Connected to hub")
                         .font(PerpetoFont.captionMedium)
                         .foregroundStyle(PerpetoColor.ink)
-                    Text(isDemo ? "No hub is configured. Changes stay on this Mac." : lastUpdated.map { "Updated " + Format.relative($0) } ?? "Waiting for first update")
+                    Text(isDemo ? "No hub is configured. Changes stay on \(Platform.device)." : lastUpdated.map { "Updated " + Format.relative($0) } ?? "Waiting for first update")
                         .font(PerpetoFont.caption)
                         .foregroundStyle(PerpetoColor.muted)
                         .fixedSize(horizontal: false, vertical: true)

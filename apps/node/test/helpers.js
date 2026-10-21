@@ -27,6 +27,13 @@ export async function fakeHub(t, options = {}) {
   const assignments = [];
   const jobs = [];
   const cache = new Map();
+  const releases = [];
+  let generation = 0;
+  let currentToken = 'private-machine-token';
+  const tokens = new Set([currentToken]);
+  let revoked = false;
+  let dropToken = false;
+  let dropRelease = false;
   let outage = false;
   let lost = false;
   let renewOutage = false;
@@ -40,15 +47,25 @@ export async function fakeHub(t, options = {}) {
       for await (const chunk of req) body += chunk;
       body = JSON.parse(body);
       requests.push({ path: req.url, body, auth: req.headers.authorization });
+      await options.onRequest?.({ path: req.url, body, auth: req.headers.authorization });
       const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
       if (outage || (renewOutage && req.url.endsWith('/renew'))) return send(503, { error: { code: 'HUB_UNAVAILABLE' } });
-      if (req.url !== '/api/v1/nodes/enroll' && req.headers.authorization !== 'Bearer private-machine-token') return send(401, { error: { code: 'UNAUTHORIZED' } });
-      if (cache.has(body.idempotencyKey)) return send(200, cache.get(body.idempotencyKey));
+      if (req.url !== '/api/v1/nodes/enroll') {
+        const presented = req.headers.authorization?.replace(/^Bearer /, '');
+        if (revoked || !tokens.has(presented)) return send(401, { error: { code: 'UNAUTHORIZED' } });
+        if (generation && presented === currentToken) { tokens.clear(); tokens.add(currentToken); }
+      }
+      const cacheKey = `${req.headers.authorization}:${body.idempotencyKey}`;
+      if (cache.has(cacheKey)) return send(200, cache.get(cacheKey));
       let result = {};
       if (req.url === '/api/v1/nodes/enroll') {
         if (body.code !== 'enroll-once') return send(401, { error: { code: 'INVALID_CODE' } });
         enrollments++;
         result = { machineId: options.machineId ?? 'mch_test', token: 'private-machine-token' };
+      } else if (req.url === '/api/v1/nodes/token') {
+        await options.rotate?.(body);
+        generation++; currentToken = `private-machine-token_${generation}`; tokens.add(currentToken);
+        result = { machineId: options.machineId ?? 'mch_test', token: currentToken, generation };
       } else if (req.url === '/api/v1/nodes/heartbeat') {
         heartbeats.push(body);
         const response = await options.heartbeat?.(body);
@@ -60,6 +77,11 @@ export async function fakeHub(t, options = {}) {
         const source = kind === 'job' ? jobs : assignments;
         const values = source.splice(0, body.max).map(item => ({ ...item, leaseExpiresAt: new Date(Date.now() + ttl).toISOString() }));
         result = { assignments: kind === 'assignment' ? values : [], jobs: kind === 'job' ? values : [] };
+      } else if (req.url.endsWith('/release')) {
+        releases.push({ path: req.url, ...body });
+        const response = await options.release?.(body);
+        if (response?.statusCode) return send(response.statusCode, response.body);
+        result = { released: true, status: 'queued', attempt: body.attempt };
       } else if (req.url.endsWith('/renew')) {
         renewals.push({ path: req.url, body });
         if (lost) return send(409, { error: { code: 'lease_lost' } });
@@ -68,7 +90,9 @@ export async function fakeHub(t, options = {}) {
         if (lost) return send(409, { error: { code: 'lease_lost' } });
         events.push({ path: req.url, ...body });
       } else return send(404, { error: { code: 'NOT_FOUND' } });
-      cache.set(body.idempotencyKey, result);
+      cache.set(cacheKey, result);
+      if (dropRelease && req.url.endsWith('/release')) { dropRelease = false; req.socket.destroy(); return; }
+      if (dropToken && req.url.endsWith('/nodes/token')) { dropToken = false; req.socket.destroy(); return; }
       if (dropEnrollment && req.url.endsWith('/enroll')) { dropEnrollment = false; req.socket.destroy(); return; }
       if (dropLease && req.url.endsWith('/lease') && (result.assignments?.length || result.jobs?.length)) { dropLease = false; req.socket.destroy(); return; }
       send(200, result);
@@ -76,7 +100,11 @@ export async function fakeHub(t, options = {}) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   addCleanup(t, () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  return { requests, events, renewals, heartbeats, assignments, jobs,
+  return { requests, events, renewals, heartbeats, assignments, jobs, releases,
+    get generation() { return generation; },
+    set revoked(value) { revoked = value; },
+    set dropToken(value) { dropToken = value; },
+    set dropRelease(value) { dropRelease = value; },
     url: `http://127.0.0.1:${server.address().port}`,
     get enrollments() { return enrollments; },
     set outage(value) { outage = value; },

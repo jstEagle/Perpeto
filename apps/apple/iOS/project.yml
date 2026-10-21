@@ -1,0 +1,57 @@
+# XcodeGen spec for the iPhone and iPad app. The generated Perpeto.xcodeproj
+# is checked in, so building needs only Xcode. After editing this file run
+# `xcodegen generate` in apps/apple/iOS.
+name: Perpeto
+options:
+  bundleIdPrefix: app.perpeto
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+packages:
+  PerpetoApple:
+    path: ..
+targets:
+  PerpetoiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+    dependencies:
+      - package: PerpetoApple
+        product: PerpetoKit
+      - package: PerpetoApple
+        product: PerpetoUI
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Perpeto
+        CFBundleShortVersionString: "0.1.0"
+        UILaunchScreen: {}
+        UIUserInterfaceStyle: Light
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # HTTPS is required for remote hubs; plain HTTP only reaches localhost.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_NAME: Perpeto
+        PRODUCT_BUNDLE_IDENTIFIER: app.perpeto.ios
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: YES
+schemes:
+  Perpeto:
+    build:
+      targets:
+        PerpetoiOS: all

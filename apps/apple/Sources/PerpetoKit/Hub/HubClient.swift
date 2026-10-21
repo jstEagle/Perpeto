@@ -75,8 +75,14 @@ public final class HubClient: Sendable {
 
     public func health() async throws -> HubHealth { try await get("/health", authenticated: false) }
     public func overview() async throws -> FactoryOverview { try await get("/overview") }
-    public func projects() async throws -> [Project] { try await list("/projects") }
+    public func projects() async throws -> [Project] { try await list("/projects", key: "projects") }
     public func project(_ id: String) async throws -> Project { try await get("/projects/\(escape(id))") }
+    /// Newest first. `status` filters to one run state.
+    public func runs(projectId: String, status: Run.Status? = nil) async throws -> [Run] {
+        var query: [String: String] = [:]
+        query["status"] = status?.rawValue
+        return try await list("/projects/\(escape(projectId))/runs", key: "runs", query: query)
+    }
 
     public struct NewProject: Encodable, Sendable {
         public var name: String
@@ -114,13 +120,33 @@ public final class HubClient: Sendable {
 
     // MARK: Workflows
 
-    public func workflows(projectId: String) async throws -> [Workflow] { try await list("/projects/\(escape(projectId))/workflows") }
+    public func workflows(projectId: String) async throws -> [Workflow] { try await list("/projects/\(escape(projectId))/workflows", key: "workflows") }
     public func workflow(_ id: String) async throws -> Workflow { try await get("/workflows/\(escape(id))") }
-    public func versions(workflowId: String) async throws -> [Workflow] { try await list("/workflows/\(escape(workflowId))/versions") }
+    public func versions(workflowId: String) async throws -> [Workflow] { try await list("/workflows/\(escape(workflowId))/versions", key: "versions") }
 
-    /// PUT validates and bumps `version`.
+    /// PUT merges the body over the head and saves a new draft version whose
+    /// `parentVersion` is the previous head.
     public func saveWorkflow(_ workflow: Workflow, idempotencyKey: String = UUID().uuidString) async throws -> Workflow {
-        try await send("PUT", "/workflows/\(escape(workflow.id))", body: workflow, idempotencyKey: idempotencyKey)
+        struct Body: Encodable {
+            var name: String
+            var graph: WorkflowGraph
+            var purpose: Workflow.Purpose
+            var rationale: String?
+        }
+        let body = Body(name: workflow.name, graph: workflow.graph, purpose: workflow.purpose, rationale: workflow.rationale)
+        return try await send("PUT", "/workflows/\(escape(workflow.id))", body: body, idempotencyKey: idempotencyKey)
+    }
+
+    /// Creates a workflow from a graph; it starts as draft version 1.
+    public func createWorkflow(projectId: String, name: String, purpose: Workflow.Purpose, graph: WorkflowGraph, rationale: String? = nil,
+                               idempotencyKey: String = UUID().uuidString) async throws -> Workflow {
+        struct Body: Encodable {
+            var name: String
+            var purpose: Workflow.Purpose
+            var graph: WorkflowGraph
+            var rationale: String?
+        }
+        return try await send("POST", "/projects/\(escape(projectId))/workflows", body: Body(name: name, purpose: purpose, graph: graph, rationale: rationale), idempotencyKey: idempotencyKey)
     }
 
     public func validate(workflowId: String, graph: WorkflowGraph) async throws -> ValidationResult {
@@ -128,8 +154,9 @@ public final class HubClient: Sendable {
         return try await send("POST", "/workflows/\(escape(workflowId))/validate", body: Body(graph: graph), idempotencyKey: nil)
     }
 
-    /// Asks the workflow architect for a draft. Returns the assignment to follow.
-    public func requestDraft(projectId: String, prompt: String, baseWorkflowId: String?, idempotencyKey: String = UUID().uuidString) async throws -> DraftRequestResult {
+    /// Asks the workflow architect for a draft. Returns the architect
+    /// assignment (HTTP 202); follow it with `assignment(_:)`.
+    public func requestDraft(projectId: String, prompt: String, baseWorkflowId: String?, idempotencyKey: String = UUID().uuidString) async throws -> Assignment {
         struct Body: Encodable {
             var prompt: String
             var baseWorkflowId: String?
@@ -144,8 +171,13 @@ public final class HubClient: Sendable {
 
     // MARK: Runs
 
-    public func startRun(workflowId: String, idempotencyKey: String = UUID().uuidString) async throws -> Run {
-        try await send("POST", "/workflows/\(escape(workflowId))/runs", body: EmptyBody(), idempotencyKey: idempotencyKey)
+    /// Starts a run of the active version, optionally with first work items.
+    public func startRun(workflowId: String, items: [String] = [], idempotencyKey: String = UUID().uuidString) async throws -> Run {
+        struct Item: Encodable { var title: String }
+        struct Input: Encodable { var items: [Item] }
+        struct Body: Encodable { var input: Input? }
+        let body = Body(input: items.isEmpty ? nil : Input(items: items.map(Item.init)))
+        return try await send("POST", "/workflows/\(escape(workflowId))/runs", body: body, idempotencyKey: idempotencyKey)
     }
 
     public func run(_ id: String) async throws -> Run { try await get("/runs/\(escape(id))") }
@@ -156,36 +188,47 @@ public final class HubClient: Sendable {
         try await send("POST", "/runs/\(escape(runId))/\(action.rawValue)", body: EmptyBody(), idempotencyKey: idempotencyKey)
     }
 
-    public func addInputs(runId: String, items: [String], idempotencyKey: String = UUID().uuidString) async throws -> [WorkItem] {
+    /// Adds work to a running run. The hub answers 202 `{ accepted: true }`.
+    public func addInputs(runId: String, items: [String], idempotencyKey: String = UUID().uuidString) async throws {
         struct Item: Encodable { var title: String }
         struct Body: Encodable { var items: [Item] }
-        let data = try await raw("POST", "/runs/\(escape(runId))/inputs", body: Body(items: items.map(Item.init)), idempotencyKey: idempotencyKey)
-        return try decode(ListEnvelope<WorkItem>.self, from: data).items
+        let _: Accepted = try await send("POST", "/runs/\(escape(runId))/inputs", body: Body(items: items.map(Item.init)), idempotencyKey: idempotencyKey)
     }
 
-    public func workItems(runId: String) async throws -> [WorkItem] { try await list("/runs/\(escape(runId))/work-items") }
-    public func assignments(runId: String) async throws -> [Assignment] { try await list("/runs/\(escape(runId))/assignments") }
+    public func workItems(runId: String) async throws -> [WorkItem] { try await list("/runs/\(escape(runId))/work-items", key: "workItems") }
+    public func assignments(runId: String) async throws -> [Assignment] { try await list("/runs/\(escape(runId))/assignments", key: "assignments") }
+    public func assignment(_ id: String) async throws -> Assignment { try await get("/assignments/\(escape(id))") }
+    /// 409 `NO_RUN_STATE` when the engine holds no state for the run.
     public func runMetrics(runId: String, window: MetricsWindow) async throws -> MetricsSnapshot {
-        try await get("/runs/\(escape(runId))/metrics", query: ["window": window.rawValue])
+        var snapshot: MetricsSnapshot = try await get("/runs/\(escape(runId))/metrics", query: ["window": window.rawValue])
+        snapshot.window = window
+        return snapshot
     }
     public func projectMetrics(projectId: String, window: MetricsWindow) async throws -> MetricsSnapshot {
-        try await get("/projects/\(escape(projectId))/metrics", query: ["window": window.rawValue])
+        var snapshot: MetricsSnapshot = try await get("/projects/\(escape(projectId))/metrics", query: ["window": window.rawValue])
+        snapshot.window = window
+        return snapshot
     }
 
     public enum Decision: String, Encodable, Sendable { case pass, fail }
 
-    public func decide(workItemId: String, _ decision: Decision, note: String? = nil, idempotencyKey: String = UUID().uuidString) async throws -> WorkItem {
+    /// Decides an item waiting at a human gate in a running run. Pass the
+    /// item's `decisionId` so the answer binds to that wait; a stale one gets
+    /// 409 `STALE_DECISION`. The hub answers `{ accepted: true, decisionId? }`.
+    public func decide(workItemId: String, _ decision: Decision, decisionId: String?, note: String? = nil, idempotencyKey: String = UUID().uuidString) async throws {
         struct Body: Encodable {
             var decision: Decision
+            var decisionId: String?
             var note: String?
         }
-        return try await send("POST", "/work-items/\(escape(workItemId))/decision", body: Body(decision: decision, note: note), idempotencyKey: idempotencyKey)
+        let body = Body(decision: decision, decisionId: decisionId, note: note)
+        let _: Accepted = try await send("POST", "/work-items/\(escape(workItemId))/decision", body: body, idempotencyKey: idempotencyKey)
     }
 
     // MARK: Factory
 
-    public func machines() async throws -> [Machine] { try await list("/machines") }
-    public func accounts() async throws -> [Account] { try await list("/accounts") }
+    public func machines() async throws -> [Machine] { try await list("/machines", key: "machines") }
+    public func accounts() async throws -> [Account] { try await list("/accounts", key: "accounts") }
 
     public func createEnrollmentCode(idempotencyKey: String = UUID().uuidString) async throws -> EnrollmentCode {
         try await send("POST", "/machines/enrollment-codes", body: EmptyBody(), idempotencyKey: idempotencyKey)
@@ -195,30 +238,51 @@ public final class HubClient: Sendable {
         try await send("POST", "/machines/\(escape(machineId))/drain", body: EmptyBody(), idempotencyKey: idempotencyKey)
     }
 
-    public func jobs() async throws -> [Job] { try await list("/jobs") }
+    public func jobs(projectId: String? = nil, runId: String? = nil) async throws -> [Job] {
+        var query: [String: String] = [:]
+        query["projectId"] = projectId
+        query["runId"] = runId
+        return try await list("/jobs", key: "jobs", query: query)
+    }
     public func job(_ id: String) async throws -> Job { try await get("/jobs/\(escape(id))") }
 
-    /// Raw CI log text for a job.
+    /// CI log text for a job, joined from its chunks.
     public func jobLog(_ id: String) async throws -> String {
-        var request = try makeRequest("GET", "/jobs/\(escape(id))/log")
-        request.setValue("text/plain, application/json", forHTTPHeaderField: "Accept")
-        return String(decoding: try await perform(request), as: UTF8.self)
+        let log: JobLog = try await get("/jobs/\(escape(id))/log")
+        return log.text
     }
-    public func mergeQueue(projectId: String) async throws -> [MergeEntry] { try await list("/projects/\(escape(projectId))/merge-queue") }
+    public func mergeQueue(projectId: String) async throws -> [MergeEntry] { try await list("/projects/\(escape(projectId))/merge-queue", key: "entries") }
 
     public func usage(projectId: String? = nil, runId: String? = nil, groupBy: UsageGrouping) async throws -> [UsageGroup] {
         var query = ["groupBy": groupBy.rawValue]
         query["projectId"] = projectId
         query["runId"] = runId
-        return try await list("/usage", query: query)
+        return try await list("/usage", key: "groups", query: query)
     }
 
     // MARK: Events
 
-    public func events(after: Int?, limit: Int = 200) async throws -> [HubEvent] {
-        var query = ["limit": String(limit)]
+    /// One page of the event log in ascending `seq` order, after `after`.
+    public func events(after: Int?, limit: Int = 200) async throws -> EventPage {
+        var query = ["limit": String(min(max(limit, 1), 1000))]
         if let after { query["after"] = String(after) }
-        return try await list("/events", query: query)
+        return try await get("/events", query: query)
+    }
+
+    /// The newest `count` events that pass `keep`. The log only pages
+    /// forward, so this walks it from the start; fine for a local hub,
+    /// bounded by `maxPages`.
+    public func recentEvents(count: Int = 1000, maxPages: Int = 50, keep: (HubEvent) -> Bool = { _ in true }) async throws -> (events: [HubEvent], cursor: Int?) {
+        var events: [HubEvent] = []
+        var cursor: Int?
+        for _ in 0..<maxPages {
+            let page = try await self.events(after: cursor, limit: 1000)
+            events += page.events.filter(keep)
+            if events.count > count { events.removeFirst(events.count - count) }
+            cursor = page.nextCursor ?? cursor
+            if page.events.count < 1000 { break }
+        }
+        return (events, cursor)
     }
 
     /// Live hub events from `GET /events` with `Accept: text/event-stream`.
@@ -263,7 +327,7 @@ public final class HubClient: Sendable {
     // MARK: Messaging
 
     public func channels(projectId: String) async throws -> [Channel] {
-        try await list("/messaging/projects/\(escape(projectId))/channels")
+        try await list("/messaging/projects/\(escape(projectId))/channels", key: "channels")
     }
 
     public func messages(projectId: String, channelId: String, latest: Bool = true, before: String? = nil, after: String? = nil, limit: Int = 100) async throws -> MessagePage {
@@ -329,9 +393,16 @@ public final class HubClient: Sendable {
         return try decode(T.self, from: try await perform(request))
     }
 
-    private func list<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> [T] {
+    private func list<T: Decodable>(_ path: String, key: String, query: [String: String] = [:]) async throws -> [T] {
         let request = try makeRequest("GET", path, query: query)
-        return try decode(ListEnvelope<T>.self, from: try await perform(request)).items
+        let data = try await perform(request)
+        let decoder = HubCoding.decoder()
+        decoder.userInfo[KeyedList<T>.keyInfo] = key
+        do {
+            return try decoder.decode(KeyedList<T>.self, from: data).items
+        } catch {
+            throw HubError.decoding("\(key) list")
+        }
     }
 
     private func send<B: Encodable, T: Decodable>(_ method: String, _ path: String, body: B, idempotencyKey: String?) async throws -> T {
