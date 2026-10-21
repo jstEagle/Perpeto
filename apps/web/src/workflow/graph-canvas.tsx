@@ -8,8 +8,8 @@ import { RuledEdge } from './ruled-edge';
 import type { RuledEdgeType } from './ruled-edge';
 import { changedKeys } from './diff';
 import { graphPort } from './registry';
-import { IconFit, IconMinus, IconPlus } from '../components/icons';
-import { autoLayout, backEdges, COL_GAP, COL_PITCH, GRID, hasUsablePositions } from './layout';
+import { IconArrowRight, IconFit, IconMinus, IconPlus } from '../components/icons';
+import { autoLayout, backEdges, COL_GAP, COL_PITCH, GRID, hasUsablePositions, layer } from './layout';
 import type { Size } from './layout';
 import { routeEdges } from './router';
 
@@ -60,6 +60,8 @@ const ESTIMATED_HEIGHT = { edit: 64, view: 64, live: 120 } as const;
 const EDIT_MIN_ZOOM = 0.6;
 /** Space kept clear around the graph inside the canvas when choosing how many columns fit. */
 const PANE_PAD = 16;
+/** Main lines up to this many steps stay on one row. */
+const SINGLE_ROW_COLUMNS = 10;
 /** Height limits for view and live canvases, and the room kept for padding, legend and toolbar. */
 const MIN_HEIGHT = 360;
 const MAX_HEIGHT = 900;
@@ -178,7 +180,7 @@ function CanvasInner(props: GraphCanvasProps) {
   const visible = useMemo(
     () =>
       allEdges.filter((m) => {
-        if (m.edge.kind === 'flow' || m.unplanned || connections === 'all') return true;
+        if (m.edge.kind === 'flow' || connections === 'all') return true;
         if (selection?.kind === 'edge') return selection.id === m.edge.id;
         return selection?.kind === 'node' && (m.edge.from.node === selection.id || m.edge.to.node === selection.id);
       }),
@@ -228,27 +230,37 @@ function CanvasInner(props: GraphCanvasProps) {
   // Columns that fit the canvas at full size; longer main lines wrap into bands.
   const paneRef = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(Infinity);
+  const [paneWidth, setPaneWidth] = useState(0);
   useEffect(() => {
     const el = paneRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
-    const measure = () => setColumns(Math.max(3, Math.floor((el.clientWidth - 2 * PANE_PAD + COL_GAP) / COL_PITCH)));
+    const measure = () => {
+      setPaneWidth(el.clientWidth);
+      setColumns(Math.max(3, Math.floor((el.clientWidth - 2 * PANE_PAD + COL_GAP) / COL_PITCH)));
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+  const [narrow] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches);
   const returns = useMemo(() => backEdges(allNodes, layoutEdges), [allNodes, layoutEdges]);
+  // Up to SINGLE_ROW_COLUMNS steps stay on one row that scrolls sideways at full size; longer lines wrap into bands.
+  const rankCount = useMemo(() => Math.max(0, ...layer(allNodes, layoutEdges).rank.values()) + 1, [allNodes, layoutEdges]);
+  const singleRow = mode !== 'edit' && !narrow && rankCount <= SINGLE_ROW_COLUMNS;
   const tidyPositions = useMemo(() => {
     const layoutSize = (): Size => ({ w: NODE_WIDTH, h: slotHeight });
     const toRoute = (pos: Map<string, { x: number; y: number }>) =>
       routeEdges(
         allNodes.map((n) => ({ id: n.id, ...pos.get(n.id)!, ...layoutSize() })),
         layoutEdges.map((e) => ({ id: e.id, kind: e.kind, from: e.from.node, to: e.to.node, port: e.from.port, back: returns.has(e.id) })),
+        { singleRow },
       );
     // Twice: the first pass finds how many lanes each gap needs.
-    const first = autoLayout(allNodes, layoutEdges, layoutSize, [], columns);
-    return autoLayout(allNodes, layoutEdges, layoutSize, toRoute(first).gutterNeeds, columns);
-  }, [allNodes, layoutEdges, slotHeight, columns, returns]);
+    const wrapAt = singleRow ? Infinity : columns;
+    const first = autoLayout(allNodes, layoutEdges, layoutSize, [], wrapAt);
+    return autoLayout(allNodes, layoutEdges, layoutSize, toRoute(first).gutterNeeds, wrapAt);
+  }, [allNodes, layoutEdges, slotHeight, columns, returns, singleRow]);
 
   // Stored positions are kept when they fit at this node size. View and
   // live screens can show the tidy layout over them on request; the editor
@@ -347,6 +359,19 @@ function CanvasInner(props: GraphCanvasProps) {
     });
   }, [builtNodes]);
 
+  // One label per step that work returns to, carried by one of its returns.
+  const returnLabels = useMemo(() => {
+    const out = new Map<string, string | undefined>();
+    if (!live) return out;
+    const byTarget = new Map<string, EdgeMeta[]>();
+    for (const m of visible) if (m.edge.kind === 'flow' && returns.has(m.edge.id)) byTarget.set(m.edge.to.node, [...(byTarget.get(m.edge.to.node) ?? []), m]);
+    for (const list of byTarget.values()) {
+      const total = list.reduce((sum, m) => sum + (m.traffic ?? 0), 0);
+      list.forEach((m, i) => out.set(m.edge.id, i === 0 && total > 0 ? `${total} returned` : undefined));
+    }
+    return out;
+  }, [visible, returns, live]);
+
   // Routes follow the nodes as drawn, including while a node is dragged in the editor.
   const routing = useMemo(() => {
     const priority = (m: EdgeMeta) => (selection?.kind === 'edge' && selection.id === m.edge.id ? 3 : m.unplanned ? 2 : m.edge.kind === 'flow' ? 1 : 0);
@@ -363,12 +388,13 @@ function CanvasInner(props: GraphCanvasProps) {
         from: m.edge.from.node,
         to: m.edge.to.node,
         port: m.edge.from.port,
-        label: labelFor(m, !!live),
+        label: returnLabels.has(m.edge.id) ? returnLabels.get(m.edge.id) : labelFor(m, !!live),
         priority: priority(m),
         back: returns.has(m.edge.id),
       })),
+      { singleRow },
     );
-  }, [nodes, visible, size, selection, live, returns]);
+  }, [nodes, visible, size, selection, live, returns, returnLabels, singleRow]);
 
   // Like nodes, edges whose route and state did not change keep their object.
   const edgeCache = useRef(new Map<string, { key: string; edge: RuledEdgeType }>());
@@ -407,7 +433,7 @@ function CanvasInner(props: GraphCanvasProps) {
   // Refit once the measured layout settles, so a re-laid graph is framed,
   // including the return channel and lanes outside the node boxes.
   const layoutKey = useMemo(() => [...positions.entries()].map(([id, p]) => `${id}:${p.x}:${p.y}`).join('|'), [positions]);
-  const [narrow] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches);
+  const scrollRef = useRef(false);
   const routingRef = useRef(routing);
   routingRef.current = routing;
   const nodesRef = useRef(nodes);
@@ -445,6 +471,12 @@ function CanvasInner(props: GraphCanvasProps) {
         return;
       }
       if (!pane) return void flow.fitBounds({ x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, { padding: 0.06, duration });
+      // One row at full size; the canvas scrolls sideways instead of shrinking it.
+      if (scrollRef.current) {
+        const room = pane.height - FIT_BOTTOM - PANE_PAD;
+        void flow.setViewport({ x: PANE_PAD - x1, y: PANE_PAD + Math.max(0, (room - (y2 - y1)) / 2) - y1, zoom: 1 }, { duration });
+        return;
+      }
       // Never above 100 %: a small graph sits centred at full size. Room is kept below for the legend and toolbar.
       const room = { w: pane.width - 2 * PANE_PAD, h: pane.height - FIT_BOTTOM - PANE_PAD };
       const zoom = Math.max(0.3, Math.min(1, room.w / (x2 - x1), room.h / (y2 - y1)));
@@ -570,17 +602,25 @@ function CanvasInner(props: GraphCanvasProps) {
   const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   // View and live canvases are as tall as the graph at full size (within
   // limits), with room below for the legend and toolbar.
-  const height = useMemo(() => {
-    if (mode === 'edit' || narrow) return undefined;
+  const bounds = useMemo(() => {
+    let x1 = Infinity;
+    let x2 = -Infinity;
     let y1 = Infinity;
     let y2 = -Infinity;
     for (const n of nodes) {
+      x1 = Math.min(x1, n.position.x);
+      x2 = Math.max(x2, n.position.x + size(n.id).w);
       y1 = Math.min(y1, n.position.y);
       y2 = Math.max(y2, n.position.y + size(n.id).h);
     }
-    for (const r of routing.routes.values()) for (const [, y] of r.points) (y1 = Math.min(y1, y)), (y2 = Math.max(y2, y));
-    return Number.isFinite(y1) ? Math.round(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, y2 - y1 + CANVAS_CHROME))) : undefined;
-  }, [mode, narrow, nodes, routing, size]);
+    for (const r of routing.routes.values()) for (const [x, y] of r.points) ((x1 = Math.min(x1, x)), (x2 = Math.max(x2, x)), (y1 = Math.min(y1, y)), (y2 = Math.max(y2, y)));
+    return Number.isFinite(x1) ? { w: x2 - x1, h: y2 - y1 } : null;
+  }, [nodes, routing, size]);
+  const height = mode === 'edit' || narrow || !bounds ? undefined : Math.round(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, bounds.h + CANVAS_CHROME)));
+  // In single-row mode the drawing is as wide as the graph and the canvas scrolls.
+  const scrollWidth = singleRow && bounds ? Math.round(bounds.w + 2 * PANE_PAD) : undefined;
+  scrollRef.current = !!scrollWidth;
+  const overflows = !!scrollWidth && scrollWidth > paneWidth + 1;
   const showToggle = mode !== 'edit' && roleCount > 0;
   const legend = {
     flowing: mode === 'live' && edges.some((e) => e.data?.kind === 'flow' && (e.data.traffic ?? 0) > 0),
@@ -593,58 +633,67 @@ function CanvasInner(props: GraphCanvasProps) {
   };
 
   return (
-    <div ref={paneRef} className={`graph ${props.className ?? ''} graph-${mode}`} style={height ? { height } : undefined} role="group" aria-label={label}>
-      <ReactFlow<StepNodeType, RuledEdgeType>
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeDragStop={onNodeDragStop}
-        onConnect={onConnect}
-        isValidConnection={isValidConnection}
-        onNodeClick={(_, n) => !n.id.startsWith('removed:') && onSelect?.({ kind: 'node', id: n.id })}
-        onEdgeClick={(_, e) => !e.id.startsWith('removed:') && onSelect?.({ kind: 'edge', id: e.id })}
-        onPaneClick={() => onSelect?.(null)}
-        onDragOver={(e) => {
-          if (!props.onDropNode || !e.dataTransfer.types.includes(DRAG_MIME)) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'copy';
-        }}
-        onDrop={(e) => {
-          const type = e.dataTransfer.getData(DRAG_MIME) as NodeType;
-          if (!props.onDropNode || !type) return;
-          e.preventDefault();
-          const p = flow.screenToFlowPosition({ x: e.clientX, y: e.clientY });
-          props.onDropNode(type, {
-            x: Math.round((p.x - NODE_WIDTH / 2) / GRID) * GRID,
-            y: Math.round((p.y - 32) / GRID) * GRID,
-          });
-        }}
-        nodesDraggable={mode === 'edit'}
-        nodesConnectable={mode === 'edit'}
-        elementsSelectable
-        deleteKeyCode={mode === 'edit' ? ['Backspace', 'Delete'] : null}
-        selectionKeyCode={null}
-        multiSelectionKeyCode={null}
-        fitView={!narrow && mode !== 'edit'}
-        onlyRenderVisibleElements={large}
-        defaultViewport={narrow ? { x: 16, y: 48, zoom: 0.62 } : undefined}
-        fitViewOptions={{ padding: 0.08, maxZoom: 1 }}
-        minZoom={0.3}
-        maxZoom={1.6}
-        snapToGrid
-        snapGrid={[GRID, GRID]}
-        connectionLineStyle={{ strokeWidth: 1.5 }}
-        proOptions={{ hideAttribution: false }}
-        ariaLabelConfig={{
-          'node.a11yDescription.default': 'Press Enter to select this node. Use arrow keys to move a selected node in the editor.',
-        }}
-      >
-        <Background id="dots" variant={BackgroundVariant.Dots} gap={24} size={1.5} className="graph-dots" />
-      </ReactFlow>
-      {mode !== 'edit' && <EdgeLegend {...legend} />}
+    <div ref={paneRef} className={`graph ${props.className ?? ''} graph-${mode} ${scrollWidth ? 'graph-scrolls' : ''}`} style={height ? { height } : undefined} role="group" aria-label={label}>
+      <div className="graph-scroll" tabIndex={scrollWidth ? 0 : undefined} aria-label={scrollWidth ? 'Scroll the map sideways' : undefined}>
+        <div className="graph-content" style={scrollWidth ? { width: `max(100%, ${scrollWidth}px)` } : undefined}>
+          <ReactFlow<StepNodeType, RuledEdgeType>
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onNodeDragStop={onNodeDragStop}
+            onConnect={onConnect}
+            isValidConnection={isValidConnection}
+            onNodeClick={(_, n) => !n.id.startsWith('removed:') && onSelect?.({ kind: 'node', id: n.id })}
+            onEdgeClick={(_, e) => !e.id.startsWith('removed:') && onSelect?.({ kind: 'edge', id: e.id })}
+            onPaneClick={() => onSelect?.(null)}
+            onDragOver={(e) => {
+              if (!props.onDropNode || !e.dataTransfer.types.includes(DRAG_MIME)) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'copy';
+            }}
+            onDrop={(e) => {
+              const type = e.dataTransfer.getData(DRAG_MIME) as NodeType;
+              if (!props.onDropNode || !type) return;
+              e.preventDefault();
+              const p = flow.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+              props.onDropNode(type, {
+                x: Math.round((p.x - NODE_WIDTH / 2) / GRID) * GRID,
+                y: Math.round((p.y - 32) / GRID) * GRID,
+              });
+            }}
+            panOnDrag={!scrollWidth}
+            zoomOnScroll={!scrollWidth}
+            zoomOnPinch={!scrollWidth}
+            zoomOnDoubleClick={!scrollWidth}
+            preventScrolling={!scrollWidth}
+            nodesDraggable={mode === 'edit'}
+            nodesConnectable={mode === 'edit'}
+            elementsSelectable
+            deleteKeyCode={mode === 'edit' ? ['Backspace', 'Delete'] : null}
+            selectionKeyCode={null}
+            multiSelectionKeyCode={null}
+            fitView={!narrow && mode !== 'edit'}
+            onlyRenderVisibleElements={large}
+            defaultViewport={narrow ? { x: 16, y: 48, zoom: 0.62 } : undefined}
+            fitViewOptions={{ padding: 0.08, maxZoom: 1 }}
+            minZoom={0.3}
+            maxZoom={1.6}
+            snapToGrid
+            snapGrid={[GRID, GRID]}
+            connectionLineStyle={{ strokeWidth: 1.5 }}
+            proOptions={{ hideAttribution: true }}
+            ariaLabelConfig={{
+              'node.a11yDescription.default': 'Press Enter to select this node. Use arrow keys to move a selected node in the editor.',
+            }}
+          >
+            <Background id="dots" variant={BackgroundVariant.Dots} gap={24} size={1.5} className="graph-dots" />
+          </ReactFlow>
+        </div>
+      </div>
+      {mode !== 'edit' && <EdgeLegend {...legend} scrollHint={overflows ? `Scroll for all ${allNodes.length} steps` : undefined} />}
       <div className="map-tools" role="toolbar" aria-label="Map">
         {showToggle && (
           <button
@@ -668,17 +717,21 @@ function CanvasInner(props: GraphCanvasProps) {
             Tidy layout
           </button>
         )}
-        {(showToggle || mode === 'edit' || usable) && <span className="map-tools-rule" aria-hidden="true" />}
-        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom out" onClick={() => flow.zoomOut({ duration: reduced ? 0 : 140 })}>
-          <IconMinus />
-        </button>
-        <ZoomLevel />
-        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom in" onClick={() => flow.zoomIn({ duration: reduced ? 0 : 140 })}>
-          <IconPlus />
-        </button>
-        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fit graph to view" onClick={() => fit(reduced ? 0 : 220, true)}>
-          <IconFit />
-        </button>
+        {!scrollWidth && (showToggle || mode === 'edit' || usable) && <span className="map-tools-rule" aria-hidden="true" />}
+        {!scrollWidth && (
+          <>
+            <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom out" onClick={() => flow.zoomOut({ duration: reduced ? 0 : 140 })}>
+              <IconMinus />
+            </button>
+            <ZoomLevel />
+            <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom in" onClick={() => flow.zoomIn({ duration: reduced ? 0 : 140 })}>
+              <IconPlus />
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Fit graph to view" onClick={() => fit(reduced ? 0 : 220, true)}>
+              <IconFit />
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -703,7 +756,25 @@ export function GraphCanvas(props: GraphCanvasProps) {
 }
 
 /** Only the styles on screen, bottom left in 12 px muted. */
-export function EdgeLegend({ flowing, unreached, delegates, messages, unplanned, live, diff }: { flowing?: boolean; unreached?: boolean; delegates?: boolean; messages?: boolean; unplanned?: boolean; live?: boolean; diff?: boolean }) {
+export function EdgeLegend({
+  flowing,
+  unreached,
+  delegates,
+  messages,
+  unplanned,
+  live,
+  diff,
+  scrollHint,
+}: {
+  scrollHint?: string;
+  flowing?: boolean;
+  unreached?: boolean;
+  delegates?: boolean;
+  messages?: boolean;
+  unplanned?: boolean;
+  live?: boolean;
+  diff?: boolean;
+}) {
   const line = (cls: string) => (
     <svg width="20" height="8" aria-hidden="true">
       <path d="M1 4h18" className={`gedge ${cls}`} />
@@ -723,6 +794,11 @@ export function EdgeLegend({ flowing, unreached, delegates, messages, unplanned,
         <li>
           <span className="dot dot-legend" aria-hidden="true" />
           Live
+        </li>
+      )}
+      {scrollHint && (
+        <li className="map-legend-hint">
+          {scrollHint} <IconArrowRight size={14} />
         </li>
       )}
     </ul>

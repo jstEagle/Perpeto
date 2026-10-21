@@ -1630,3 +1630,18 @@ a.row-title:hover,
   align-items: stretch;
   gap: var(--space-3);
 }
+/* Evenly spaced buckets on a calm baseline: empty periods are short quiet stubs. */
+.bars-even {
+  height: 72px;
+  margin-top: var(--space-6);
+  gap: 3px;
+  border-bottom: 0;
+}
+.bars-even > span {
+  max-width: 14px;
+  margin-inline: auto;
+}
+.bars-even > span.zero {
+  height: 3px;
+  min-height: 3px;
+}
