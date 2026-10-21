@@ -26,9 +26,11 @@ export async function writeNew(path, value, mode = 0o600) {
   await writeFile(path, value, { flag: 'wx', mode });
 }
 export async function readJson(path) { return JSON.parse(await readFile(path, 'utf8')); }
-export function hubConfig(dir, { host = '127.0.0.1', port = 4320 } = {}) {
+export const isLoopback = host => ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(host) || /^127\.\d+\.\d+\.\d+$/.test(host);
+export function hubConfig(dir, { host = '127.0.0.1', port = 4320, tls = false } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Port must be 0–65535.');
-  return { host, port, databasePath: './hub/hub.sqlite', messagingDatabasePath: './hub/messaging.sqlite',
+  if (!tls && !isLoopback(host)) throw new Error('A hub reachable beyond this machine needs HTTPS: add --tls, or keep it on loopback and run perpeto hub expose --tailscale.');
+  return { host, port, ...(tls ? { tlsEnabled: true, tlsCertPath: './hub/tls/cert.pem', tlsKeyPath: './hub/tls/key.pem' } : {}), databasePath: './hub/hub.sqlite', messagingDatabasePath: './hub/messaging.sqlite',
     deliveryDatabasePath: './hub/delivery.sqlite', workflowDatabasePath: './hub/workflow.sqlite',
     deliveryRepositoriesPath: './hub/repositories', deliveryLeaseDurationMs: 60000,
     deliveryMaxStepFailures: 5, deliveryRetryBackoffMs: 2000, ownerTokenPath: './hub/owner.secret', credentialKeyPath: './hub/credentials.key',
@@ -49,12 +51,21 @@ export function hubUrl(value) {
   }
   return url.origin;
 }
-export function nodeConfig(dir, url, { labels = [], name = hostname() } = {}) {
+/** A join code from perpeto hub enroll-code: `pj1_` and base64url JSON of the hub URL, optional pinned fingerprint and code. */
+export function decodeJoinCode(text) {
+  let value;
+  try { value = /^pj1_[A-Za-z0-9_-]+$/.test(text) ? JSON.parse(Buffer.from(text.slice(4), 'base64url').toString('utf8')) : null; } catch { value = null; }
+  if (!value || typeof value.code !== 'string' || !value.code || typeof value.url !== 'string' ||
+    (value.fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(value.fingerprint))) throw new Error('Invalid join code. Copy the whole command from perpeto hub enroll-code.');
+  return { url: hubUrl(value.url), code: value.code, ...(value.fingerprint ? { fingerprint: value.fingerprint } : {}) };
+}
+export function nodeConfig(dir, url, { labels = [], name = hostname(), fingerprint } = {}) {
   if (!Array.isArray(labels) || labels.some(label => typeof label !== 'string' || !label.trim())) throw new Error('Labels must be non-empty strings.');
   if (typeof name !== 'string' || !name.trim() || name.length > 200) throw new Error('Invalid machine name.');
   const runtime = readConfiguration();
   const host = ['0.0.0.0', '::'].includes(runtime.host) ? '127.0.0.1' : runtime.host;
-  return { hubUrl: hubUrl(url), name, labels, dataDir: './node', credentialFile: './node/machine.json',
+  if (fingerprint !== undefined && (!/^[a-f0-9]{64}$/.test(fingerprint) || !url.startsWith('https:'))) throw new Error('A pinned fingerprint needs an https hub URL.');
+  return { hubUrl: hubUrl(url), ...(fingerprint ? { hubFingerprint: fingerprint } : {}), name, labels, dataDir: './node', credentialFile: './node/machine.json',
     capacity: { maxAgents: 1, maxJobs: 1 }, allowInsecureHttp: false,
     executorPackages: ['@perpeto/t3-executor'],
     timing: { heartbeatMs: 10000, renewMs: 20000, requestMs: 30000, pollIdleMs: 200, backoffMinMs: 250, backoffMaxMs: 10000 },
