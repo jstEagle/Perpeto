@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DeliveryError, LocalGitAdapter, MergeQueue, MergeQueueStore } from '../../../factory-delivery/src/index.js';
+
+import { githubAdapter, githubRepository } from './github.js';
 
 const TERMINAL = new Set(['merged', 'rejected']);
 const ACTIVE_JOB = new Set(['queued', 'leased', 'running']);
@@ -13,7 +15,7 @@ const digest = value => createHash('sha256').update(JSON.stringify(sorted(value)
 
 class Unsupported extends Error {}
 
-/** Only local bare repositories have an atomic merge adapter. GitHub publication is refused by factory-delivery. */
+/** Local repository paths used by the local adapter. GitHub uses a separate hub-owned mirror. */
 export function localRepository(repo = {}) {
   const candidate = repo.localPath ?? repo.url;
   if (typeof candidate !== 'string') return null;
@@ -43,7 +45,7 @@ export class HubDelivery {
   queue(record) {
     let queue = this.queues.get(record.id);
     if (!queue) {
-      queue = new MergeQueue({ store: this.store, queueId: record.id, config: record.config, adapter: new LocalGitAdapter({ repository: record.repository }) });
+      queue = new MergeQueue({ store: this.store, queueId: record.id, config: record.config, adapter: record.github ? githubAdapter(record) : new LocalGitAdapter({ repository: record.repository }), leaseMs: this.hub.config.deliveryLeaseDurationMs });
       this.queues.set(record.id, queue);
     }
     return queue;
@@ -52,8 +54,9 @@ export class HubDelivery {
   queueRecord(entry) {
     const store = this.hub.store;
     const project = store.need('project', entry.projectId);
-    const repository = localRepository(project.repo);
-    if (!repository) throw new Unsupported('Automatic merging needs a local bare repository: set the project repo localPath or an absolute path url. GitHub queue publication is not supported yet.');
+    const github = githubRepository(project.repo.url) ?? /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/[1-9][0-9]*$/.exec(entry.prUrl)?.[1];
+    const repository = github ? join(this.hub.config.deliveryRepositoriesPath, `${project.id}-${digest(project.repo.url).slice(0, 12)}.git`) : localRepository(project.repo);
+    if (!repository) throw new Unsupported('Automatic publication supports GitHub repositories and local bare repositories.');
     const graph = store.need('run-workflow', entry.runId).workflow.graph;
     const node = graph.nodes.find(value => value.id === entry.nodeId) ?? { config: {} };
     const required = entry.requiredChecks ?? node.config.requiredChecks ?? [];
@@ -64,10 +67,11 @@ export class HubDelivery {
       : sources.flatMap(value => value.config.steps.map(item => ({ ...item, name: `${value.id}:${item.name}` })));
     const config = { projectId: entry.projectId, repo: { url: repository, defaultBranch: project.repo.defaultBranch }, baseBranch: entry.baseBranch,
       strategy: entry.strategy ?? node.config.strategy ?? 'serial', method: entry.method ?? node.config.method ?? 'squash', requiredChecks: required,
+      ...(github || node.config.publication ? { publication: node.config.publication ?? 'fast-forward-push' } : {}),
       ci: { steps: steps.length ? steps : [{ name: 'candidate', run: 'git rev-parse --verify HEAD' }], requirements: requirements(sources.map(value => value.config.requirements ?? {})) } };
     const id = `dq_${digest(config).slice(0, 24)}`;
     // Required checks named after ci nodes are proven by the speculative job running those nodes' steps.
-    return store.get('delivery-queue', id) ?? store.put('delivery-queue', { id, projectId: entry.projectId, repository, config, checks: referenced.map(value => value.id) });
+    return store.get('delivery-queue', id) ?? store.put('delivery-queue', { id, projectId: entry.projectId, repository, ...(github ? { github, remote: project.repo.url } : {}), config, checks: referenced.map(value => value.id) });
   }
   schedule() { if (!this.closed) setImmediate(() => this.pump().catch(() => {})); }
   async pump() {
@@ -90,11 +94,12 @@ export class HubDelivery {
   /** Enqueue newly created hub merge entries and return the queues with open work. */
   admit() {
     const { store } = this.hub;
-    for (const entry of store.list('merge-entry', value => value.status === 'queued' && !value.queueId && !value.deliveryError)) {
+    for (const entry of store.list('merge-entry', value => value.status === 'queued' && !value.queueId && !value.deliveryRejected)) {
       let record;
       try { record = this.queueRecord(entry); }
       catch (error) {
         if (!(error instanceof Unsupported)) throw error;
+        if (entry.deliveryError === error.message) continue;
         entry.deliveryError = error.message; store.put('merge-entry', entry);
         this.hub.emit('merge-entry.blocked', 'merge-entry', entry, { reason: error.message }); continue;
       }
@@ -108,12 +113,13 @@ export class HubDelivery {
         this.hub.emit('merge-entry.blocked', 'merge-entry', entry, { reason: entry.deliveryError });
         continue;
       }
-      entry.queueId = record.id; store.put('merge-entry', entry);
+      entry.queueId = record.id; delete entry.deliveryError; store.put('merge-entry', entry);
       this.hub.emit('merge-entry.enqueued', 'merge-entry', entry, { queueId: record.id });
     }
     return store.list('delivery-queue').filter(record => {
       const state = this.queue(record).state;
       return state.active || state.entries.some(value => !TERMINAL.has(value.status)) ||
+        state.entries.some(entry => TERMINAL.has(entry.status) && !TERMINAL.has(store.get('merge-entry', entry.id)?.status)) ||
         state.jobs.some(job => !store.get('job', job.id)) || this.errors.has(record.id) || record.lastError;
     }).map(record => record.id);
   }
@@ -168,12 +174,16 @@ export class HubDelivery {
           if (members.length && members.every(entry => TERMINAL.has(entry.status))) this.hub.cancelWork('job', value);
           continue;
         }
+        if (['passed', 'failed', 'error'].includes(job.status) && ACTIVE_JOB.has(hubJob.status)) {
+          hubJob.status = job.status; hubJob.artifacts = job.artifacts ?? []; delete hubJob.leaseExpiresAt;
+          store.put('job', hubJob); this.hub.emit('job.updated', 'job', hubJob, { status: job.status, source: 'merge-queue-recovery' }); changed = true;
+        }
         if (job.status === 'cancelled' && ACTIVE_JOB.has(hubJob.status)) { this.hub.cancelWork('job', hubJob); changed = true; }
       }
       for (const entry of state.entries) {
         const hubEntry = store.get('merge-entry', entry.id);
         if (!hubEntry || TERMINAL.has(hubEntry.status)) continue;
-        const next = { status: entry.status, jobId: entry.jobId, reason: entry.reason, mergedRevision: entry.mergedRevision };
+        const next = { status: entry.status, jobId: entry.jobId, reason: entry.reason, testedRevision: entry.testedRevision, mergedRevision: entry.mergedRevision };
         if (Object.entries(next).every(([key, value]) => hubEntry[key] === value)) continue;
         const value = { ...hubEntry, ...next };
         for (const key of Object.keys(next)) if (value[key] === undefined) delete value[key];

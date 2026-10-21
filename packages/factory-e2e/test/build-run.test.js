@@ -12,7 +12,7 @@ test('build template runs from input to merged output on a real hub, node and ba
   t.after(() => import('node:fs/promises').then(fs => fs.rm(repoRoot, { recursive: true, force: true })));
   const repository = await bareRepository(repoRoot);
   const initialMain = await git(repository, 'rev-parse', 'main');
-  const executor = createFactoryExecutor({ repository, crashOnce: ['Farewell'] });
+  const executor = createFactoryExecutor({ crashOnce: ['Farewell'] });
   const factory = await startFactory(t, { executor });
   const { request } = factory;
 
@@ -58,6 +58,8 @@ test('build template runs from input to merged output on a real hub, node and ba
   const byNode = node => assignments.filter(value => value.nodeId === node);
   assert.equal(byNode('planner').length, 1); assert.equal(byNode('builder').length, 5); assert.equal(byNode('reviewer').length, 4);
   assert.ok(assignments.every(value => value.machineId === machineId));
+  assert.ok(assignments.every(value => JSON.stringify(value.repo) === JSON.stringify(project.repo)));
+  assert.ok(executor.calls.every(value => JSON.stringify(value.repo) === JSON.stringify(project.repo)));
   const crashed = assignments.filter(value => value.status === 'failed');
   assert.equal(crashed.length, 1); assert.equal(crashed[0].nodeId, 'builder'); assert.equal(crashed[0].result.outcome, 'failure');
   assert.ok(assignments.filter(value => value !== crashed[0]).every(value => value.status === 'succeeded'));

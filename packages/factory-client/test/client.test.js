@@ -57,7 +57,7 @@ test('sends scoped authenticated HTTP requests with stable configured sender ide
   await client.read({ after: 'opaque+cursor=', limit: 25, recipientRoleId: 'reviewer', channelId: 'qa' });
   assert.deepEqual(f.calls.map(call => call.method), ['PUT', 'POST', 'GET', 'POST', 'GET']);
   assert.ok(f.calls.every(call => call.auth === `Bearer ${token}`));
-  assert.equal(f.calls[0].url, '/api/perpeto/projects/project%20%2F%20one');
+  assert.equal(f.calls[0].url, '/api/v1/messaging/projects/project%20%2F%20one');
   assert.deepEqual(f.calls[0].body, { name: 'Factory' });
   assert.deepEqual(f.calls[1].body, { id: 'qa', name: 'QA' });
   assert.deepEqual(f.calls[3].body, { senderRoleId: 'backend-lead', body: 'Ready', idempotencyKey: 'revision-1', recipientRoleId: 'reviewer' });
@@ -183,4 +183,13 @@ test('client, CLI and MCP expose mutually exclusive bounded history directions',
   const replies = output.stdout.trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(JSON.parse(replies[1].result.content[0].text), { ok: true });
   assert.equal(new URL(f.calls[4].url, 'http://localhost').searchParams.get('latest'), 'true');
+});
+
+test('T3-hosted messaging remains available through explicit config', async t => {
+  const f = await fixture(t);
+  writeFileSync(f.configPath, JSON.stringify({ ...f.config, messagingPrefix: '/api/perpeto' }));
+  await new FactoryClient(loadConfig(f.configPath)).channels();
+  assert.equal(f.calls[0].url, '/api/perpeto/projects/project%20%2F%20one/channels');
+  writeFileSync(f.configPath, JSON.stringify({ ...f.config, messagingPrefix: '//other-host' }));
+  assert.throws(() => loadConfig(f.configPath), /messagingPrefix/);
 });

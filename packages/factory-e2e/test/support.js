@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,7 +32,7 @@ export async function eventually(check, { timeoutMs = 45000, intervalMs = 50, me
 }
 
 /** Start a real hub (ephemeral port, temporary SQLite and secrets) and enroll a real node daemon with `executor`. */
-export async function startFactory(t, { executor, hub: hubConfig = {}, node: nodeConfig = {} }) {
+export async function startFactory(t, { executor, hub: hubConfig = {}, node: nodeConfig = {}, subprocess = false }) {
   const root = await mkdtemp(join(tmpdir(), 'perpeto-e2e-'));
   await chmod(root, 0o700);
   const cleanups = [];
@@ -42,8 +42,8 @@ export async function startFactory(t, { executor, hub: hubConfig = {}, node: nod
   await writeFile(hubPath, JSON.stringify({ port: 0, databasePath: './hub/hub.sqlite', messagingDatabasePath: './hub/messaging.sqlite',
     deliveryDatabasePath: './hub/delivery.sqlite', ownerTokenPath: './hub/owner.secret', heartbeatIntervalMs: 1000, leaseDurationMs: 15000,
     longPollMs: 2000, maintenanceIntervalMs: 50, ...hubConfig }));
-  const hub = await createHub({ configPath: hubPath });
-  const url = await hub.listen();
+  const hub = subprocess ? await processHub(hubPath, subprocess) : await createHub({ configPath: hubPath });
+  const url = subprocess ? hub.url : await hub.listen();
   cleanups.push(() => hub.close());
   const owner = (await readFile(join(root, 'hub/owner.secret'), 'utf8')).trim();
   const request = async (method, path, body) => {
@@ -91,13 +91,13 @@ const slug = text => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|
  * branch of the bare repository (crashing once for titles in `crashOnce`); reviewers reject each item once, then pass
  * it; the architect is supplied by the test.
  */
-export function createFactoryExecutor({ repository, architect, crashOnce = [], usage = { inputTokens: 120, outputTokens: 30 } }) {
+export function createFactoryExecutor({ architect, crashOnce = [], usage = { inputTokens: 120, outputTokens: 30 } }) {
   const reviews = new Map(); const calls = []; const crashed = new Set();
   return {
     kind: 'e2e-fake', calls,
     canRun: assignment => assignment.harness?.provider === 'fake',
     async run(assignment, ctx) {
-      calls.push({ id: assignment.id, role: assignment.role, nodeType: assignment.nodeType, workItemId: assignment.workItemId, prompt: assignment.prompt });
+      calls.push({ id: assignment.id, role: assignment.role, nodeType: assignment.nodeType, workItemId: assignment.workItemId, prompt: assignment.prompt, repo: assignment.repo });
       await ctx.report({ type: 'usage', data: { provider: 'fake', model: assignment.harness.model, ...usage } });
       if (assignment.role === 'workflow-architect') return architect(assignment, calls.filter(call => call.role === 'workflow-architect').length);
       if (assignment.nodeType === 'planner') {
@@ -114,7 +114,7 @@ export function createFactoryExecutor({ repository, architect, crashOnce = [], u
       const title = titleOf(assignment.prompt);
       if (crashOnce.includes(title) && !crashed.has(title)) { crashed.add(title); throw new Error('Simulated harness crash.'); }
       const branch = `perpeto/${assignment.workItemId}`; const source = join(ctx.workspace, 'source');
-      await git(ctx.workspace, 'clone', '--quiet', repository, source);
+      await git(ctx.workspace, 'clone', '--quiet', assignment.repo.localPath ?? assignment.repo.url, source);
       const existing = await git(source, 'ls-remote', '--heads', 'origin', branch);
       await git(source, 'checkout', '-B', branch, existing ? `origin/${branch}` : 'origin/main');
       const file = `features/${slug(titleOf(assignment.prompt))}.txt`;
@@ -125,5 +125,54 @@ export function createFactoryExecutor({ repository, architect, crashOnce = [], u
       await git(source, 'push', '--quiet', 'origin', `HEAD:refs/heads/${branch}`);
       return { outcome: 'success', summary: `Committed ${file}.`, branch, prUrl: `local:${branch}`, headSha: await git(source, 'rev-parse', 'HEAD') };
     },
+  };
+}
+
+/** A real hub CLI process, restarted against the same port and durable files after SIGKILL. */
+async function processHub(configPath, options) {
+  let child, exited, url;
+  const preload = `${configPath}.fault.mjs`;
+  const imports = [];
+  if (options.pauseBeforeMergedSync) {
+    const { barrier, release } = options.pauseBeforeMergedSync;
+    await writeFile(preload, `
+      import { HubDelivery } from ${JSON.stringify(new URL('../../factory-hub/src/delivery/index.js', import.meta.url).href)};
+      import { existsSync, writeFileSync } from 'node:fs';
+      import { setTimeout as sleep } from 'node:timers/promises';
+      const sync = HubDelivery.prototype.sync;
+      HubDelivery.prototype.sync = async function (...args) {
+        if ([...this.queues.values()].some(queue => queue.state.entries.some(entry => entry.status === 'merged')) && !existsSync(${JSON.stringify(release)})) {
+          writeFileSync(${JSON.stringify(barrier)}, 'delivery committed before hub sync');
+          while (!existsSync(${JSON.stringify(release)})) await sleep(20);
+        }
+        return sync.apply(this, args);
+      };
+    `);
+    imports.push('--import', preload);
+  }
+  async function start() {
+    child = spawn(process.execPath, [...imports, new URL('../../factory-hub/bin/perpeto-hub.js', import.meta.url).pathname, '--config', configPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+    exited = new Promise(resolve => child.once('exit', resolve));
+    url = await new Promise((resolve, reject) => {
+      let output = '', errors = '';
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`Hub startup timed out: ${errors}`)); }, 20000);
+      child.stderr.on('data', data => { errors += data; });
+      child.stdout.on('data', data => {
+        output += data;
+        const match = /listening at (http:\/\/[^\s]+)/.exec(output);
+        if (match) { clearTimeout(timer); resolve(match[1]); }
+      });
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('exit', code => { clearTimeout(timer); reject(new Error(`Hub exited ${code}: ${errors}`)); });
+    });
+  }
+  await start();
+  const config = JSON.parse(await readFile(configPath, 'utf8'));
+  await writeFile(configPath, JSON.stringify({ ...config, port: Number(new URL(url).port) }));
+  return {
+    get url() { return url; },
+    async kill() { child.kill('SIGKILL'); await exited; },
+    async restart() { await start(); },
+    async close() { child.kill('SIGTERM'); await exited; },
   };
 }

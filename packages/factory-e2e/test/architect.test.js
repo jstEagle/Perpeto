@@ -7,6 +7,7 @@ const reply = (rationale, graph) => `Here is the proposal.\n\n\`\`\`json\n${JSON
 test('workflow architect drafts through a real node, retries an invalid graph, and the user activates versions', async t => {
   const template = await buildTemplate();
   const architect = (assignment, call) => {
+    assert.deepEqual(assignment.repo, { url: '/tmp/architect.git', defaultBranch: 'main' });
     // The architect answers in text, as a T3 thread would; the hub parses the fenced json block.
     if (call === 1) return { outcome: 'success', summary: reply('First try.', { ...template, nodes: template.nodes.filter(node => node.type !== 'output') }) };
     if (call === 2) {
@@ -17,11 +18,12 @@ test('workflow architect drafts through a real node, retries an invalid graph, a
     const graph = structuredClone(template); graph.nodes.find(node => node.id === 'reviewer').config.concurrency = 4;
     return { outcome: 'success', summary: reply('Review is the bottleneck; allow four reviewers.', graph) };
   };
-  const executor = createFactoryExecutor({ repository: '/unused', architect });
+  const executor = createFactoryExecutor({ architect });
   const { request } = await startFactory(t, { executor, hub: { architectHarness: { provider: 'fake', model: 'fake-architect' } } });
   const project = await request('POST', '/projects', { name: 'Architect', repo: { url: '/tmp/architect.git', defaultBranch: 'main' }, goals: ['Ship weekly'] });
 
   const draft = await request('POST', `/projects/${project.id}/workflows/drafts`, { prompt: 'Describe how this project should be built.' });
+  assert.deepEqual(draft.repo, project.repo);
   assert.equal(draft.role, 'workflow-architect'); assert.equal(draft.runId, undefined);
   const invalid = await eventually(async () => { const value = await request('GET', `/assignments/${draft.id}`); return value.status === 'failed' && value; });
   assert.ok(invalid.architectErrors.some(error => error.code === 'NO_OUTPUT'));

@@ -4,7 +4,8 @@
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24
-npm run test:e2e   # both suites, about 3 seconds
+node --test packages/factory-e2e/test/*.test.js   # all integration and crash suites
+npm run test:e2e   # original build and architect suites
 npm test           # also discovers them
 ```
 
@@ -22,6 +23,8 @@ It asserts the final Git state, work items, assignments, job revisions and logs,
 
 `architect.test.js` asks for a workflow draft. The architect's first reply is an invalid graph, so the hub retries with the validation errors; the second is saved as a draft version and activated. A follow-up request from the active version produces version 2 with a one-field diff, which is then activated.
 
+`hub-wiring.test.js` verifies GitHub fast-forward publication and native queue selection with a PATH-injected fake `gh` executable and temporary local bare origins. A fixture gitconfig rewrites the public GitHub clone URL to its local origin. It checks Assignment repo propagation, exact candidate CI versus published revisions, PR create/close evidence, real MCP stdio messaging into hub events, and SIGKILL recovery during publication, between delivery/hub commits, and across lease expiry while the same node daemon stays alive.
+
 ## Not covered
 
-A live T3 runtime or harness, real subscription accounts, remote Git or GitHub, more than one machine, and lease expiry under the node (that path is covered at the hub level in `packages/factory-hub/test/workflow-adapter.test.js`).
+A live T3 runtime or harness, real subscription accounts, network Git or GitHub, protected-branch acceptance, or more than one machine. Candidate jobs currently require access to the hub mirror path.

@@ -195,7 +195,15 @@ export function createWorkflowAdapter() {
     retriesLostWork: true,
     validate(graph) {
       const { ok, errors, warnings } = validateGraph(graph);
-      return { valid: ok, errors, warnings };
+      // Delivery config is hub-owned until the shared workflow schema recognizes publication.
+      for (const node of Array.isArray(graph?.nodes) ? graph.nodes : []) {
+        if (node?.type !== 'merge-queue' || node.config?.publication === undefined) continue;
+        const publication = node.config.publication;
+        if (!['fast-forward-push', 'github-merge-queue'].includes(publication) || (publication === 'github-merge-queue' && node.config.strategy !== 'serial')) {
+          errors.push({ code: 'INVALID_CONFIG', nodeId: node.id, message: 'publication must be fast-forward-push, or github-merge-queue with strategy serial.' });
+        }
+      }
+      return { valid: ok && errors.length === 0, errors, warnings };
     },
     startRun({ run, workflow, input, project }) {
       const repo = project?.repo;
