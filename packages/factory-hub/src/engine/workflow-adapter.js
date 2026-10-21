@@ -74,8 +74,8 @@ function apply(run, state, event) {
 }
 
 /**
- * Review gates decide on `verdict`. A review that ends without one, or contradicts itself, is an error that parks
- * the item for a person (`blocked`), never a silent rejection.
+ * Review gates decide on `verdict`. The contract makes a review without one an error, not a rejection, so a
+ * `success` without a verdict (the engine's legacy pass) is sent as a verdict-less failure, which the engine retries.
  */
 function engineResult(data, node) {
   const summary = clip(typeof data.summary === 'string' ? data.summary : '');
@@ -83,17 +83,16 @@ function engineResult(data, node) {
   for (const key of ['branch', 'prUrl', 'threadRef']) if (typeof data[key] === 'string') result[key] = data[key];
   if (typeof data.headSha === 'string') result.headSha = data.headSha.toLowerCase();
   if (Array.isArray(data.items)) result.items = data.items.map(item => ({ title: item?.title, ...(item?.body !== undefined ? { body: item.body } : {}) }));
-  if (node?.type !== 'review' || data.outcome === 'blocked') return result;
-  if (data.verdict === 'fail') return { ...result, outcome: 'failure' };
-  if (data.verdict === 'pass' && data.outcome === 'success') return { ...result, outcome: 'success' };
-  const problem = data.verdict === 'pass' ? 'reported verdict "pass" with a failed outcome' : 'ended without a verdict';
-  return { ...result, outcome: 'blocked', summary: clip(`Review error: the reviewer ${problem}. Retry the review or fail the item.${summary ? `\n\n${summary}` : ''}`) };
+  if (node?.type !== 'review') return result;
+  if (data.verdict === 'pass' || data.verdict === 'fail') return { ...result, verdict: data.verdict };
+  if (data.outcome !== 'success') return result;
+  return { ...result, outcome: 'failure', summary: clip(`Review error: the reviewer ended without a verdict.${summary ? `\n\n${summary}` : ''}`) };
 }
 
 function jobSummary(data, status) {
   const failed = (data.steps ?? []).filter(item => item?.status && item.status !== 'passed');
   const steps = failed.map(item => `step "${item.name}" ${item.status}${Number.isInteger(item.exitCode) ? ` (exit ${item.exitCode})` : ''}`).join(', ');
-  if (status === 'error') return `CI could not run to completion (infrastructure error)${steps ? `: ${steps}` : ''}. The change itself may be fine.`;
+  if (status === 'error' || status === 'cancelled') return `CI did not run to completion (${status})${steps ? `: ${steps}` : ''}. The change itself may be fine.`;
   return steps ? `CI failed: ${steps}.` : undefined;
 }
 
@@ -109,10 +108,9 @@ function hubEvent(state, event) {
     return { id: `assignment:${event.assignmentId}:${event.value?.attempt ?? 1}`, type: 'assignment.completed', data: { assignmentId: event.assignmentId, result: engineResult(data, node) } };
   }
   if (type === 'job.finished') {
-    // A cancelled job belongs to a stopped run; the run.stopped transition already closed it.
-    if (data.status === 'cancelled') return null;
-    const status = data.status === 'passed' ? 'passed' : 'failed';
-    const summary = jobSummary(data, data.status);
+    // error and cancelled are infrastructure outcomes the engine retries; passed and failed judge the commit.
+    const status = data.status;
+    const summary = jobSummary(data, status);
     return { id: `job:${event.jobId}:${event.value?.attempt ?? 1}`, type: 'job.completed', data: { jobId: event.jobId, status,
       ...(summary ? { summary } : {}), ...(event.value?.logRef ? { logRef: event.value.logRef } : {}) } };
   }
@@ -120,6 +118,14 @@ function hubEvent(state, event) {
     return data.status === 'merged'
       ? { id: `merge:${event.mergeEntryId}`, type: 'merge.completed', data: { mergeId: event.mergeEntryId, ...(data.mergedRevision ? { mergedSha: data.mergedRevision } : {}) } }
       : { id: `merge:${event.mergeEntryId}`, type: 'merge.rejected', data: { mergeId: event.mergeEntryId, reason: data.reason || 'Merge queue rejected the entry.' } };
+  }
+  if (type === 'lease.expired') {
+    // The machine stopped renewing (crash, network loss). Report it as a failed attempt so the engine's retry policy decides.
+    const kind = event.kind === 'job' ? 'job' : 'assignment';
+    return kind === 'job'
+      ? { id: `job:${event.entityId}:${event.attempt}:expired`, type: 'job.completed', data: { jobId: event.entityId, status: 'error', summary: 'The machine running this CI job stopped renewing its lease.' } }
+      : { id: `assignment:${event.entityId}:${event.attempt}:expired`, type: 'assignment.completed', data: { assignmentId: event.entityId,
+        result: { outcome: 'failure', summary: 'The machine running this assignment stopped renewing its lease (crashed harness or lost connection).' } } };
   }
   if (type === 'human.decision') {
     return { id: `human:${event.workItemId}:${randomUUID()}`, type: 'human.decision', data: { workItemId: event.workItemId, decision: data.decision, ...(data.note !== undefined ? { note: data.note } : {}) } };
@@ -154,7 +160,8 @@ function aggregate(results) {
       utilization: concurrency ? Math.round(active / concurrency * 100) / 100 : null,
       waitSec: stat(parts, part => part.waitSec, part => finished(part) + part.active), serviceSec: stat(parts, part => part.serviceSec, finished),
       throughputPerHour: Math.round(sum(parts, 'throughputPerHour') * 100) / 100,
-      failureRate: done + failed ? Math.round(failed / (done + failed) * 100) / 100 : null, tokens: sum(parts, 'tokens') };
+      failureRate: done + failed + sum(parts, 'errors') ? Math.round((failed + sum(parts, 'errors')) / (done + failed + sum(parts, 'errors')) * 100) / 100 : null,
+      tokens: sum(parts, 'tokens'), errors: sum(parts, 'errors'), retries: sum(parts, 'retries'), escalations: sum(parts, 'escalations') };
   });
   const edges = new Map();
   for (const { edges: list } of results) for (const edge of list) {
@@ -174,6 +181,7 @@ function aggregate(results) {
       cycleTimeSec: stat(runs, run => run.cycleTimeSec, run => run.velocity.trend.reduce((a, b) => a + b, 0)),
       wip: sum(runs, 'wip'), tokensPerItem: totalDone ? Math.round(tokens / totalDone) : null,
       activeAgents: sum(runs, 'activeAgents'), machines: [],
+      retries: sum(runs, 'retries'), escalations: sum(runs, 'escalations'), waitingOnHuman: sum(runs, 'waitingOnHuman'),
     },
     bottlenecks: results.flatMap(result => result.bottlenecks.map(bottleneck => ({ ...bottleneck, runId: result.runId }))),
     runs: results.map(result => result.runId),
@@ -183,6 +191,8 @@ function aggregate(results) {
 /** Hub adapter over `@perpeto/factory-workflow`: the pure engine, graph validation, diffs, architect support and metrics. */
 export function createWorkflowAdapter() {
   return {
+    /** The engine owns retries: the hub reports expired leases instead of requeueing run work itself. */
+    retriesLostWork: true,
     validate(graph) {
       const { ok, errors, warnings } = validateGraph(graph);
       return { valid: ok, errors, warnings };

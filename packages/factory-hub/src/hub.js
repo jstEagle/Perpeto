@@ -130,7 +130,7 @@ export class Hub {
   async maintenance() {
     return this.serialize(async () => {
       let changed = false;
-      await this.store.transaction(() => {
+      await this.store.transaction(async () => {
         const time = Date.now();
         for (const cancellation of this.store.list('cancellation', value => Date.parse(value.leaseExpiresAt) <= time)) this.store.remove('cancellation', cancellation.id);
         for (const machine of this.store.list('machine')) {
@@ -140,6 +140,17 @@ export class Hub {
         }
         for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, active)) {
           if (Date.parse(value.leaseExpiresAt) <= time) {
+            const run = value.runId && !value.delivery && this.engine.retriesLostWork ? this.store.get('run', value.runId) : null;
+            if (run) {
+              // The engine owns retries for run work: close this attempt and let its retry policy create the next one.
+              const attempt = value.attempt;
+              value.status = kind === 'job' ? 'error' : 'failed'; delete value.leaseExpiresAt;
+              if (kind === 'assignment') value.result = { outcome: 'failure', summary: 'Lease expired before a result arrived.' };
+              this.store.put(kind, value); this.emit(`${kind}.expired`, kind, value, { attempt, machineId: value.machineId });
+              if (kind === 'assignment') this.observation.assignment(value);
+              if (['running', 'paused'].includes(run.status)) await this.engineEvent(run, { type: 'lease.expired', kind, entityId: value.id, attempt });
+              changed = true; continue;
+            }
             value.status = 'queued'; value.attempt += 1;
             delete value.machineId; delete value.leaseExpiresAt;
             this.store.put(kind, value); this.emit(`${kind}.requeued`, kind, value, { attempt: value.attempt });
@@ -221,7 +232,8 @@ export class Hub {
       if (kind === 'merge-entry' && value.status === 'queued' && !value.queueId) this.delivery.dirty = true;
       if (kind === 'assignment' || kind === 'job') {
         requireValue(!previous || previous.status === 'queued', 'Engine cannot overwrite leased or finished work.');
-        value.status = 'queued'; value.attempt = previous?.attempt ?? 1; value.requirements ??= {};
+        value.status = 'queued'; value.attempt = previous?.attempt ?? value.attempt ?? 1; value.requirements ??= {};
+        if (value.notBefore !== undefined) requireValue(Number.isFinite(Date.parse(value.notBefore)), 'Invalid notBefore.');
         this.requirements(value.requirements);
         if (kind === 'job') {
           requireValue(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value.revision), 'Job revision must be a full commit SHA.');
@@ -263,6 +275,8 @@ export class Hub {
         if (!(requirements.providers ?? []).every(provider => machine.providers.includes(provider))) continue;
         if (kind === 'assignment' && value.harness?.provider && !machine.providers.includes(value.harness.provider)) continue;
         if (value.runId && this.store.need('run', value.runId).status !== 'running') continue;
+        // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
+        if (value.notBefore && Date.parse(value.notBefore) > Date.now()) continue;
         value.status = 'leased'; value.machineId = machine.id;
         value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
         this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
