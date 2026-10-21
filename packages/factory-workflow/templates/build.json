@@ -28,7 +28,11 @@
           "model": "claude-opus-5-5"
         },
         "maxItems": 8,
-        "prompt": "Read the idea, the project docs and goals. Split the idea into independent work items that can each be built, reviewed and merged as one pull request. Give each item a short title and a body with acceptance criteria."
+        "prompt": "Read the idea, the project docs and goals. Split the idea into independent work items that can each be built, reviewed and merged as one pull request. Give each item a short title and a body with acceptance criteria.",
+        "retry": {
+          "maxAttempts": 2,
+          "backoffSec": 60
+        }
       }
     },
     {
@@ -41,7 +45,8 @@
       },
       "config": {
         "until": "ci-pass",
-        "maxIterations": 3
+        "maxIterations": 3,
+        "onExhausted": "triage"
       }
     },
     {
@@ -54,7 +59,8 @@
       },
       "config": {
         "until": "review-pass",
-        "maxIterations": 3
+        "maxIterations": 3,
+        "onExhausted": "senior-reviewer"
       }
     },
     {
@@ -75,7 +81,12 @@
           "maxSubagents": 2,
           "maxTurns": 200
         },
-        "prompt": "Implement the work item on its own branch, add or update tests, and open a pull request. Report the branch, pull request URL and full head commit SHA. If feedback is attached, address every point before reporting."
+        "prompt": "Implement the work item on its own branch, add or update tests, and open a pull request. Report the branch, pull request URL and full head commit SHA. If feedback is attached, address every point before reporting.",
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 60
+        },
+        "onExhausted": "triage"
       }
     },
     {
@@ -110,7 +121,47 @@
         },
         "concurrency": 2,
         "rubric": "Correct behaviour, tests cover the change, no unrelated edits, clear names, no secrets.",
-        "prompt": "Review the pull request at the given head commit against the rubric. Succeed only if it is ready to merge; otherwise fail with specific, actionable feedback."
+        "prompt": "Review the pull request at the given head commit against the rubric. Give verdict pass only if it is ready to merge; otherwise give verdict fail with specific, actionable feedback.",
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 30
+        },
+        "onExhausted": "senior-reviewer",
+        "onBlocked": "triage"
+      }
+    },
+    {
+      "id": "senior-reviewer",
+      "type": "review",
+      "label": "Senior reviewer",
+      "position": {
+        "x": 900,
+        "y": 320
+      },
+      "config": {
+        "harness": {
+          "provider": "claudeAgent",
+          "model": "claude-opus-5-5"
+        },
+        "rubric": "Correct behaviour, tests cover the change, no unrelated edits, clear names, no secrets. Weigh the earlier review feedback but decide on the code as it is now.",
+        "prompt": "The review loop could not settle this pull request. Read the escalation context and the earlier feedback, then review the pull request at the given head commit. Give verdict pass if it is ready to merge, or verdict fail with the specific changes a person should decide on.",
+        "retry": {
+          "maxAttempts": 2,
+          "backoffSec": 60
+        },
+        "onExhausted": "triage"
+      }
+    },
+    {
+      "id": "triage",
+      "type": "human",
+      "label": "Triage",
+      "position": {
+        "x": 1080,
+        "y": 320
+      },
+      "config": {
+        "prompt": "This work item ran out of automatic attempts or is blocked. Read the escalation context, then pass it to send it back through the delivery loop with your note as guidance, or fail it to stop work on it."
       }
     },
     {
@@ -134,7 +185,12 @@
             "timeoutSec": 1800
           }
         ],
-        "requirements": {}
+        "requirements": {},
+        "retry": {
+          "maxAttempts": 3,
+          "backoffSec": 120
+        },
+        "onExhausted": "triage"
       }
     },
     {
@@ -275,6 +331,39 @@
       "from": {
         "node": "merge",
         "port": "fail"
+      },
+      "to": {
+        "node": "delivery-loop"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "senior-pass",
+      "from": {
+        "node": "senior-reviewer",
+        "port": "pass"
+      },
+      "to": {
+        "node": "ci"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "senior-fail",
+      "from": {
+        "node": "senior-reviewer",
+        "port": "fail"
+      },
+      "to": {
+        "node": "triage"
+      },
+      "kind": "flow"
+    },
+    {
+      "id": "triage-pass",
+      "from": {
+        "node": "triage",
+        "port": "pass"
       },
       "to": {
         "node": "delivery-loop"

@@ -2,6 +2,15 @@ import { readFileSync } from 'node:fs';
 import { step } from '../src/engine.js';
 
 export const template = name => JSON.parse(readFileSync(new URL(`../templates/${name}.json`, import.meta.url), 'utf8'));
+/** A template without retries, escalation or triage nodes, for the behaviour of graphs that configure none. */
+export function bare(name) {
+  const graph = template(name);
+  const extra = new Set(['senior-reviewer', 'triage']);
+  graph.nodes = graph.nodes.filter(node => !extra.has(node.id));
+  graph.edges = graph.edges.filter(edge => !extra.has(edge.from.node) && !extra.has(edge.to.node));
+  for (const node of graph.nodes) for (const key of ['retry', 'onExhausted', 'onBlocked']) delete node.config[key];
+  return graph;
+}
 export const sha = n => n.toString(16).padStart(40, '0');
 export const repo = { url: 'file:///srv/git/app.git', defaultBranch: 'main' };
 export const code = expected => error => error.code === expected;

@@ -8,6 +8,15 @@ export const EVENT_TYPES = Object.freeze([
 ]);
 /** A work item that crosses more flow edges than this fails, as a backstop against unbounded routing. */
 export const MAX_ITEM_HOPS = 1000;
+/**
+ * Escalations to agent or review targets an item may take without a person deciding in between. Past this the item
+ * fails instead, so automatic escalation cannot cycle forever. Human decisions reset the count.
+ */
+export const MAX_UNATTENDED_ESCALATIONS = 3;
+/** Retry n waits `backoffSec × 2^(n−1)` seconds, capped at this. */
+export const MAX_BACKOFF_SEC = 86400;
+export const JOB_STATUSES = Object.freeze(['passed', 'failed', 'error', 'cancelled']);
+const MAX_ESCALATION_RECORDS = 20;
 const MAX_VISITS = 100;
 const MAX_INPUTS = 100;
 const MAX_PLANNED_ITEMS = 1000;
@@ -79,33 +88,31 @@ const HANDLERS = {
     assignment.status = result.outcome === 'success' ? 'succeeded' : 'failed';
     assignment.result = structuredClone(result);
     assignment.completedAt = assignment.updatedAt = ctx.at;
-    assignmentState(ctx, assignment, { outcome: result.outcome });
+    assignmentState(ctx, assignment, { outcome: result.outcome, ...(result.verdict ? { verdict: result.verdict } : {}) });
 
     const item = s.workItems[assignment.workItemId];
     const node = s.plan.nodes[assignment.nodeId];
     delete item.assignmentId;
-    if (node.type === 'agent' && result.outcome === 'success') {
-      for (const key of ['branch', 'prUrl', 'headSha']) if (result[key] !== undefined) item[key] = result[key];
-    }
-    if (result.outcome === 'blocked') {
-      closeVisit(ctx, item, 'blocked');
-      item.status = 'blocked';
-      item.waiting = { kind: 'retry', nodeId: node.id, summary: result.summary };
-      item.updatedAt = ctx.at;
-      emit(ctx, 'workitem.blocked', item, { workItemId: item.id, nodeId: node.id, summary: result.summary });
-      return;
-    }
+    if (result.outcome === 'blocked') return blocked(ctx, item, node, result.summary);
     if (node.type === 'review') {
-      const passed = result.outcome === 'success';
+      // `verdict` decides the gate. Results without one fall back to `outcome` only when it is `success` (legacy
+      // reviewers); a failed review without a verdict is an error to retry, never a rejection.
+      const verdict = result.verdict ?? (result.outcome === 'success' ? 'pass' : null);
+      if (!verdict) {
+        return attemptFailed(ctx, item, node, { reason: 'review_error', summary: result.summary || `${node.label} could not complete the review.`, ref: { assignmentId } });
+      }
+      const passed = verdict === 'pass';
       closeVisit(ctx, item, passed ? 'pass' : 'fail');
-      gateResult(ctx, item, node, passed, { assignmentId, summary: result.summary });
+      gateResult(ctx, item, node, passed, { assignmentId, summary: result.summary, ...(result.verdict ? {} : { legacyVerdict: true }) });
       if (passed) delete item.feedback;
       else item.feedback = { kind: 'review', from: node.role, summary: result.summary };
       return move(ctx, item, node.id, passed ? 'pass' : 'fail');
     }
     if (result.outcome === 'failure') {
-      closeVisit(ctx, item, 'fail');
-      return failItem(ctx, item, 'assignment_failed', result.summary || `${node.label} reported failure.`);
+      return attemptFailed(ctx, item, node, { reason: 'assignment_failed', summary: result.summary || `${node.label} reported failure.`, ref: { assignmentId } });
+    }
+    if (node.type === 'agent') {
+      for (const key of ['branch', 'prUrl', 'headSha']) if (result[key] !== undefined) item[key] = result[key];
     }
     closeVisit(ctx, item, 'pass');
     if (node.type === 'planner') return planned(ctx, item, node, result.items ?? []);
@@ -118,7 +125,7 @@ const HANDLERS = {
     if (!isText(jobId, 200)) fail('INVALID_EVENT', 'job.completed needs jobId.');
     const job = s.jobs[jobId];
     if (!job) fail('NOT_FOUND', `Job ${jobId} is not part of this run.`);
-    if (status !== 'passed' && status !== 'failed') fail('INVALID_EVENT', 'job.completed status must be passed or failed.');
+    if (!JOB_STATUSES.includes(status)) fail('INVALID_EVENT', 'job.completed status must be passed, failed, error or cancelled.');
     if (summary !== undefined && typeof summary !== 'string') fail('INVALID_EVENT', 'summary must be a string.');
     if (logRef !== undefined && !isText(logRef, 2000)) fail('INVALID_EVENT', 'logRef must be a nonblank string.');
     if (!ACTIVE_RUN.has(s.status)) return ignore(ctx, 'run_not_active');
@@ -129,6 +136,13 @@ const HANDLERS = {
     if (logRef) job.logRef = logRef;
     const item = s.workItems[job.workItemId];
     const node = s.plan.nodes[job.nodeId];
+    if (status === 'error' || status === 'cancelled') {
+      // The job never judged the commit, so this is an infrastructure error to retry, not a CI failure.
+      return attemptFailed(ctx, item, node, {
+        reason: status === 'error' ? 'job_error' : 'job_cancelled',
+        summary: summary || `CI job ended with status ${status} at ${job.revision}.`, ref: { jobId }, ...(logRef ? { logRef } : {}),
+      });
+    }
     const passed = status === 'passed';
     closeVisit(ctx, item, passed ? 'pass' : 'fail');
     gateResult(ctx, item, node, passed, { jobId, revision: job.revision, ...(summary ? { summary } : {}) });
@@ -180,16 +194,23 @@ const HANDLERS = {
     const node = s.plan.nodes[item.nodeId];
     const waiting = item.waiting;
     delete item.waiting;
+    delete item.unattendedEscalations;
     item.updatedAt = ctx.at;
     if (waiting.kind === 'human') {
       closeVisit(ctx, item, decision);
       gateResult(ctx, item, node, decision === 'pass', note ? { summary: note } : {});
-      if (decision === 'fail') item.feedback = { kind: 'human', from: node.id, summary: note ?? 'Returned by a person.' };
+      if (decision === 'fail') {
+        // Escalation targets may leave `fail` unwired: declining there ends the item.
+        if (!node.routes.fail) return failItem(ctx, item, 'rejected_by_human', note ?? `${node.label}: a person declined this work item.`);
+        item.feedback = { kind: 'human', from: node.id, summary: note ?? 'Returned by a person.' };
+      } else if (note) item.feedback = { kind: 'human', from: node.id, summary: note };
       else delete item.feedback;
       return move(ctx, item, node.id, decision);
     }
     if (decision === 'fail') return failItem(ctx, item, 'rejected_by_human', note ?? 'A person declined to retry this work item.');
     if (note) item.feedback = { kind: 'human', from: 'human', summary: note };
+    item.attempt = 1;
+    delete item.lastError;
     queue(ctx, item);
   },
 
@@ -341,7 +362,7 @@ function addInputs(ctx, items) {
 function createItem(ctx, { title, body, nodeId, parentId }) {
   const { s, at } = ctx;
   const item = {
-    id: nextId(ctx, 'workItem', 'wi'), runId: s.runId, title, body, nodeId, status: 'queued', iteration: 0,
+    id: nextId(ctx, 'workItem', 'wi'), runId: s.runId, title, body, nodeId, status: 'queued', iteration: 0, attempt: 1,
     ...(parentId ? { parentId } : {}), createdAt: at, updatedAt: at, enteredAt: at, hops: 0, loopCounts: {}, visits: [],
   };
   s.workItems[item.id] = item;
@@ -367,6 +388,9 @@ function enter(ctx, item, nodeId, fromNodeId) {
   const node = s.plan.nodes[nodeId];
   item.nodeId = nodeId;
   item.enteredAt = item.updatedAt = at;
+  item.attempt = 1;
+  delete item.lastError;
+  delete item.retryAt;
   if (node.type === 'loop') {
     const loop = s.plan.loops[nodeId];
     const count = loop.backSources.includes(fromNodeId) ? (item.loopCounts[nodeId] ?? 0) + 1 : 1;
@@ -374,7 +398,12 @@ function enter(ctx, item, nodeId, fromNodeId) {
     item.iteration = count;
     emit(ctx, 'loop.iteration', item, { workItemId: item.id, nodeId, iteration: count, maxIterations: loop.maxIterations });
     if (count > loop.maxIterations) {
-      return failItem(ctx, item, 'loop_limit', `${node.label} reached its limit of ${loop.maxIterations} iterations.`);
+      const recent = item.visits.filter(visit => loop.body.includes(visit.nodeId)).slice(-10)
+        .map(visit => ({ nodeId: visit.nodeId, result: visit.result ?? null, ...visitRef(visit) }));
+      return exhausted(ctx, item, node, {
+        reason: 'loop_limit', failReason: 'loop_limit', message: `${node.label} reached its limit of ${loop.maxIterations} iterations.`,
+        evidence: { iterations: loop.maxIterations, maxIterations: loop.maxIterations, ...(item.feedback ? { feedback: structuredClone(item.feedback) } : {}), visits: recent },
+      });
     }
     return move(ctx, item, nodeId, 'next');
   }
@@ -409,6 +438,7 @@ function finish(ctx, item, status, failure) {
   item.completedAt = item.updatedAt = ctx.at;
   delete item.waiting;
   delete item.queuedSeq;
+  delete item.retryAt;
   if (failure) {
     item.failure = failure;
     ctx.effects.push({ type: 'mark-item-failed', workItemId: item.id, ...failure });
@@ -424,6 +454,93 @@ function finish(ctx, item, status, failure) {
   const failed = children.filter(child => child.status === 'failed').length;
   if (failed) failItem(ctx, parent, 'children_failed', `${failed} of ${children.length} planned items failed.`);
   else finish(ctx, parent, 'done');
+}
+
+const visitRef = visit => Object.fromEntries(['assignmentId', 'jobId', 'mergeId'].filter(key => visit[key]).map(key => [key, visit[key]]));
+const addSeconds = (iso, seconds) => new Date(Date.parse(iso) + seconds * 1000).toISOString();
+
+/**
+ * An assignment or job ended in an error rather than a verdict: agent `failure`, a review without a verdict, or a
+ * CI job that errored or was cancelled. Retry at the same node per its `retry` policy, then escalate or fail.
+ */
+function attemptFailed(ctx, item, node, { reason, summary, ref, logRef }) {
+  closeVisit(ctx, item, 'error');
+  const { maxAttempts, backoffSec } = node.config.retry ?? { maxAttempts: 1, backoffSec: 0 };
+  const attempt = item.attempt ?? 1;
+  item.lastError = { nodeId: node.id, attempt, reason, summary, ...ref, ...(logRef ? { logRef } : {}) };
+  if (attempt < maxAttempts) {
+    const delaySec = Math.min(MAX_BACKOFF_SEC, backoffSec * 2 ** (attempt - 1));
+    item.attempt = attempt + 1;
+    if (delaySec > 0) item.retryAt = addSeconds(ctx.at, delaySec);
+    emit(ctx, 'workitem.retried', item, {
+      workItemId: item.id, nodeId: node.id, attempt: item.attempt, maxAttempts, reason, summary, ...ref,
+      ...(item.retryAt ? { notBefore: item.retryAt } : {}),
+    });
+    return queue(ctx, item);
+  }
+  // Every trailing errored visit at this node is one attempt of this exhausted run of retries.
+  const attempts = [];
+  for (let index = item.visits.length - 1; index >= 0; index -= 1) {
+    const visit = item.visits[index];
+    if (visit.nodeId !== node.id || visit.result !== 'error') break;
+    attempts.unshift(visitRef(visit));
+  }
+  exhausted(ctx, item, node, {
+    reason: 'retries_exhausted', failReason: reason,
+    message: maxAttempts === 1 ? summary : `${node.label} failed all ${maxAttempts} attempts. Last error: ${summary}`,
+    evidence: { attempts: attempt, maxAttempts, error: reason, lastError: summary, refs: attempts, ...(logRef ? { logRef } : {}) },
+  });
+}
+
+/** A node ran out of attempts or iterations: escalate to its `onExhausted` target, or fail the item. */
+function exhausted(ctx, item, node, { reason, failReason, message, evidence }) {
+  const target = node.escalation?.exhausted;
+  if (!target) return failItem(ctx, item, failReason, message);
+  const targetNode = ctx.s.plan.nodes[target];
+  if (targetNode.type !== 'human') {
+    const count = item.unattendedEscalations ?? 0;
+    if (count >= MAX_UNATTENDED_ESCALATIONS) {
+      return failItem(ctx, item, failReason, `${message} Not escalated to ${targetNode.label}: ${count} automatic escalations already happened without a person.`);
+    }
+    item.unattendedEscalations = count + 1;
+  }
+  // Escalation grants the item a fresh budget at the exhausted loop if the target sends it back.
+  if (node.type === 'loop') delete item.loopCounts[node.id];
+  // The message already carries the last error; keep the latest gate feedback alongside it.
+  const prior = item.feedback;
+  item.feedback = {
+    kind: 'escalation', from: node.id,
+    summary: [message, prior && prior.kind !== 'escalation' && `Latest feedback (${prior.kind} from ${prior.from}):\n${prior.summary}`]
+      .filter(Boolean).join('\n\n'),
+  };
+  escalate(ctx, item, node, target, reason, evidence);
+}
+
+/**
+ * `blocked` goes to the node's human gate (`onBlocked`, or a human `onExhausted` target) when it has one. Otherwise
+ * the item is held as blocked until `human.decision` retries or fails it.
+ */
+function blocked(ctx, item, node, summary) {
+  closeVisit(ctx, item, 'blocked');
+  const target = node.escalation?.blocked;
+  emit(ctx, 'workitem.blocked', item, { workItemId: item.id, nodeId: node.id, summary, ...(target ? { routedTo: target } : {}) });
+  if (!target) {
+    item.status = 'blocked';
+    item.waiting = { kind: 'retry', nodeId: node.id, summary };
+    item.updatedAt = ctx.at;
+    return;
+  }
+  item.feedback = { kind: 'blocked', from: node.id, summary };
+  escalate(ctx, item, node, target, 'blocked', { summary });
+}
+
+function escalate(ctx, item, node, target, reason, evidence) {
+  const record = { from: node.id, to: target, reason, at: ctx.at, ...(evidence.iterations ? { iterations: evidence.iterations } : {}), ...(evidence.attempts ? { attempts: evidence.attempts } : {}) };
+  item.escalations = [...(item.escalations ?? []), record].slice(-MAX_ESCALATION_RECORDS);
+  emit(ctx, 'workitem.escalated', item, { workItemId: item.id, from: node.id, to: target, reason, evidence });
+  item.hops += 1;
+  if (item.hops > MAX_ITEM_HOPS) return failItem(ctx, item, 'hop_limit', `Work item crossed more than ${MAX_ITEM_HOPS} flow edges.`);
+  enter(ctx, item, target, node.id);
 }
 
 function planned(ctx, item, node, items) {
@@ -466,7 +583,10 @@ function dispatch(ctx) {
       item.waiting = { kind: 'human', nodeId: node.id };
       delete item.queuedSeq;
       openVisit(ctx, item, {});
-      emit(ctx, 'human.requested', item, { workItemId: item.id, nodeId: node.id, prompt: node.config.prompt });
+      emit(ctx, 'human.requested', item, {
+        workItemId: item.id, nodeId: node.id, prompt: node.config.prompt,
+        ...(item.feedback ? { context: { kind: item.feedback.kind, from: item.feedback.from, summary: item.feedback.summary } } : {}),
+      });
     }
   }
 }
@@ -484,7 +604,7 @@ function createAssignment(ctx, item, node, role) {
     id: nextId(ctx, 'assignment', 'asg'), runId: s.runId, workItemId: item.id, nodeId: node.id, nodeType: node.type,
     role: role.role, prompt: buildPrompt(s, item, node, role), harness: structuredClone(role.harness),
     policy: structuredClone(role.policy), requirements: structuredClone(role.requirements),
-    status: 'queued', attempt: 1, createdAt: at, updatedAt: at,
+    status: 'queued', ...retryFields(ctx, item), createdAt: at, updatedAt: at,
   };
   s.assignments[assignment.id] = assignment;
   item.assignmentId = assignment.id;
@@ -493,21 +613,42 @@ function createAssignment(ctx, item, node, role) {
   assignmentState(ctx, assignment, {});
 }
 
+/** `attempt`, plus `retryOf` and a `notBefore` backoff time for retries. The host must not start work before `notBefore`. */
+function retryFields(ctx, item) {
+  const attempt = item.attempt ?? 1;
+  const fields = { attempt };
+  if (attempt > 1 && item.lastError?.nodeId === item.nodeId) {
+    const previous = item.lastError.assignmentId ?? item.lastError.jobId;
+    if (previous) fields.retryOf = previous;
+  }
+  if (item.retryAt && Date.parse(item.retryAt) > Date.parse(ctx.at)) fields.notBefore = item.retryAt;
+  delete item.retryAt;
+  return fields;
+}
+
 function buildPrompt(s, item, node, role) {
   const parts = [role.prompt, `Work item: ${item.title}`];
   if (item.body) parts.push(item.body);
   if (node.type === 'review' && node.config.rubric) parts.push(`Rubric:\n${node.config.rubric}`);
   const refs = [['Branch', item.branch], ['Pull request', item.prUrl], ['Head commit', item.headSha]].filter(([, value]) => value);
   if (refs.length) parts.push(refs.map(([label, value]) => `${label}: ${value}`).join('\n'));
-  if (item.feedback && node.type !== 'review') {
+  if (item.feedback?.kind === 'escalation') {
+    parts.push(`Escalated to you from ${item.feedback.from}:\n${item.feedback.summary}`);
+  } else if (item.feedback && node.type !== 'review') {
     parts.push(`Feedback to address (${item.feedback.kind} from ${item.feedback.from}):\n${item.feedback.summary}`);
   }
   if (item.iteration > 1) parts.push(`This is attempt ${item.iteration} in the current loop.`);
+  if ((item.attempt ?? 1) > 1 && item.lastError?.nodeId === node.id) {
+    parts.push(`This is retry ${item.attempt} of ${node.config.retry?.maxAttempts ?? item.attempt} at this step. The previous attempt failed: ${item.lastError.summary}`);
+  }
   if (node.type === 'planner') {
     parts.push(`Report success with result.items listing at most ${node.config.maxItems} work items as [{ "title": "…", "body": "…" }]. ` +
       'Return an empty items list when the work item is already small enough to build as one pull request.');
   }
-  if (node.type === 'review') parts.push('Report outcome "success" if the work passes review and "failure" with actionable feedback if it does not.');
+  if (node.type === 'review') {
+    parts.push('Report outcome "success" with verdict "pass" if the work passes review, or verdict "fail" with actionable feedback in the summary if it does not. ' +
+      'Report outcome "failure" only if you could not complete the review.');
+  }
   return parts.join('\n\n');
 }
 
@@ -518,7 +659,7 @@ function createJob(ctx, item, node) {
   const job = {
     id: nextId(ctx, 'job', 'job'), projectId: s.projectId, runId: s.runId, workItemId: item.id, nodeId: node.id,
     repo: s.repo.url ?? s.repo.localPath, revision: item.headSha, steps, requirements,
-    status: 'queued', attempt: 1, artifacts: [], configHash: sha256(canonicalJson({ steps, requirements })), createdAt: at, updatedAt: at,
+    status: 'queued', ...retryFields(ctx, item), artifacts: [], configHash: sha256(canonicalJson({ steps, requirements })), createdAt: at, updatedAt: at,
   };
   s.jobs[job.id] = job;
   activate(ctx, item, { jobId: job.id });
@@ -556,6 +697,7 @@ function checkResult(result) {
     fail('INVALID_EVENT', 'result.headSha must be a full lowercase commit SHA.');
   }
   if (result.threadRef !== undefined && !isText(result.threadRef, 2000)) fail('INVALID_EVENT', 'result.threadRef must be a nonblank string.');
+  if (result.verdict !== undefined && result.verdict !== 'pass' && result.verdict !== 'fail') fail('INVALID_EVENT', 'result.verdict must be pass or fail.');
   if (result.items !== undefined) {
     if (!Array.isArray(result.items) || result.items.length > MAX_PLANNED_ITEMS) fail('INVALID_EVENT', `result.items must be an array of at most ${MAX_PLANNED_ITEMS} items.`);
     checkItems(result.items);

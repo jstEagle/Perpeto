@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { step, replay, canonicalJson } from '../src/index.js';
-import { Driver, template, sha, code } from './fixtures.js';
+import { Driver, template, bare, sha, code } from './fixtures.js';
 
 const built = n => ({ outcome: 'success', summary: `built ${n}`, branch: `feat/${n}`, prUrl: `https://git.example/app/pull/${n}`, headSha: sha(n) });
 
@@ -40,7 +40,7 @@ test('build template runs from input to merged output through review and CI retr
   assert.match(run.open('reviewer')[0].prompt, /Rubric:/);
 
   // Review fails: the item returns to the builder with feedback on iteration 2.
-  run.complete('reviewer', { outcome: 'failure', summary: 'Add tests for empty passwords.' });
+  run.complete('reviewer', { outcome: 'success', verdict: 'fail', summary: 'Add tests for empty passwords.' });
   assert.deepEqual(run.effectTypes(), [
     'assignment.state', 'gate.result', 'workitem.moved', 'loop.iteration', 'workitem.moved', 'create-assignment', 'assignment.state',
   ]);
@@ -89,8 +89,9 @@ test('build template runs from input to merged output through review and CI retr
     ['planner-delivery', 'delivery-review', 'review-builder']);
   const states = run.emitted('assignment.state').map(event => event.data.state);
   assert.equal(states.filter(state => state === 'queued').length, 7);
-  assert.equal(states.filter(state => state === 'succeeded').length, 6);
-  assert.equal(states.filter(state => state === 'failed').length, 1);
+  // A rejection is a completed review: its assignment succeeded with verdict fail.
+  assert.equal(states.filter(state => state === 'succeeded').length, 7);
+  assert.equal(states.filter(state => state === 'failed').length, 0);
   const visits = run.state.workItems[child.id].visits;
   assert.deepEqual(visits.map(visit => `${visit.nodeId}:${visit.result}`), [
     'builder:pass', 'reviewer:fail', 'builder:pass', 'reviewer:pass', 'ci:fail', 'builder:pass', 'reviewer:pass', 'ci:pass', 'merge:pass',
@@ -102,11 +103,11 @@ test('build template runs from input to merged output through review and CI retr
 
 test('loop limit fails the item, its parent and the run', () => {
   const run = new Driver();
-  run.start();
+  run.start({ graph: bare('build') });
   run.complete('planner', { outcome: 'success', items: [{ title: 'Risky' }] });
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     run.complete('builder', built(attempt));
-    run.complete('reviewer', { outcome: 'failure', summary: `still wrong ${attempt}` });
+    run.complete('reviewer', { outcome: 'success', verdict: 'fail', summary: `still wrong ${attempt}` });
   }
   const child = run.items(item => item.parentId)[0];
   assert.equal(child.status, 'failed');
@@ -227,7 +228,7 @@ test('step is pure and deterministic', () => {
 
 test('blocked assignments wait for a person to retry or fail them', () => {
   const run = new Driver();
-  run.start();
+  run.start({ graph: bare('build') });
   run.complete('planner', { outcome: 'success', items: [{ title: 'A' }, { title: 'B' }] });
   run.complete('builder', { outcome: 'blocked', summary: 'Need database credentials.' });
   const blocked = run.items(item => item.status === 'blocked')[0];
@@ -298,7 +299,7 @@ test('merge rejection returns through the delivery loop, or fails without a fail
 
 test('CI without a head commit and agent failure fail the item', () => {
   const run = new Driver();
-  run.start({ inputs: [{ title: 'A' }, { title: 'B' }] });
+  run.start({ graph: bare('build'), inputs: [{ title: 'A' }, { title: 'B' }] });
   run.complete('planner', { outcome: 'success', items: [] });
   run.complete('planner', { outcome: 'success', items: [] });
   run.complete('builder', { outcome: 'success', summary: 'forgot to push' });
