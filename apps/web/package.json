@@ -2,6 +2,7 @@
   "name": "@perpeto/web",
   "version": "0.0.1",
   "private": true,
+  "description": "Perpeto web client: factory dashboard, workflow builder and messaging.",
   "type": "module",
   "engines": {
     "node": ">=24.13.1 <25"
@@ -15,6 +16,7 @@
     "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {
+    "@perpeto/design-tokens": "*",
     "@tanstack/react-router": "^1.170.45",
     "@xyflow/react": "^12.12.0",
     "react": "^19.3.1",

@@ -3,8 +3,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 
-// Brand tokens and identity assets live at the repository root until
-// packages/design-tokens lands; allow Vite to read them.
+// Design tokens (packages/design-tokens) and brand assets live outside this
+// app; allow Vite to read them from the repository root.
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 export default defineConfig({

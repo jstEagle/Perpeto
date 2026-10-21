@@ -7,6 +7,7 @@
     "node": ">=24.13.1 <25"
   },
   "workspaces": [
+    "apps/web",
     "apps/hub",
     "apps/node",
     "apps/cli",
@@ -23,6 +24,9 @@
     "verify:upstream": "node scripts/check-upstream.mjs",
     "runtime:help": "node scripts/runtime.mjs help",
     "smoke:messaging": "node scripts/smoke-messaging.mjs",
+    "dev:web": "npm run dev -w @perpeto/web",
+    "build:web": "npm run build -w @perpeto/web",
+    "build:apple": "swift build --package-path apps/apple",
     "hub": "node apps/hub/bin/perpeto-hub.js",
     "node": "node apps/node/bin/perpeto-node.js"
   }
