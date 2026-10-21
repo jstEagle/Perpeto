@@ -124,7 +124,30 @@ for (const path of ['/projects/prj_perpeto/workflows/wf_k3build?version=4', '/pr
 }
 step('proposal and editor labels never overlap');
 
-// 8. No owner token in localStorage.
+// 8. Editor: a node dragged onto another stays put until "Tidy layout" lays the graph out again.
+page.on('dialog', (d) => d.accept());
+await page.goto(`${base}/projects/prj_perpeto/workflows/wf_k3build/edit`);
+await page.locator('.react-flow__node').first().waitFor();
+await page.waitForTimeout(400);
+const boxes = async () => page.locator('.react-flow__node').evaluateAll((els) => els.map((e) => ({ id: e.dataset.id, ...e.getBoundingClientRect().toJSON() })));
+const overlapping = (list) => list.some((a, i) => list.some((b, j) => j > i && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom));
+assert.ok(!overlapping(await boxes()), 'the editor opens without overlapping nodes');
+const [from, to] = await page.locator('.react-flow__node .gnode-head').evaluateAll((els) => els.slice(0, 2).map((e) => e.getBoundingClientRect().toJSON()));
+await page.mouse.move(from.x + 20, from.y + 10);
+await page.mouse.down();
+await page.mouse.move(to.x + 30, to.y + 20, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(300);
+assert.ok(overlapping(await boxes()), 'a dragged node keeps the position it was dropped at');
+await page.getByRole('button', { name: 'Tidy layout' }).click();
+await page.waitForTimeout(300);
+const tidied = await boxes();
+assert.ok(!overlapping(tidied), 'tidy layout removes the overlap');
+const line = ['input', 'planner', 'loop', 'builder', 'reviewer', 'ci', 'merge', 'done'].map((id) => tidied.find((b) => b.id === id));
+assert.ok(line.every((b, i) => b && Math.abs(b.top - line[0].top) < 1 && (i === 0 || b.left > line[i - 1].left)), 'the main line runs left to right in one row');
+step('editor keeps moved nodes and tidies on request');
+
+// 9. No owner token in localStorage.
 assert.ok(!(await page.evaluate(() => Object.keys(localStorage).some((k) => k === 'perpeto.hub.v1'))), 'legacy token key is gone');
 step('owner token is not kept in localStorage');
 

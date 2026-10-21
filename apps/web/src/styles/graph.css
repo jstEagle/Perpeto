@@ -549,6 +549,13 @@
   z-index: 5;
 }
 
+.graph-tidy {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 5;
+}
+
 .graph-controls .icon-btn {
   border-radius: 0;
   border: 0;

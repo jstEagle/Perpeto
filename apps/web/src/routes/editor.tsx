@@ -31,6 +31,8 @@ function Editor({ workflow, projectId, docs }: { workflow: Workflow; projectId: 
   const [roleKind, setRoleKind] = useState<'delegates' | 'messages'>('delegates');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Bumped when a template replaces the graph, so the canvas lays it out afresh.
+  const [generation, setGeneration] = useState(0);
   const [serverIssues, setServerIssues] = useState<ValidationIssue[]>([]);
   const dirty = useRef(false);
 
@@ -135,6 +137,7 @@ function Editor({ workflow, projectId, docs }: { workflow: Workflow; projectId: 
                 const t = TEMPLATES.find((x) => x.purpose === e.target.value);
                 if (t && window.confirm(`Replace the graph with the ${t.name} template?`)) {
                   change(t.graph());
+                  setGeneration((g) => g + 1);
                   setSelection(null);
                 }
               }}
@@ -199,8 +202,10 @@ function Editor({ workflow, projectId, docs }: { workflow: Workflow; projectId: 
             <EdgeLegend />
           </div>
           <GraphCanvas
+            key={generation}
             graph={graph}
             mode="edit"
+            onLayout={setGraph}
             label={`${workflow.name} editor canvas`}
             issuesByNode={issuesByNode}
             selection={selection}

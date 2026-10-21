@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, useStore } from '@xyflow/react';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { Bottleneck, GraphNode, NodeMetrics, NodeType, WorkItem } from '../api/types';
 import { NODE_SPECS, nodeSummary } from './registry';
@@ -20,11 +20,15 @@ export interface StepData extends Record<string, unknown> {
   bottleneck?: Bottleneck;
   items?: WorkItem[];
   dimmed?: boolean;
+  /** Large graphs draw compact nodes when zoomed far out. */
+  large?: boolean;
 }
 
 export type StepNodeType = Node<StepData, 'step'>;
 
 export const NODE_WIDTH = NODE_W;
+/** Below this zoom, nodes of a large graph drop their live detail: unreadable at that size and costly in DOM. */
+export const COMPACT_ZOOM = 0.45;
 /** Flow ports sit at the centre of the 40 px header; `fail` sits in the body. */
 export const PORT_TOP = PORT_Y.out;
 
@@ -138,7 +142,9 @@ function LiveStrip({ metrics, items, bottleneck, type }: { metrics?: NodeMetrics
 const SEVERITY_TONE = { critical: 'error', warning: 'warning', info: 'neutral' } as const;
 
 function StepNodeView({ data, selected }: NodeProps<StepNodeType>) {
-  const { node, mode, issues, diff, changedKeys, metrics, bottleneck, items, dimmed } = data;
+  const { node, mode, issues, diff, changedKeys, metrics, bottleneck, items, dimmed, large } = data;
+  // Subscribes to a boolean, so a node re-renders only when it crosses the threshold.
+  const compact = useStore((s) => !!large && s.transform[2] < COMPACT_ZOOM);
   const spec = NODE_SPECS[node.type];
   const editable = mode === 'edit';
   const classes = [
@@ -178,7 +184,7 @@ function StepNodeView({ data, selected }: NodeProps<StepNodeType>) {
             {issues && !issues.errors && issues.warnings > 0 && <StatusLabel tone="warning">{issues.warnings === 1 ? '1 warning' : `${issues.warnings} warnings`}</StatusLabel>}
           </div>
         )}
-        {mode === 'live' && <LiveStrip metrics={metrics} items={items} bottleneck={bottleneck} type={node.type} />}
+        {mode === 'live' && !compact && <LiveStrip metrics={metrics} items={items} bottleneck={bottleneck} type={node.type} />}
       </div>
       {spec.outputs.map((port) =>
         port === 'out' ? (
