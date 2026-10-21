@@ -4,12 +4,14 @@ import type { EdgeKind } from '../api/types';
  * Orthogonal edge routing for workflow graphs.
  *
  * Flow edges run along the main line: straight between neighbours in a row,
- * and through the gap between rows (the gutter) when they wrap to the next
- * row or return to an earlier node. Delegates and messages never share the
- * main line. They leave from the top or bottom of a node and run in their
- * own lanes: above a row when both ends share it, straight down when one
- * node sits over the other, otherwise through the gutter above the lower
- * node. Edges between the same two nodes are bundled into one cable with a
+ * and through a gap between rows (a gutter) otherwise. Returns along the top
+ * row run in one channel above it, so loops read as arcs over the line they
+ * repeat; returns from lower rows run below their row. An edge into another
+ * row takes one elbow through the column gap when that gap is clear.
+ * Delegates and messages never share the main line. They leave from the top
+ * or bottom of a node and run in their own lanes: below a row when both ends
+ * share it, straight down when one node sits over the other, otherwise
+ * through the gutter above the lower node. Edges between the same two nodes are bundled into one cable with a
  * single label. Every horizontal run gets its own lane, and labels are
  * placed where they collide with no node, label or other edge; a label that
  * cannot be placed is dropped and kept as the edge's tooltip.
@@ -56,7 +58,7 @@ export interface Route {
 
 export interface Routing {
   routes: Map<string, Route>;
-  /** Minimum height of the gap above row k so its lanes fit; 0 when unused. */
+  /** Minimum height of the gap above row k so its lanes fit; 0 when unused. For row 0, the height of the return channel above it. */
   gutterNeeds: number[];
 }
 
@@ -93,9 +95,16 @@ function clusterRows(nodes: RouteNode[]): { rows: Row[]; rowOf: Map<string, numb
   return { rows, rowOf };
 }
 
+/**
+ * Lanes in a gutter stack away from one of its rows: `down` from the row
+ * above, `up` from the row below. Gutters outside the outermost rows have
+ * only one neighbour, and all their lanes stack away from it.
+ */
 type Plan =
   | { type: 'fixed'; points: Pt[] }
-  | { type: 'lane'; gutter: number; cat: 'flow' | 'role'; span: [number, number]; build(y: number): Pt[] };
+  | { type: 'lane'; gutter: number; dir: 'down' | 'up'; span: [number, number]; build(y: number): Pt[] };
+
+type Box = { x1: number; y1: number; x2: number; y2: number };
 
 interface Bundle {
   key: string;
@@ -113,6 +122,8 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
   const port = (n: RouteNode, name: string, side: 'in' | 'out'): Pt => [side === 'in' ? n.x : n.x + n.w, n.y + (PORT_Y[name] ?? PORT_Y.out)];
 
   // Flow edges.
+  const clear = (box: Box, except: RouteNode[]) =>
+    !nodes.some((n) => !except.includes(n) && n.x < Math.max(box.x1, box.x2) && n.x + n.w > Math.min(box.x1, box.x2) && n.y < Math.max(box.y1, box.y2) && n.y + n.h > Math.min(box.y1, box.y2));
   for (const e of valid.filter((x) => x.kind === 'flow')) {
     const s = byId.get(e.from)!;
     const t = byId.get(e.to)!;
@@ -120,22 +131,37 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
     const tp = port(t, 'in', 'in');
     const rs = rowOf.get(s.id)!;
     const rt = rowOf.get(t.id)!;
+    const x1 = sp[0] + STUB;
+    const x2 = tp[0] - STUB;
     const blocked = nodes.some((n) => n !== s && n !== t && rowOf.get(n.id) === rs && n.x + n.w > sp[0] && n.x < tp[0] && n.y < Math.max(sp[1], tp[1]) && n.y + n.h > Math.min(sp[1], tp[1]));
     if (rs === rt && tp[0] > sp[0] + 2 * STUB && !blocked) {
       const midX = Math.round((sp[0] + tp[0]) / 2);
       plans.set(e.id, { type: 'fixed', points: Math.abs(sp[1] - tp[1]) < 1 ? [sp, tp] : [sp, [midX, sp[1]], [midX, tp[1]], tp] });
       continue;
     }
-    const gutter = rs === rt ? rs + 1 : rt > rs ? rt : rt + 1;
-    const x1 = sp[0] + STUB;
-    const x2 = tp[0] - STUB;
-    plans.set(e.id, {
+    // Into another row, forward: one elbow in the column gap just before the target.
+    if (rs !== rt && x2 > x1 && clear({ x1: sp[0], y1: sp[1], x2, y2: sp[1] }, [s]) && clear({ x1: x2, y1: sp[1], x2, y2: tp[1] }, [])) {
+      plans.set(e.id, { type: 'fixed', points: [sp, [x2, sp[1]], [x2, tp[1]], tp] });
+      continue;
+    }
+    const lane = (gutter: number, dir: 'down' | 'up'): Plan => ({
       type: 'lane',
       gutter,
-      cat: 'flow',
+      dir,
       span: [Math.min(x1, x2), Math.max(x1, x2)],
       build: (y) => [sp, [x1, sp[1]], [x1, y], [x2, y], [x2, tp[1]], tp],
     });
+    if (rs === rt) {
+      plans.set(e.id, rs === 0 ? lane(0, 'up') : lane(rs + 1, 'down'));
+      continue;
+    }
+    // Back from a lower row: below the source row when both verticals are clear.
+    const below = rs + 1 < rows.length ? rows[rs + 1].top : rows[rs].bottom + 2 * CLEAR;
+    if (rs > rt && clear({ x1, y1: sp[1], x2: x1, y2: below }, [s]) && clear({ x1: x2, y1: tp[1], x2, y2: below }, [])) {
+      plans.set(e.id, lane(rs + 1, 'down'));
+      continue;
+    }
+    plans.set(e.id, rt > rs ? lane(rt, 'up') : lane(rt + 1, 'down'));
   }
 
   // Delegates and messages, bundled per pair of nodes.
@@ -158,7 +184,7 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
     const cx = (n: RouteNode) => n.x + n.w / 2;
     if (ra === rb) {
       shape.set(bundle.key, { kind: 'channel', upper: a.id, lower: b.id });
-      attaches.push({ bundle, node: a.id, side: 'top', other: cx(b) }, { bundle, node: b.id, side: 'top', other: cx(a) });
+      attaches.push({ bundle, node: a.id, side: 'bottom', other: cx(b) }, { bundle, node: b.id, side: 'bottom', other: cx(a) });
       continue;
     }
     const [upper, lower] = ra < rb ? [a, b] : [b, a];
@@ -213,25 +239,24 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
     } else if (s.kind === 'channel') {
       bundlePlan.set(bundle.key, {
         type: 'lane',
-        gutter: rowOf.get(upper.id)!,
-        cat: 'role',
+        gutter: rowOf.get(upper.id)! + 1,
+        dir: 'down',
         span: [Math.min(ux, lx), Math.max(ux, lx)],
-        build: (y) => [[ux, upper.y], [ux, y], [lx, y], [lx, lower.y]],
+        build: (y) => [[ux, upper.y + upper.h], [ux, y], [lx, y], [lx, lower.y + lower.h]],
       });
     } else {
       bundlePlan.set(bundle.key, {
         type: 'lane',
         gutter: rowOf.get(lower.id)!,
-        cat: 'role',
+        dir: 'up',
         span: [Math.min(ux, lx), Math.max(ux, lx)],
         build: (y) => [[ux, upper.y + upper.h], [ux, y], [lx, y], [lx, lower.y]],
       });
     }
   }
 
-  // Lanes: flow lanes stack down from the upper row, role lanes up from the
-  // lower row. Shorter runs sit closer to the nodes; runs that do not
-  // overlap share a lane.
+  // Lanes stack away from their row. Shorter runs sit closer to the nodes,
+  // so nested returns never cross; runs that do not overlap share a lane.
   const laneOf = new Map<string, number>();
   const counts = new Map<string, number>();
   const groups = new Map<string, { id: string; span: [number, number] }[]>();
@@ -239,7 +264,7 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
   for (const [id, p] of plans) if (p.type === 'lane') lanePlans.push([id, p]);
   for (const [key, p] of bundlePlan) if (p.type === 'lane') lanePlans.push([`bundle:${key}`, p]);
   for (const [id, p] of lanePlans) {
-    const g = `${p.gutter}|${p.cat}`;
+    const g = `${p.gutter}|${p.gutter === 0 || p.gutter >= rows.length ? 'edge' : p.dir}`;
     groups.set(g, [...(groups.get(g) ?? []), { id, span: p.span }]);
   }
   for (const [g, list] of groups) {
@@ -254,27 +279,33 @@ export function routeEdges(nodes: RouteNode[], edges: RouteEdge[]): Routing {
     counts.set(g, lanes.length);
   }
 
-  const laneY = (gutter: number, cat: 'flow' | 'role', lane: number) => {
-    const above = gutter > 0 ? rows[gutter - 1].bottom : null;
-    const below = gutter < rows.length ? rows[gutter].top : null;
-    if (cat === 'flow') return above !== null ? above + CLEAR + lane * LANE : below! - CLEAR - lane * LANE;
-    return below !== null ? below - CLEAR - lane * LANE : above! + CLEAR + lane * LANE;
+  const laneY = (gutter: number, dir: 'down' | 'up', lane: number) => {
+    if (gutter === 0) return rows[0].top - CLEAR - lane * LANE;
+    if (gutter >= rows.length) return rows[rows.length - 1].bottom + CLEAR + lane * LANE;
+    return dir === 'down' ? rows[gutter - 1].bottom + CLEAR + lane * LANE : rows[gutter].top - CLEAR - lane * LANE;
   };
+  const laneOfPlan = (id: string, p: Extract<Plan, { type: 'lane' }>) => laneY(p.gutter, p.dir, laneOf.get(id)!);
 
   const gutterNeeds = rows.map((_, k) => {
-    const lanes = (counts.get(`${k}|flow`) ?? 0) + (counts.get(`${k}|role`) ?? 0);
-    return k === 0 || lanes === 0 ? 0 : 2 * CLEAR + (lanes - 1) * LANE + (counts.get(`${k}|flow`) && counts.get(`${k}|role`) ? LANE : 0);
+    if (k === 0) {
+      const lanes = counts.get('0|edge') ?? 0;
+      return lanes ? CLEAR + (lanes - 1) * LANE + CLEAR : 0;
+    }
+    const down = counts.get(`${k}|down`) ?? 0;
+    const up = counts.get(`${k}|up`) ?? 0;
+    const lanes = down + up;
+    return lanes === 0 ? 0 : 2 * CLEAR + (lanes - 1) * LANE + (down && up ? LANE : 0);
   });
 
   // Final points.
   const routes = new Map<string, Route>();
   for (const e of valid.filter((x) => x.kind === 'flow')) {
     const p = plans.get(e.id)!;
-    routes.set(e.id, { points: p.type === 'fixed' ? p.points : p.build(laneY(p.gutter, p.cat, laneOf.get(e.id)!)) });
+    routes.set(e.id, { points: p.type === 'fixed' ? p.points : p.build(laneOfPlan(e.id, p)) });
   }
   for (const bundle of bundles.values()) {
     const p = bundlePlan.get(bundle.key)!;
-    const base = p.type === 'fixed' ? p.points : p.build(laneY(p.gutter, p.cat, laneOf.get(`bundle:${bundle.key}`)!));
+    const base = p.type === 'fixed' ? p.points : p.build(laneOfPlan(`bundle:${bundle.key}`, p));
     const upperId = shape.get(bundle.key)!.upper;
     bundle.edges.forEach((e, i) => {
       const d = (i - (bundle.edges.length - 1) / 2) * BUNDLE_STEP;
@@ -343,11 +374,38 @@ function candidates(points: Pt[], w: number): [number, number][] {
   return out;
 }
 
+/** Rectangles bucketed in a coarse grid, so a lookup only tests nearby ones. */
+class RectIndex {
+  readonly #cells = new Map<string, { rect: Rect; owner?: string }[]>();
+  static readonly CELL = 128;
+  #keys(r: Rect): string[] {
+    const c = RectIndex.CELL;
+    const keys: string[] = [];
+    for (let i = Math.floor(r.x1 / c); i <= Math.floor(r.x2 / c); i++) for (let j = Math.floor(r.y1 / c); j <= Math.floor(r.y2 / c); j++) keys.push(`${i}:${j}`);
+    return keys;
+  }
+  add(rect: Rect, owner?: string) {
+    const entry = { rect, owner };
+    for (const k of this.#keys(rect)) {
+      const list = this.#cells.get(k);
+      if (list) list.push(entry);
+      else this.#cells.set(k, [entry]);
+    }
+  }
+  /** True when `r` hits any rectangle not owned by `ignore`. */
+  hits(r: Rect, ignore?: string): boolean {
+    for (const k of this.#keys(r)) for (const e of this.#cells.get(k) ?? []) if ((ignore === undefined || e.owner !== ignore) && hit(r, e.rect)) return true;
+    return false;
+  }
+}
+
 function placeLabels(nodes: RouteNode[], edges: RouteEdge[], bundles: Map<string, Bundle>, routes: Map<string, Route>) {
-  const blocked: Rect[] = nodes.map((n) => ({ x1: n.x - 4, y1: n.y - 4, x2: n.x + n.w + 4, y2: n.y + n.h + 4 }));
+  const blocked = new RectIndex();
+  for (const n of nodes) blocked.add({ x1: n.x - 4, y1: n.y - 4, x2: n.x + n.w + 4, y2: n.y + n.h + 4 });
   const ownerOf = new Map<string, string>();
   for (const b of bundles.values()) for (const e of b.edges) ownerOf.set(e.id, b.key);
-  const lines = [...routes.entries()].map(([id, r]) => ({ owner: ownerOf.get(id) ?? id, rects: segmentRects(r.points, 3) }));
+  const lines = new RectIndex();
+  for (const [id, r] of routes) for (const rect of segmentRects(r.points, 3)) lines.add(rect, ownerOf.get(id) ?? id);
 
   // One label per flow edge and per bundle.
   const jobs: { owner: string; carrier: string; text: string; priority: number }[] = [];
@@ -363,16 +421,15 @@ function placeLabels(nodes: RouteNode[], edges: RouteEdge[], bundles: Map<string
   for (const job of jobs) {
     const route = routes.get(job.carrier)!;
     const w = labelWidth(job.text);
-    const others = lines.filter((l) => l.owner !== job.owner).flatMap((l) => l.rects);
     const spot = candidates(route.points, w).find(([x, y]) => {
       const r = { x1: x - w / 2 - 2, y1: y - LABEL_H / 2 - 2, x2: x + w / 2 + 2, y2: y + LABEL_H / 2 + 2 };
-      return !blocked.some((b) => hit(r, b)) && !others.some((b) => hit(r, b));
+      return !blocked.hits(r) && !lines.hits(r, job.owner);
     });
     if (!spot) {
       route.tooltip = job.text;
       continue;
     }
     route.label = { x: spot[0], y: spot[1], w, h: LABEL_H, text: job.text };
-    blocked.push({ x1: spot[0] - w / 2 - 2, y1: spot[1] - LABEL_H / 2 - 2, x2: spot[0] + w / 2 + 2, y2: spot[1] + LABEL_H / 2 + 2 });
+    blocked.add({ x1: spot[0] - w / 2 - 2, y1: spot[1] - LABEL_H / 2 - 2, x2: spot[0] + w / 2 + 2, y2: spot[1] + LABEL_H / 2 + 2 });
   }
 }
