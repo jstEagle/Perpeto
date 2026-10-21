@@ -5,7 +5,8 @@ Node executor that runs factory assignments through a local T3 environment serve
 ```js
 import { createT3Executor } from '@perpeto/t3-executor';
 const executor = createT3Executor({ config, runtimeUrl, accountProvider });
-// { kind: 't3', canRun(assignment, machine), run(assignment, ctx), close() }
+// { kind: 't3', canRun(assignment, machine), run(assignment, ctx), providers({ signal }), close() }
+// providers() lists the driver kinds T3 reports enabled and ready; the node advertises them.
 ```
 
 `@perpeto/node` loads it by package name (the default `executorPackages` entry); the root npm workspaces link it. A node outside this checkout can list an absolute module path instead, for example `"executorPackages": ["/path/Perpeto/packages/t3-executor/src/index.js"]`.
@@ -50,7 +51,7 @@ A minted session gets `orchestration:read`, `orchestration:operate` and `provide
    - **Review** (`nodeType: 'review'`): `verdict` comes from the final message's fenced JSON. A missing verdict leaves the field unset, so the engine retries.
    - **Planner** (`nodeType: 'planner'`): `items` comes from fenced JSON. A missing or invalid block makes the attempt fail rather than plan nothing.
    - **Workflow architect** (`role: 'workflow-architect'` or `architectRequestId`): `graph` and `rationale` come from fenced JSON. Otherwise the whole reply goes back in `summary`, so the hub's parser can return its errors.
-   - **Work**: the executor reports uncommitted changes, pushes new commits on the work branch, and returns `branch`, `headSha`, the last PR URL the agent mentioned, and `threadRef` (`t3-thread://v1/<threadId>`).
+   - **Work**: the executor reports uncommitted changes, pushes new commits on the work branch, and returns `branch`, `headSha`, the last PR URL the agent mentioned, and `threadRef` (`t3-thread://v1/<threadId>`). When it pushed to a local bare origin (an absolute or `file://` path, not GitHub) and the agent named no PR, `prUrl` is `local:<branch>`, the address the merge queue's local adapter expects.
 6. **Cancellation.** When `ctx.signal` aborts, the executor interrupts every active run (`run.interrupt`, `holdQueue: true`), waits briefly, then rejects with the abort reason.
 
 ### Local account-provider contract

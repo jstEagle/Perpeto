@@ -67,7 +67,7 @@ function Overview({ project, onChanged }: { project: Project; onChanged(): void 
       <dl className="stats" aria-live="polite">
         <Stat label="Agents working" value={overview.data?.activeAgents ?? '—'} detail={activeRun ? 'in the active run' : undefined} />
         <Stat label="Queued work" value={overview.data?.queuedWork ?? '—'} detail="items" />
-        <Stat label="Tokens today" value={overview.data ? tokens(overview.data.tokensToday) : '—'} detail="input and output" />
+        <Stat label="Tokens today" value={overview.data ? tokens(overview.data.tokensToday) : '—'} detail="input, output and cache" />
         <Stat label="Tokens, 7 days" value={tokens7d !== undefined ? tokens(tokens7d) : '—'} />
       </dl>
 
