@@ -46,7 +46,7 @@ export class Workflows {
     const prompt = await this.hub.engine.buildArchitectPrompt({ prompt: request.prompt, project, machines, providers: [...new Set(machines.flatMap(machine => machine.providers))], workflows,
       baseGraph: request.baseGraph, validationErrors: request.errors, attempt: request.attempt });
     nonblank(prompt, 'architect prompt', 1048576);
-    const assignment = { id: id('asg'), projectId: project.id, nodeId: 'workflow-architect', role: 'workflow-architect', prompt,
+    const assignment = { id: id('asg'), projectId: project.id, repo: structuredClone(project.repo), nodeId: 'workflow-architect', role: 'workflow-architect', prompt,
       harness: this.hub.config.architectHarness, policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: [] },
       requirements: { providers: [this.hub.config.architectHarness.provider] }, status: 'queued', attempt: 1,
       architectRequestId: request.id, architectAttempt: request.attempt };

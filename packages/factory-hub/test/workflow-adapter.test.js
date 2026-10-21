@@ -77,3 +77,16 @@ test('real engine adapter: lost leases and verdict-less reviews become engine re
   assert.equal(metrics.nodes.find(value => value.nodeId === 'builder').errors, 1);
   assert.equal(metrics.nodes.find(value => value.nodeId === 'reviewer').retries, 1);
 });
+
+test('hub validates merge publication before a workflow can reach delivery', async () => {
+  const { createWorkflowAdapter } = await import('../src/engine/workflow-adapter.js');
+  const { readFile } = await import('node:fs/promises');
+  const graph = JSON.parse(await readFile(new URL('../../factory-workflow/templates/build.json', import.meta.url), 'utf8'));
+  const merge = graph.nodes.find(node => node.type === 'merge-queue'); const adapter = createWorkflowAdapter();
+  for (const publication of ['fast-forward-push', 'github-merge-queue']) {
+    merge.config.publication = publication; merge.config.strategy = 'serial';
+    assert.equal(adapter.validate(graph).valid, true);
+  }
+  merge.config.strategy = 'batch'; assert.equal(adapter.validate(graph).valid, false);
+  merge.config.publication = 'invalid'; assert.equal(adapter.validate(graph).valid, false);
+});

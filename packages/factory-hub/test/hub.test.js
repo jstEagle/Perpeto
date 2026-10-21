@@ -484,3 +484,22 @@ test('CLI starts from JSON, serves liveness, shuts down, and never prints creden
   process.kill('SIGTERM'); assert.equal((await exited).code, 0);
   assert.equal((output + errors).includes(token), false);
 });
+
+test('project runs are scoped, newest first, filterable by status, and durable', async t => {
+  const f = await fixture(t);
+  const { project, workflow, run: first } = await f.run();
+  await sleep(2);
+  const second = (await f.request('POST', `/workflows/${workflow.id}/runs`, {})).body;
+  await f.request('POST', `/runs/${first.id}/pause`, {});
+  await f.run(); // A different project's run never leaks into the list.
+  await f.restart();
+  const path = `/projects/${project.id}/runs`;
+  assert.deepEqual((await f.request('GET', path)).body.runs.map(run => run.id), [second.id, first.id]);
+  assert.deepEqual((await f.request('GET', `${path}?status=paused`)).body.runs.map(run => run.id), [first.id]);
+  assert.deepEqual((await f.request('GET', `${path}?status=running`)).body.runs.map(run => run.id), [second.id]);
+  assert.deepEqual((await f.request('GET', `${path}?status=completed`)).body.runs, []);
+  assert.equal((await f.request('GET', `${path}?status=invalid`)).status, 400);
+  assert.equal((await f.request('GET', '/projects/missing/runs')).status, 404);
+  const node = await f.enroll();
+  assert.equal((await f.request('GET', path, undefined, node.token)).status, 403);
+});

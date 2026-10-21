@@ -1,6 +1,6 @@
 # Factory messaging client
 
-Dependency-free Node 24 CLI and MCP stdio client for the Perpeto messaging HTTP API hosted by the T3 runtime. Agents use the same authenticated channels as people. All inference continues to run through their existing harnesses.
+Dependency-free Node 24 CLI and MCP stdio client for the Perpeto messaging HTTP API hosted by the hub. T3-hosted messaging remains available through configuration. Agents use the same authenticated channels as people. All inference continues to run through their existing harnesses.
 
 ## Configure a device or harness role
 
@@ -8,7 +8,8 @@ Create a local JSON configuration file. All non-secret configuration belongs her
 
 ```json
 {
-  "baseUrl": "http://127.0.0.1:3773",
+  "baseUrl": "http://127.0.0.1:4320",
+  "messagingPrefix": "/api/v1/messaging",
   "projectId": "perpeto",
   "roleId": "backend-lead",
   "channelId": "build",
@@ -17,9 +18,9 @@ Create a local JSON configuration file. All non-secret configuration belongs her
 }
 ```
 
-Put an existing T3 session credential, as a single raw token, in `session.secret`. Use the runtime's authenticated session provisioning path; this client does not mint credentials. Make the file owner-only (`chmod 600 session.secret`). Relative credential paths resolve against the config file's directory. The client rejects symlinks, files owned by another user, and files readable by group or others. Never commit the secret file or put the token in config, CLI arguments, or a harness configuration.
+Put the hub owner bearer token, as a single raw token, in `session.secret`. The client does not mint credentials. For a T3-hosted endpoint, set `messagingPrefix` to `/api/perpeto`, use that runtime's base URL and existing session credential. Omitting `messagingPrefix` selects `/api/v1/messaging`. Make the file owner-only (`chmod 600 session.secret`). Relative credential paths resolve against the config file's directory. The client rejects symlinks, files owned by another user, and files readable by group or others. Never commit the secret file or put the token in config, CLI arguments, or a harness configuration.
 
-Use an HTTPS endpoint for remote connections or forward the remote endpoint to loopback through a trusted tunnel. HTTP loopback is supported. Explicit `"allowInsecureHttp": true` in the JSON config permits remote HTTP when needed; that sends the bearer credential without TLS. Networking and remote pairing remain the T3 runtime's responsibility.
+Use an HTTPS endpoint for remote connections or forward the remote endpoint to loopback through a trusted tunnel. HTTP loopback is supported. Explicit `"allowInsecureHttp": true` in the JSON config permits remote HTTP when needed; that sends the bearer credential without TLS. The host owns networking and remote authentication setup.
 
 ## CLI
 
@@ -56,7 +57,7 @@ Configure an MCP stdio server in a harness that supports one, using absolute pat
 }
 ```
 
-This illustrates the common MCP server configuration shape; confirm your harness's configuration location and syntax. Give each durable role its own config. Replacing a harness session can reuse that role config without changing message identity. The session bearer credential grants the runtime's access level; role IDs are labels, not separate permissions.
+This illustrates the common MCP server configuration shape; confirm your harness's configuration location and syntax. Give each durable role its own config. Replacing a harness session can reuse that role config without changing message identity. The bearer credential grants the host's access level; role IDs are labels, not separate permissions.
 
 Tools:
 
@@ -73,4 +74,4 @@ cd packages/factory-client
 node --test
 ```
 
-Tests exercise authenticated HTTP request shapes, cursor encoding, retry idempotency, rejected credentials and HTTP errors, CLI child processes, and actual MCP stdio child-process exchanges. Tests use a local HTTP fixture; deployed routing, pairing and real harness loading require separate end-to-end verification.
+Tests exercise authenticated HTTP request shapes, cursor encoding, retry idempotency, rejected credentials and HTTP errors, CLI child processes, and actual MCP stdio child-process exchanges. Client tests use a local HTTP fixture. `node --test packages/factory-e2e/test/hub-wiring.test.js` from the repository root additionally exercises real MCP stdio sends through the hub and their idempotent `agent.messaged` events. Deployed routing, pairing and real harness loading remain unverified.

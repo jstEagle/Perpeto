@@ -14,7 +14,7 @@ export function loadConfig(filename) {
   try { config = JSON.parse(readFileSync(filename, 'utf8')); }
   catch { throw new ClientError('Cannot read client configuration JSON.'); }
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new ClientError('Invalid client configuration.');
-  const allowed = new Set(['baseUrl', 'projectId', 'roleId', 'channelId', 'credentialFile', 'timeoutMs', 'allowInsecureHttp']);
+  const allowed = new Set(['baseUrl', 'projectId', 'roleId', 'channelId', 'credentialFile', 'timeoutMs', 'allowInsecureHttp', 'messagingPrefix']);
   if (Object.keys(config).some(key => !allowed.has(key))) throw new ClientError('Unknown configuration field. Credentials must stay in the credential file.');
   for (const key of ['baseUrl', 'projectId', 'roleId', 'channelId', 'credentialFile']) nonblank(config[key], key);
   let url;
@@ -23,7 +23,9 @@ export function loadConfig(filename) {
   if (config.allowInsecureHttp !== undefined && typeof config.allowInsecureHttp !== 'boolean') throw new ClientError('allowInsecureHttp must be a boolean.');
   if (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && config.allowInsecureHttp !== true) throw new ClientError('Remote HTTP requires HTTPS or explicit allowInsecureHttp: true in the client config.');
   if (config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 100 || config.timeoutMs > 300000)) throw new ClientError('timeoutMs must be between 100 and 300000.');
-  return { ...config, baseUrl: config.baseUrl.replace(/\/+$/, ''), credentialFile: resolve(dirname(resolve(filename)), config.credentialFile) };
+  const messagingPrefix = config.messagingPrefix ?? '/api/v1/messaging';
+  if (!['/api/v1/messaging', '/api/perpeto'].includes(messagingPrefix)) throw new ClientError('messagingPrefix must be /api/v1/messaging or /api/perpeto.');
+  return { ...config, messagingPrefix, baseUrl: config.baseUrl.replace(/\/+$/, ''), credentialFile: resolve(dirname(resolve(filename)), config.credentialFile) };
 }
 
 export class FactoryClient {
@@ -40,7 +42,7 @@ export class FactoryClient {
   }
 
   async #request(method, path, body, query = {}) {
-    const url = new URL(`${this.#config.baseUrl}/api/perpeto${path}`);
+    const url = new URL(`${this.#config.baseUrl}${this.#config.messagingPrefix ?? '/api/v1/messaging'}${path}`);
     for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
     for (let attempt = 0; attempt < 2; attempt++) {
       let response;

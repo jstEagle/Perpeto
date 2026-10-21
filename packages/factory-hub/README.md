@@ -2,7 +2,7 @@
 
 Dependency-free Node 24 HTTP control plane with its own durable SQLite state. It implements the [factory contract](../../docs/architecture.md) and the later agent-authored workflow, observation and node wire-format addenda. It never calls inference APIs.
 
-**Engine and delivery:** the default engine is [workflow-adapter.js](src/engine/workflow-adapter.js) over `@perpeto/factory-workflow`; tests may still inject the in-package stub. Merge-queue nodes run through [delivery/index.js](src/delivery/index.js) over `@perpeto/factory-delivery`, for local bare repositories only. The [e2e suite](../factory-e2e/README.md) runs a real hub, node and bare repository with a fake executor. No live T3 harness run is claimed.
+**Engine and delivery:** the default engine is [workflow-adapter.js](src/engine/workflow-adapter.js) over `@perpeto/factory-workflow`; tests may still inject the in-package stub. Merge-queue nodes run through [delivery/index.js](src/delivery/index.js) over `@perpeto/factory-delivery`, for local bare repositories and GitHub publication. The [e2e suite](../factory-e2e/README.md) runs a real hub, node and bare repository with a fake executor. No live T3 harness run is claimed.
 
 ## Start
 
@@ -45,7 +45,7 @@ Errors are `{ "error": { "code": "INVALID_INPUT", "message": "..." } }`. Lease r
 | Workflows | `GET/POST /projects/:id/workflows`, `GET/PUT /workflows/:id`, `POST /workflows/:id/validate` |
 | Drafts | `POST /projects/:id/workflows/drafts` with `{prompt, baseWorkflowId?}` |
 | Versions | `GET /workflows/:id/versions`, `GET /workflows/:id/diff?from=&to=`, `POST /workflows/:id/activate` with `{version}` |
-| Runs | `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/pause`, `/resume`, `/stop`, `/inputs` |
+| Runs | `GET /projects/:id/runs?status=`, `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/pause`, `/resume`, `/stop`, `/inputs` |
 | Work | `GET /runs/:id/work-items`, `GET /runs/:id/assignments`, `POST /work-items/:id/decision`, `GET /assignments/:id` |
 | Metrics | `GET /runs/:id/metrics?window=1h|24h|7d`, `GET /projects/:id/metrics?window=...` |
 | Machines | `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain` |
@@ -58,7 +58,7 @@ Errors are `{ "error": { "code": "INVALID_INPUT", "message": "..." } }`. Lease r
 | Nodes | `POST /nodes/enroll`, `/nodes/heartbeat`, `/nodes/lease` |
 | Lease reports | `POST /assignments/:id/renew`, `/events`, and the corresponding `/jobs/:id/...` |
 
-List responses use `{projects}`, `{workflows}`, `{versions}`, `{machines}`, `{accounts}`, `{jobs}`, `{workItems}`, `{assignments}` or `{entries}`. Single entities are returned directly. Draft requests return the architect Assignment with HTTP 202. Follow it using `GET /assignments/:id`; invalid attempts expose `retryAssignmentId` and `architectErrors`, and a valid result exposes `draftWorkflowId` and `draftVersion`. There are at most three architect validation attempts, independent of lease requeue attempts. Architect assignments belong to a project before there is a run, so they omit `runId`/`workItemId`.
+List responses use `{projects}`, `{workflows}`, `{runs}`, `{versions}`, `{machines}`, `{accounts}`, `{jobs}`, `{workItems}`, `{assignments}` or `{entries}`. Single entities are returned directly. Draft requests return the architect Assignment with HTTP 202. Follow it using `GET /assignments/:id`; invalid attempts expose `retryAssignmentId` and `architectErrors`, and a valid result exposes `draftWorkflowId` and `draftVersion`. There are at most three architect validation attempts, independent of lease requeue attempts. Architect assignments belong to a project before there is a run, so they omit `runId`/`workItemId`.
 
 New workflow versions are always drafts with `authoredBy`, optional `rationale` and `parentVersion`. `versions` returns immutable saved records. Activation changes a separate `activeVersion` pointer, not historical records or live runs. A workflow head may show a newer draft alongside its older `activeVersion`; new runs use that active version. Starting a workflow with no active version returns `409 WORKFLOW_NOT_ACTIVE`.
 
@@ -72,7 +72,7 @@ Enrollment codes are single-use and expiring. An idempotent enrollment retry rec
 
 Heartbeat bodies carry `{capacity:{maxAgents,maxJobs}, running:{agents,jobs}, providers, accounts, status:'online'|'draining'}`. Account snapshots replace that machine's previous public metadata; unknown fields are dropped, and IDs belonging to another machine are rejected. Responses are exactly `{status, cancel:{assignments:[],jobs:[]}}`. Owner-requested drain is persistent. Offline detection also covers draining machines, and a recovered owner-drained machine remains draining.
 
-Lease requests carry `{kinds:['assignment','job'],max}` and return exactly `{assignments,jobs}`. Each work entity includes `attempt` and `leaseExpiresAt`. Capacity uses the larger of machine-reported running work and hub-held unexpired leases, so stale or optimistic heartbeats cannot grant extra slots. OS, labels and providers must match. Paused runs cannot receive new leases. Expired work requeues with `attempt + 1`, including during startup recovery.
+Lease requests carry `{kinds:['assignment','job'],max}` and return exactly `{assignments,jobs}`. Each work entity includes `attempt` and `leaseExpiresAt`. Every Assignment, including a workflow architect, carries a copy of its project `repo: {url, defaultBranch, localPath?}` taken when the assignment is created. Capacity uses the larger of machine-reported running work and hub-held unexpired leases, so stale or optimistic heartbeats cannot grant extra slots. OS, labels and providers must match. Paused runs cannot receive new leases. Expired run work becomes an engine-owned failed attempt and follows its retry policy. Project-scoped assignments and speculative merge jobs requeue with `attempt + 1`, including during startup recovery.
 
 **Renewals and events require top-level `attempt`**. The hub checks machine ownership, attempt, active state and expiry in the same serialized DB transaction. Wrong, absent or expired attempts return `409 lease_lost`, including when the same machine reacquires the work. Renewal returns exactly `{leaseExpiresAt}`.
 
@@ -96,7 +96,7 @@ GET  /api/v1/messaging/projects/:projectId/channels/:channelId/messages
 POST /api/v1/messaging/projects/:projectId/channels/:channelId/messages
 ```
 
-Send/read bodies, role addressing and cursor semantics match [factory messaging](../../docs/messaging.md). Each run gets `run-<runId>` automatically. Owner sends in run channels emit `agent.messaged` once per message ID. `factory-client` currently hardcodes `/api/perpeto`; it needs a base-path option at integration to use the hub prefix. That package was not modified here.
+Send/read bodies, role addressing and cursor semantics match [factory messaging](../../docs/messaging.md). Each run gets `run-<runId>` automatically. Owner sends in run channels emit `agent.messaged` once per message ID. `factory-client` defaults to this hub prefix and supports the T3-hosted `/api/perpeto` routes through its `messagingPrefix` JSON option.
 
 ## Engine mapping
 
@@ -116,7 +116,11 @@ Engine retries carry `attempt`, `retryOf` and `notBefore`; the hub does not leas
 
 A merge entry from the engine is enqueued into one `factory-delivery` queue per project repository, base branch and merge configuration, stored in `deliveryDatabasePath`. Its CI is the steps of the ci nodes named in `requiredChecks` (or every ci node), and a passing speculative job proves those named checks. Speculative jobs are hub Jobs with a `delivery` field, leased by nodes like any other job; their results go to the queue rather than the engine. The pump runs Git preparation and publication outside the request serializer, then reconciles queue state into hub merge entries and jobs, so a crash between the two stores is repaired on the next pump. Waiting entries of a stopped run are withdrawn.
 
-Only local bare repositories (project `repo.localPath`, or an absolute path or `file://` `url`) are supported. Other repositories leave the entry queued with `deliveryError` and a `merge-entry.blocked` event; GitHub queue publication is not wired yet.
+Local bare repositories (project `repo.localPath`, or an absolute path or `file://` `url`) retain atomic local ref publication. GitHub HTTPS/SSH URLs, or GitHub PR URLs paired with a local/remote Git origin, select `GitHubAdapter`. The hub clones an isolated bare mirror under `deliveryRepositoriesPath`, fetches the observed base and heads before candidate preparation, and gives speculative jobs that mirror URL. Nodes must be able to read that path; cross-machine object transfer is not implemented. Other forges remain blocked with `deliveryError`.
+
+Merge-queue node config accepts `publication: 'fast-forward-push'` (default) or `'github-merge-queue'` (serial only). The former pushes the exact tested candidate without force and finalizes PRs through `gh`; squash/rebase PRs become CLOSED with evidence. The native option lets GitHub own final ordering and checks, so `mergedRevision` can differ from `testedRevision`. These guarantees and remote race limits are documented by [factory-delivery](../factory-delivery/README.md). Git/gh authentication stays with their credential helpers.
+
+`deliveryLeaseDurationMs` defaults to 60000 and fences a pump worker independently of node leases. After a crash, recovery waits for that lease to expire. Maintenance schedules the pump outside the request serializer, including after startup, and reconciles terminal delivery entries even when the hub did not commit their prior projection. `GET /projects/:id/runs?status=` returns `{runs}` newest first and rejects unknown status values.
 
 ## Persistence and limits
 

@@ -128,7 +128,7 @@ export class Hub {
     });
   }
   async maintenance() {
-    return this.serialize(async () => {
+    await this.serialize(async () => {
       let changed = false;
       await this.store.transaction(async () => {
         const time = Date.now();
@@ -161,7 +161,7 @@ export class Hub {
       if (changed) this.notify();
     });
     // Merge queue progress (Git preparation and publication) runs outside the request serializer between its two syncs.
-    await this.delivery.pump();
+    this.delivery.schedule();
   }
   fenced(kind, entityId, auth, body, read = false) {
     const value = this.store.need(kind, entityId);
@@ -230,6 +230,7 @@ export class Hub {
       // Merge entries also carry hub delivery fields (queue, job, merged revision) that engine snapshots do not know.
       const value = { ...(kind === 'merge-entry' ? previous : {}), ...effect.value, projectId: run.projectId, runId: run.id };
       if (kind === 'merge-entry' && value.status === 'queued' && !value.queueId) this.delivery.dirty = true;
+      if (kind === 'assignment') value.repo = previous?.repo ?? structuredClone(this.store.need('project', run.projectId).repo);
       if (kind === 'assignment' || kind === 'job') {
         requireValue(!previous || previous.status === 'queued', 'Engine cannot overwrite leased or finished work.');
         value.status = 'queued'; value.attempt = previous?.attempt ?? value.attempt ?? 1; value.requirements ??= {};
@@ -323,6 +324,12 @@ export class Hub {
           project[key] = body[key];
         }
         project.updatedAt = now(); this.store.put('project', project); this.emit('project.updated', 'project', { ...project, projectId: project.id }); return reply(project);
+      }
+      if (action === 'runs' && method === 'GET') {
+        const status = query.get('status');
+        if (status !== null) requireValue(['running', 'paused', 'stopped', 'completed', 'failed'].includes(status), 'Invalid run status.');
+        const runs = this.store.list('run', value => value.projectId === entityId && (!status || value.status === status));
+        return reply({ runs: runs.reverse().sort((a, b) => b.startedAt.localeCompare(a.startedAt)) });
       }
       if (action === 'workflows' && method === 'GET') return reply({ workflows: this.store.list('workflow', value => value.projectId === entityId) });
       if (action === 'workflows' && method === 'POST') {
