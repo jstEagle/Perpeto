@@ -315,3 +315,37 @@ test('normalized auth failure is invalid while permission failures stay separate
   assert.equal(detectClaudeSignal({ error: 'authentication_failed', api_error_status: 403 }), null);
   assert.equal(detectClaudeSignal({ failure: { class: 'permission_error', message: 'Not logged in' } }), null);
 });
+
+test('receipt retention bounds churn, preserves recent retries and expires old receipts', t => {
+  const f = fixture(t, { maxReceipts: 8, receiptRetentionMs: 1000 });
+  f.add('acct_a');
+  for (let i = 0; i < 40; i++) {
+    f.select(`asg_${i}`);
+    f.release(`asg_${i}`);
+  }
+  const input = { accountId: 'acct_a', idempotencyKey: 'recent-disable' };
+  const original = f.pool.disable(input);
+  const registry = () => JSON.parse(fs.readFileSync(path.join(f.nodeDataDir, 'accounts/registry.json')));
+  assert.ok(Object.keys(registry().receipts).length <= 8);
+  assert.deepEqual(f.pool.disable(input), original);
+  assert.throws(() => f.pool.enable(input), code('IDEMPOTENCY_CONFLICT'));
+  f.advance(1000);
+  f.pool.enable({ accountId: 'acct_a', idempotencyKey: f.next() });
+  assert.equal(Object.keys(registry().receipts).length, 1);
+  assert.equal(f.pool.snapshot()[0].status, 'active');
+});
+
+test('startup compacts legacy receipts even after the old registry read limit', t => {
+  const f = fixture(t);
+  f.add('acct_a');
+  const file = path.join(f.nodeDataDir, 'accounts/registry.json');
+  const state = JSON.parse(fs.readFileSync(file));
+  for (let i = 0; i < 6000; i++) state.receipts[`legacy-${i}`] = {
+    signature: 'a'.repeat(64), result: { fixture: 'x'.repeat(700) },
+  };
+  write(file, JSON.stringify(state));
+  assert.ok(fs.statSync(file).size > 4 * 1024 * 1024);
+  const reopened = new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now });
+  assert.equal(reopened.snapshot().length, 1);
+  assert.ok(fs.statSync(file).size < 1024 * 1024);
+});

@@ -23,15 +23,17 @@ const canonical = value => JSON.stringify(value, (_, item) => item && typeof ite
 export class AccountPool {
   #root; #file; #lock; #machineId; #clock; #config;
 
-  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,clock?:()=>number}} options */
+  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,maxReceipts?:number,receiptRetentionMs?:number,clock?:()=>number}} options */
   constructor({ nodeDataDir, machineId, selection = 'lru', defaultCooldownMs = 300_000,
-    maxConcurrentPerAccount = 1, clock = Date.now }) {
+    maxConcurrentPerAccount = 1, maxReceipts = 512, receiptRetentionMs = 86_400_000, clock = Date.now }) {
     guarded(() => {
       if (typeof nodeDataDir !== 'string' || !path.isAbsolute(nodeDataDir)) fail('INVALID_PATH');
       this.#machineId = identifier(machineId);
       if (!['lru', 'headroom'].includes(selection) || !Number.isSafeInteger(defaultCooldownMs)
           || defaultCooldownMs <= 0 || !Number.isSafeInteger(maxConcurrentPerAccount)
-          || maxConcurrentPerAccount < 1 || typeof clock !== 'function') fail('INVALID_CONFIG');
+          || maxConcurrentPerAccount < 1 || !Number.isSafeInteger(maxReceipts) || maxReceipts < 1
+          || maxReceipts > 1024 || !Number.isSafeInteger(receiptRetentionMs) || receiptRetentionMs < 1
+          || typeof clock !== 'function') fail('INVALID_CONFIG');
       privateDirectory(nodeDataDir);
       this.#root = path.join(fs.realpathSync(nodeDataDir), 'accounts');
       privateDirectory(this.#root);
@@ -39,9 +41,13 @@ export class AccountPool {
       this.#file = path.join(this.#root, 'registry.json');
       this.#lock = path.join(this.#root, '.lock');
       this.#clock = clock;
-      this.#config = { selection, defaultCooldownMs, maxConcurrentPerAccount };
+      this.#config = { selection, defaultCooldownMs, maxConcurrentPerAccount, maxReceipts, receiptRetentionMs };
       this.#locked(() => {
-        if (fs.existsSync(this.#file)) this.#read();
+        if (fs.existsSync(this.#file)) {
+          const state = this.#read();
+          this.#compact(state, this.#now());
+          this.#write(state);
+        }
         else this.#write({ version: 1, machineId, accounts: [], selectionSequence: 0, reservations: {}, receipts: {} });
       });
     });
@@ -62,12 +68,35 @@ export class AccountPool {
 
   #read() {
     assertPrivate(this.#root, true);
-    const state = readJson(this.#file);
+    // Allow bounded recovery of legacy registries already over the old 4 MiB cap.
+    // Credential reads retain their independent, smaller limit.
+    const state = readJson(this.#file, 64 * 1024 * 1024);
     if (state?.version !== 1 || state.machineId !== this.#machineId || !Array.isArray(state.accounts)
         || !state.reservations || !state.receipts) fail('INVALID_REGISTRY');
     return state;
   }
   #write(state) { writePrivate(this.#file, `${JSON.stringify(state)}\n`); }
+  #compact(state, now) {
+    const entries = Object.entries(state.receipts);
+    let bytes = 0;
+    const retained = [];
+    for (const [key, receipt] of entries) {
+      receipt.recordedAt ??= now;
+      if (receipt.recordedAt + this.#config.receiptRetentionMs <= now) {
+        delete state.receipts[key];
+      } else {
+        const size = Buffer.byteLength(JSON.stringify([key, receipt]));
+        bytes += size;
+        retained.push({ key, size });
+      }
+    }
+    // Bound bytes as well as count, since selection receipts include bindings.
+    for (const [index, { key, size }] of retained.entries()) {
+      if (retained.length - index <= this.#config.maxReceipts && bytes <= 1024 * 1024) break;
+      delete state.receipts[key];
+      bytes -= size;
+    }
+  }
   #record(state, id) {
     identifier(id, /^acct_[a-zA-Z0-9_-]{1,48}$/);
     const record = state.accounts.find(account => account.id === id);
@@ -108,6 +137,8 @@ export class AccountPool {
     return guarded(() => this.#locked(() => {
       identifier(idempotencyKey, /^[a-zA-Z0-9_.:-]{1,256}$/);
       const state = this.#read();
+      const now = this.#now();
+      this.#compact(state, now);
       const signature = createHash('sha256').update(canonical({ operation, input })).digest('hex');
       const receipt = Object.hasOwn(state.receipts, idempotencyKey) ? state.receipts[idempotencyKey] : undefined;
       if (receipt) {
@@ -115,8 +146,9 @@ export class AccountPool {
         validateReplay?.(state, receipt.result);
         return structuredClone(receipt.result);
       }
-      const result = fn(state, this.#now());
-      Object.defineProperty(state.receipts, idempotencyKey, { value: { signature, result }, enumerable: true, writable: true, configurable: true });
+      const result = fn(state, now);
+      Object.defineProperty(state.receipts, idempotencyKey, { value: { signature, result, recordedAt: now }, enumerable: true, writable: true, configurable: true });
+      this.#compact(state, now);
       this.#write(state);
       return structuredClone(result);
     }));

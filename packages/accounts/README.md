@@ -35,7 +35,7 @@ pool.release({ assignmentId: 'asg_example', idempotencyKey: 'release-example' })
 const heartbeatAccounts = pool.snapshot();
 ```
 
-All methods are synchronous. Every mutation requires a stable `idempotencyKey`. Same key and same request returns the recorded result; a changed request fails with `IDEMPOTENCY_CONFLICT`. Observation receipts retain only a digest of the request plus sanitized status, never the raw error/usage message. Selection retries additionally recheck the reservation and current account eligibility, so an old result cannot resurrect a released, disabled, invalid or cooling account.
+All methods are synchronous. Every mutation requires a stable `idempotencyKey`. Within receipt retention, the same key and same request returns the recorded result; a changed request fails with `IDEMPOTENCY_CONFLICT`. Observation receipts retain only a digest of the request plus sanitized status, never the raw error/usage message. Selection retries additionally recheck the reservation and current account eligibility, so an old result cannot resurrect a released, disabled, invalid or cooling account.
 
 - `importAccount({ provider, label, source, id?, idempotencyKey })`: fresh isolated home, generated `acct_…` ID unless supplied. Never overwrites an existing ID/home.
 - `select({ provider, assignmentId, idempotencyKey })`: returns `{ account, binding }`, or throws `NO_ELIGIBLE_ACCOUNT`. Reserves capacity atomically. Reusing an active assignment returns its existing account.
@@ -123,7 +123,9 @@ Normalized T3 `{ windows: [{ id, usedPercent, resetsAt? }] }` updates are accept
 
 The private `registry.json` records metadata, sparse usage windows, reservation IDs and idempotency receipts. Writes use fsync plus an atomic rename. A private `.lock` directory serializes mutations and imports across handles/processes. There are no network calls, dependencies, shell executions or token logs.
 
-`ACCOUNT_POOL_BUSY` is retryable by the node. A crash can leave the lock directory or an unregistered credential home behind; recovery is deliberately manual and must first establish that no writer is active. Never remove a lock merely because it is old. Reservations survive restart, so the node must reconcile them against its durable assignment leases and release terminated work. No automatic timeout, stale-result fencing, account deletion, receipt compaction or distributed lock is supplied here. Use local filesystems with reliable atomic rename/permissions semantics.
+`ACCOUNT_POOL_BUSY` is retryable by the node. A crash can leave the lock directory or an unregistered credential home behind; recovery is deliberately manual and must first establish that no writer is active. Never remove a lock merely because it is old. Reservations survive restart, so the node must reconcile them against its durable assignment leases and release terminated work. No automatic timeout, stale-result fencing, account deletion or distributed lock is supplied here. Use local filesystems with reliable atomic rename/permissions semantics.
+
+Receipts are compacted on startup and mutation. Defaults are `receiptRetentionMs: 86400000` (24 hours), `maxReceipts: 512` (configurable from 1 to 1024), and a fixed 1 MiB receipt budget. The first age, count or byte limit ends the retry guarantee; callers must not retry old operation keys after that window. Legacy receipts without timestamps start their retention window at migration and remain subject to both size limits. Startup can recover legacy registries up to 64 MiB; credential-file reads remain capped at 4 MiB. Account metadata and current reservations are preserved during compaction.
 
 Only fixture and local process tests are claimed. No real account enrollment, live authentication, T3 readiness, harness turn, end-to-end node/hub heartbeat, or provider-terms compliance has been verified.
 
