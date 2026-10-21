@@ -380,3 +380,43 @@ test('M9: a rejected release cannot turn into a terminal event or kill the node'
   assert.equal(hub.events.length, 0);
   assert.equal(node.status.state, 'running');
 });
+
+test('executor exceptions log context and send the same bounded, sanitized failure reason', async t => {
+  const hub = await fakeHub(t);
+  const { configPath, config } = await nodeConfig(t, hub);
+  const errors = [];
+  t.mock.method(console, 'error', (...args) => errors.push(args.join(' ')));
+  const registry = new ExecutorRegistry().register({ kind: 'throwing', canRun: () => true, async run() {
+    throw Object.assign(new Error('Cannot create auth link: token=secret-token password="secret password" ' +
+      'Authorization: Bearer bearer-secret\nhttps://user:url-secret@example.com/?key=query-secret ' +
+      'private-machine-token pa1_secret-agent-token sk-proj-secret-key\n' + 'x'.repeat(2000)), { code: 'EEXIST' });
+  } });
+  hub.assignments.push(assignment('asg_exception', { attempt: 7 }));
+  const node = await startNode(t, configPath, { registry });
+  await eventually(() => completed(hub).length === 1 && node.status.running.agents === 0);
+  const result = completed(hub)[0].data;
+  assert.equal(result.outcome, 'failure');
+  assert.match(result.failureReason, /EEXIST.*Cannot create auth link/);
+  assert.ok(result.failureReason.length <= 1000);
+  assert.equal(result.summary, result.failureReason, "hub result storage and existing UI use summary");
+  assert.doesNotMatch(result.failureReason, /secret-token|secret password|bearer-secret|url-secret|query-secret|private-machine-token|secret-agent-token|secret-key|[\n\r\x1b]/);
+  const log = errors.join('\n');
+  assert.match(log, /asg_exception/);
+  assert.match(log, /"attempt":7/);
+  assert.match(log, /"executorKind":"throwing"/);
+  assert.ok(log.includes(result.failureReason));
+  assert.equal(log.includes('secret-token'), false);
+});
+
+test('unavailable diagnostic redaction fails closed while reporting the executor failure', async t => {
+  const hub = await fakeHub(t);
+  const { configPath } = await nodeConfig(t, hub, { jobs: { redactPatterns: ['('] } });
+  const errors = [];
+  t.mock.method(console, 'error', value => errors.push(value));
+  const registry = new ExecutorRegistry().register({ kind: 'throwing', canRun: () => true, async run() { throw new Error('opaque-secret'); } });
+  hub.assignments.push(assignment('asg_redaction'));
+  await startNode(t, configPath, { registry });
+  await eventually(() => completed(hub).length === 1);
+  assert.equal(completed(hub)[0].data.failureReason, 'Executor failed; diagnostic redaction is unavailable.');
+  assert.equal(JSON.stringify(errors).includes('opaque-secret'), false);
+});
