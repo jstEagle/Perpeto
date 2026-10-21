@@ -17,5 +17,8 @@
   },
   "scripts": {
     "test": "node --test"
+  },
+  "devDependencies": {
+    "@perpeto/hub": "*"
   }
 }

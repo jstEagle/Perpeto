@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { FactoryClient, loadConfig } from '../src/client.js';
 // Test-only: the hub's dependency-free self-signed certificate, to exercise pinning against a real TLS handshake.
-import { generateCertificate } from '../../../apps/hub/src/tls.js';
+import { generateCertificate } from '@perpeto/hub/tls';
 
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 const token = 'pa1_test-agent-token';
