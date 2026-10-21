@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import configuration from '../config/limits.json' with { type: 'json' };
+import { watchRunner } from './watch.js';
 
 const limits = configuration.worker;
 const queueLimits = configuration.queue;
@@ -11,7 +12,7 @@ const queueLimits = configuration.queue;
 function invalid(message) { throw new Error(message); }
 export function loadRunnerConfig(filename) {
   const raw = JSON.parse(readFileSync(filename, 'utf8'));
-  const allowed = ['baseUrl','credentialFile','runnerId','labels','repositories','executables','workDirectory','timeoutMs','maxOutputBytes','leaseMs','artifactPaths','toolPath','allowInsecureHttp'];
+  const allowed = ['baseUrl','credentialFile','runnerId','labels','repositories','executables','workDirectory','timeoutMs','maxOutputBytes','leaseMs','artifactPaths','toolPath','allowInsecureHttp','pollIntervalMs','retryIntervalMs'];
   if (!raw || typeof raw !== 'object' || Object.keys(raw).some(key => !allowed.includes(key))) invalid('Invalid runner configuration fields.');
   for (const field of ['baseUrl','credentialFile','runnerId','workDirectory','toolPath']) if (typeof raw[field] !== 'string' || !raw[field].trim()) invalid(`Invalid ${field}.`);
   const url = new URL(raw.baseUrl);
@@ -21,6 +22,8 @@ export function loadRunnerConfig(filename) {
     if (!raw[field] || typeof raw[field] !== 'object' || Array.isArray(raw[field]) || !Object.keys(raw[field]).length) invalid(`Invalid ${field}.`);
     for (const [name,path] of Object.entries(raw[field])) if (!/^[a-zA-Z0-9_.-]+$/.test(name) || typeof path !== 'string' || !isAbsolute(path)) invalid(`${field} must map names to absolute local paths.`);
   }
+  raw.pollIntervalMs ??= limits.pollIntervalMs;
+  raw.retryIntervalMs ??= limits.retryIntervalMs;
   for (const [field,[min,max]] of Object.entries(limits.validationRanges)) if (!Number.isSafeInteger(raw[field]) || raw[field] < min || raw[field] > max) invalid(`Invalid ${field}.`);
   const artifactPaths = raw.artifactPaths ?? [];
   if (!Array.isArray(artifactPaths) || artifactPaths.length > queueLimits.maxArtifacts || artifactPaths.some(path => typeof path !== 'string' || !path || path.length > queueLimits.maxArtifactPathCharacters || isAbsolute(path) || path.split(/[\\/]/).includes('..'))) invalid('artifactPaths must stay within the checkout.');
@@ -31,10 +34,11 @@ export function createRunnerClient(config) {
   if (!stat.isFile() || (stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) invalid('Runner credential must be an owner-only regular file.');
   const token = readFileSync(config.credentialFile, 'utf8').trim();
   if (!token || /[\r\n]/.test(token)) invalid('Runner credential must contain one token.');
-  return async (path, body, method = 'POST', timeoutMs = limits.requestTimeoutMs) => {
+  return async (path, body, method = 'POST', timeoutMs = limits.requestTimeoutMs, parentAbortSignal) => {
+    const timeout = AbortSignal.timeout(Math.max(1,Math.floor(Math.min(limits.requestTimeoutMs,timeoutMs))));
     const response = await fetch(`${config.baseUrl}/api/perpeto/runner${path}`, { method,
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      redirect: 'error', signal: AbortSignal.timeout(Math.max(1,Math.floor(Math.min(limits.requestTimeoutMs,timeoutMs)))), ...(body === undefined ? {} : {body:JSON.stringify(body)}) });
+      redirect: 'error', signal: parentAbortSignal ? AbortSignal.any([timeout,parentAbortSignal]) : timeout, ...(body === undefined ? {} : {body:JSON.stringify(body)}) });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`Runner request rejected (HTTP ${response.status}).`); }
     return response.json();
   };
@@ -112,12 +116,13 @@ export function boundResult(result) {
   }
   return {...result,log:original.slice(0,low)};
 }
-export async function runOnce(config) {
+export async function runOnce(config, parentAbortSignal) {
   const request = createRunnerClient(config);
   const claimStarted = performance.now();
-  const claimed = await request('/claim', { runnerId:config.runnerId, labels:config.labels, repositoryIds:Object.keys(config.repositories), leaseMs:config.leaseMs });
+  const claimed = await request('/claim', { runnerId:config.runnerId, labels:config.labels, repositoryIds:Object.keys(config.repositories), leaseMs:config.leaseMs },'POST',limits.requestTimeoutMs,parentAbortSignal);
   if (!claimed) return { claimed:false };
   const controller = new AbortController();
+  const signal = parentAbortSignal ? AbortSignal.any([controller.signal,parentAbortSignal]) : controller.signal;
   let confirmedDeadline = claimStarted + config.leaseMs;
   let watchdog;
   const armWatchdog = () => {
@@ -129,26 +134,27 @@ export async function runOnce(config) {
   armWatchdog();
   let heartbeatInFlight;
   const timer = setInterval(() => {
-    if (heartbeatInFlight || controller.signal.aborted) return;
+    if (heartbeatInFlight || signal.aborted) return;
     const started = performance.now();
     const remaining = confirmedDeadline-started-limits.leaseSafetyMarginMs;
     if (remaining <= 0) { controller.abort(); return; }
     heartbeatInFlight = (async()=>{
       try {
-        await request(`/jobs/${claimed.job.id}/heartbeat`, {runnerId:config.runnerId,leaseToken:claimed.leaseToken,leaseMs:config.leaseMs},'POST',Math.min(config.leaseMs/limits.heartbeatDivisor,remaining));
-        if (!controller.signal.aborted) {confirmedDeadline=started+config.leaseMs;armWatchdog();}
+        await request(`/jobs/${claimed.job.id}/heartbeat`, {runnerId:config.runnerId,leaseToken:claimed.leaseToken,leaseMs:config.leaseMs},'POST',Math.min(config.leaseMs/limits.heartbeatDivisor,remaining),signal);
+        if (!signal.aborted) {confirmedDeadline=started+config.leaseMs;armWatchdog();}
       } catch { controller.abort(); }
       finally {heartbeatInFlight=undefined;}
     })();
   }, Math.floor(config.leaseMs / limits.heartbeatDivisor));
   try {
     let result;
-    try { result = await executeJob(config, claimed.job, controller.signal); }
+    try { result = await executeJob(config, claimed.job, signal); }
     catch (error) { result = {exitCode:null,timedOut:false,logsTruncated:false,log:error.message,artifacts:[]}; }
     clearInterval(timer);
     if (heartbeatInFlight) await heartbeatInFlight;
-    if (controller.signal.aborted || performance.now() >= confirmedDeadline-limits.leaseSafetyMarginMs) throw new Error('Lease confirmation failed; command stopped. Completion withheld; explicit retry may be needed.');
-    const job = await request(`/jobs/${claimed.job.id}/complete`, {runnerId:config.runnerId,leaseToken:claimed.leaseToken,result:boundResult(result)},'POST',confirmedDeadline-performance.now()-limits.leaseSafetyMarginMs);
+    if (parentAbortSignal?.aborted) throw new Error('Runner stopped; command cancelled and completion withheld.');
+    if (signal.aborted || performance.now() >= confirmedDeadline-limits.leaseSafetyMarginMs) throw new Error('Lease confirmation failed; command stopped. Completion withheld; explicit retry may be needed.');
+    const job = await request(`/jobs/${claimed.job.id}/complete`, {runnerId:config.runnerId,leaseToken:claimed.leaseToken,result:boundResult(result)},'POST',confirmedDeadline-performance.now()-limits.leaseSafetyMarginMs,signal);
     return { claimed:true, job };
   } finally {clearInterval(timer);clearTimeout(watchdog);}
 }
@@ -156,11 +162,27 @@ export async function runOnce(config) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const configIndex = process.argv.indexOf('--config');
   try {
-    if (!['once','submit','get','retry'].includes(process.argv[2]) || configIndex < 0 || !process.argv[configIndex+1]) invalid('Usage: node worker.js once|submit|get|retry --config runner.json [--job job.json|--id JOB_ID]');
+    if (!['watch','once','submit','get','retry'].includes(process.argv[2]) || configIndex < 0 || !process.argv[configIndex+1]) invalid('Usage: node worker.js watch|once|submit|get|retry --config runner.json [--job job.json|--id JOB_ID]');
     const config = loadRunnerConfig(process.argv[configIndex+1]);
     const request = createRunnerClient(config);
     let outcome;
-    if (process.argv[2] === 'once') outcome = await runOnce(config);
+    if (['watch','once'].includes(process.argv[2])) {
+      const controller = new AbortController();
+      const stop = () => controller.abort();
+      process.on('SIGINT',stop); process.on('SIGTERM',stop);
+      try {
+        if (process.argv[2] === 'watch') {
+          process.stdout.write(JSON.stringify({watching:true})+'\n');
+          outcome = await watchRunner(config, runOnce, {signal:controller.signal,
+            onOutcome:result=>process.stdout.write(JSON.stringify(result)+'\n'),
+            onError:error=>process.stderr.write(error.message+'\n'),
+          });
+        } else {
+          try { outcome = await runOnce(config,controller.signal); }
+          catch (error) { if (controller.signal.aborted) outcome = {stopped:true}; else throw error; }
+        }
+      } finally {process.off('SIGINT',stop);process.off('SIGTERM',stop);}
+    }
     else if (process.argv[2] === 'submit') {
       const jobIndex = process.argv.indexOf('--job');
       if (jobIndex < 0 || !process.argv[jobIndex+1]) invalid('submit requires --job job.json');

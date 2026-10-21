@@ -34,7 +34,7 @@ npm run smoke:messaging
 npm run smoke:factory
 ```
 
-`npm test` runs Perpeto messaging and launcher tests. Upstream checks cover selected orchestration, provider registry, and machine-grouping behavior. `npm run runtime:help` shows the inherited CLI reference after a build. See [current verification and next work](docs/status.md).
+`npm test` runs Perpeto storage, client, factory definition, runner process and launcher tests. Upstream checks cover selected orchestration, provider registry, and machine-grouping behavior. `npm run runtime:help` shows the inherited CLI reference after a build. See [current verification and next work](docs/status.md).
 
 Use the [messaging guide](docs/messaging.md) to connect CLI or harness clients, and the [runner guide](packages/factory-runner/README.md) to execute revision-pinned CI on an owned machine. See the [architecture](docs/architecture.md) for current boundaries.
 

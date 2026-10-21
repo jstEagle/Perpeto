@@ -19,6 +19,8 @@
     "maxArtifactPathCharacters": 1024
   },
   "worker": {
+    "pollIntervalMs": 2000,
+    "retryIntervalMs": 5000,
     "requestTimeoutMs": 10000,
     "maxCompletionBytes": 393216,
     "revisionCaptureBytes": 1024,
@@ -27,7 +29,9 @@
     "validationRanges": {
       "timeoutMs": [100, 3600000],
       "maxOutputBytes": [1000, 262144],
-      "leaseMs": [3000, 300000]
+      "leaseMs": [3000, 300000],
+      "pollIntervalMs": [100, 300000],
+      "retryIntervalMs": [100, 300000]
     },
     "environment": {
       "LANG": "C.UTF-8",

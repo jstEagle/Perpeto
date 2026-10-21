@@ -1,6 +1,6 @@
 # User-owned CI runner
 
-This increment runs queued CI jobs on an owner-controlled macOS or Linux machine. The existing Perpeto/T3 environment server owns the durable SQLite queue and authenticates requests. A separate one-shot worker claims a matching job, checks out its exact Git revision in a temporary clone, executes an allowed executable with an argv array, and submits a bounded result.
+This increment runs queued CI jobs on an owner-controlled macOS or Linux machine. The existing Perpeto/T3 environment server owns the durable SQLite queue and authenticates requests. A separate worker claims a matching job, checks out its exact Git revision in a temporary clone, executes an allowed executable with an argv array, and submits a bounded result. It can process one job or continuously watch the queue.
 
 Shared operational defaults, storage settings and validation limits live in `config/limits.json`; machine-specific settings live in the runner JSON described below. No non-secret runner setting requires an environment variable.
 
@@ -25,7 +25,9 @@ Create local non-secret JSON configuration:
   "timeoutMs": 600000,
   "maxOutputBytes": 65536,
   "leaseMs": 30000,
-  "artifactPaths": ["test-report.json"]
+  "artifactPaths": ["test-report.json"],
+  "pollIntervalMs": 2000,
+  "retryIntervalMs": 5000
 }
 ```
 
@@ -49,11 +51,16 @@ Replace the example revision with the full lowercase commit SHA from the configu
 ```sh
 node packages/factory-runner/src/worker.js submit --config /path/runner.json --job /path/job.json
 node packages/factory-runner/src/worker.js once --config /path/runner.json
+node packages/factory-runner/src/worker.js watch --config /path/runner.json
 node packages/factory-runner/src/worker.js get --config /path/runner.json --id JOB_ID
 node packages/factory-runner/src/worker.js retry --config /path/runner.json --id JOB_ID
 ```
 
-`once` exits after one job, or immediately if no compatible queued job exists. A service manager or an agent can invoke it repeatedly; this increment does not install a background service. Submissions are idempotent within a project when their key and execution instructions match. Changing the payload under the same key returns a conflict.
+`once` exits after one job, or immediately if no compatible queued job exists. `watch` processes one job at a time, immediately checks for the next compatible job after completion, and waits between empty claims. Optional `pollIntervalMs` and `retryIntervalMs` override the shared idle and error-backoff defaults in `config/limits.json`. Both accept 100–300000 milliseconds. Connection/credential errors are reported without raw response bodies and use the configured backoff rather than a tight failure loop. This increment does not install a background service; a service manager can run the watch command.
+
+`watch` prints a JSON readiness event, one JSON outcome per completed job, and a final stopped event. Both `watch` and `once` handle SIGINT/SIGTERM by cancelling active request/command execution, cleaning up the command process group, and exiting with code 0 and a stopped event. Watch also interrupts idle waiting. Shutdown cancellation does not submit a failed or successful completion: an active lease expires to `lost` and requires explicit inspection/retry. This avoids treating an interrupted test as verified. Programmatic `runOnce(config, parentAbortSignal)` also accepts cancellation. Other configuration/startup failures exit 1.
+
+Submissions are idempotent within a project when their key and execution instructions match. Changing the payload under the same key returns a conflict.
 
 ## Execution and recovery
 
@@ -83,6 +90,6 @@ Claims return `{job,leaseToken,leaseExpiresAt}`. Completion result is `{exitCode
 
 ## Verified boundary
 
-Root tests exercise temporary SQLite databases, restart persistence, simultaneous claimant subprocesses, expiry/manual retry/fencing, actual worker subprocess execution over HTTP, lease heartbeats, stalled-heartbeat cancellation before expiry, cleanup of unref descendants, completion of heavily escaped output within the HTTP size limit, pinned checkout isolation despite dirty source files, omission of a test parent secret, artifact summary, output truncation and timeout. Inherited server tests independently exercise real environment authentication, scoped runner routes, revocation and completion fencing.
+Root tests exercise temporary SQLite databases, restart persistence, simultaneous claimant subprocesses, expiry/manual retry/fencing, actual worker subprocess execution over HTTP, lease heartbeats, stalled-heartbeat cancellation before expiry, cleanup of unref descendants, completion of heavily escaped output within the HTTP size limit, pinned checkout isolation despite dirty source files, omission of a test parent secret, artifact summary, output truncation and timeout. Watch subprocess tests also cover jobs arriving after idle polling, prompt idle/active signal shutdown, descendant cleanup with completion withheld, eventual lost/manual-retry state, and configured error backoff. Inherited server tests independently exercise real environment authentication, scoped runner routes, revocation and completion fencing.
 
 Two physical hosts, Windows, GitHub Actions compatibility, artifact uploads and a runner UI remain unverified or unimplemented. There is no claim of a complete CI platform.

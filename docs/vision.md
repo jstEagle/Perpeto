@@ -78,9 +78,9 @@ Desired capabilities now include shared cross-device messaging, a visual factory
 
 Justus wants Perpeto to address the operational gaps an individual encounters when shipping large volumes of agent-produced software.
 
-Users must be able to supply machines they own as CI runners. Agents should be able to submit CI workflows, including testing and verification jobs, to those machines as part of factory execution. This is an intended product capability, not an implemented integration.
+Users must be able to supply machines they own as CI runners. Agents should be able to submit CI workflows, including testing and verification jobs, to those machines as part of factory execution. This is a requested product capability. An initial Perpeto-native queue and worker now execute revision-pinned commands; see [build status](status.md) for verified behavior and remaining gaps.
 
-The CI job submission and execution mechanism remains open. GitHub Actions compatibility, other CI integrations, and a Perpeto-native job runner have not been selected. User-owned execution does not imply that Git is unnecessary for transferring source code.
+The initial implementation uses a Perpeto-native job queue. GitHub Actions compatibility and other CI integrations remain open. User-owned execution does not imply that Git is unnecessary for transferring source code.
 
 Supporting proposals to discuss:
 
@@ -99,7 +99,7 @@ Requested 20 October 2026, following further experience with software factories:
 - The experience should resemble Slack, with users able to see and participate in communication.
 - This is a shared communication capability within Perpeto; an integration with Slack itself has not been requested.
 
-Channels, threads, direct messages, addressing, retention, delivery guarantees, and agent wake-up behavior remain to be defined. A durable inbox addressed to an agent role rather than a transient session is an assistant proposal that would support session replacement and disconnected devices.
+Initial project channels, role-addressed messages, persistent history, CLI/MCP tools and a browser view are implemented. Threads, private direct messages, retention policy and agent wake-up behavior remain open. Role labels currently describe participants; they are not independently authenticated identities. See [the messaging guide](messaging.md).
 
 ## Visual factory builder
 
