@@ -1,0 +1,191 @@
+import Foundation
+
+/// In-memory factory built from `DemoFixtures`. Mutations apply locally and
+/// are lost on quit; nothing leaves the device.
+public actor DemoDataSource: FactoryDataSource {
+    private var factory: FactoryState
+    private var projects: [String: ProjectState] = [:]
+    private let now: @Sendable () -> Date
+    /// Delay between architect stages; zero in tests.
+    private let stageDelay: Duration
+
+    public init(now: @escaping @Sendable () -> Date = Date.init, stageDelay: Duration = .milliseconds(900)) {
+        self.now = now
+        self.stageDelay = stageDelay
+        self.factory = DemoFixtures.factory(now: now())
+    }
+
+    public nonisolated var isDemo: Bool { true }
+
+    public func loadFactory() async throws -> FactoryState { factory }
+
+    public func loadProject(_ projectId: String) async throws -> ProjectState {
+        if let state = projects[projectId] { return state }
+        let state = DemoFixtures.project(projectId, now: now())
+        projects[projectId] = state
+        return state
+    }
+
+    public nonisolated func requestDraft(projectId: String, prompt: String, baseWorkflowId: String?) -> AsyncThrowingStream<DraftProgress, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let assignmentId = "asg_arch\(Int.random(in: 100...999))"
+                    for stage in [DraftProgress.Stage.queued, .reading, .drafting, .validating] {
+                        continuation.yield(DraftProgress(assignmentId: assignmentId, stage: stage))
+                        try await Task.sleep(for: stageDelay)
+                    }
+                    let draft = try await self.makeDraft(projectId: projectId, prompt: prompt, baseWorkflowId: baseWorkflowId, assignmentId: assignmentId)
+                    continuation.yield(DraftProgress(assignmentId: assignmentId, stage: .ready, draft: draft))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Produces a plausible draft. The demo cannot run an architect, so it
+    /// applies a fixed change: a human approval gate before the merge queue,
+    /// or the build template when the project has no workflow yet.
+    private func makeDraft(projectId: String, prompt: String, baseWorkflowId: String?, assignmentId: String) async throws -> Workflow {
+        var state = try await loadProject(projectId)
+        let base = baseWorkflowId.flatMap { state.activeVersion(of: $0) ?? state.versions[$0]?.last }
+        var graph: WorkflowGraph
+        var rationale: String
+        let workflowId = base?.id ?? "wf_\(UUID().uuidString.prefix(6).lowercased())"
+        if let base {
+            graph = base.graph
+            graph.nodes.removeAll { $0.id == "approve" }
+            graph.edges.removeAll { $0.from.node == "approve" || $0.to.node == "approve" }
+            let ciPass = graph.edges.firstIndex { $0.from.node == "ci" && $0.from.port == "pass" }
+            if let ciPass, let mq = graph.node("mq") {
+                graph.edges[ciPass].to = .init(node: "approve")
+                for index in graph.nodes.indices where graph.nodes[index].position.x >= mq.position.x {
+                    graph.nodes[index].position.x += 188
+                }
+                graph.nodes.append(GraphNode(id: "approve", type: .human, label: "Release approval", position: .init(x: mq.position.x, y: mq.position.y),
+                                             config: ["prompt": "Approve merging this change to main."]))
+                graph.edges += [
+                    GraphEdge(id: "h1", from: .init(node: "approve", port: "pass"), to: .init(node: "mq"), kind: .flow),
+                    GraphEdge(id: "h2", from: .init(node: "approve", port: "fail"), to: .init(node: "loop"), kind: .flow),
+                ]
+            }
+            rationale = "Added a human approval gate between CI and the merge queue, as the prompt asks for a person to sign off before merging. Rejected changes return to the review loop, so they keep their iteration count."
+        } else {
+            graph = DemoFixtures.buildGraphV3()
+            rationale = "Used the build template: a planner splits goals into items, builders work in a review loop limited to 3 iterations, then CI and a serial merge queue. The project has two online machines, so builder concurrency is 4."
+            if let i = graph.nodes.firstIndex(where: { $0.id == "build" }) { graph.nodes[i].config["concurrency"] = 4 }
+        }
+        let versions = state.versions[workflowId] ?? []
+        let draft = Workflow(
+            id: workflowId, projectId: projectId, name: base?.name ?? "Build", purpose: base?.purpose ?? .build,
+            version: (versions.map(\.version).max() ?? 0) + 1, graph: graph, status: .draft,
+            authoredBy: Authorship(kind: .agent, assignmentId: assignmentId, prompt: prompt), rationale: rationale,
+            parentVersion: base?.version, createdAt: now())
+        state.versions[workflowId, default: []].append(draft)
+        if !state.workflows.contains(where: { $0.id == workflowId }) { state.workflows.append(draft) }
+        projects[projectId] = state
+        return draft
+    }
+
+    public func activate(workflowId: String, version: Int) async throws -> Workflow {
+        guard let projectId = projects.first(where: { $0.value.versions[workflowId] != nil })?.key,
+              var state = projects[projectId],
+              var versions = state.versions[workflowId],
+              let index = versions.firstIndex(where: { $0.version == version }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "That workflow version no longer exists.")
+        }
+        for i in versions.indices where versions[i].status == .active { versions[i].status = .draft }
+        versions[index].status = .active
+        state.versions[workflowId] = versions
+        if let w = state.workflows.firstIndex(where: { $0.id == workflowId }) { state.workflows[w] = versions[index] }
+        projects[projectId] = state
+        return versions[index]
+    }
+
+    public func save(_ workflow: Workflow) async throws -> Workflow {
+        var state = try await loadProject(workflow.projectId)
+        let result = WorkflowValidator.validate(workflow.graph)
+        guard result.valid else {
+            throw HubError.http(status: 422, code: "INVALID_GRAPH", message: "The graph has \(result.errorCount) validation errors. Fix them before saving.")
+        }
+        var saved = workflow
+        saved.version = (state.versions[workflow.id]?.map(\.version).max() ?? 0) + 1
+        saved.status = .draft
+        saved.authoredBy = Authorship(kind: .user)
+        saved.rationale = nil
+        saved.parentVersion = workflow.version
+        saved.createdAt = now()
+        state.versions[workflow.id, default: []].append(saved)
+        projects[workflow.projectId] = state
+        return saved
+    }
+
+    public func validate(_ workflow: Workflow) async throws -> ValidationResult { WorkflowValidator.validate(workflow.graph) }
+
+    public func control(runId: String, _ action: HubClient.RunControl) async throws -> Run {
+        guard let projectId = projects.first(where: { $0.value.runs.contains { $0.id == runId } })?.key,
+              var state = projects[projectId],
+              let index = state.runs.firstIndex(where: { $0.id == runId }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "That run no longer exists.")
+        }
+        switch action {
+        case .pause: state.runs[index].status = .paused
+        case .resume: state.runs[index].status = .running
+        case .stop:
+            state.runs[index].status = .stopped
+            state.runs[index].stoppedAt = now()
+        }
+        projects[projectId] = state
+        return state.runs[index]
+    }
+
+    public func startRun(workflowId: String) async throws -> Run {
+        guard let projectId = projects.first(where: { $0.value.versions[workflowId] != nil })?.key,
+              var state = projects[projectId],
+              let active = state.activeVersion(of: workflowId) else {
+            throw HubError.http(status: 409, code: "NOT_ACTIVE", message: "Activate a version of this workflow before starting a run.")
+        }
+        let run = Run(id: "run_\(UUID().uuidString.prefix(5).lowercased())", projectId: projectId, workflowId: workflowId, workflowVersion: active.version, status: .running, startedAt: now())
+        state.runs.insert(run, at: 0)
+        projects[projectId] = state
+        return run
+    }
+
+    public func decide(workItemId: String, _ decision: HubClient.Decision) async throws -> WorkItem {
+        guard let projectId = projects.first(where: { $0.value.workItems.contains { $0.id == workItemId } })?.key,
+              var state = projects[projectId],
+              let index = state.workItems.firstIndex(where: { $0.id == workItemId }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "That work item no longer exists.")
+        }
+        state.workItems[index].status = decision == .pass ? .queued : .failed
+        projects[projectId] = state
+        return state.workItems[index]
+    }
+
+    public func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message {
+        var state = try await loadProject(projectId)
+        let message = Message(id: "msg_\(UUID().uuidString.prefix(8))", projectId: projectId, channelId: channelId, senderRoleId: "owner", body: body, createdAt: now())
+        state.messages[channelId, default: []].append(message)
+        projects[projectId] = state
+        return message
+    }
+
+    public func enrollmentCode() async throws -> EnrollmentCode {
+        EnrollmentCode(code: "DEMO-" + String(UUID().uuidString.prefix(4)), expiresAt: now().addingTimeInterval(900))
+    }
+
+    public func drain(machineId: String) async throws -> Machine {
+        guard let index = factory.machines.firstIndex(where: { $0.id == machineId }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "That machine is no longer enrolled.")
+        }
+        factory.machines[index].status = .draining
+        return factory.machines[index]
+    }
+
+    public nonisolated func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}
