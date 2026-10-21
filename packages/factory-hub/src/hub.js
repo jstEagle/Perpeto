@@ -89,7 +89,8 @@ export class Hub {
             return this.restoreResponse(JSON.parse(previous.response));
           }
         }
-        const result = await this.route(method, new URL(path, 'http://hub'), body, auth);
+        const routeBody = key && body.idempotencyKey === undefined ? { ...body, idempotencyKey: key } : body;
+        const result = await this.route(method, new URL(path, 'http://hub'), routeBody, auth);
         const emptyLease = path === '/nodes/lease' && !result.body.assignments.length && !result.body.jobs.length;
         if (mutation && idempotencyKey && (!emptyLease || finalLease)) {
           this.store.db.prepare('INSERT INTO idempotency VALUES(?,?,?,?)').run(scope, idempotencyKey, fingerprint, JSON.stringify(this.persistResponse(result)));
@@ -392,6 +393,7 @@ export class Hub {
           requireValue(['active', 'cooling', 'disabled', 'invalid'].includes(account.status), 'Invalid account status.');
           const previous = this.store.get('account', account.id);
           if (previous && previous.machineId !== machine.id) fail(409, 'CONFLICT', 'Account belongs to another machine.');
+          for (const field of ['cooldownUntil', 'lastUsedAt']) if (account[field] !== undefined) requireValue(typeof account[field] === 'string' && Number.isFinite(Date.parse(account[field])), `Invalid account ${field}.`);
           // Only allow public metadata through. Credentials never belong in hub snapshots.
           return { id: account.id, machineId: machine.id, provider: account.provider, label: account.label, status: account.status,
             ...(account.cooldownUntil ? { cooldownUntil: account.cooldownUntil } : {}), ...(account.lastUsedAt ? { lastUsedAt: account.lastUsedAt } : {}) };

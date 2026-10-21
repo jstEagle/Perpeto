@@ -454,3 +454,33 @@ test('restart requeues persisted expired leases with attempt incremented', async
   await sleep(40); await f.restart();
   const requeued = (await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments[0]; assert.equal(requeued.status, 'queued'); assert.equal(requeued.attempt, work.attempt + 1);
 });
+
+test('header idempotency works for existing MessagingStore sends and all DB sidecars stay private', async t => {
+  const f = await fixture(t); const { project, run } = await f.run();
+  const path = `/messaging/projects/${project.id}/channels/run-${run.id}/messages`;
+  const body = { senderRoleId: 'builder', recipientRoleId: 'review', body: 'Header retry' };
+  const headers = { 'Idempotency-Key': 'header-message' };
+  const first = await f.request('POST', path, body, f.owner, headers); assert.equal(first.status, 200);
+  assert.deepEqual((await f.request('POST', path, body, f.owner, headers)).body, first.body);
+  assert.equal((await f.request('GET', path)).body.messages.length, 1);
+  for (const basename of ['hub.sqlite', 'messaging.sqlite']) for (const suffix of ['', '-wal', '-shm']) {
+    assert.equal((await stat(join(f.directory, basename + suffix))).mode & 0o777, 0o600);
+  }
+});
+
+test('CLI starts from JSON, serves liveness, shuts down, and never prints credentials', async t => {
+  const { spawn } = await import('node:child_process');
+  const f = await fixture(t); const configPath = join(f.directory, 'cli.json');
+  await writeFile(configPath, JSON.stringify({ port: 0, databasePath: './cli.sqlite', messagingDatabasePath: './cli-messaging.sqlite', ownerTokenPath: './cli.secret' }));
+  const process = spawn(globalThis.process.execPath, ['packages/factory-hub/bin/perpeto-hub.js', '--config', configPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = ''; let errors = '';
+  process.stdout.on('data', data => { output += data; }); process.stderr.on('data', data => { errors += data; });
+  const exited = new Promise(resolve => process.once('exit', (code, signal) => resolve({ code, signal })));
+  t.after(async () => { process.kill('SIGTERM'); await exited; });
+  await eventually(() => /http:\/\/127\.0\.0\.1:\d+/.test(output));
+  const url = output.match(/http:\/\/127\.0\.0\.1:\d+/)[0];
+  assert.equal((await fetch(`${url}/health`)).status, 200);
+  const token = (await readFile(join(f.directory, 'cli.secret'), 'utf8')).trim();
+  process.kill('SIGTERM'); assert.equal((await exited).code, 0);
+  assert.equal((output + errors).includes(token), false);
+});
