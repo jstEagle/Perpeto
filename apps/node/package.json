@@ -1,0 +1,23 @@
+{
+  "name": "@perpeto/node",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Machine daemon: enrolls with a hub, runs executors and reports account capacity.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "perpeto-node": "./bin/perpeto-node.js"
+  },
+  "engines": {
+    "node": ">=24.13.1 <25"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@perpeto/accounts": "*"
+  }
+}

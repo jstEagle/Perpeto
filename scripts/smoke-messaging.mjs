@@ -75,7 +75,7 @@ try {
   await writeFile(credentialFile, writer+'\n', {mode:0o600});
   await writeFile(clientConfig, JSON.stringify({baseUrl:origin,projectId:'smoke-project',roleId:'implementation',channelId:'build',credentialFile}));
   function cli(args, input) {
-    const result = spawnSync(process.execPath, [resolve(root, 'packages/factory-client/src/cli.js'), '--config', clientConfig, ...args], {cwd:root, input, encoding:'utf8', timeout:15000});
+    const result = spawnSync(process.execPath, [resolve(root, 'packages/sdk/src/cli.js'), '--config', clientConfig, ...args], {cwd:root, input, encoding:'utf8', timeout:15000});
     if (result.status !== 0) throw new Error('Factory client subprocess failed.');
     assert.equal(result.stdout.includes(writer), false, 'Client must not output its credential.');
     return result.stdout;
@@ -108,7 +108,7 @@ try {
   const liveHarness = process.argv.includes('--live-codex');
   if (liveHarness) {
     console.log('Starting optional live Codex harness check.');
-    const mcp = `{perpeto={command=${JSON.stringify(process.execPath)},args=${JSON.stringify([resolve(root, 'packages/factory-client/src/cli.js'),'--config',clientConfig,'mcp'])},required=true,tools={factory_read={approval_mode="approve"},factory_send={approval_mode="approve"},factory_channels={approval_mode="approve"}}}}`;
+    const mcp = `{perpeto={command=${JSON.stringify(process.execPath)},args=${JSON.stringify([resolve(root, 'packages/sdk/src/cli.js'),'--config',clientConfig,'mcp'])},required=true,tools={factory_read={approval_mode="approve"},factory_send={approval_mode="approve"},factory_channels={approval_mode="approve"}}}}`;
     let harnessFailure;
     const invocation = promisify(execFile)('codex', ['exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only','--json','--cd',home,
       '-c',`mcp_servers=${mcp}`,

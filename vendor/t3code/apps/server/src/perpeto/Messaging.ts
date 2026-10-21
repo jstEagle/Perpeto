@@ -4,7 +4,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
-import { MessagingStore } from "../../../../../../packages/factory-transport/src/storage.js";
+import { MessagingStore } from "../../../../../../packages/messaging/src/messaging-store.js";
 import * as ServerConfig from "../config.ts";
 
 /** Environment-owned local state; every HTTP caller is authorized separately. */

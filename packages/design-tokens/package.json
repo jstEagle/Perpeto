@@ -2,8 +2,8 @@
   "name": "@perpeto/design-tokens",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "description": "Workshop design tokens, Spindle assets and component specimen for the Perpeto web and Apple clients.",
+  "type": "module",
   "exports": {
     ".": "./dist/tokens.ts",
     "./tokens.css": "./dist/tokens.css",
@@ -11,7 +11,9 @@
     "./tokens.ts": "./dist/tokens.ts",
     "./assets/*": "./assets/*"
   },
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test",
