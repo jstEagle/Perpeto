@@ -1,20 +1,76 @@
+/*
+  Perpeto Mono: the product UI direction for the web and Apple clients, selected by Justus on 2026-10-21.
+  Source of truth. packages/design-tokens generates CSS, JSON, TypeScript and Swift from this file.
+
+  Minimal, spacious, monochrome, rounded, smooth. Warm off-white canvas, white cards, near-black ink.
+  Signal orange is the only hue: a small live-activity dot and the brand mark, never buttons or large areas.
+  Failure may use the one restrained red where meaning would otherwise be lost.
+*/
 :root {
-  --canvas: #f4f2ed;
+  /* Surfaces */
+  --canvas: #f6f5f2;
   --surface: #ffffff;
-  --ink: #202521;
-  --muted: #62665f;
-  --border: #d9dcd3;
-  --control-border: #797e74;
+  --surface-subtle: #f0efeb;
+
+  /* Greys, light to dark */
+  --grey-100: #e8e7e3;
+  --grey-200: #d9d7d2;
+  --grey-300: #b8b6b0;
+  --grey-400: #8a8883;
+  --grey-500: #6a6863;
+  --grey-600: #43423e;
+  --ink: #161615;
+
+  /* Roles */
+  --ink-soft: var(--grey-600);
+  --muted: var(--grey-500);
+  --faint: var(--grey-400);
+  --border: var(--grey-100);
+  --control-border: var(--grey-400);
+  --action: var(--ink);
+  --on-action: var(--surface);
+  --focus: var(--ink);
+
+  /* Signal: live activity and the brand mark only */
   --accent: #f05a28;
-  --action: #ad360f;
-  --on-action: #ffffff;
-  --focus: #2459c4;
-  --success: #286140;
-  --warning: #805500;
-  --error: #ad3030;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* Status: greys with icon, label and weight; red only for failure */
+  --success: var(--grey-600);
+  --warning: var(--ink);
+  --error: #b3372c;
+
+  /* Type */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Space and layout */
   --space-unit: 4px;
-  --radius-control: 6px;
-  --radius-panel: 12px;
+  --page-padding: 48px;
+  --page-padding-compact: 24px;
+  --card-padding: 28px;
+  --card-padding-compact: 20px;
+  --section-gap: 40px;
+  --content-max: 1120px;
+  --reading-max: 680px;
+  --sidebar-width: 248px;
+
+  /* Radii */
+  --radius-small: 8px;
+  --radius-control: 12px;
+  --radius-node: 16px;
+  --radius-panel: 20px;
+  --radius-sheet: 28px;
+  --radius-pill: 999px;
+
+  /* Elevation: a faint ring and soft, low shadows instead of borders */
+  --shadow-card: 0 0 0 1px rgb(22 22 21 / 0.045), 0 1px 2px rgb(22 22 21 / 0.04), 0 8px 24px rgb(22 22 21 / 0.035);
+  --shadow-raised: 0 0 0 1px rgb(22 22 21 / 0.05), 0 2px 6px rgb(22 22 21 / 0.06), 0 16px 40px rgb(22 22 21 / 0.08);
+  --shadow-overlay: 0 0 0 1px rgb(22 22 21 / 0.06), 0 8px 24px rgb(22 22 21 / 0.1), 0 24px 64px rgb(22 22 21 / 0.1);
+
+  /* Motion: short and eased out; the generated CSS drops durations to 0 under reduced motion */
+  --duration-fast: 140ms;
+  --duration-base: 220ms;
+  --duration-slow: 360ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
