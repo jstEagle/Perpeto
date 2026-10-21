@@ -79,7 +79,7 @@ Use the [messaging guide](docs/guides/messaging.md) to connect CLI or harness cl
 - [T3 source study](docs/research/t3-code.md) and [implementation decisions](docs/architecture/decisions.md)
 - [Documentation map](docs/README.md)
 
-The visual explorations remain proposals, with [brand/tokens.css](brand/tokens.css) as the source for the proposed Workshop system.
+The product UI follows Perpeto Mono, selected by Justus on 21 October 2026: minimal, spacious, monochrome and rounded. [brand/tokens.css](brand/tokens.css) is its source of truth; other brand explorations remain proposals.
 
 ## License and contributing
 

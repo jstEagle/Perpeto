@@ -240,7 +240,7 @@ The node ships a `fake` executor for tests and loads `@perpeto/t3-executor` for 
 
 ## Clients and brand
 
-Both clients follow the Workshop system strictly: [brand/README.md](../../brand/README.md), [brand/tokens.css](../../brand/tokens.css) and the Spindle identity in `brand/identity/`. `packages/design-tokens` is the only place clients read colors, type scale, spacing and radii from. No ad-hoc colors, no uppercase microcopy, no numbered eyebrows or tracked-out kickers, no decorative node meshes or gradients. The workflow editor is the one place nodes and edges appear, and it should look like a precise ruled drawing, not a sci-fi network.
+Both clients follow Perpeto Mono strictly (see [design system](design-system.md)): [brand/README.md](../../brand/README.md), [brand/tokens.css](../../brand/tokens.css) and the Spindle identity in `brand/identity/`. `packages/design-tokens` is the only place clients read colors, type scale, spacing and radii from. No ad-hoc colors, no uppercase microcopy, no numbered eyebrows or tracked-out kickers, no decorative node meshes or gradients. The workflow editor is the one place nodes and edges appear: soft rounded nodes and thin grey edges on a faint dot grid, not a ruled drawing or a sci-fi network.
 
 Primary navigation: Projects → Project (Overview, Workflows, Runs, Work, Messages, Merge queue) and Factory (Machines, Accounts, Usage). Usage and agent counts are always visible at the project level.
 

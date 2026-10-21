@@ -20,7 +20,7 @@ This repository contains an evolving product vision, proposed identity, and init
 | --- | --- | --- |
 | [Factory architecture](architecture/README.md) | Shared names, entities, APIs and package boundaries | Implementation contract |
 | [Implementation decisions](architecture/decisions.md) | Record implementation choices and rationale | Active |
-| [Design system](architecture/design-system.md) | Apply the Workshop direction to the web and Apple clients | Proposed |
+| [Design system](architecture/design-system.md) | Perpeto Mono for the web and Apple clients | Selected 21 Oct 2026; client restyle in progress |
 | [Messaging transport](architecture/messaging.md) | Authenticated messaging routes inside the T3 environment server | Implemented |
 
 ## Guides
