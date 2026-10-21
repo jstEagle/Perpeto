@@ -108,6 +108,19 @@ describe('HttpHub', () => {
     expect(bodies[1]).toMatchObject({ decision: 'fail', note: 'Needs tests' });
   });
 
+  it('binds a human decision to its wait and surfaces a stale one', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(json({ accepted: true, decisionId: 'dec_2' }))
+      .mockResolvedValueOnce(json({ error: { code: 'STALE_DECISION', message: 'This decision answers an earlier wait.' } }, 409));
+    vi.stubGlobal('fetch', fetch);
+    await hub.decideWorkItem('wi_1', { decision: 'approve', decisionId: 'dec_2' });
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [URL, RequestInit])[1].body))).toMatchObject({ decision: 'pass', decisionId: 'dec_2' });
+    const refused = await hub.decideWorkItem('wi_1', { decision: 'approve', decisionId: 'dec_1' }).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(HubError);
+    expect(refused).toMatchObject({ status: 409, code: 'STALE_DECISION' });
+  });
+
   it('finds the newest event by paging forward once', async () => {
     const events = Array.from({ length: 1500 }, (_, i) => ({ seq: i + 1, at: '', type: 'x', subject: { kind: 'run', id: 'r' }, data: {} }));
     const fetch = vi.fn(async (url: URL) => {

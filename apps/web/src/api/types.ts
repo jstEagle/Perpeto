@@ -137,6 +137,8 @@ export interface WorkItem {
   headSha?: string;
   iteration: number;
   parentId?: Id;
+  /** Set while the item waits at a human gate; names that one wait. */
+  decisionId?: string;
 }
 
 export interface Harness {
@@ -388,6 +390,8 @@ export interface RunInput {
 export interface HumanDecision {
   decision: 'approve' | 'return';
   note?: string;
+  /** The wait being answered. The hub refuses it with 409 STALE_DECISION once the item waits for another decision. */
+  decisionId?: string;
 }
 
 /* Observing runs (docs/architecture/README.md "Observing runs"). */

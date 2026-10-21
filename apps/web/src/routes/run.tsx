@@ -239,7 +239,7 @@ function RunView({ run, projectId, onChanged }: { run: Run; projectId: string; o
           ))}
         {tab === 'work' && (
           <Async resource={items} what="work items">
-            {(list) => <WorkBoard items={list} graph={version?.graph} />}
+            {(list) => <WorkBoard items={list} graph={version?.graph} onStale={items.reload} />}
           </Async>
         )}
         {tab === 'assignments' && (

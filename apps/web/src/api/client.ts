@@ -274,7 +274,9 @@ export class HttpHub implements HubApi {
   }
   /** The engine decides human gates with `pass` or `fail`. */
   async decideWorkItem(id: string, decision: HumanDecision) {
-    await this.#request('POST', `/work-items/${enc(id)}/decision`, { body: { decision: decision.decision === 'approve' ? 'pass' : 'fail', ...(decision.note ? { note: decision.note } : {}) } });
+    await this.#request('POST', `/work-items/${enc(id)}/decision`, {
+      body: { decision: decision.decision === 'approve' ? 'pass' : 'fail', ...(decision.note ? { note: decision.note } : {}), ...(decision.decisionId ? { decisionId: decision.decisionId } : {}) },
+    });
   }
 
   async listMachines() {

@@ -43,7 +43,7 @@ export function WorkPage() {
             </div>
           ) : (
             <Async resource={items} what="work items">
-              {(list: WorkItem[]) => <WorkBoard items={list} graph={merged} runLabel={live.length > 1 ? (i) => i.runId : undefined} />}
+              {(list: WorkItem[]) => <WorkBoard items={list} graph={merged} runLabel={live.length > 1 ? (i) => i.runId : undefined} onStale={items.reload} />}
             </Async>
           )
         }

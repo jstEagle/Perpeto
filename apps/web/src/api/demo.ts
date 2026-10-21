@@ -306,6 +306,9 @@ export class DemoHub implements HubApi {
   async decideWorkItem(id: string, decision: HumanDecision) {
     await latency();
     const item = this.#state.workItems.find((w) => w.id === id) ?? notFound('Work item');
+    if (decision.decisionId && item.decisionId && decision.decisionId !== item.decisionId)
+      throw new HubError(409, 'STALE_DECISION', 'This decision answers an earlier wait; the work item now waits for another decision.');
+    delete item.decisionId;
     item.status = decision.decision === 'approve' ? 'active' : 'queued';
     this.#emit('gate.result', { kind: 'work-item', id }, { result: decision.decision === 'approve' ? 'pass' : 'fail', decision: decision.decision === 'approve' ? 'pass' : 'fail', source: 'human', nodeId: item.nodeId }, { runId: item.runId });
   }
