@@ -13,6 +13,7 @@
   "archiveFinished": true,
   "retentionSweepIntervalMs": 60000,
   "sessionTtlMs": 43200000,
+  "messageRatePerMinute": 30,
   "deliveryMaxStepFailures": 5,
   "deliveryRetryBackoffMs": 2000,
   "deliveryRepositoriesPath": "../.perpeto/hub/repositories",
