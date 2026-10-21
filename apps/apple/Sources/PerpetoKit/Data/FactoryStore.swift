@@ -97,6 +97,7 @@ public final class FactoryStore {
     }
 
     func apply(_ event: HubEvent) {
+        guard !event.isHousekeeping else { return }
         if let projectId = event.projectId {
             var state = projectStates[projectId] ?? .empty
             state.events.insert(event, at: 0)

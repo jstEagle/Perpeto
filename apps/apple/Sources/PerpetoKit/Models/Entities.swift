@@ -690,6 +690,10 @@ public enum InteractionType: String, LenientEnum {
 }
 
 extension HubEvent {
+    /// Lease renewals and heartbeats arrive every few seconds and change
+    /// nothing a person reads; they are neither shown nor used to refetch.
+    public var isHousekeeping: Bool { type == "machine.heartbeat" || type.hasSuffix(".renewed") }
+
     public var interaction: InteractionType { InteractionType(rawValue: type) ?? .unknown }
     /// Interactions with no matching edge are recorded with `unplanned: true`.
     public var isUnplanned: Bool { data["unplanned"]?.boolValue ?? false }

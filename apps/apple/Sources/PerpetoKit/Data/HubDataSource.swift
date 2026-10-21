@@ -36,7 +36,7 @@ public struct HubDataSource: FactoryDataSource {
         async let usage = usageBundle(projectId: projectId)
         async let channelsCall = (try? client.channels(projectId: projectId)) ?? []
         async let metrics = try? client.projectMetrics(projectId: projectId, window: window)
-        async let eventsCall = try? client.recentEvents(count: 1000)
+        async let eventsCall = try? client.recentEvents(count: 1000) { $0.projectId == projectId && !$0.isHousekeeping }
 
         let workflows = try await workflowsCall
         var versions: [String: [Workflow]] = [:]
@@ -61,7 +61,7 @@ public struct HubDataSource: FactoryDataSource {
             messages[channel.id] = (try? await client.messages(projectId: projectId, channelId: channel.id))?.messages ?? []
         }
         // Newest first, like the live feed.
-        let events = (await eventsCall)?.events.filter { $0.projectId == projectId }.reversed() ?? []
+        let events = (await eventsCall)?.events.reversed() ?? []
 
         return try await ProjectState(
             workflows: workflows, versions: versions, runs: runs, workItems: items,

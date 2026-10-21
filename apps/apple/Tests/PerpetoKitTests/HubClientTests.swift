@@ -267,3 +267,60 @@ struct SettingsTests {
         #expect(try settings.makeClient() == nil)
     }
 }
+
+@Suite("Live event handling")
+struct LiveEventTests {
+    static func event(_ seq: Int, _ type: String, runId: String? = DemoFixtures.liveRunId) -> HubEvent {
+        HubEvent(seq: seq, at: Date(), type: type, projectId: DemoFixtures.primaryProjectId, runId: runId, subject: .init(kind: "assignment", id: "asg"), data: [:])
+    }
+
+    @MainActor @Test func housekeepingIsIgnoredAndBurstsAreDebounced() async throws {
+        let source = CountingSource()
+        let store = FactoryStore(source: source)
+        store.eventDebounce = .milliseconds(50)
+        await store.refresh()
+        let before = await source.runLoads
+        store.apply(Self.event(9001, "assignment.renewed"))
+        store.apply(Self.event(9002, "machine.heartbeat", runId: nil))
+        #expect(!store.state(DemoFixtures.primaryProjectId).events.contains { $0.seq >= 9001 })
+        for seq in 9003...9010 { store.apply(Self.event(seq, "workitem.moved")) }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await source.runLoads == before + 1)
+        #expect(store.state(DemoFixtures.primaryProjectId).events.first?.seq == 9010)
+    }
+
+    @MainActor @Test func windowChangeRefetchesMetrics() async throws {
+        let store = FactoryStore(source: DemoDataSource(stageDelay: .zero))
+        await store.refresh()
+        let day = store.state(DemoFixtures.primaryProjectId).runMetrics[DemoFixtures.liveRunId]
+        await store.setMetricsWindow(.week)
+        let week = store.state(DemoFixtures.primaryProjectId).runMetrics[DemoFixtures.liveRunId]
+        #expect(week?.window == .week)
+        #expect(week?.run.velocity.trend.count == 7)
+        #expect(day?.run.velocity.trend.count == 24)
+    }
+}
+
+/// Demo data that counts run reloads.
+actor CountingSource: FactoryDataSource {
+    let demo = DemoDataSource(stageDelay: .zero)
+    var runLoads = 0
+    nonisolated var isDemo: Bool { false }
+    func loadFactory() async throws -> FactoryState { try await demo.loadFactory() }
+    func loadProject(_ projectId: String, window: MetricsWindow) async throws -> ProjectState { try await demo.loadProject(projectId, window: window) }
+    func loadRun(_ runId: String, window: MetricsWindow) async throws -> RunSnapshot {
+        runLoads += 1
+        return try await demo.loadRun(runId, window: window)
+    }
+    nonisolated func requestDraft(projectId: String, prompt: String, baseWorkflowId: String?) -> AsyncThrowingStream<DraftProgress, Error> { demo.requestDraft(projectId: projectId, prompt: prompt, baseWorkflowId: baseWorkflowId) }
+    func activate(workflowId: String, version: Int) async throws -> Workflow { try await demo.activate(workflowId: workflowId, version: version) }
+    func save(_ workflow: Workflow) async throws -> Workflow { try await demo.save(workflow) }
+    func validate(_ workflow: Workflow) async throws -> ValidationResult { try await demo.validate(workflow) }
+    func control(runId: String, _ action: HubClient.RunControl) async throws -> Run { try await demo.control(runId: runId, action) }
+    func startRun(workflowId: String) async throws -> Run { try await demo.startRun(workflowId: workflowId) }
+    func decide(workItemId: String, _ decision: HubClient.Decision) async throws { try await demo.decide(workItemId: workItemId, decision) }
+    func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message { try await demo.sendMessage(projectId: projectId, channelId: channelId, body: body) }
+    func enrollmentCode() async throws -> EnrollmentCode { try await demo.enrollmentCode() }
+    func drain(machineId: String) async throws -> Machine { try await demo.drain(machineId: machineId) }
+    nonisolated func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> { AsyncThrowingStream { _ in } }
+}

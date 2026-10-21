@@ -265,14 +265,15 @@ public final class HubClient: Sendable {
         return try await get("/events", query: query)
     }
 
-    /// The newest `count` events. The log only pages forward, so this walks
-    /// it from the start; fine for a local hub, bounded by `maxPages`.
-    public func recentEvents(count: Int = 1000, maxPages: Int = 50) async throws -> (events: [HubEvent], cursor: Int?) {
+    /// The newest `count` events that pass `keep`. The log only pages
+    /// forward, so this walks it from the start; fine for a local hub,
+    /// bounded by `maxPages`.
+    public func recentEvents(count: Int = 1000, maxPages: Int = 50, keep: (HubEvent) -> Bool = { _ in true }) async throws -> (events: [HubEvent], cursor: Int?) {
         var events: [HubEvent] = []
         var cursor: Int?
         for _ in 0..<maxPages {
             let page = try await self.events(after: cursor, limit: 1000)
-            events += page.events
+            events += page.events.filter(keep)
             if events.count > count { events.removeFirst(events.count - count) }
             cursor = page.nextCursor ?? cursor
             if page.events.count < 1000 { break }
