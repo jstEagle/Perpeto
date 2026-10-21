@@ -21,7 +21,8 @@ export const NOISE_EVENTS = Object.freeze(['machine.heartbeat', 'assignment.rene
  */
 export class HubStore {
   #statements = new Map();
-  constructor(filename) {
+  constructor(filename, { clock = Date.now } = {}) {
+    this.clock = clock;
     this.db = new DatabaseSync(filename);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
     const version = this.db.prepare('PRAGMA user_version').get().user_version;
@@ -49,7 +50,7 @@ export class HubStore {
   #migrate() {
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const at = new Date().toISOString();
+      const at = new Date(this.clock()).toISOString();
       this.db.exec(`
         CREATE INDEX entities_machine ON entities(kind, ${json('machineId')}, ${json('status')});
         CREATE INDEX entities_run ON entities(kind, ${json('runId')});
@@ -112,7 +113,7 @@ export class HubStore {
   need(kind, id) { const value = this.get(kind, id); if (!value) fail(404, 'NOT_FOUND', `${kind} not found.`); return value; }
   put(kind, value) {
     // Retention counts from when work finished.
-    if (TERMINAL[kind]?.includes(value.status) && !value.finishedAt) value.finishedAt = new Date().toISOString();
+    if (TERMINAL[kind]?.includes(value.status) && !value.finishedAt) value.finishedAt = new Date(this.clock()).toISOString();
     this.#sql('INSERT INTO entities VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data').run(kind, value.id, JSON.stringify(value));
     this.onPut?.(kind, value);
     return value;
@@ -156,7 +157,7 @@ export class HubStore {
   }
   remove(kind, id) { this.#sql('DELETE FROM entities WHERE kind=? AND id=?').run(kind, id); }
   event(type, subject, data = {}, context = {}) {
-    const at = new Date().toISOString();
+    const at = new Date(this.clock()).toISOString();
     const result = this.#sql('INSERT INTO events(at,type,project_id,run_id,subject,data) VALUES(?,?,?,?,?,?)')
       .run(at, type, context.projectId ?? null, context.runId ?? null, JSON.stringify(subject), JSON.stringify(data));
     this.onEvent?.();
@@ -193,11 +194,11 @@ export class HubStore {
   }
   idempotent(scope, key) { return this.#sql('SELECT fingerprint,response FROM idempotency WHERE scope=? AND key=?').get(scope, key); }
   remember(scope, key, fingerprint, response) {
-    this.#sql('INSERT INTO idempotency(scope,key,fingerprint,response,created_at) VALUES(?,?,?,?,?)').run(scope, key, fingerprint, response, new Date().toISOString());
+    this.#sql('INSERT INTO idempotency(scope,key,fingerprint,response,created_at) VALUES(?,?,?,?,?)').run(scope, key, fingerprint, response, new Date(this.clock()).toISOString());
   }
   /** Record an agent.messaged interaction once per message; returns false if it was already recorded. */
   messageOnce(messageId) {
-    return this.#sql('INSERT INTO message_interactions VALUES(?,?) ON CONFLICT(message_id) DO NOTHING').run(messageId, new Date().toISOString()).changes === 1;
+    return this.#sql('INSERT INTO message_interactions VALUES(?,?) ON CONFLICT(message_id) DO NOTHING').run(messageId, new Date(this.clock()).toISOString()).changes === 1;
   }
   keyFingerprint(name) { return this.#sql('SELECT fingerprint FROM hub_keys WHERE name=?').get(name)?.fingerprint ?? null; }
   setKeyFingerprint(name, fingerprint) { this.#sql('INSERT INTO hub_keys VALUES(?,?)').run(name, fingerprint); }
@@ -263,7 +264,7 @@ export class HubStore {
    */
   sweep({ finishedBefore, eventsBefore, usageBefore, idempotencyBefore, sessionsBefore, archive, batch = 500 }) {
     const counts = { assignments: 0, jobs: 0, events: 0, usage: 0, idempotency: 0 };
-    const archivedAt = new Date().toISOString();
+    const archivedAt = new Date(this.clock()).toISOString();
     for (const kind of ['assignment', 'job']) {
       const rows = this.#sql(`SELECT id, data FROM entities WHERE kind=? AND ${json('finishedAt')}<? LIMIT ?`).all(kind, finishedBefore, batch);
       for (const row of rows) {

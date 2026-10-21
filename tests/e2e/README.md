@@ -25,6 +25,8 @@ It asserts the final Git state, work items, assignments, job revisions and logs,
 
 `hub-wiring.test.js` verifies GitHub fast-forward publication and native queue selection with a PATH-injected fake `gh` executable and temporary local bare origins. A fixture gitconfig rewrites the public GitHub clone URL to its local origin. It checks Assignment repo propagation, exact candidate CI versus published revisions, PR create/close evidence, real MCP stdio messaging into hub events, and SIGKILL recovery during publication, between delivery/hub commits, and across lease expiry while the same node daemon stays alive.
 
+`continuous.test.js` runs Goals and Schedule sources through real HTTP/SQLite and an enrolled node with a fake executor. It excludes completed/dropped goals, completes unfinished goals, proves item-budget and token-budget pauses, and resumes in the next UTC window using an injected hub clock. It checks scheduled minute deduplication and cache-token exclusion. This suite needs no Git or model calls.
+
 ## Not covered
 
 A live T3 runtime or harness, real subscription accounts, network Git or GitHub, protected-branch acceptance, or more than one machine. Candidate jobs currently require access to the hub mirror path.

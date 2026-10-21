@@ -51,7 +51,7 @@ export class HubMessaging {
     const expected = Buffer.from(this.hub.credentials.derive(`agent-messaging:${payload}`));
     const [assignmentId, attempt] = Buffer.from(payload, 'base64url').toString('utf8').split('\n');
     const assignment = payload && mac.length === expected.length && timingSafeEqual(mac, expected) ? this.store.get('assignment', assignmentId) : null;
-    if (!assignment?.runId || !active(assignment) || String(assignment.attempt) !== attempt || Date.parse(assignment.leaseExpiresAt) <= Date.now()) {
+    if (!assignment?.runId || !active(assignment) || String(assignment.attempt) !== attempt || Date.parse(assignment.leaseExpiresAt) <= this.hub.clock()) {
       fail(401, 'UNAUTHORIZED', 'This agent messaging credential is not valid for a running assignment.');
     }
     return { kind: 'agent', assignment, scope: hash(token) };
@@ -110,7 +110,7 @@ export class HubMessaging {
         unplanned = true;
       }
       const limit = workflow.messageRateLimits?.[agent.role] ?? workflow.messageRateLimits?.['*'] ?? this.hub.config.messageRatePerMinute;
-      const recent = this.messaging.countSentSince({ projectId, channelId, senderRoleId: agent.role, since: new Date(Date.now() - 60000).toISOString() });
+      const recent = this.messaging.countSentSince({ projectId, channelId, senderRoleId: agent.role, since: new Date(this.hub.clock() - 60000).toISOString() });
       if (recent >= limit) fail(429, 'RATE_LIMITED', `Role ${agent.role} may send ${limit} messages a minute.`);
     }
     // A reply to a live assignment's message goes back to that assignment, not any agent holding the role.

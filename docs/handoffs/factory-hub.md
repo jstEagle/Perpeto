@@ -1,5 +1,23 @@
 # Factory hub handoff
 
+## Run budget visibility and intake acceptance, 21 October 2026
+
+Based on `fada780`; edits are confined to `apps/hub/**`, `tests/e2e/**` and this handoff. No changes to the executor or node worker's paths.
+
+Run creation, detail, overview, project run listings and pause/resume/stop responses now expose `budgetUsage` independently of `intake`. It carries `{day, tokens, items, windowStart, windowEnd}` with an exclusive UTC window end; absent counters default to zero. Tests first failed on missing window bounds and the listing/action responses, and cover existing nonzero counters without intake state plus legacy snapshots with neither field.
+
+`createHub({configPath, clock?})` accepts an epoch-millisecond clock. The hub uses it for run/usage/engine event timestamps, intake delivery, persistence, leases, fencing and retry deadlines; HTTP wait timers remain wall-clock. The adapter now preserves event timestamps when translating completion, expiry and lifecycle events. The default remains `Date.now`, with no configuration key or dependency change.
+
+Two new `tests/e2e/test/continuous.test.js` cases use actual HTTP, SQLite, an enrolled node daemon and a fake executor. A keep-open Goals run omits owner-done/dropped and previously completed goals, executes unfinished goals, pauses at the item allowance and executes the remaining goal in the next UTC window. A Schedule run creates and executes work only on its cron minute, exhausts its input/output token allowance (excluding cache), blocks a later due tick, clears the pause at the next window and executes on the next scheduled minute. Repeated ticks do not duplicate input. No real midnight wait, model call or browser/device acceptance is involved.
+
+Validation on Node `v24.22.0`: root `npm test` passes **564 tests, 0 failures** (38.0 s); the focused hub/continuous e2e command passes **18 tests, 0 failures**. The first full run hit the existing delivery test's 20 ms worker-lock timing assertion (`Missing expected rejection` at `packages/delivery/test/queue.test.js:154`); the unmodified rerun passed. Markdown links resolve and `git diff --check` passes.
+
+### Seeded lease investigation
+
+Both unmodified seed scripts completed against a temporary hub with `longPollMs: 0` and 10 ms maintenance. Inspection of committed events found zero `assignment.expired`/`assignment.requeued` and zero `assignment.updated` transitions back to queued after leasing. The historical Apple premature-requeue report was not reproduced on this revision.
+
+The web handoff's polling failure is reproducible: a sequential simulator can wait on empty lease polls while its previously held lease expires. A deterministic HTTP regression holds an architect lease, starts an empty poll, verifies it survives maintenance up to one millisecond before expiry, advances to expiry, and observes exactly one requeue with an incremented attempt. The waiting poll reacquires it; the old attempt correctly receives `lease_lost`. This is elapsed lease time, not premature maintenance or a broken attempt fence. Additional tests keep a running attempt intact through usage, maintenance and settings changes, and prove engine retries cannot lease before `notBefore`. No lease/fencing policy was weakened. Seed users should use a short/zero hub `longPollMs` or renew independently of their simulation loop; seed scripts remain outside this worker's owned paths.
+
 ## Conflict recovery integration, 21 October 2026
 
 Merged main `8f8f903` in `b4bd436`, retaining the continuous-intake implementation below. The minimal additive delivery change persists `rejectionKind: 'conflict'|'ci'|'other'` on queue entries: typed `MERGE_CONFLICT` preparation failures activate recovery, failed checks/missing evidence are `ci`, and infrastructure/publication/withdrawal failures are `other`. Types survive SQLite reopen. Historical/untyped causes are conservatively `other`, with no reason-text inference. The hub copies the field to its entry and maps it to `merge.rejected.data.kind`.

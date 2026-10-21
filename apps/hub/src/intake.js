@@ -8,8 +8,11 @@ export class Intake {
   state(run) { return this.store.get('engine-state', run.id)?.state ?? this.hub.engine.runState?.(run.id); }
   view(run) {
     const state = this.state(run);
-    return { ...run, ...Object.fromEntries(RUN_SETTINGS.filter(key => state?.[key] !== undefined).map(key => [key, state[key]])),
-      ...(state?.intake ? { intake: state.intake, budgetUsage: state.budgetUsage } : {}), ...(run.intakeHeld ? { keepOpen: run.keepOpen } : {}) };
+    const usage = state?.budgetUsage ?? { day: run.startedAt.slice(0, 10), tokens: 0, items: 0 };
+    const windowStart = `${usage.day}T00:00:00.000Z`;
+    const budgetUsage = { ...usage, windowStart, windowEnd: new Date(Date.parse(windowStart) + 86400000).toISOString() };
+    return { ...run, budgetUsage, ...Object.fromEntries(RUN_SETTINGS.filter(key => state?.[key] !== undefined).map(key => [key, state[key]])),
+      ...(state?.intake ? { intake: state.intake } : {}), ...(run.intakeHeld ? { keepOpen: run.keepOpen } : {}) };
   }
   settings(value) {
     object(value, 'run settings');
@@ -97,7 +100,7 @@ export class Intake {
       }
     }
   }
-  prepare(at = new Date().toISOString()) {
+  prepare(at = this.hub.now()) {
     for (const request of this.store.list('intake-request')) {
       const run = this.store.get('run', request.runId);
       if (!run || ['stopped', 'completed', 'failed'].includes(run.status)) { this.store.remove('intake-request', request.id); continue; }

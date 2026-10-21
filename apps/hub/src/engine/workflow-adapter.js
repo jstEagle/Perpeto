@@ -334,7 +334,7 @@ export function createWorkflowAdapter() {
         if (!state) result.effects.unshift(...Object.values(before.workItems).map(value => ({ type: 'work-item', value })));
         return result;
       }
-      const translated = hubEvent(event, nodeId => workflow.graph.nodes.find(node => node.id === nodeId));
+      const translated = { at: event.at, ...hubEvent(event, nodeId => workflow.graph.nodes.find(node => node.id === nodeId)) };
       return state ? apply(run, state, translated) : applyStored(run, translated);
     },
     diffGraphs(from, to) { return diff(from ?? null, to); },
