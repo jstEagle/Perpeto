@@ -7,7 +7,7 @@
     "node": ">=24.13.1 <25"
   },
   "scripts": {
-    "setup": "node scripts/runtime.mjs setup",
+    "setup": "npm install --no-audit --no-fund && node scripts/runtime.mjs setup",
     "build": "node scripts/runtime.mjs build",
     "start": "node scripts/runtime.mjs start",
     "test": "node scripts/test.mjs",
@@ -16,5 +16,8 @@
     "runtime:help": "node scripts/runtime.mjs help",
     "smoke:messaging": "node scripts/smoke-messaging.mjs",
     "test:e2e": "node --test packages/factory-e2e/test/build-run.test.js packages/factory-e2e/test/architect.test.js"
-  }
+  },
+  "workspaces": [
+    "packages/*"
+  ]
 }
