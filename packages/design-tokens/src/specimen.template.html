@@ -427,7 +427,9 @@ body:has(.screen:target) .page > * { visibility: hidden; }
 body:has(.screen:target) .page { padding: 0; max-width: none; }
 .screen:target { visibility: visible; position: fixed; inset: 0; width: 100vw; height: auto; max-height: none; min-height: 100vh; overflow: visible; border-radius: 0; box-shadow: none; z-index: 10; }
 .screen:target * { visibility: visible; }
-.screen-mobile:target .tabbar { position: fixed; left: 0; right: 0; bottom: var(--space-5); margin: 0 var(--space-5); }
+/* Headless Chrome keeps windows at least ~500 px wide, so mobile frames stay 390 px and pinned left. */
+.screen-mobile:target { width: 390px; right: auto; }
+.screen-mobile:target .tabbar { position: fixed; left: var(--space-5); bottom: var(--space-5); width: calc(390px - 2 * var(--space-5)); margin: 0; }
 
 @media (max-width: 900px) {
   .page { padding: var(--space-8) var(--page-padding-compact) var(--space-16); }
