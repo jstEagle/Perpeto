@@ -3,6 +3,7 @@ import { loadConfig } from './config.js';
 import { Hub } from './hub.js';
 import { HubError, fail, integer, object } from './errors.js';
 import { createWorkflowAdapter } from './engine/workflow-adapter.js';
+import { sendBundle } from './delivery/source.js';
 
 async function readBody(request, limit) {
   if (request.headers['content-length'] && Number(request.headers['content-length']) > limit) fail(413, 'REQUEST_TOO_LARGE', 'Request body exceeds the configured limit.');
@@ -131,7 +132,10 @@ export async function createHub({ configPath, engine = createWorkflowAdapter() }
         cookie: request.headers.cookie, origin: request.headers.origin, contentType: request.headers['content-type'], key: request.headers['idempotency-key'] };
       if (args.path.split('?')[0] === '/events' && request.method === 'GET' && request.headers.accept?.split(',').some(value => value.trim() === 'text/event-stream')) return await stream(request, response, args, url);
       if (args.path === '/nodes/lease' && request.method === 'POST') return await lease(request, response, args);
-      const result = await hub.request(args); json(response, result.status, result.body, setCookie(request, result.cookie));
+      const result = await hub.request(args);
+      // Job sources stream outside the request serializer, after their lease was checked.
+      if (result.bundle) return await sendBundle(response, result.bundle);
+      json(response, result.status, result.body, setCookie(request, result.cookie));
     } catch (error) {
       if (response.headersSent) { response.destroy(); return; }
       const expected = error instanceof HubError;

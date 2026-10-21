@@ -282,3 +282,27 @@ test('H6: trusted checkout remote rewrites remain available without exposing Git
   assert.equal(result.status, 'passed');
   assert.equal(JSON.stringify(ctx.events).includes('CONFIG_SECRET'), false);
 });
+
+test('a hub-sourced job fetches its bundle into the job workspace and runs at exactly its revision; a bundle without it fails', async t => {
+  const repo = await repository(t);
+  // What the hub serves: a bundle of one ref at the job's revision, holding no newer commits.
+  const bundles = join(repo.root, 'bundles'); await mkdir(bundles);
+  const make = async (name, revision) => {
+    await exec('git', ['update-ref', `refs/perpeto/bundles/${name}`, revision], { cwd: repo.bare });
+    await exec('git', ['bundle', 'create', join(bundles, `${name}.bundle`), `refs/perpeto/bundles/${name}`], { cwd: repo.bare });
+  };
+  await make('exact', repo.revision);
+  const requests = [];
+  const source = name => ({ ...context(), fetchSource: async (path, file) => { requests.push(path); await writeFile(file, await readFile(join(bundles, `${name}.bundle`))); } });
+  const ctx = source('exact');
+  const hubJob = { ...job(repo, [{ name: 'verify', run: `test "$(git rev-parse HEAD)" = "${repo.revision}" && cat value.txt` }]), repo: { defaultBranch: 'main' }, source: { kind: 'hub-bundle', path: '/jobs/job_hub/bundle' } };
+  const result = await runJob(hubJob, ctx, { dataDir: repo.root });
+  assert.equal(result.status, 'passed'); assert.deepEqual(requests, ['/jobs/job_hub/bundle']);
+  assert.match(ctx.events.filter(event => event.type === 'log').map(event => event.data.chunk).join(''), /exact revision/);
+  // A bundle that does not hold the job's revision never yields a pass.
+  const wrong = await runJob({ ...hubJob, revision: repo.latest }, source('exact'), { dataDir: repo.root });
+  assert.equal(wrong.status, 'error');
+  for (const path of ['/jobs/../bundle', '/elsewhere', 'http://evil/jobs/x/bundle']) {
+    assert.equal((await runJob({ ...hubJob, source: { kind: 'hub-bundle', path } }, source('exact'), { dataDir: repo.root })).status, 'error', path);
+  }
+});

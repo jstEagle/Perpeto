@@ -41,8 +41,12 @@ export async function eventually(check, { timeoutMs = 45000, intervalMs = 50, me
   throw new Error(message);
 }
 
-/** Start a real hub (ephemeral port, temporary SQLite and secrets) and enroll a real node daemon with `executor`. */
-export async function startFactory(t, { executor, hub: hubConfig = {}, node: nodeConfig = {}, subprocess = false }) {
+/**
+ * Start a real hub (ephemeral port, temporary SQLite and secrets) and enroll a real node daemon with `executor`.
+ * `separateNode` gives the node its own temporary root, sharing no directory with the hub; `node` may then be a
+ * function of `{ root }` (the hub's root) for settings that name hub paths.
+ */
+export async function startFactory(t, { executor, hub: hubConfig = {}, node: nodeConfig = {}, subprocess = false, separateNode = false }) {
   const root = await mkdtemp(join(tmpdir(), 'perpeto-e2e-'));
   await chmod(root, 0o700);
   const cleanups = [];
@@ -64,7 +68,10 @@ export async function startFactory(t, { executor, hub: hubConfig = {}, node: nod
   };
 
   const enrollment = await request('POST', '/machines/enrollment-codes', {});
-  const nodeDir = join(root, 'node'); await mkdir(nodeDir, { mode: 0o700 });
+  const nodeRoot = separateNode ? await mkdtemp(join(tmpdir(), 'perpeto-e2e-node-')) : root;
+  if (separateNode) { await chmod(nodeRoot, 0o700); t.after(() => rm(nodeRoot, { recursive: true, force: true })); }
+  const nodeDir = join(nodeRoot, 'node'); await mkdir(nodeDir, { mode: 0o700 });
+  if (typeof nodeConfig === 'function') nodeConfig = nodeConfig({ root });
   await writeFile(join(nodeDir, 'enrollment-code'), enrollment.code, { mode: 0o600 });
   const nodePath = join(nodeDir, 'node.json');
   await writeFile(nodePath, JSON.stringify({ hubUrl: url, name: 'e2e-machine', dataDir: './data', enrollmentCodeFile: './enrollment-code',
@@ -83,7 +90,7 @@ export async function startFactory(t, { executor, hub: hubConfig = {}, node: nod
       after = page.nextCursor;
     }
   }
-  return { root, url, owner, request, hub, node, events, nodeDataDir: join(nodeDir, 'data') };
+  return { root, nodeRoot, url, owner, request, hub, node, events, nodeDataDir: join(nodeDir, 'data') };
 }
 
 /** Load the default build template and point every role at the `fake` provider the e2e executor serves. */

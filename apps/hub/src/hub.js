@@ -6,7 +6,7 @@ import { HubStore } from './store.js';
 import { Credentials } from './credentials.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
-import { HubDelivery } from './delivery/index.js';
+import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings } from './errors.js';
 
 const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
@@ -40,7 +40,7 @@ function nodeRoute(method, segments) {
   if (!['assignments', 'jobs'].includes(collection) || !entityId || segments.length > 3) return false;
   if (action === undefined) return method === 'GET';
   if (method === 'POST') return ['renew', 'events', 'release'].includes(action);
-  return method === 'GET' && collection === 'jobs' && action === 'log';
+  return method === 'GET' && collection === 'jobs' && ['log', 'bundle'].includes(action);
 }
 
 function prepareDatabase(path) {
@@ -445,6 +445,8 @@ export class Hub {
           requireValue(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value.revision), 'Job revision must be a full commit SHA.');
           requireValue(Array.isArray(value.steps), 'Job steps are required.');
           nonblank(value.configHash, 'job configHash'); value.artifacts ??= [];
+          // CI for a project whose repository lives on the hub fetches its revision from the hub, from any machine.
+          if (!previous && hubRepository(this.store, value)) Object.assign(value, servedFromHub(value, this.store.need('project', run.projectId).repo));
         }
       }
       this.store.put(kind, value); this.emit(`${kind}.updated`, kind, value, { status: value.status });
@@ -714,6 +716,14 @@ export class Hub {
       if (!action && method === 'GET') {
         if (auth.kind === 'node') return reply(this.fenced(kind, entityId, auth, body, true));
         const value = this.store.find(kind, entityId); if (!value) fail(404, 'NOT_FOUND', `${kind} not found.`); return reply(value);
+      }
+      if (kind === 'job' && action === 'bundle' && method === 'GET') {
+        // The leasing machine fetches exactly its job's revision; the hub picks the repository, never the caller.
+        const value = auth.kind === 'node' ? this.fenced(kind, entityId, auth, body, true) : this.store.need(kind, entityId);
+        if (auth.kind === 'node' && Number(query.get('attempt')) !== value.attempt) fail(409, 'lease_lost', 'The current attempt is required.');
+        const repository = value.source?.kind === 'hub-bundle' ? hubRepository(this.store, value) : null;
+        if (!repository) fail(404, 'NOT_FOUND', 'This job has no hub source.');
+        return { status: 200, body: null, bundle: { repository, revision: value.revision, jobId: value.id } };
       }
       if (kind === 'job' && action === 'log' && method === 'GET') {
         if (auth.kind === 'node') this.fenced(kind, entityId, auth, body, true); else if (!this.store.find(kind, entityId)) fail(404, 'NOT_FOUND', `${kind} not found.`);
