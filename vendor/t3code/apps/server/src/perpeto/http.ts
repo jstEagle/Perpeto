@@ -8,6 +8,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { MessagingError } from "../../../../../../packages/factory-transport/src/storage.js";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as AgentPolicy from "./AgentPolicy.ts";
 import * as Messaging from "./Messaging.ts";
 
 export const MAX_BODY_BYTES = 512 * 1024;
@@ -61,7 +62,7 @@ const body = Effect.gen(function* () {
   );
 });
 
-export const layer = Layer.effectDiscard(Effect.gen(function* () {
+const routes = Layer.effectDiscard(Effect.gen(function* () {
   const router = yield* HttpRouter.HttpRouter;
   const auth = yield* EnvironmentAuth.EnvironmentAuth;
   const messages = yield* Messaging.FactoryMessaging;
@@ -79,6 +80,9 @@ export const layer = Layer.effectDiscard(Effect.gen(function* () {
       try: () => url.pathname.split("/").filter(Boolean).map(decodeURIComponent),
       catch: () => apiError(400, "INVALID_INPUT", "Malformed path."),
     });
+    if (parts[2] === "agent-policies") {
+      return yield* AgentPolicy.route({ segments: parts.slice(3), method: request.method, url, body });
+    }
     const projectId = parts[3];
     if (parts[2] !== "projects" || !projectId) return yield* Effect.fail(apiError(404, "NOT_FOUND", "Messaging route not found."));
     if (parts.length === 4 && request.method === "PUT") {
@@ -117,5 +121,7 @@ export const layer = Layer.effectDiscard(Effect.gen(function* () {
   }).pipe(Effect.catchTag("PerpetoMessagingApiError", (error) => Effect.succeed(errorResponse(error))));
   yield* router.add("*", "/api/perpeto/*", handler);
 }));
+
+export const layer = Layer.merge(routes, AgentPolicy.layer);
 
 export { body as readJsonBody };

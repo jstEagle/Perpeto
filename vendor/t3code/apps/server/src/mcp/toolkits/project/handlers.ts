@@ -7,6 +7,7 @@ import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageInt
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
+import * as PerpetoAgentPolicy from "../../../perpeto/AgentPolicy.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -133,6 +134,19 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             message:
               "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
           });
+        // Perpeto: a thread launched by a governed agent draws from its AgentPolicy.
+        const policyRequest: PerpetoAgentPolicy.CreationRequest | undefined =
+          caller === undefined
+            ? undefined
+            : {
+                requestKey: commandId,
+                callerThreadId: caller.id,
+                rootThreadId: caller.lineage?.rootThreadId ?? null,
+                kind: "thread",
+                providerInstanceId: modelSelection.instanceId,
+                model: modelSelection.model,
+              };
+        if (policyRequest !== undefined) yield* PerpetoAgentPolicy.authorize(policyRequest);
         const result = yield* ThreadMessageIntake.launchThread({
           commandId,
           threadId,
@@ -155,6 +169,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           createdBy: "agent",
           creationSource: "mcp",
         }).pipe(
+          Effect.tapError(() =>
+            policyRequest === undefined ? Effect.void : PerpetoAgentPolicy.release(policyRequest),
+          ),
           Effect.mapError((error) => {
             if (error._tag === "AttachmentClaimError") {
               return new OrchestratorMcpFailure({
@@ -172,6 +189,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           }),
         );
         const thread = result.projection.thread;
+        if (policyRequest !== undefined)
+          yield* PerpetoAgentPolicy.recordCreated(policyRequest, { childThreadId: thread.id });
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,
