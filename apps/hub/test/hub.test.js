@@ -129,9 +129,13 @@ test('leases enforce requirements, actual capacity, ownership and renewal', asyn
 });
 
 test('lease expiry requeues with incremented attempt, including same-machine fencing', async t => {
+  // Only advance the lease clock deliberately. Under load, the HTTP fencing checks
+  // can otherwise outlive the second lease and correctly reject its renewal.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const f = await fixture(t, { leaseDurationMs: 60 }); const { run } = await f.run(); await f.seed(run.id);
   const node = await f.enroll();
   const first = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
+  t.mock.timers.setTime(Date.parse(first.leaseExpiresAt));
   await eventually(async () => (await f.request('GET', `/runs/${run.id}/assignments`)).body.assignments[0].status === 'queued');
   const second = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
   assert.equal(second.attempt, 2); assert.notEqual(second.attempt, first.attempt);
