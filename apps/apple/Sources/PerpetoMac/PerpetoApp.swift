@@ -45,7 +45,7 @@ struct MainWindow: View {
         RootView(store: store, navigator: navigator, openSettings: { openSettings() })
             .task {
                 if let directory = Snapshotter.requestedDirectory {
-                    await Snapshotter(store: store, navigator: navigator, directory: directory).run()
+                    await Snapshotter(store: store, navigator: navigator, directory: directory, openSettings: { openSettings() }).run()
                 }
             }
     }

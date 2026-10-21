@@ -426,6 +426,8 @@ public struct FieldModifier: ViewModifier {
         content
             .textFieldStyle(.plain)
             .font(PerpetoFont.body)
+            .foregroundStyle(PerpetoColor.ink)
+            .tint(PerpetoColor.ink)
             .focused($focused)
             .padding(.horizontal, PerpetoSpacing.x(4))
             .padding(.vertical, PerpetoSpacing.x(2.5))

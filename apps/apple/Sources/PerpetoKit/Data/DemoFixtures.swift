@@ -368,7 +368,7 @@ public enum DemoFixtures {
             ],
             run: RunMetrics(
                 // 24 hourly buckets, as the hub returns for the 24h window.
-                velocity: .init(itemsDonePerDay: 5.5, trend: [0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0]),
+                velocity: .init(itemsDonePerDay: 5.5, trend: [1, 0, 2, 1, 0, 3, 1, 0, 2, 4, 1, 0, 2, 3, 0, 1, 2, 0, 3, 1, 2, 0, 1, 2]),
                 cycleTimeSec: p(15_100, 26_400), wip: 15, tokensPerItem: 1_508_000, activeAgents: 5,
                 machines: [
                     .init(machineId: studioId, activeAgents: 4, nodes: ["build", "review"]),

@@ -41,6 +41,7 @@ struct Snapshotter {
     var store: FactoryStore
     var navigator: Navigator
     var directory: URL
+    var openSettings: () -> Void = {}
 
     func run() async {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -112,11 +113,24 @@ struct Snapshotter {
                 navigator.route = .project("prj_docs", .workflows)
             }),
             ("14-editor", { navigator.route = .project(project, .workflows); navigator.editWorkflowRequest += 1 }),
+            ("15-runs-list", { navigator.selectedRunId = nil; navigator.route = .project(project, .runs) }),
+            ("16-empty-runs", { navigator.route = .project("prj_docs", .runs) }),
+            ("17-error", {
+                navigator.route = .project(project, .overview)
+                store.lastError = "Activating the workflow failed. The hub could not be reached. Check that it is running, then try again."
+            }),
+            ("18-settings", {
+                store.lastError = nil
+                openSettings()
+            }),
         ]
     }
 
     private func capture(_ name: String) {
-        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil && $0.title != "" && !$0.isSheet }) else { return }
+        // The settings shot captures the Settings window; every other shot the main window.
+        let candidates = NSApp.windows.filter { $0.isVisible && $0.contentView != nil && !$0.isSheet && $0.frame.width > 200 }
+        let settings = candidates.first { $0.identifier?.rawValue.contains("Settings") == true || $0.title.contains("Settings") || $0.title.contains("General") }
+        guard let window = name.contains("settings") ? (settings ?? NSApp.keyWindow) : candidates.first(where: { $0.title != "" && $0 != settings }) ?? candidates.first else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         process.arguments = ["-x", "-o", "-l", String(window.windowNumber), directory.appendingPathComponent("\(name).png").path]

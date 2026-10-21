@@ -42,7 +42,12 @@ if [ "${WIDE:-0}" = 1 ]; then
   shot 03bw-run-node-selected-full-width --route runs --node "${NODE:-review}" --detail-only
   shot 02w-workflow-proposal-full-width --route workflows --detail-only
 fi
+shot 04-work --route work
+shot 05-messages --route messages
+shot 06-merge-queue --route merge-queue
 shot 07-machines --route machines
+shot 08-accounts --route accounts
 shot 09-usage --route usage
+shot 10-settings --route overview --settings
 xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
 ls "$OUT" | grep "^$PREFIX-"
