@@ -295,15 +295,22 @@ struct AccountRow: View {
     var openSettings: () -> Void
 
     var body: some View {
+        let owner = store.factory.overview.owner
         HStack(spacing: PerpetoSpacing.x(3)) {
-            Text(store.isDemo ? "D" : "H")
-                .font(PerpetoFont.captionMedium)
-                .foregroundStyle(PerpetoColor.inkSoft)
-                .frame(width: 32, height: 32)
-                .background(Circle().fill(PerpetoColor.surfaceSubtle))
+            Group {
+                if let initials = owner?.initials, !initials.isEmpty {
+                    Text(initials)
+                } else {
+                    Image(systemName: "person")
+                }
+            }
+            .font(PerpetoFont.captionMedium)
+            .foregroundStyle(PerpetoColor.inkSoft)
+            .frame(width: 32, height: 32)
+            .background(Circle().fill(PerpetoColor.surfaceSubtle))
             VStack(alignment: .leading, spacing: 1) {
-                Text(store.isDemo ? "Demo data" : "Connected to hub").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.ink)
-                Text(store.isDemo ? "Not connected" : store.lastUpdated.map { "Updated " + Format.relative($0) } ?? "Waiting for data")
+                Text(owner?.name ?? "Owner").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.ink).lineLimit(1)
+                Text(store.isDemo ? "Demo data" : store.lastUpdated.map { "Connected · " + Format.relative($0) } ?? "Connected to hub")
                     .font(PerpetoFont.small).foregroundStyle(PerpetoColor.muted).lineLimit(1)
             }
             Spacer(minLength: 0)

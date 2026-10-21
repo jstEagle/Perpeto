@@ -328,15 +328,20 @@ public struct GraphCanvas: View {
     private func liveLabels(_ live: LiveOverlay, layout: GraphLayout) -> [EdgeLabel] {
         let flow = graph.edges.filter { !isRole($0) }
         let roles = graph.edges.filter { isRole($0) && isVisible($0) }
+        let returning = Set(layout.returnGroups.values.flatMap { $0 })
         let counts: [EdgeLabel] = (flow + roles).compactMap { edge in
-            guard let metric = live.metrics.edge(edge.id), metric.count > 0 else { return nil }
-            let returned = layout.route(edge)?.isReturn == true
-            return EdgeLabel(id: edge.id, text: returned ? "\(metric.count) returned" : "\(metric.count)")
+            guard !returning.contains(edge.id), let metric = live.metrics.edge(edge.id), metric.count > 0 else { return nil }
+            return EdgeLabel(id: edge.id, text: "\(metric.count)")
+        }
+        // Returns into one step share a line, so they share one label.
+        let returns: [EdgeLabel] = layout.returnGroups.sorted { $0.key < $1.key }.compactMap { target, members in
+            let total = members.compactMap { live.metrics.edge($0)?.count }.reduce(0, +)
+            return total > 0 ? EdgeLabel(id: "ret:" + target, text: "\(total) returned") : nil
         }
         let unplanned = zip(live.unplanned, live.edges).filter { isVisible($0.1) }.map {
             EdgeLabel(id: $0.1.id, text: "\($0.0.count) unplanned")
         }
-        return counts + unplanned
+        return counts + returns + unplanned
     }
 
     @ViewBuilder

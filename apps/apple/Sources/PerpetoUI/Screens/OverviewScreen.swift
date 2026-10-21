@@ -229,8 +229,21 @@ struct OverviewScreen: View {
                 Text("Add goals so the planner knows what to aim for.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
                     .padding(.top, PerpetoSpacing.x(3))
             } else {
-                RowList(project.goals.map { IdentifiedText(text: $0) }) { goal in
-                    Text(goal.text).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).fixedSize(horizontal: false, vertical: true)
+                RowList(project.goals.filter { $0.status != .dropped }) { goal in
+                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
+                        HStack(alignment: .firstTextBaseline, spacing: PerpetoSpacing.x(4)) {
+                            Text(goal.title).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: PerpetoSpacing.x(2))
+                            if goal.status == .done {
+                                StatusLabel("Done", tone: .success)
+                            } else {
+                                Text(goal.total > 0 ? "\(goal.done) of \(goal.total)" : "No work yet")
+                                    .font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.muted)
+                            }
+                        }
+                        Meter(goal.status == .done ? 1 : goal.progress ?? 0)
+                            .accessibilityLabel("Progress on \(goal.title)")
+                    }
                 }
             }
             if !project.docs.isEmpty {

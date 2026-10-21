@@ -3,24 +3,37 @@ import Foundation
 // Response bodies whose exact envelope the contract leaves open. Each decoder
 // is deliberately tolerant and documented in docs/handoffs/apple-app.md.
 
-/// `GET /overview`: counts for dashboards.
+/// The hub owner's display name and initials, from `GET /owner`, `/session` and `/overview`.
+public struct OwnerProfile: Codable, Hashable, Sendable {
+    public var name: String?
+    public var initials: String?
+    public init(name: String?, initials: String?) {
+        self.name = name
+        self.initials = initials
+    }
+}
+
+/// `GET /overview`: counts for dashboards, and the owner.
 public struct FactoryOverview: Codable, Hashable, Sendable {
+    public var owner: OwnerProfile?
     public var activeAgents: Int
     public var queuedWork: Int
     public var tokensToday: Int
     public var machinesOnline: Int
 
-    public init(activeAgents: Int, queuedWork: Int, tokensToday: Int, machinesOnline: Int) {
+    public init(activeAgents: Int, queuedWork: Int, tokensToday: Int, machinesOnline: Int, owner: OwnerProfile? = nil) {
+        self.owner = owner
         self.activeAgents = activeAgents
         self.queuedWork = queuedWork
         self.tokensToday = tokensToday
         self.machinesOnline = machinesOnline
     }
 
-    enum CodingKeys: String, CodingKey { case activeAgents, queuedWork, tokensToday, machinesOnline }
+    enum CodingKeys: String, CodingKey { case owner, activeAgents, queuedWork, tokensToday, machinesOnline }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        owner = try? c.decodeIfPresent(OwnerProfile.self, forKey: .owner)
         activeAgents = try c.decodeIfPresent(Int.self, forKey: .activeAgents) ?? 0
         queuedWork = try c.decodeIfPresent(Int.self, forKey: .queuedWork) ?? 0
         tokensToday = try c.decodeIfPresent(Int.self, forKey: .tokensToday) ?? 0

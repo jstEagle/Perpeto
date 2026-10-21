@@ -20,11 +20,11 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
     public var name: String
     public var repo: Repo
     public var docs: [DocRef]
-    public var goals: [String]
+    public var goals: [Goal]
     public var createdAt: Date
     public var updatedAt: Date
 
-    public init(id: String, name: String, repo: Repo, docs: [DocRef], goals: [String], createdAt: Date, updatedAt: Date) {
+    public init(id: String, name: String, repo: Repo, docs: [DocRef], goals: [Goal], createdAt: Date, updatedAt: Date) {
         self.id = id
         self.name = name
         self.repo = repo
@@ -44,9 +44,60 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         name = try c.decode(String.self, forKey: .name)
         repo = try c.decode(Repo.self, forKey: .repo)
         docs = (try? c.decodeIfPresent(Lossy<DocRef>.self, forKey: .docs))?.elements ?? []
-        goals = (try? c.decodeIfPresent([String].self, forKey: .goals)) ?? []
+        goals = (try? c.decodeIfPresent(Lossy<Goal>.self, forKey: .goals))?.elements ?? []
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+    }
+}
+
+/// A project goal with progress: `{ id, title, status, workItemIds, done,
+/// total }`. Older hubs store plain strings; those decode as active goals
+/// with a title-derived id and no progress.
+public struct Goal: Codable, Hashable, Identifiable, Sendable {
+    public enum Status: String, LenientEnum {
+        case active, done, dropped, unknown
+        public static var unknownCase: Self { .unknown }
+    }
+
+    public var id: String
+    public var title: String
+    public var status: Status
+    public var workItemIds: [String]
+    /// Leaf work items linked to the goal that are done, and in total.
+    public var done: Int
+    public var total: Int
+
+    public init(id: String? = nil, title: String, status: Status = .active, workItemIds: [String] = [], done: Int = 0, total: Int = 0) {
+        self.id = id ?? Goal.id(forTitle: title)
+        self.title = title
+        self.status = status
+        self.workItemIds = workItemIds
+        self.done = done
+        self.total = total
+    }
+
+    /// Progress from 0 to 1, or nil when no work is linked yet.
+    public var progress: Double? { total > 0 ? Double(done) / Double(total) : nil }
+
+    static func id(forTitle title: String) -> String {
+        "goal_" + title.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }.split(separator: "-").joined(separator: "-")
+    }
+
+    enum CodingKeys: String, CodingKey { case id, title, status, workItemIds, done, total }
+
+    public init(from decoder: Decoder) throws {
+        if let title = try? decoder.singleValueContainer().decode(String.self) {
+            self.init(title: title)
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let title = try c.decode(String.self, forKey: .title)
+        self.init(
+            id: try c.decodeIfPresent(String.self, forKey: .id), title: title,
+            status: try c.decodeIfPresent(Status.self, forKey: .status) ?? .active,
+            workItemIds: try c.decodeIfPresent([String].self, forKey: .workItemIds) ?? [],
+            done: try c.decodeIfPresent(Int.self, forKey: .done) ?? 0,
+            total: try c.decodeIfPresent(Int.self, forKey: .total) ?? 0)
     }
 }
 
