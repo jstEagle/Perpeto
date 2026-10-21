@@ -12,6 +12,8 @@ export const BOTTLENECK_RULES = Object.freeze({
   criticalFailureRate: 0.75,
   humanWaitWarningSec: 3600,
   humanWaitCriticalSec: 86400,
+  conflictChurnMinRejections: 2,
+  conflictChurnCriticalRejections: 4,
 });
 const INTERACTIONS = new Map([['workitem.moved', 'flow'], ['agent.delegated', 'delegates'], ['agent.messaged', 'messages']]);
 const STARTED = new Set(['leased', 'running']);
@@ -59,6 +61,8 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
   const inWindow = iso => typeof iso === 'string' && ms(iso) > fromMs && ms(iso) <= nowMs;
   const items = Object.values(state.workItems);
   const assignments = Object.values(state.assignments);
+  const conflicts = Object.values(state.merges ?? {}).filter(entry => entry.status === 'rejected' && entry.rejectionKind === 'conflict' && inWindow(entry.completedAt));
+  const rebases = assignments.filter(assignment => assignment.step === 'rebase' && inWindow(assignment.createdAt));
   const ordered = events.filter(event => isPlainObject(event) && isIsoTimestamp(event.at) && ms(event.at) <= nowMs && isPlainObject(event.data))
     .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || ms(a.at) - ms(b.at));
 
@@ -131,12 +135,16 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
       tokens: tokensByNode.get(node.id) ?? 0,
       retries: retriesByNode.get(node.id) ?? 0,
       escalations: escalationsByNode.get(node.id) ?? 0,
+      conflictRejections: conflicts.filter(entry => entry.nodeId === node.id).length,
+      rebases: rebases.filter(assignment => assignment.nodeId === node.id).length,
     };
   });
 
   const edgeCounts = new Map(plan.edges.map(edge => [edge.id, 0]));
   const unplanned = new Map();
   for (const event of ordered) {
+    // Recovery is engine-owned routing, not traffic over an authored graph edge or an unplanned interaction.
+    if (event.type === 'workitem.moved' && event.data.step === 'rebase' && event.data.unplanned === false) continue;
     const kind = INTERACTIONS.get(event.type);
     if (!kind || !inWindow(event.at)) continue;
     const { edgeId, from, to } = event.data;
@@ -177,6 +185,8 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
     retries: [...retriesByNode.values()].reduce((sum, count) => sum + count, 0),
     escalations: escalationsInWindow.length,
     waitingOnHuman: items.filter(item => item.status === 'blocked').length,
+    conflictRejections: conflicts.length,
+    rebases: rebases.length,
     machines: [...machinesInUse.values()].sort((a, b) => a.machineId.localeCompare(b.machineId))
       .map(entry => ({ machineId: entry.machineId, activeAgents: entry.activeAgents, nodes: [...entry.nodes].sort() })),
   };
@@ -188,6 +198,11 @@ export function computeRunMetrics(state, events = [], { now, window = '24h', mac
   const startDepthAt = Math.max(fromMs, ms(state.startedAt));
   for (const metric of nodes) {
     const node = plan.nodes[metric.nodeId];
+    if (metric.conflictRejections >= R.conflictChurnMinRejections) {
+      const associated = rebases.filter(assignment => state.merges?.[assignment.rebaseOf]?.nodeId === node.id).length;
+      add(node.id, 'conflict-churn', metric.conflictRejections >= R.conflictChurnCriticalRejections ? 'critical' : 'warning',
+        `${metric.conflictRejections} conflict rejections; ${associated} rebase assignments in the last ${label}`);
+    }
     const before = depthAt(node.id, startDepthAt);
     const growth = metric.queued - before;
     const saturated = metric.concurrency && metric.utilization >= R.saturatedUtilization && metric.queued > 0 && growth > 0;

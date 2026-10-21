@@ -16,7 +16,12 @@
 // --isolation runs only one builder turn on the factory instance and checks the
 // commit author and the Codex rollout: no personal skills, memories, AGENTS.md
 // or hooks, plus the first model call's input tokens. --server-entry points at
-// another checkout's built runtime.
+// another checkout's built runtime. With --provider claudeAgent it also checks the
+// dedicated Claude config directory: transcripts land there, none in
+// ~/.claude/projects, and whether the account email still reaches the prompt.
+// That needs --claude-login copy-once, which copies this machine's current Claude
+// login into the temporary home once; the copy and the keychain item Claude
+// makes for it are removed afterwards.
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtemp, rm, mkdir, readdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -28,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 
+import { deleteClaudeKeychainLogin, hasClaudeKeychainLogin } from '@perpeto/accounts';
 import { createT3Executor } from '../src/index.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -41,6 +47,7 @@ const { values: args } = parseArgs({ options: {
   keep: { type: 'boolean', default: false },
   native: { type: 'boolean', default: false },
   roles: { type: 'boolean', default: false },
+  'claude-login': { type: 'string', default: 'pool-only' },
 } });
 const serverEntry = resolve(args['server-entry']);
 if (!existsSync(serverEntry)) { console.error('Build the runtime first: npm run setup && npm run build.'); process.exit(2); }
@@ -64,7 +71,7 @@ try {
   execFileSync('git', ['init', '-q', '-b', 'main', repo]);
   execFileSync('git', ['-C', repo, '-c', 'user.email=live@perpeto.invalid', '-c', 'user.name=Perpeto live check', 'commit', '-q', '--allow-empty', '-m', 'init']);
 
-  const executor = createT3Executor({ config: { url: origin, serverEntry, baseDir: join(home, 'runtime'), tokenTtl: '1h', settleMs: 1500 } });
+  const executor = createT3Executor({ config: { url: origin, serverEntry, baseDir: join(home, 'runtime'), tokenTtl: '1h', settleMs: 1500, claudeLogin: args['claude-login'] } });
   async function runOnce(label, assignment) {
     const events = [];
     const workspace = join(home, `ws-${label}`);
@@ -89,6 +96,8 @@ try {
     }
     const origin = join(home, 'origin.git');
     execFileSync('git', ['clone', '-q', '--bare', repo, origin]);
+    const operatorProjects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects');
+    const projectsBefore = new Set(await readdir(operatorProjects).catch(() => []));
     const workItemId = `wi_live_iso_${Date.now()}`;
     const built = await runOnce('isolated-builder', { ...base, id: `asg_live_iso_${Date.now()}`, workItemId, nodeType: 'agent', role: 'builder', repo: { url: origin, defaultBranch: 'main' },
       prompt: 'This is an automated integration check. Create a file named hello.txt containing the single line "hello" and commit it with the message "Add hello", using only shell and git commands. Reply with one short sentence.',
@@ -98,8 +107,9 @@ try {
     check(bound && /^perpeto_/.test(bound.data.providerInstanceId), `ran on a factory instance (${bound?.data.providerInstanceId})`);
     const author = (() => { try { return execFileSync('git', ['-C', origin, 'log', '-1', '--format=%an <%ae>|%cn <%ce>', `refs/heads/perpeto/${workItemId}`], { encoding: 'utf8' }).trim(); } catch { return null; } })();
     check(author === 'Perpeto Agent <agents@perpeto.local>|Perpeto Agent <agents@perpeto.local>', `commit author and committer (${author})`);
-    if (args.provider !== 'codex') return;
     const homes = join(home, 'runtime', 'perpeto-agent-homes');
+    if (args.provider === 'claudeAgent') return claudeHomeCheck(homes, operatorProjects, projectsBefore);
+    if (args.provider !== 'codex') return;
     const rollouts = [];
     async function walk(dir) {
       for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
@@ -123,6 +133,30 @@ try {
     check(!all.includes('T3 Code orchestration') && !all.includes('<t3_code_tools>'), 'no T3 orchestration or browser notes');
     const first = rows.find(row => row.type === 'event_msg' && row.payload?.type === 'token_count' && row.payload.info);
     console.log(`  first model call input tokens: ${first?.payload.info.last_token_usage.input_tokens}; turn total ${JSON.stringify(first ? rows.filter(row => row.type === 'event_msg' && row.payload?.type === 'token_count' && row.payload.info).at(-1).payload.info.total_token_usage : null)}`);
+  }
+
+  // Prints only names, counts and booleans: never credentials, the email itself or transcript text.
+  async function claudeHomeCheck(homes, operatorProjects, projectsBefore) {
+    const claudeHomes = (await readdir(homes).catch(() => [])).filter(name => name.startsWith('claude-')).map(name => join(homes, name));
+    check(claudeHomes.length === 1, `one dedicated Claude config directory (${claudeHomes.length})`);
+    const newProjects = (await readdir(operatorProjects).catch(() => [])).filter(name => !projectsBefore.has(name));
+    const ours = newProjects.filter(name => name.includes('perpeto-t3-executor-live'));
+    check(ours.length === 0, `no transcript directory for this run in ~/.claude/projects (${ours.length}; ${newProjects.length} new from any session)`);
+    for (const claudeHome of claudeHomes) {
+      const transcripts = [];
+      for (const project of await readdir(join(claudeHome, 'projects')).catch(() => [])) {
+        for (const file of await readdir(join(claudeHome, 'projects', project)).catch(() => [])) if (file.endsWith('.jsonl')) transcripts.push(join(claudeHome, 'projects', project, file));
+      }
+      check(transcripts.length > 0, `transcripts in the dedicated home (${transcripts.length})`);
+      console.log(`  dedicated home entries: ${(await readdir(claudeHome)).sort().join(', ')}`);
+      const text = (await Promise.all(transcripts.map(file => readFile(file, 'utf8')))).join('\n');
+      const personal = await readFile(join(homedir(), '.claude', 'CLAUDE.md'), 'utf8').catch(() => '');
+      check(!personal.trim() || !text.includes(personal.trim().slice(0, 80)), 'no personal ~/.claude/CLAUDE.md');
+      check(!text.includes('mcp__claude_ai_'), 'no claude.ai connector tools');
+      const config = JSON.parse(await readFile(join(claudeHome, '.claude.json'), 'utf8').catch(() => '{}'));
+      console.log(`  account email in the prompt: ${text.includes("The user's email address is")}; oauthAccount.emailAddress in the home's .claude.json: ${typeof config.oauthAccount?.emailAddress === 'string'}`);
+      console.log(`  login: .credentials.json ${existsSync(join(claudeHome, '.credentials.json')) ? 'present' : 'absent'}, keychain item for this home ${hasClaudeKeychainLogin(claudeHome) ? 'present' : 'absent'}`);
+    }
   }
 
   async function basicChecks() {
@@ -198,7 +232,11 @@ try {
   runtime.kill('SIGTERM');
   await Promise.race([once(runtime, 'exit'), delay(8000)]);
   if (runtime.exitCode === null) runtime.kill('SIGKILL');
-  if (!args.keep) await rm(home, { recursive: true, force: true });
-  else console.log(`Kept ${home}`);
+  if (!args.keep) {
+    // Claude moves a seeded login into a keychain item per config directory; remove it with the home.
+    const homes = join(home, 'runtime', 'perpeto-agent-homes');
+    for (const name of await readdir(homes).catch(() => [])) if (name.startsWith('claude-') && deleteClaudeKeychainLogin(join(homes, name))) console.log(`Removed the keychain login for ${name}`);
+    await rm(home, { recursive: true, force: true });
+  } else console.log(`Kept ${home}; its Claude homes may also have keychain items (Claude Code-credentials-<hash>)`);
 }
 process.exitCode = failed ? 1 : 0;

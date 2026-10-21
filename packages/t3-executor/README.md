@@ -27,7 +27,9 @@ The node passes its `runtime` section as `config`. Executor settings can sit at 
 | `publishBranch` | `true` | Push new commits on the work branch to `origin`, without force |
 | `agentIsolation` | `factory` | `factory` runs agents on an isolated T3 provider instance (see [agent isolation](#agent-isolation)). `inherit` uses the operator's instance as is; keep it for debugging |
 | `gitIdentity` | `{ "name": "Perpeto Agent", "email": "agents@perpeto.local" }` | Author and committer of agent commits. An assignment's `gitIdentity`, or `context.project.gitIdentity`, overrides it per project |
-| `agentHomesDir` | `<baseDir>/perpeto-agent-homes`, else `~/.perpeto/agent-homes` | Where factory Codex homes live |
+| `agentHomesDir` | `<baseDir>/perpeto-agent-homes`, else `~/.perpeto/agent-homes` | Where factory Codex and Claude homes live |
+| `claudeLogin` | `pool-only` | How an unpooled factory Claude home gets its login. `pool-only` never copies one: the home must already be signed in (see [Claude config directory](#claude-config-directory)). `copy-once` copies the operator's current login into an empty home once |
+| `claudeHome` | the base instance's `homePath`, else `CLAUDE_CONFIG_DIR`, else `~/.claude` | Claude config directory whose login `copy-once` copies |
 | `codexHome` | the base instance's home, else `CODEX_HOME`, else `~/.codex` | Codex home whose login an unpooled factory instance uses |
 | `personalSkillDirs` | `["~/.agents/skills"]` (absolute) | Shared skill folders whose skills factory Codex instances disable |
 | `turnTimeoutMs` | 4 hours | Assignment time limit |
@@ -68,11 +70,11 @@ Live acceptance run 1 showed factory agents reading the operator's personal inst
 
 | Layer | Operator setup that stays out | What still loads |
 | --- | --- | --- |
-| Claude | `--setting-sources=project,local`: `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, user hooks, skills, plugins and user-scope MCP servers in `~/.claude.json`. The Claude Agent SDK loads every source when T3 passes none. `ENABLE_CLAUDEAI_MCP_SERVERS=false` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` turn off the account's claude.ai connectors and auto memory, which setting sources do not cover | The repository's `CLAUDE.md` and `.claude/` settings. The login, from the base instance's `homePath`. The account email in Claude's session context, and transcripts under `~/.claude/projects` |
+| Claude | A dedicated config directory (`CLAUDE_CONFIG_DIR`) per source login under `agentHomesDir`, holding only a login, so transcripts, `.claude.json`, memory and settings never touch `~/.claude`. `--setting-sources=project,local`: `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, user hooks, skills, plugins and user-scope MCP servers in `~/.claude.json`. The Claude Agent SDK loads every source when T3 passes none. `ENABLE_CLAUDEAI_MCP_SERVERS=false` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` turn off the account's claude.ai connectors and auto memory, which setting sources do not cover | The repository's `CLAUDE.md` and `.claude/` settings. The account email in Claude's session context: it comes from the signed-in account, not from `~/.claude` (see below). Pooled accounts keep their Perpeto-owned homes |
 | Codex | A factory `CODEX_HOME` with a minimal `config.toml` and `auth.json` linked to the source home's: `~/.codex/AGENTS.md`, skills, memories, hooks, plugins, MCP servers, rollout history. The config also disables bundled skills and every skill in `~/.agents/skills` (`personalSkillDirs`), which Codex reads whatever `CODEX_HOME` is. `-c features.{memories,hooks,plugins,apps,multi_agent,multi_agent_v2}=false` disables account-level plugins and apps | The repository's `AGENTS.md` and skills. The one login: token refreshes write through the link. Pooled accounts keep their Perpeto-owned homes |
 | Git | `GIT_AUTHOR_*` and `GIT_COMMITTER_*` from `gitIdentity`, and `commit.gpgsign`, `tag.gpgsign` off through `GIT_CONFIG_*`, so the operator's identity and signing key never touch agent commits | The operator's other Git config, such as credential helpers |
 
-The executor reports `isolation.bound` with the instance and identity. A factory home whose `auth.json` became a regular file is refused (`blocked`), since that copy would drift from the operator's login. Base-instance environment variables T3 marks sensitive are redacted for clients, so they are not copied; their names are reported in `droppedEnvironment`.
+The executor reports `isolation.bound` with the instance and identity, plus `claudeLogin` (`existing` or `copied`) for an unpooled Claude home; never a path or credential. A factory home whose `auth.json` became a regular file is refused (`blocked`), since that copy would drift from the operator's login. Base-instance environment variables T3 marks sensitive are redacted for clients, so they are not copied; their names are reported in `droppedEnvironment`.
 
 Context before the agent does anything, from Codex rollouts (`gpt-6.1-sol`, low effort):
 
@@ -88,7 +90,25 @@ Context before the agent does anything, from Codex rollouts (`gpt-6.1-sol`, low 
 
 The factory column is `node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low` on 21 October 2026. A fresh before/after pair used 15,256 and 13,562 first-call input tokens, a reduction of 1,694 (11.1%). Each was one builder turn in its own temporary runtime and repository, using the existing login; both committed as `Perpeto Agent <agents@perpeto.local>`. These are actual Codex rollout counts, including its own instructions and tools, rather than a characters-to-tokens estimate. The multi-agent notes come from the model catalog (`multi_agent_version: v2`) and remain.
 
-Claude isolation was verified live in [live acceptance 2](../../docs/handoffs/live-acceptance-2.md#claude-side-isolation): ten Claude Sonnet turns carried no personal instructions, skills, plugins, hooks or `~/.claude.json` MCP servers, and committed as Perpeto Agent. First-call input was 19,496 to 20,352 tokens for planner, builder and senior reviewer.
+Claude isolation was verified live in [live acceptance 2](../../docs/handoffs/live-acceptance-2.md#claude-side-isolation): ten Claude Sonnet turns carried no personal instructions, skills, plugins, hooks or `~/.claude.json` MCP servers, and committed as Perpeto Agent. First-call input was 19,496 to 20,352 tokens for planner, builder and senior reviewer. That run predates the dedicated [Claude config directory](#claude-config-directory).
+
+### Claude config directory
+
+Live acceptance run 2 found Claude factory agents writing transcripts into the operator's `~/.claude/projects` and receiving the account email. An unpooled factory Claude instance now gets `homePath` `<agentHomesDir>/claude-<hash of the source home>`, which T3 turns into `CLAUDE_CONFIG_DIR` ([ClaudeHome.ts](../../vendor/t3code/apps/server/src/provider/Drivers/ClaudeHome.ts)). The directory is mode 700 and starts with nothing but a login. Claude Code then keeps its `.claude.json`, `projects/` transcripts, sessions and settings there. The executor never falls back to the operator's home: a home without a login returns `blocked` with the steps below, before anything is registered with T3.
+
+A home counts as signed in when it holds `.credentials.json` (mode 600) or, on macOS, the keychain item Claude keeps for that directory. Claude Code 2.1.304 stores logins under the keychain service `Claude Code-credentials`, suffixed with the first 8 hex digits of the SHA-256 of the config directory whenever `CLAUDE_CONFIG_DIR` is set. Its first credential write (a token refresh, or recording the plan) moves `.credentials.json` into that item and deletes the file. The executor only checks the item exists; it never reads it for a factory home.
+
+Ways to give it a login, best first:
+
+1. **Pool account.** Enroll a Claude login in [`@perpeto/accounts`](../accounts/README.md). Pooled assignments run in the pool's own private home, so this section's directory is not used.
+2. **Separate sign-in into the factory home:** `CLAUDE_CONFIG_DIR=<home> claude auth login`, where `<home>` is the path in the `blocked` message. This is its own OAuth grant, so it shares no refresh token with the operator.
+3. **`claudeLogin: "copy-once"`**, an explicit operator opt-in. On first use the executor copies the current login into the empty home: `<source>/.credentials.json` if present (it must be a private regular file), else on macOS the source's keychain item, read with `/usr/bin/security` and kept in memory. Only `claudeAiOauth` is copied; MCP server tokens and every other file stay behind. It writes `.credentials.json` (mode 600) and `perpeto-login.json`, a record of the copy without secrets. If that copy later loses its login, the executor reports it instead of copying again; delete the home to copy afresh. The copy shares the operator's refresh token, so when one side refreshes, the provider may rotate the token and sign the other out. That was not observed but not ruled out. Prefer option 1 or 2 for long-running nodes.
+
+Deleting a factory Claude home should also delete its keychain item (`deleteClaudeKeychainLogin(home)` from `@perpeto/accounts`); the live check does this for its temporary homes.
+
+**The account email still reaches the prompt.** Claude Code 2.1.304 builds the `userEmail` context block from `oauthAccount.emailAddress` in the config directory's `.claude.json` and omits it only when `ANTHROPIC_UNIX_SOCKET` is set (a different transport). The dedicated home starts without `oauthAccount`; with a normal subscription login (`user:profile` scope) Claude fetches `/api/oauth/profile` itself and stores the email there. In the live check below the home's `.claude.json` gained `oauthAccount.emailAddress` and the transcript carried the email block. It is a property of the signed-in account, and no setting is known to stop it. Source reading suggests an inference-only token from `claude setup-token` skips the profile fetch and so the email; that is untested, and the executor has no way to seed one yet. A dedicated factory account is the reliable way to keep the operator's email out.
+
+Verified live on 21 October 2026 with `node packages/t3-executor/scripts/live-check.mjs --isolation --provider claudeAgent --model claude-sonnet-5-5 --claude-login copy-once`: one Sonnet builder turn, commit by Perpeto Agent, the transcript only in the dedicated home, no new directory in `~/.claude/projects` (67 before and after), no personal `CLAUDE.md` or claude.ai connector tools. The login was copied from the macOS keychain. No credential write happened during the turn, so `.credentials.json` stayed and no keychain item was created; the move into the keychain is taken from Claude Code's source and covered by tests with a fake keychain, not observed live.
 
 ### Local account-provider contract
 
@@ -199,4 +219,7 @@ Source: `vendor/t3code` at the pinned commit. Verified live where noted.
   npm run setup && npm run build
   node packages/t3-executor/scripts/live-check.mjs --policy --roles [--provider claudeAgent --model claude-haiku-5-5] [--native]
   node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low [--server-entry other/checkout/bin.mjs]
+  node packages/t3-executor/scripts/live-check.mjs --isolation --provider claudeAgent --model claude-sonnet-5-5 --claude-login copy-once
   ```
+
+  The Claude form copies this machine's current Claude login into a temporary home once, prints only booleans about the email, and removes the home and its keychain item afterwards.

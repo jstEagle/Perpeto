@@ -26,7 +26,7 @@
           "provider": "codex",
           "model": "gpt-6-astra"
         },
-        "prompt": "Audit the authorized repository scope for security weaknesses. Propose evidence-backed findings with severity, location, impact and a safe verification plan. Avoid duplicate findings.",
+        "prompt": "Audit the authorized repository scope for security weaknesses. Propose evidence-backed findings with severity, location, impact and a safe verification plan. Avoid duplicate findings. Split along file/module boundaries and declare touches: string[] per item, including shared entry points and manifests.",
         "concurrency": 1,
         "policy": {
           "maxSubagents": 0
@@ -35,7 +35,8 @@
           "maxAttempts": 3,
           "backoffSec": 30
         },
-        "maxItems": 3
+        "maxItems": 3,
+        "serializeOverlappingTouches": true
       }
     },
     {
@@ -168,7 +169,9 @@
         "method": "squash",
         "requiredChecks": [
           "test"
-        ]
+        ],
+        "onConflict": "rebase",
+        "rebaseReview": "changed"
       }
     },
     {

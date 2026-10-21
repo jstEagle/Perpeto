@@ -1,5 +1,18 @@
 # factory-t3 handoff
 
+## Dedicated Claude config directory, 21 October 2026
+
+Worktree branch `t3/a4959f6c` from `main` at `9c9e43f`, for the "account-level Claude context" finding in [live acceptance run 2](live-acceptance-2.md#findings). Not pushed or merged.
+
+- **Transcripts and state:** unpooled factory Claude instances now run with `homePath` `<agentHomesDir>/claude-<hash>`, which T3 passes as `CLAUDE_CONFIG_DIR`. The directory (mode 700) holds only a login, and Claude keeps its transcripts, `.claude.json`, memory and settings there. Pooled accounts already ran in private homes. Details in the [executor README](../../packages/t3-executor/README.md#claude-config-directory).
+- **Login:** a pool account, a separate `claude auth login` into the factory home, or the explicit `runtime.t3.claudeLogin: "copy-once"`, which copies only `claudeAiOauth` from the current login (file, else macOS keychain) once and records the copy. With none of these, the assignment is `blocked`; it never falls back to `~/.claude`. **This changes the default:** a node that ran Claude factory work on the operator login now needs one of the three.
+- **Account email: still present, and inherent to the account.** Claude Code 2.1.304 takes it from `oauthAccount.emailAddress`, which it fetches from `/api/oauth/profile` and stores in the dedicated home's own `.claude.json`. The live turn confirmed both. Only a different account, or possibly an inference-only `claude setup-token` token (untested), keeps the operator's email out.
+- **Accounts fix found on the way:** on macOS Claude moves `.credentials.json` into a per-directory keychain item on its first credential write. Pooled Claude homes would then have been marked invalid after one use; the pool now accepts that item (presence check only). Claude imports also drop everything but `claudeAiOauth`. See [factory-accounts](factory-accounts.md#dedicated-claude-homes-follow-up-21-october-2026).
+
+Verification on Node v24.22.0: `npm test -w @perpeto/t3-executor` 53 of 53 and `npm test -w @perpeto/accounts` 31 of 31, all with synthetic credentials, a fake keychain and the fake T3 server. Repository `npm test`: 486 of 486. One live Sonnet turn (`live-check.mjs --isolation --provider claudeAgent --model claude-sonnet-5-5 --claude-login copy-once`, runtime built from the same vendor commit in another worktree): success, commit by Perpeto Agent, one transcript in the dedicated home, `~/.claude/projects` unchanged at 67 directories, email block present. The temporary home was deleted and no keychain item was left.
+
+Not verified: the keychain move and the pool's acceptance of it live (no refresh happened in a 10-second turn); whether a shared refresh token from `copy-once` signs the operator out when either side refreshes; a `setup-token` login.
+
 ## Factory orchestration context filtering, 21 October 2026
 
 Implemented in this worktree from `main` at `61855d5`. No push or merge.

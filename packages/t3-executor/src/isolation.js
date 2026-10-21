@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, readdir, readlink, symlink, unlink, writeFile, chmod } from 'node:fs/promises';
+import { constants, lstat, mkdir, open, readFile, readdir, readlink, rename, rm, symlink, unlink, writeFile, chmod } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { claudeOauth, hasClaudeKeychainLogin, readClaudeKeychainLogin } from '@perpeto/accounts';
 
 /**
  * Factory agents run on their own T3 provider instance, so they never load the operator's personal
  * setup and never commit as the operator:
  * - Claude: `--setting-sources=project,local`, so ~/.claude settings, CLAUDE.md, hooks, skills and
  *   plugins stay out; the project's own CLAUDE.md and .claude settings still load. claude.ai connectors and
- *   auto memory are switched off by environment. The login is kept.
+ *   auto memory are switched off by environment. Unpooled instances run in a dedicated config directory
+ *   (CLAUDE_CONFIG_DIR) seeded only with a login, so transcripts and state stay out of ~/.claude.
  * - Codex: a factory CODEX_HOME holding only a minimal config.toml and a link to the source home's
  *   auth.json, so ~/.codex AGENTS.md, skills, memories, hooks, plugins and MCP servers stay out, and
  *   the config disables bundled skills and those in ~/.agents/skills; the repository's AGENTS.md and
@@ -18,6 +20,7 @@ import { isAbsolute, join, resolve } from 'node:path';
  */
 export const DEFAULT_GIT_IDENTITY = Object.freeze({ name: 'Perpeto Agent', email: 'agents@perpeto.local' });
 export const ISOLATION_MODES = Object.freeze(['factory', 'inherit']);
+export const CLAUDE_LOGIN_MODES = Object.freeze(['pool-only', 'copy-once']);
 
 const CLAUDE_SETTING_SOURCES = '--setting-sources=project,local';
 // Personal features Codex would otherwise enable from the account or home. Native multi-agent stays off
@@ -68,7 +71,11 @@ export function resolveIsolation(settings) {
   if (!Array.isArray(personalSkillDirs) || !personalSkillDirs.every(dir => typeof dir === 'string' && isAbsolute(dir))) {
     throw new Error('personalSkillDirs must be a list of absolute paths.');
   }
-  return { mode, identity, homesDir, codexHome, personalSkillDirs };
+  const claudeLogin = settings.claudeLogin ?? 'pool-only';
+  if (!CLAUDE_LOGIN_MODES.includes(claudeLogin)) throw new Error(`claudeLogin must be ${CLAUDE_LOGIN_MODES.join(' or ')}.`);
+  const claudeHome = settings.claudeHome ?? null;
+  if (claudeHome !== null && !isAbsolute(claudeHome)) throw new Error('claudeHome must be an absolute path.');
+  return { mode, identity, homesDir, codexHome, personalSkillDirs, claudeLogin, claudeHome, claudeKeychain: CLAUDE_KEYCHAIN };
 }
 
 /** Environment that makes Git use the factory identity and never sign with the operator's key. */
@@ -144,6 +151,82 @@ export async function prepareCodexHome(home, sourceHome, { personalSkillDirs = P
   return { home, auth: 'linked' };
 }
 
+/** Real keychain access; tests replace it so they never touch a login. */
+const CLAUDE_KEYCHAIN = Object.freeze({ has: hasClaudeKeychainLogin, read: readClaudeKeychainLogin });
+const CLAUDE_SEED_RECORD = 'perpeto-login.json';
+
+const isolationError = (code, message) => Object.assign(new Error(message), { code });
+
+/**
+ * The operator's Claude login an unpooled instance would use, and the config dir Claude keys its keychain
+ * item on: T3 sets CLAUDE_CONFIG_DIR only when the instance has a `homePath`.
+ */
+export function claudeSourceHome(config, isolation, env = process.env) {
+  const configured = typeof config.homePath === 'string' && config.homePath.trim() ? config.homePath.trim() : null;
+  const explicit = configured ?? isolation.claudeHome ?? (env.CLAUDE_CONFIG_DIR?.trim() || null);
+  const home = resolve(expandHome(explicit ?? join(homedir(), '.claude')));
+  return { home, configDir: explicit ? home : null };
+}
+
+async function privateFile(path) {
+  const stat = await lstat(path).catch(() => null);
+  if (!stat) return null;
+  if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
+    throw isolationError('ISOLATION_HOME_UNSAFE', `${path} must be a private regular file (mode 600) owned by this user.`);
+  }
+  return stat;
+}
+
+/** The operator's current login, reduced to `claudeAiOauth`: the source's plaintext file, else its keychain item. */
+async function currentClaudeLogin(source, keychain) {
+  const file = join(source.home, '.credentials.json');
+  if (await privateFile(file)) {
+    let data = null;
+    try { data = JSON.parse(await readFile(file, 'utf8')); } catch { /* reported below without content */ }
+    const oauth = claudeOauth(data);
+    if (oauth) return { oauth, from: 'file' };
+  }
+  const oauth = await keychain.read(source.configDir);
+  return oauth ? { oauth, from: 'keychain' } : null;
+}
+
+async function writePrivate(path, text) {
+  const temporary = `${path}.${process.pid}.tmp`;
+  const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  try { await handle.writeFile(text); await handle.sync(); } finally { await handle.close(); }
+  try { await rename(temporary, path); } catch (error) { await rm(temporary, { force: true }); throw error; }
+}
+
+/**
+ * Create or check a dedicated Claude config directory for factory agents. It holds only a login:
+ * - an existing login (a `.credentials.json`, or the keychain item Claude moves it into on macOS) is used as is;
+ * - otherwise, with `claudeLogin: "copy-once"`, the operator's current `claudeAiOauth` is copied in once
+ *   (mode 600) and the copy is recorded, so a later sign-out is reported instead of silently re-copied.
+ * Nothing else from the source home is read. Claude then keeps its transcripts, memory and settings here.
+ */
+export async function prepareClaudeHome(home, source, { claudeLogin = 'pool-only', claudeKeychain = CLAUDE_KEYCHAIN } = {}) {
+  if (resolve(home) === source.home) throw new Error('The factory Claude home must differ from the source home.');
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  const stat = await lstat(home);
+  if (!stat.isDirectory() || stat.uid !== process.getuid?.()) {
+    throw isolationError('ISOLATION_HOME_UNSAFE', `The factory Claude home ${home} must be a directory owned by this user.`);
+  }
+  await chmod(home, 0o700);
+  if (await privateFile(join(home, '.credentials.json')) || await claudeKeychain.has(home)) return { home, login: 'existing' };
+  const relogin = `CLAUDE_CONFIG_DIR=${JSON.stringify(home)} claude auth login`;
+  if (await readFile(join(home, CLAUDE_SEED_RECORD), 'utf8').then(() => true, () => false)) {
+    throw isolationError('ISOLATION_LOGIN_MISSING', `The factory Claude home ${home} was seeded once and is no longer signed in. Run ${relogin}, or delete the home to copy the current login again.`);
+  }
+  if (claudeLogin !== 'copy-once') {
+    throw isolationError('ISOLATION_LOGIN_MISSING', `Factory Claude agents need their own login. Enroll a Claude account in the pool, run ${relogin}, or set runtime.t3.claudeLogin to "copy-once" to copy the current login into ${home} once.`);
+  }
+  const login = await currentClaudeLogin(source, claudeKeychain);
+  if (!login) throw isolationError('ISOLATION_LOGIN_MISSING', `No Claude login found to copy for ${source.home}. Sign in to Claude Code first.`);
+  await writePrivate(join(home, '.credentials.json'), `${JSON.stringify({ claudeAiOauth: login.oauth })}\n`);
+  await writePrivate(join(home, CLAUDE_SEED_RECORD), `${JSON.stringify({ seeded: 'copy-once', from: login.from, at: new Date().toISOString() })}\n`);
+  return { home, login: 'copied' };
+}
+
 const slug = value => String(value).replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 24);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 12);
 
@@ -151,14 +234,21 @@ const digest = value => createHash('sha256').update(JSON.stringify(value)).diges
  * The provider-instance mutation for a factory agent derived from a base instance.
  * `base` is `{ instanceId, driver, config?, environment?, displayName? }`; `pooled` marks an account-pool
  * binding, whose home is already Perpeto-owned and whose instance id stays as the pool chose it.
- * @returns {Promise<{ instanceId: string, mutation: object, dropped: string[], codexHome?: string }>}
+ * @returns {Promise<{ instanceId: string, mutation: object, dropped: string[], codexHome?: string, claudeHome?: string, claudeLogin?: string }>}
  */
 export async function factoryInstance(base, isolation, { pooled = false, identity = isolation.identity } = {}) {
   const driver = base.driver;
   let config = { ...(base.config ?? {}) };
   const { environment, dropped } = withEnvironment(base.environment, identity, driver === 'claudeAgent' ? CLAUDE_ENV : {});
-  let codexHome;
-  if (driver === 'claudeAgent') config = claudeConfig(config);
+  let codexHome, claudeHome, claudeLogin;
+  if (driver === 'claudeAgent') {
+    config = claudeConfig(config);
+    if (!pooled) {
+      const source = claudeSourceHome(config, isolation);
+      ({ home: claudeHome, login: claudeLogin } = await prepareClaudeHome(join(isolation.homesDir, `claude-${digest(source.home)}`), source, isolation));
+      config = { ...config, homePath: claudeHome };
+    }
+  }
   if (driver === 'codex') {
     config.launchArgs = codexArgs(config.launchArgs);
     if (!pooled) {
@@ -174,5 +264,6 @@ export async function factoryInstance(base, isolation, { pooled = false, identit
     displayName: pooled ? base.displayName ?? base.instanceId : `Perpeto agents (${base.displayName ?? base.instanceId})`,
     environment, config,
   };
-  return { instanceId, mutation: { operation: 'upsert', instanceId, instance }, dropped, ...(codexHome ? { codexHome } : {}) };
+  return { instanceId, mutation: { operation: 'upsert', instanceId, instance }, dropped, ...(codexHome ? { codexHome } : {}),
+    ...(claudeHome ? { claudeHome, claudeLogin } : {}) };
 }

@@ -2,6 +2,17 @@
 
 Implemented on `t3/factory-account-pool`, based on the supplied Perpeto foundation. Core implementation commit: `423073944df341adedab75ab099b7ffb29c5c279`. This handoff and the package README are committed separately. No push or merge was performed.
 
+## Dedicated Claude homes follow-up, 21 October 2026
+
+Part of the executor's [dedicated Claude config directory](factory-t3.md#dedicated-claude-config-directory-21-october-2026) work, branch `t3/a4959f6c`.
+
+- **Keychain-moved logins stay eligible.** Claude Code 2.1.304 on macOS moves `.credentials.json` into the keychain item `Claude Code-credentials-<sha256(home)[0:8]>` on its first credential write and deletes the file. `checkHome` used to require the file, so a pooled Claude account would have turned `invalid` after its first token refresh. It now accepts the item, found with a presence-only `security` call; the `claudeKeychain` constructor option replaces the probe in tests.
+- **Minimal Claude imports.** Only `claudeAiOauth` is copied; MCP server OAuth tokens in the source file stay behind.
+- New exports in [claude-login.js](../../packages/accounts/src/claude-login.js): `claudeKeychainService`, `hasClaudeKeychainLogin`, `readClaudeKeychainLogin`, `deleteClaudeKeychainLogin`, `claudeOauth`.
+- A private home does not hide the account email: Claude stores it in the home's `.claude.json` from the profile endpoint. Each pooled account therefore shows its own email to its agents.
+
+Tests: 31 of 31, synthetic credentials and a fake keychain. The keychain move itself is taken from Claude Code's source, not observed live.
+
 ## What exists
 
 - Dependency-free ESM/JSDoc package [`@perpeto/accounts`](../../packages/accounts/README.md), with `AccountPool` / `createAccountPool` exports and a [JSON configuration example](../../config/accounts.example.json).

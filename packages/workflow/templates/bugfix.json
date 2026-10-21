@@ -26,7 +26,7 @@
           "provider": "claudeAgent",
           "model": "claude-sonnet-5-5"
         },
-        "prompt": "Triage the bug against repository evidence. Identify scope, expected behaviour and acceptance criteria. Keep one actionable bug per item.",
+        "prompt": "Triage the bug against repository evidence. Identify scope, expected behaviour and acceptance criteria. Keep one actionable bug per item. Split along file/module boundaries and declare touches: string[] per item, including shared entry points and manifests.",
         "concurrency": 1,
         "policy": {
           "maxSubagents": 0
@@ -35,7 +35,8 @@
           "maxAttempts": 3,
           "backoffSec": 30
         },
-        "maxItems": 3
+        "maxItems": 3,
+        "serializeOverlappingTouches": true
       }
     },
     {
@@ -168,7 +169,9 @@
         "method": "squash",
         "requiredChecks": [
           "test"
-        ]
+        ],
+        "onConflict": "rebase",
+        "rebaseReview": "changed"
       }
     },
     {

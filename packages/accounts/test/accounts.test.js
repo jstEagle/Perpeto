@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { AccountPool, detectClaudeSignal, detectCodexSignal } from '../src/index.js';
+import { createHash } from 'node:crypto';
+import { AccountPool, claudeKeychainService, detectClaudeSignal, detectCodexSignal } from '../src/index.js';
 
 // Fake strings only. Never read a user's login, ccswap store, or Keychain.
 const claude = JSON.stringify({ claudeAiOauth: { accessToken: 'fixture-claude-secret', refreshToken: 'fixture-refresh' } });
@@ -18,7 +19,8 @@ function fixture(t, options = {}) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   let now = Date.parse('2026-10-21T02:00:00Z');
   const nodeDataDir = path.join(root, 'node');
-  const pool = new AccountPool({ nodeDataDir, machineId: 'mch_fixture', clock: () => now, ...options });
+  // Hermetic: the macOS keychain probe is replaced unless a test supplies its own.
+  const pool = new AccountPool({ nodeDataDir, machineId: 'mch_fixture', clock: () => now, claudeKeychain: () => false, ...options });
   let key = 0;
   const next = () => `request-${++key}`;
   const source = provider => {
@@ -487,4 +489,41 @@ test('Claude overage windows remain permitted across unrelated observations and 
   assert.equal(reopened.select({ provider: 'claudeAgent', assignmentId: 'asg_overage', idempotencyKey: f.next() }).account.id, 'acct_a');
   f.observe('acct_a', limit('rejected'));
   assert.equal(f.pool.snapshot()[0].status, 'cooling');
+});
+
+test('Claude imports keep only the login, never other tokens in the credentials file', t => {
+  const f = fixture(t);
+  const source = f.source('claudeAgent');
+  write(path.join(source.homePath, '.credentials.json'), JSON.stringify({
+    claudeAiOauth: { accessToken: 'fixture-claude-secret', refreshToken: 'fixture-refresh', scopes: ['user:inference'] },
+    mcpOAuth: { 'fixture-server': { accessToken: 'fixture-mcp-secret' } },
+  }));
+  f.add('acct_min', 'claudeAgent', { source });
+  const home = f.select('asg_min', 'claudeAgent').binding.instance.config.homePath;
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, '.credentials.json'), 'utf8')),
+    { claudeAiOauth: { accessToken: 'fixture-claude-secret', refreshToken: 'fixture-refresh', scopes: ['user:inference'] } });
+});
+
+test('a Claude home whose login moved into the keychain stays eligible', t => {
+  const moved = new Set();
+  const f = fixture(t, { claudeKeychain: home => moved.has(home) });
+  f.add('acct_kc', 'claudeAgent');
+  const { binding } = f.select('asg_kc_1', 'claudeAgent');
+  f.release('asg_kc_1');
+  const home = binding.instance.config.homePath;
+  // Claude's first credential write on macOS deletes the file and stores the login in the keychain.
+  fs.rmSync(path.join(home, '.credentials.json'));
+  moved.add(home);
+  assert.equal(f.select('asg_kc_2', 'claudeAgent').account.id, 'acct_kc');
+  f.release('asg_kc_2');
+  moved.delete(home);
+  assert.throws(() => f.select('asg_kc_3', 'claudeAgent'), code('ACCOUNT_POOL_EXHAUSTED'));
+});
+
+test('Claude keychain service names follow Claude Code per config directory', () => {
+  assert.equal(claudeKeychainService(null), 'Claude Code-credentials');
+  const dir = '/private/tmp/perpeto-home';
+  const digest = createHash('sha256').update(dir).digest('hex').slice(0, 8);
+  assert.equal(claudeKeychainService(dir), `Claude Code-credentials-${digest}`);
+  assert.equal(claudeKeychainService(`${dir}/`), claudeKeychainService(dir));
 });

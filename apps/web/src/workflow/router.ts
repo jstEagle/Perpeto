@@ -77,9 +77,9 @@ const LABEL_H = 20;
 const BUNDLE_STEP = 5;
 const SLOTS = [0, -32, 32, -64, 64, -96, 96];
 
-/** Approximate rendered width of a 12 px label with 6 px padding. */
+/** Approximate rendered width of a 12 px label with 4 px padding. */
 export function labelWidth(text: string): number {
-  return Math.ceil(text.length * 7 + 14);
+  return Math.ceil(text.length * 7 + 10);
 }
 
 interface Row {
@@ -512,7 +512,7 @@ class RectIndex {
 
 function placeLabels(nodes: RouteNode[], edges: RouteEdge[], bundles: Map<string, Bundle>, routes: Map<string, Route>, returnChannel: Map<string, string>) {
   const blocked = new RectIndex();
-  for (const n of nodes) blocked.add({ x1: n.x - 4, y1: n.y - 4, x2: n.x + n.w + 4, y2: n.y + n.h + 4 });
+  for (const n of nodes) blocked.add({ x1: n.x - 2, y1: n.y - 2, x2: n.x + n.w + 2, y2: n.y + n.h + 2 });
   const ownerOf = new Map<string, string>();
   for (const b of bundles.values()) for (const e of b.edges) ownerOf.set(e.id, b.key);
   // Returns in one channel overlap by design; their labels may sit on any part of it.

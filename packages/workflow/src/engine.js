@@ -204,11 +204,13 @@ const HANDLERS = {
     if (!OPEN_ASSIGNMENT.has(s.assignments[assignmentId].status)) return ignore(ctx, 'assignment_closed');
 
     const assignment = edit(ctx, 'assignments', assignmentId);
-    assignment.status = result.outcome === 'success' ? 'succeeded' : 'failed';
+    const invalidRebase = assignment.step === 'rebase' && result.outcome === 'success' &&
+      (!result.headSha || result.headSha === s.workItems[assignment.workItemId].headSha);
+    assignment.status = result.outcome === 'success' && !invalidRebase ? 'succeeded' : 'failed';
     assignment.result = structuredClone(result);
     assignment.completedAt = assignment.updatedAt = ctx.at;
     ctx.refill = true;
-    assignmentState(ctx, assignment, { outcome: result.outcome, ...(result.verdict ? { verdict: result.verdict } : {}) });
+    assignmentState(ctx, assignment, { outcome: invalidRebase ? 'failure' : result.outcome, ...(result.verdict ? { verdict: result.verdict } : {}) });
 
     const item = edit(ctx, 'workItems', assignment.workItemId);
     const node = s.plan.nodes[assignment.nodeId];
@@ -231,6 +233,9 @@ const HANDLERS = {
     if (result.outcome === 'failure') {
       return attemptFailed(ctx, item, node, { reason: 'assignment_failed', summary: result.summary || `${node.label} reported failure.`, ref: { assignmentId } });
     }
+    if (invalidRebase) {
+      return attemptFailed(ctx, item, node, { reason: 'assignment_failed', summary: 'Rebase must report a new full head commit SHA.', ref: { assignmentId } });
+    }
     if (node.type === 'agent') {
       for (const key of ['branch', 'prUrl', 'headSha']) if (result[key] !== undefined) item[key] = result[key];
     }
@@ -243,6 +248,14 @@ const HANDLERS = {
       return planned(ctx, item, node, result.items ?? [], result.summary);
     }
     delete item.feedback;
+    if (assignment.step === 'rebase') {
+      const policy = s.plan.nodes[item.rebase.mergeNodeId].config.rebaseReview ?? 'changed';
+      if (policy === 'never' || (policy === 'changed' && result.rebaseTouchedBeyondConflicts === false)) {
+        item.rebase.phase = 'ci';
+        return advanceRebase(ctx, item);
+      }
+      delete item.rebase;
+    }
     move(ctx, item, node.id, 'next');
   },
 
@@ -274,6 +287,10 @@ const HANDLERS = {
     gateResult(ctx, item, node, passed, { jobId, revision: job.revision, ...(summary ? { summary } : {}) });
     if (passed) delete item.feedback;
     else item.feedback = { kind: 'ci', from: node.id, summary: summary || `CI failed at ${job.revision}.`, ...(logRef ? { logRef } : {}) };
+    if (item.rebase?.phase === 'ci') {
+      if (passed) return advanceRebase(ctx, item);
+      delete item.rebase;
+    }
     move(ctx, item, node.id, passed ? 'pass' : 'fail');
   },
 
@@ -294,19 +311,22 @@ const HANDLERS = {
     move(ctx, item, node.id, 'pass');
   },
 
-  'merge.rejected'(ctx, { mergeId, reason }) {
+  'merge.rejected'(ctx, { mergeId, reason, kind }) {
     if (!isText(reason, 2000)) fail('INVALID_EVENT', 'merge.rejected needs a reason.');
+    if (kind !== undefined && !['conflict', 'ci', 'other'].includes(kind)) fail('INVALID_EVENT', 'Merge rejection kind must be conflict, ci or other.');
     if (!openMerge(ctx, mergeId)) return;
     const entry = edit(ctx, 'merges', mergeId);
     entry.status = 'rejected';
     entry.reason = reason;
+    if (kind) entry.rejectionKind = kind;
     entry.completedAt = entry.updatedAt = ctx.at;
     const item = edit(ctx, 'workItems', entry.workItemId);
     const node = ctx.s.plan.nodes[entry.nodeId];
     closeVisit(ctx, item, 'fail');
-    gateResult(ctx, item, node, false, { mergeId, summary: reason });
-    if (!node.routes.fail) return failItem(ctx, item, 'merge_rejected', reason);
+    gateResult(ctx, item, node, false, { mergeId, summary: reason, ...(kind ? { kind } : {}) });
     item.feedback = { kind: 'merge', from: node.id, summary: reason };
+    if (kind === 'conflict' && (node.config.onConflict ?? 'rebase') === 'rebase' && startRebase(ctx, item, node, mergeId)) return;
+    if (!node.routes.fail) return failItem(ctx, item, 'merge_rejected', reason);
     move(ctx, item, node.id, 'fail');
   },
 
@@ -453,7 +473,8 @@ function settle(ctx) {
   s.updatedAt = ctx.at;
   if (s.status !== 'running') return;
   drainPlans(ctx);
-  dispatch(ctx);
+  // A synchronous CI/merge precondition failure can release a touch scope after its waiter was scanned.
+  while (dispatch(ctx)) { /* Dispatch the newly unblocked scope in this same event. */ }
   refreshIndex(ctx);
   if (s.budget) refreshBudget(ctx);
   if (ctx.refill) requestInputs(ctx);
@@ -500,6 +521,7 @@ function checkItems(items) {
   for (const item of items) {
     if (!isPlainObject(item) || !isText(item.title, 200)) fail('INVALID_EVENT', 'Each item needs a nonblank title of at most 200 characters.');
     if (item.body !== undefined && (typeof item.body !== 'string' || item.body.length > 20000)) fail('INVALID_EVENT', 'Item body must be a string of at most 20000 characters.');
+    checkTouches(item.touches);
   }
 }
 
@@ -517,18 +539,19 @@ function addInputs(ctx, items) {
   });
   if (!allowIntake(ctx, items.length)) return false;
   items.forEach((input, index) => {
-    const item = createItem(ctx, { title: input.title, body: input.body ?? '', nodeId: resolved[index] });
+    const item = createItem(ctx, { title: input.title, body: input.body ?? '', touches: input.touches, nodeId: resolved[index] });
     move(ctx, item, resolved[index], 'next');
   });
   return true;
 }
 
-function createItem(ctx, { title, body, nodeId, parentId }) {
+function createItem(ctx, { title, body, nodeId, parentId, touches, serializeOverlappingTouches }) {
   const { s, at } = ctx;
   budgetUsage(ctx).items += 1;
   const item = {
     id: nextId(ctx, 'workItem', 'wi'), runId: s.runId, title, body, nodeId, status: 'queued', iteration: 0, attempt: 1,
     ...(parentId ? { parentId } : {}), createdAt: at, updatedAt: at, enteredAt: at, hops: 0, loopCounts: {}, visits: [],
+    ...(touches ? { touches: touches.map(normalizeTouch), serializeOverlappingTouches: serializeOverlappingTouches ?? true } : {}),
   };
   insert(ctx, 'workItems', item);
   ctx.effects.push({ type: 'create-work-item', workItem: structuredClone(item) });
@@ -546,6 +569,34 @@ function move(ctx, item, fromNodeId, port) {
     workItemId: item.id, edgeId: route.edgeId, from: fromNodeId, to: route.node, ...(port === 'next' ? {} : { port }), unplanned: false,
   });
   enter(ctx, item, route.node, fromNodeId);
+}
+
+/** Recovery is an engine step on the same builder role, not another authored graph node. */
+function recoveryMove(ctx, item, to) {
+  const from = item.nodeId;
+  item.hops += 1;
+  if (item.hops > MAX_ITEM_HOPS) return failItem(ctx, item, 'hop_limit', `Work item crossed more than ${MAX_ITEM_HOPS} flow edges.`);
+  emit(ctx, 'workitem.moved', item, { workItemId: item.id, edgeId: null, from, to, step: 'rebase', unplanned: false });
+  enter(ctx, item, to, from);
+}
+
+function startRebase(ctx, item, node, mergeId) {
+  // Use the actual successful path, including escalated review/human decisions. Never guess another builder.
+  const index = item.visits.findLastIndex(visit => ctx.s.plan.nodes[visit.nodeId].type === 'agent' && visit.result === 'pass');
+  if (index < 0) return false;
+  const builderNodeId = item.visits[index].nodeId;
+  const ciNodeIds = [...new Set(item.visits.slice(index + 1)
+    .filter(visit => ctx.s.plan.nodes[visit.nodeId].type === 'ci' && visit.result === 'pass').map(visit => visit.nodeId))];
+  item.rebase = { mergeId, mergeNodeId: node.id, builderNodeId, ciNodeIds, phase: 'builder' };
+  recoveryMove(ctx, item, builderNodeId);
+  return true;
+}
+
+function advanceRebase(ctx, item) {
+  const next = item.rebase.ciNodeIds.shift();
+  const target = next ?? item.rebase.mergeNodeId;
+  if (!next) delete item.rebase;
+  recoveryMove(ctx, item, target);
 }
 
 function enter(ctx, item, nodeId, fromNodeId) {
@@ -704,6 +755,7 @@ function blocked(ctx, item, node, summary) {
 }
 
 function escalate(ctx, item, node, target, reason, evidence) {
+  delete item.rebase;
   const record = { from: node.id, to: target, reason, at: ctx.at, ...(evidence.iterations ? { iterations: evidence.iterations } : {}), ...(evidence.attempts ? { attempts: evidence.attempts } : {}) };
   item.escalations = [...(item.escalations ?? []), record].slice(-MAX_ESCALATION_RECORDS);
   emit(ctx, 'workitem.escalated', item, { workItemId: item.id, from: node.id, to: target, reason, evidence });
@@ -727,7 +779,7 @@ function planned(ctx, item, node, items, summary) {
   item.status = 'active';
   item.waiting = { kind: 'children' };
   item.childIds = [];
-  item.pendingPlan = structuredClone(kept);
+  item.pendingPlan = kept.map(child => ({ ...structuredClone(child), serializeOverlappingTouches: node.config.serializeOverlappingTouches ?? true }));
 }
 
 /** Copy core subobjects before writing; pure steps must preserve the previous state. */
@@ -828,26 +880,34 @@ function requestInputs(ctx) {
 
 function dispatch(ctx) {
   const { s } = ctx;
+  let released = false;
   refreshIndex(ctx);
   const open = new Map();
   for (const nodeId of ctx.index.open.values()) open.set(nodeId, (open.get(nodeId) ?? 0) + 1);
   const queued = [...ctx.index.queued].sort((a, b) => a[1] - b[1]).map(([id]) => id);
+  const holders = [...ctx.index.unfinished].map(id => s.workItems[id]).filter(item => item.touchesClaimed && !TERMINAL_ITEM.has(item.status));
   for (const id of queued) {
     if (s.workItems[id].status !== 'queued') continue;
     const node = s.plan.nodes[s.workItems[id].nodeId];
     if (node.role) {
       const role = s.plan.roles[node.role];
       if ((open.get(node.id) ?? 0) >= role.concurrency) continue;
+      const current = s.workItems[id];
+      if (node.type === 'agent' && current.serializeOverlappingTouches !== false && current.touches?.length) {
+        if (holders.some(holder => holder.id !== id && !TERMINAL_ITEM.has(s.workItems[holder.id].status) && touchesOverlap(current.touches, holder.touches))) continue;
+        const item = edit(ctx, 'workItems', id);
+        if (!item.touchesClaimed) { item.touchesClaimed = true; holders.push(item); }
+      }
       open.set(node.id, (open.get(node.id) ?? 0) + 1);
       createAssignment(ctx, edit(ctx, 'workItems', id), node, role);
       continue;
     }
     const item = edit(ctx, 'workItems', id);
     if (node.type === 'ci') {
-      if (!item.headSha) { failItem(ctx, item, 'missing_head_sha', `${node.label} needs a head commit; no agent reported one.`); continue; }
+      if (!item.headSha) { failItem(ctx, item, 'missing_head_sha', `${node.label} needs a head commit; no agent reported one.`); released = true; continue; }
       createJob(ctx, item, node);
     } else if (node.type === 'merge-queue') {
-      if (!item.prUrl || !item.headSha) { failItem(ctx, item, 'missing_pull_request', `${node.label} needs a pull request URL and head commit.`); continue; }
+      if (!item.prUrl || !item.headSha) { failItem(ctx, item, 'missing_pull_request', `${node.label} needs a pull request URL and head commit.`); released = true; continue; }
       enqueueMerge(ctx, item, node);
     } else if (node.type === 'human') {
       item.status = 'blocked';
@@ -860,6 +920,7 @@ function dispatch(ctx) {
       });
     }
   }
+  return released;
 }
 
 function activate(ctx, item, ref) {
@@ -876,6 +937,7 @@ function createAssignment(ctx, item, node, role) {
     role: role.role, prompt: buildPrompt(s, item, node, role), harness: structuredClone(role.harness),
     policy: structuredClone(role.policy), requirements: structuredClone(role.requirements),
     status: 'queued', ...retryFields(ctx, item), createdAt: at, updatedAt: at,
+    ...(item.rebase?.phase === 'builder' ? { step: 'rebase', rebaseOf: item.rebase.mergeId } : {}),
   };
   insert(ctx, 'assignments', assignment);
   item.assignmentId = assignment.id;
@@ -899,8 +961,12 @@ function retryFields(ctx, item) {
 
 function buildPrompt(s, item, node, role) {
   // Work-item context, in this order for every role: what to do, the agreed plan, where the work is, what to fix.
-  const parts = [role.prompt, `Work item: ${item.title}`];
+  const rebase = item.rebase?.phase === 'builder';
+  const parts = [rebase
+    ? `Rebase onto the new base (${s.repo.defaultBranch}). Fetch the latest base, resolve conflicts and keep behavior. Preserve the existing work branch and delivery reference. Report the new full head commit SHA. Compare the resolved patch with the previously reviewed patch, excluding conflict regions: report rebaseTouchedBeyondConflicts: true if that diff is non-empty, false only if all edits are confined to conflict hunks. If uncertain, report true.`
+    : role.prompt, `Work item: ${item.title}`];
   if (item.body) parts.push(item.body);
+  if (item.touches?.length) parts.push(`Declared touches: ${item.touches.join(', ')}`);
   const parent = item.parentId ? s.workItems[item.parentId] : null;
   if (parent) parts.push(`Part of: ${parent.title}`);
   if (item.plan) parts.push(`Plan from ${item.plan.from}:\n${item.plan.summary}`);
@@ -918,6 +984,7 @@ function buildPrompt(s, item, node, role) {
   }
   if (node.type === 'planner') {
     parts.push(`Split the work item into at most ${node.config.maxItems} items, each small enough for one pull request, with a title and a body that states its contract and acceptance criteria. ` +
+      'Split along file/module boundaries to avoid shared edits. Declare touches: string[] per item, listing repository-relative files or module directories (include shared entry points and manifests); use disjoint scopes where possible. ' +
       (node.config.emptyResult === 'complete'
         ? 'An explicit empty items array completes this pass without sending work downstream. Return items: [] when no justified work remains; otherwise include every proposed item explicitly, even a single item.'
         : 'If it is already that small, keep it whole: return no items and put its contract and acceptance criteria in your summary. The builder and reviewer receive that summary.'));
@@ -974,8 +1041,20 @@ function checkResult(result) {
   }
   if (result.threadRef !== undefined && !isText(result.threadRef, 2000)) fail('INVALID_EVENT', 'result.threadRef must be a nonblank string.');
   if (result.verdict !== undefined && result.verdict !== 'pass' && result.verdict !== 'fail') fail('INVALID_EVENT', 'result.verdict must be pass or fail.');
+  if (result.rebaseTouchedBeyondConflicts !== undefined && typeof result.rebaseTouchedBeyondConflicts !== 'boolean') fail('INVALID_EVENT', 'rebaseTouchedBeyondConflicts must be a boolean.');
   if (result.items !== undefined) {
     if (!Array.isArray(result.items) || result.items.length > MAX_PLANNED_ITEMS) fail('INVALID_EVENT', `result.items must be an array of at most ${MAX_PLANNED_ITEMS} items.`);
     checkItems(result.items);
   }
 }
+
+const normalizeTouch = path => path.split('/').filter(part => part && part !== '.').join('/') || '.';
+function checkTouches(touches) {
+  if (touches === undefined) return; // Old planners without declarations retain their concurrency.
+  if (!Array.isArray(touches) || touches.length > 100 || touches.some(path => !isText(path, 4096) ||
+    path.startsWith('/') || /^[A-Za-z]:/.test(path) || /[\\\x00-\x1f*?\[\]]/.test(path) || path.split('/').includes('..')) ||
+    new Set(touches.map(normalizeTouch)).size !== touches.length) {
+    fail('INVALID_EVENT', 'touches must be at most 100 distinct repository-relative file or directory paths, without globs or parent traversal.');
+  }
+}
+const touchesOverlap = (a, b) => a.some(left => b.some(right => left === '.' || right === '.' || left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)));

@@ -87,6 +87,26 @@ assert.ok((await roleEdges()) >= 1, "selecting the reviewer shows its messages")
 await page.getByRole('heading', { name: 'Activity at Reviewer' }).waitFor();
 await page.screenshot({ path: `${shots}run-node-selected-desktop.png`, fullPage: false });
 step('selecting a node filters the interaction feed and shows its assignments');
+// "Show on map" selects the bottleneck step and keeps it inside the visible canvas.
+await page.getByRole('button', { name: 'Clear' }).first().click().catch(() => {});
+await page.getByRole('button', { name: 'Show on map' }).first().click();
+await page.locator('.react-flow__node[data-id="reviewer"] .gnode.is-selected').waitFor();
+await page.waitForTimeout(500);
+const inView = await page.evaluate(() => {
+  const pane = document.querySelector('.graph').getBoundingClientRect();
+  const node = document.querySelector('.react-flow__node[data-id="reviewer"]').getBoundingClientRect();
+  return node.left >= pane.left && node.right <= pane.right;
+});
+assert.ok(inView, 'the selected bottleneck is inside the canvas');
+const visibleSteps = await page.evaluate(() => {
+  const pane = document.querySelector('.graph').getBoundingClientRect();
+  return [...document.querySelectorAll('.react-flow__node')].filter((n) => {
+    const r = n.getBoundingClientRect();
+    return r.left >= pane.left && r.right <= pane.right;
+  }).length;
+});
+assert.equal(visibleSteps, 8, 'every step of the build run is in view at 1440 px');
+step('the whole factory is in view and Show on map selects the bottleneck');
 await page.getByRole('button', { name: 'Pause' }).click();
 await page.getByText('Paused. No new assignments start until you resume.').waitFor();
 await page.getByRole('button', { name: 'Resume' }).click();

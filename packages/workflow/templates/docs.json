@@ -88,7 +88,9 @@
       "config": {
         "strategy": "serial",
         "method": "squash",
-        "requiredChecks": []
+        "requiredChecks": [],
+        "onConflict": "rebase",
+        "rebaseReview": "changed"
       }
     },
     {

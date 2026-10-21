@@ -28,13 +28,14 @@
           "model": "claude-sonnet-5-5"
         },
         "maxItems": 5,
-        "prompt": "Continuously audit unfinished goals and observed metrics against repository evidence and previous run outcomes. Propose the highest-value measurable improvements as small independent items with baseline, target and verification method. Avoid duplicate, already active or completed work. When no justified improvement remains, return an explicit empty items array; never invent busywork.",
+        "prompt": "Continuously audit unfinished goals and observed metrics against repository evidence and previous run outcomes. Propose the highest-value measurable improvements as small independent items with baseline, target and verification method. Avoid duplicate, already active or completed work. When no justified improvement remains, return an explicit empty items array; never invent busywork. Split along file/module boundaries and declare touches: string[] per item, including shared entry points and manifests.",
         "retry": {
           "maxAttempts": 2,
           "backoffSec": 60
         },
         "concurrency": 1,
-        "emptyResult": "complete"
+        "emptyResult": "complete",
+        "serializeOverlappingTouches": true
       }
     },
     {
@@ -140,7 +141,9 @@
         "method": "squash",
         "requiredChecks": [
           "ci"
-        ]
+        ],
+        "onConflict": "rebase",
+        "rebaseReview": "changed"
       }
     },
     {
