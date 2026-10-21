@@ -16,6 +16,7 @@
     "live": "node scripts/live-check.mjs"
   },
   "devDependencies": {
+    "@perpeto/accounts": "*",
     "@perpeto/node": "*"
   }
 }

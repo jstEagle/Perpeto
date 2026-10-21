@@ -1,5 +1,18 @@
 # factory-t3 handoff
 
+## Account lease follow-up, 21 October 2026
+
+Implemented on `t3/executor-reservation-renewal` after merging `t3/account-reservation-retention`. Only executor files and this handoff changed beyond that dependency merge; `apps/node` remains owned by the node worker.
+
+- Reservations renew halfway through their confirmed remaining lifetime with a fresh idempotency key each time. A hung renewal cancels after three quarters of that lifetime, leaving time to interrupt before expiry. Renewal continues through setup, execution and interrupt cleanup, then stops before release.
+- Binding checks, observe and release receive `reservationId`. Lost renewal interrupts followed root and child runs with `holdQueue: true` and returns `failure`. Cancellation during the launch reply is recovered by reading the thread before interrupting it.
+- `ACCOUNT_POOL_EXHAUSTED` returns assignment `failure` with an explicit backoff summary. It never registers or launches the operator's ready default login.
+- The node worker agreed to the [local account-provider contract](../../packages/t3-executor/README.md#local-account-provider-contract), including `renewReservation({ assignmentId, attempt, reservationId, idempotencyKey })`. Its adapter changes are a separate branch and are not claimed as verified here.
+
+Verification uses Node v24.22.0, the fake T3 server and synthetic pool credentials. `npm test -w @perpeto/t3-executor` passes 33 tests. Repository `npm test` passes 328 of 329; its only failure is the known obsolete exhaustion/null expectation in `apps/node/test/accounts-integration.test.js:35`, pending the node worker's branch. All publishing end-to-end tests passed. No real account or live harness turn was exercised for this follow-up.
+
+## Original executor handoff
+
 Branch `t3/factory-t3-executor`, with main `9881b7b` merged in. Not pushed or merged. Package documentation, including the T3 API research and file references, is in [packages/t3-executor/README.md](../../packages/t3-executor/README.md).
 
 ## What exists
