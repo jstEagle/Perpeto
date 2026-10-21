@@ -1,0 +1,97 @@
+07:36:17 assignment.state assignment:asg_e11976a9 queued builder
+07:36:17 workitem.moved workItem:wi_e11976a97 in ideas delivery-loop
+07:36:17 loop.iteration workItem:wi_e11976a97 delivery-loop
+07:36:17 workitem.moved workItem:wi_e11976a97 dr delivery-loop review-loop
+07:36:17 loop.iteration workItem:wi_e11976a97 review-loop
+07:36:17 workitem.moved workItem:wi_e11976a97 rb review-loop builder
+07:36:17 workitem.moved workItem:wi_e11976a97 in ideas delivery-loop
+07:36:17 loop.iteration workItem:wi_e11976a97 delivery-loop
+07:36:17 workitem.moved workItem:wi_e11976a97 dr delivery-loop review-loop
+07:36:17 loop.iteration workItem:wi_e11976a97 review-loop
+07:36:17 workitem.moved workItem:wi_e11976a97 rb review-loop builder
+07:36:17 run.started run:run_e11976a9 
+07:36:17 assignment.leased assignment:asg_e11976a9 m
+07:36:17 assignment.state assignment:asg_e11976a9 leased builder m
+07:36:17 assignment.state assignment:asg_e11976a9 running builder m
+07:36:17 assignment.started assignment:asg_e11976a9 
+07:36:35 agent.messaged assignment:88938391-90a builder
+07:36:52 assignment.usage assignment:asg_e11976a9 
+07:36:55 assignment.state assignment:asg_e11976a9 succeeded builder m
+07:36:55 assignment.state assignment:asg_e11976a9 queued reviewer
+07:36:55 workitem.moved workItem:wi_e11976a97 br builder reviewer
+07:36:55 assignment.completed assignment:asg_e11976a9 
+07:36:55 assignment.leased assignment:asg_e11976a9 m
+07:36:55 assignment.state assignment:asg_e11976a9 leased reviewer m
+07:36:55 assignment.state assignment:asg_e11976a9 running reviewer m
+07:36:55 assignment.started assignment:asg_e11976a9 
+07:37:10 assignment.usage assignment:asg_e11976a9 
+07:37:12 assignment.state assignment:asg_e11976a9 succeeded reviewer m
+07:37:12 gate.result assignment:asg_e11976a9 pass review reviewer m
+07:37:12 job.updated job:job_e11976a9 queued
+07:37:12 workitem.moved workItem:wi_e11976a97 rp reviewer ci
+07:37:12 assignment.completed assignment:asg_e11976a9 pass
+07:37:12 job.leased job:job_e11976a9 m
+07:37:13 job.started job:job_e11976a9 
+07:37:13 job.step job:job_e11976a9 passed
+07:37:13 job.step job:job_e11976a9 passed
+07:37:13 gate.result assignment:job_e11976a9 passed ci ci m
+07:37:13 merge-entry.updated merge-entry:mq_e11976a97 queued
+07:37:13 workitem.moved workItem:wi_e11976a97 cp ci merge
+07:37:13 job.completed job:job_e11976a9 passed
+07:37:13 merge-entry.enqueued merge-entry:mq_e11976a97 
+07:37:13 job.updated job:job_mq_71475 queued merge-queue
+07:37:13 merge-entry.updated merge-entry:mq_e11976a97 testing
+07:37:13 job.leased job:job_mq_71475 m
+07:37:13 job.started job:job_mq_71475 
+07:37:14 job.step job:job_mq_71475 passed
+07:37:14 job.step job:job_mq_71475 passed
+07:37:14 gate.result assignment:job_mq_71475 passed merge-queue merge m
+07:37:14 job.completed job:job_mq_71475 passed
+07:37:14 merge-entry.updated merge-entry:mq_e11976a97 merged
+07:37:14 assignment.state assignment:asg_e11976a9 queued builder
+07:37:14 gate.result workItem:wi_e11976a97 pass merge-queue merge
+07:37:14 workitem.moved workItem:wi_e11976a97 mp merge shipped
+07:37:14 assignment.leased assignment:asg_e11976a9 m
+07:37:14 assignment.state assignment:asg_e11976a9 leased builder m
+07:37:14 assignment.state assignment:asg_e11976a9 running builder m
+07:37:14 assignment.started assignment:asg_e11976a9 
+07:37:14 message.delivered message:88938391-90a 
+07:37:33 agent.messaged assignment:a103e167-251 builder
+07:37:33 message.acked message:88938391-90a 
+07:38:02 assignment.usage assignment:asg_e11976a9 
+07:38:05 assignment.state assignment:asg_e11976a9 succeeded builder m
+07:38:05 assignment.state assignment:asg_e11976a9 queued reviewer
+07:38:05 workitem.moved workItem:wi_e11976a97 br builder reviewer
+07:38:05 assignment.completed assignment:asg_e11976a9 
+07:38:05 assignment.leased assignment:asg_e11976a9 m
+07:38:05 assignment.state assignment:asg_e11976a9 leased reviewer m
+07:38:05 assignment.state assignment:asg_e11976a9 running reviewer m
+07:38:05 assignment.started assignment:asg_e11976a9 
+07:38:21 assignment.usage assignment:asg_e11976a9 
+07:38:23 assignment.state assignment:asg_e11976a9 succeeded reviewer m
+07:38:23 gate.result assignment:asg_e11976a9 pass review reviewer m
+07:38:23 job.updated job:job_e11976a9 queued
+07:38:23 workitem.moved workItem:wi_e11976a97 rp reviewer ci
+07:38:23 assignment.completed assignment:asg_e11976a9 pass
+07:38:23 job.leased job:job_e11976a9 m
+07:38:23 job.started job:job_e11976a9 
+07:38:24 job.step job:job_e11976a9 passed
+07:38:24 job.step job:job_e11976a9 passed
+07:38:24 gate.result assignment:job_e11976a9 passed ci ci m
+07:38:24 merge-entry.updated merge-entry:mq_e11976a97 queued
+07:38:24 workitem.moved workItem:wi_e11976a97 cp ci merge
+07:38:24 job.completed job:job_e11976a9 passed
+07:38:24 merge-entry.enqueued merge-entry:mq_e11976a97 
+07:38:24 job.updated job:job_mq_84d81 queued merge-queue
+07:38:24 merge-entry.updated merge-entry:mq_e11976a97 testing
+07:38:24 job.leased job:job_mq_84d81 m
+07:38:24 job.started job:job_mq_84d81 
+07:38:24 job.step job:job_mq_84d81 passed
+07:38:24 job.step job:job_mq_84d81 passed
+07:38:25 gate.result assignment:job_mq_84d81 passed merge-queue merge m
+07:38:25 job.completed job:job_mq_84d81 passed
+07:38:25 merge-entry.updated merge-entry:mq_e11976a97 merged
+07:38:25 gate.result workItem:wi_e11976a97 pass merge-queue merge
+07:38:25 workitem.moved workItem:wi_e11976a97 mp merge shipped
+07:38:25 run.updated run:run_e11976a9 completed
+RUN completed
