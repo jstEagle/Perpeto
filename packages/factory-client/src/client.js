@@ -1,5 +1,6 @@
 import { readFileSync, lstatSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { validateDefinition } from '../../factory-definition/src/storage.js';
 
 export class ClientError extends Error {
   constructor(message) { super(message); this.name = 'ClientError'; }
@@ -113,6 +114,46 @@ export class FactoryClient {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ClientError('CI job limit must be between 1 and 100.');
     return this.#request('GET', '/runner/jobs', undefined, { projectId: this.#config.projectId, limit });
   }
+
+  #factories(id) {
+    const base = `/factories/projects/${factoryIdentity(this.#config.projectId)}`;
+    return id === undefined ? base : `${base}/${factoryIdentity(id)}`;
+  }
+  listFactories() { return this.#request('GET', this.#factories()); }
+  readFactory(id, { version } = {}) {
+    factoryIdentity(id);
+    if (version !== undefined) factoryVersion(version);
+    return this.#request('GET', this.#factories(id), undefined, { version });
+  }
+  createFactory(input) {
+    factoryInput(input, ['id', 'definition']);
+    const definition = factoryDefinition(input.definition);
+    factoryIdentity(input.id);
+    return this.#request('POST', this.#factories(), { id: input.id, ...definition }, {}, false);
+  }
+  updateFactory(input) {
+    factoryInput(input, ['id', 'definition', 'expectedVersion']);
+    factoryIdentity(input.id);
+    factoryVersion(input.expectedVersion, Number.MAX_SAFE_INTEGER - 1);
+    const definition = factoryDefinition(input.definition);
+    return this.#request('PUT', this.#factories(input.id), { ...definition, expectedVersion: input.expectedVersion }, {}, false);
+  }
+}
+
+function factoryInput(input, allowed) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !allowed.includes(key)) || allowed.some(key => !(key in input))) throw new ClientError('Invalid factory fields. Project comes from client configuration.');
+}
+function factoryIdentity(value) {
+  nonblank(value, 'factory/project identity');
+  if (value.length > 200 || value === '.' || value === '..' || /[/?#\\]/.test(value)) throw new ClientError('Factory/project identity must be a single path-safe identifier.');
+  return encodeURIComponent(value);
+}
+function factoryVersion(value, max = Number.MAX_SAFE_INTEGER) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > max) throw new ClientError('Factory version must be a positive safe integer.');
+}
+function factoryDefinition(input) {
+  try { return validateDefinition(input); }
+  catch { throw new ClientError('Invalid factory definition. Check node types, limits, references and delegation cycles.'); }
 }
 
 function jobPath(jobId) {

@@ -3,7 +3,7 @@ import { FactoryClient, loadConfig, ClientError } from './client.js';
 import { serveMcp } from './mcp.js';
 import { readFileSync } from 'node:fs';
 
-const usage = 'Usage: perpeto-messages --config FILE init-project NAME | create-channel ID NAME | channels | send --body TEXT --key KEY [--to ROLE] [--channel ID] | read [--latest | --after CURSOR | --before CURSOR] [--limit N] [--to ROLE] [--channel ID] | ci-submit --job FILE | ci-status --id ID | ci-retry --id ID | ci-jobs [--limit N] | mcp';
+const usage = 'Usage: perpeto-messages --config FILE init-project NAME | create-channel ID NAME | channels | send --body TEXT --key KEY [--to ROLE] [--channel ID] | read [--latest | --after CURSOR | --before CURSOR] [--limit N] [--to ROLE] [--channel ID] | ci-submit --job FILE | ci-status --id ID | ci-retry --id ID | ci-jobs [--limit N] | factories | factory-read --id ID [--version N] | factory-create --id ID --definition FILE | factory-update --id ID --expected-version N --definition FILE | mcp';
 try {
   const args = process.argv.slice(2);
   if (args[0] !== '--config' || !args[1] || !args[2]) throw new ClientError(usage);
@@ -24,6 +24,23 @@ try {
     }
     else if (['ci-status', 'ci-retry'].includes(command) && rest.length === 2 && rest[0] === '--id') result = command === 'ci-status' ? await client.ciStatus(rest[1]) : await client.retryCi(rest[1]);
     else if (command === 'ci-jobs' && (rest.length === 0 || (rest.length === 2 && rest[0] === '--limit'))) result = await client.ciJobs(rest.length ? { limit: Number(rest[1]) } : {});
+    else if (command === 'factories' && rest.length === 0) result = await client.listFactories();
+    else if (['factory-read', 'factory-create', 'factory-update'].includes(command)) {
+      const accepted = command === 'factory-read' ? ['--id', '--version'] : command === 'factory-create' ? ['--id', '--definition'] : ['--id', '--definition', '--expected-version'];
+      const options = {};
+      for (let i = 0; i < rest.length; i += 2) {
+        if (!accepted.includes(rest[i]) || rest[i + 1] === undefined || rest[i] in options) throw new ClientError(usage);
+        options[rest[i]] = rest[i + 1];
+      }
+      if (!options['--id']) throw new ClientError(usage);
+      if (command === 'factory-read') result = await client.readFactory(options['--id'], options['--version'] === undefined ? {} : { version: Number(options['--version']) });
+      else {
+        let definition;
+        try { definition = JSON.parse(readFileSync(options['--definition'], 'utf8')); }
+        catch { throw new ClientError('Cannot read factory definition JSON.'); }
+        result = command === 'factory-create' ? await client.createFactory({ id: options['--id'], definition }) : await client.updateFactory({ id: options['--id'], expectedVersion: Number(options['--expected-version']), definition });
+      }
+    }
     else if (command === 'send' || command === 'read') {
       const options = {};
       const mapping = command === 'send' ? { '--body': 'body', '--key': 'idempotencyKey', '--to': 'recipientRoleId', '--channel': 'channelId' } : { '--after': 'after', '--before': 'before', '--latest': 'latest', '--limit': 'limit', '--to': 'recipientRoleId', '--channel': 'channelId' };

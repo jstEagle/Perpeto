@@ -71,12 +71,32 @@ try {
   await start();
   const writer = issue(['orchestration:read','orchestration:operate']);
   const reader = issue(['orchestration:read']);
+  const credentialFile = join(home,'runner.secret');
+  await writeFile(credentialFile,writer+'\n',{mode:0o600});
+  const clientConfig = join(home,'agent-client.json');
+  await writeFile(clientConfig,JSON.stringify({baseUrl:origin,projectId:'smoke-project',roleId:'implementation',channelId:'ci',credentialFile}));
+  async function callTool(name, args) {
+    const invocation = promisify(execFile)(process.execPath,[resolve(root,'packages/factory-client/src/cli.js'),'--config',clientConfig,'mcp'],{cwd:root,encoding:'utf8',timeout:15000});
+    invocation.child.stdin.end([
+      {jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'factory-smoke',version:'1'}}},
+      {jsonrpc:'2.0',method:'notifications/initialized'},
+      {jsonrpc:'2.0',id:2,method:'tools/call',params:{name,arguments:args}},
+    ].map(value=>JSON.stringify(value)).join('\n')+'\n');
+    const output = await invocation;
+    assert.equal(output.stdout.includes(writer),false);
+    const reply = output.stdout.trim().split('\n').map(value=>JSON.parse(value)).find(value=>value.id===2);
+    assert.notEqual(reply.result.isError,true);
+    return JSON.parse(reply.result.content[0].text);
+  }
   const factories = '/api/perpeto/factories/projects/smoke-project';
   const definition = {id:'delivery',name:'Delivery',nodes:[{id:'lead',type:'agent',label:'Lead',harness:'codex',allowSubagents:true,maxSubagents:4,maxConcurrent:4}],edges:[]};
-  const saved = await request(factories,{token:writer,method:'POST',body:definition,status:201});
+  const {id:factoryId,...graph}=definition;
+  const saved = await callTool('factory_create_definition',{id:factoryId,definition:graph});
   assert.equal(saved.version,1);
-  const edited = await request(`${factories}/delivery`,{token:writer,method:'PUT',body:{expectedVersion:1,name:'Delivery revised',nodes:definition.nodes,edges:[]}});
+  const edited = await callTool('factory_update_definition',{id:factoryId,expectedVersion:1,definition:{...graph,name:'Delivery revised'}});
   assert.equal(edited.version,2);
+  assert.equal((await callTool('factory_read_definition',{id:factoryId,version:1})).name,graph.name);
+  assert.equal((await callTool('factory_list_definitions',{})).factories[0].version,2);
   await request(`${factories}/delivery`,{token:writer,method:'PUT',body:{expectedVersion:1,name:'Stale edit',nodes:definition.nodes,edges:[]},status:409});
   await request(factories,{token:reader,method:'POST',body:{...definition,id:'denied'},status:403});
   const source = join(home,'source');
@@ -91,25 +111,11 @@ try {
   git(['init']);git(['add','.']);git(['commit','-m','fixture']);
   const revision = git(['rev-parse','HEAD']);
   await writeFile(join(source,'value.txt'),'dirty source must stay untouched');
-  const credentialFile = join(home,'runner.secret');
-  await writeFile(credentialFile,writer+'\n',{mode:0o600});
   const configFile = join(home,'runner.json');
   await writeFile(configFile,JSON.stringify({baseUrl:origin,credentialFile,runnerId:'smoke-runner',labels:[process.platform],repositories:{fixture:source},executables:{node:process.execPath},workDirectory:join(home,'jobs'),toolPath:process.env.PATH,timeoutMs:10000,maxOutputBytes:65536,leaseMs:6000,artifactPaths:['report.json']}));
   const input = {projectId:'smoke-project',repositoryId:'fixture',revision,command:['node','verify.mjs'],requiredLabels:[process.platform],idempotencyKey:'pinned-build'};
-  const clientConfig = join(home,'agent-client.json');
-  await writeFile(clientConfig,JSON.stringify({baseUrl:origin,projectId:'smoke-project',roleId:'implementation',channelId:'ci',credentialFile}));
   const {projectId,...jobArguments}=input;
-  const invocation = promisify(execFile)(process.execPath,[resolve(root,'packages/factory-client/src/cli.js'),'--config',clientConfig,'mcp'],{cwd:root,encoding:'utf8',timeout:15000});
-  invocation.child.stdin.end([
-    {jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'ci-smoke',version:'1'}}},
-    {jsonrpc:'2.0',method:'notifications/initialized'},
-    {jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'factory_submit_ci',arguments:jobArguments}},
-  ].map(value=>JSON.stringify(value)).join('\n')+'\n');
-  const agentResult=await invocation;
-  assert.equal(agentResult.stdout.includes(writer),false);
-  const toolReply=agentResult.stdout.trim().split('\n').map(value=>JSON.parse(value)).find(value=>value.id===2);
-  assert.notEqual(toolReply.result.isError,true);
-  const submitted=JSON.parse(toolReply.result.content[0].text);
+  const submitted=await callTool('factory_submit_ci',jobArguments);
   assert.equal(submitted.job.status,'queued');
   const retry = await request('/api/perpeto/runner/jobs',{token:writer,method:'POST',body:input});
   assert.equal(retry.duplicate,true);

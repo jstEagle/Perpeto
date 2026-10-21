@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -133,7 +133,7 @@ test('MCP stdio actual process negotiates, lists tools, calls HTTP and emits onl
   assert.equal(replies.length, 5);
   assert.ok(replies.every(reply => reply.jsonrpc === '2.0'));
   assert.equal(replies[0].result.protocolVersion, '2025-06-18');
-  assert.equal(replies[1].result.tools.length, 6);
+  assert.equal(replies[1].result.tools.length, 10);
   assert.deepEqual(JSON.parse(replies[2].result.content[0].text), { ok: true });
   assert.equal(replies[3].error.code, -32602);
   assert.deepEqual(replies[4].result, {});
@@ -270,4 +270,101 @@ test('CI MCP failures redact server bodies and preserve tool error shape', async
   assert.equal(reply.result.isError, true);
   assert.ok(!`${output.stdout}${output.stderr}`.includes(token));
   assert.equal(f.calls.length, 1);
+});
+
+const definition = {
+  name: 'Delivery factory',
+  nodes: [
+    { id: 'lead', type: 'agent', label: 'Lead', harness: 'codex', allowSubagents: true, maxSubagents: 4, maxConcurrent: 2, position: { x: 0, y: 0 } },
+    { id: 'worker', type: 'agent', label: 'Implementation', harness: 'claudeAgent', allowSubagents: false, maxSubagents: 0, maxConcurrent: 2 },
+    { id: 'docs', type: 'context', label: 'Specification', references: ['README.md'] },
+    { id: 'test', type: 'check', label: 'Tests', command: ['node', '--test'] },
+    { id: 'merge', type: 'merge-queue', label: 'Merge', requireChecks: true, requireReview: true, maxConcurrent: 1 },
+  ],
+  edges: [
+    { id: 'docs-lead', type: 'context', source: 'docs', target: 'lead' },
+    { id: 'lead-worker', type: 'delegates-to', source: 'lead', target: 'worker' },
+    { id: 'worker-test', type: 'workflow', source: 'worker', target: 'test' },
+    { id: 'test-merge', type: 'workflow', source: 'test', target: 'merge' },
+  ],
+};
+function factoryConfig(f) {
+  f.config.projectId = 'factory project';
+  writeFileSync(f.configPath, JSON.stringify(f.config));
+}
+
+test('factory definitions use configured project paths, explicit ID and CAS version', async t => {
+  const f = await fixture(t); factoryConfig(f);
+  const saved = { ...definition, id: 'delivery', projectId: f.config.projectId, version: 1 };
+  f.respond(call => ({ status: call.method === 'POST' ? 201 : 200, body: call.method === 'GET' && call.url.endsWith('/factory%20project') ? { factories: [saved] } : saved }));
+  const client = new FactoryClient(f.config);
+  await client.listFactories();
+  await client.readFactory('delivery', { version: 1 });
+  await client.createFactory({ id: 'delivery', definition });
+  await client.updateFactory({ id: 'delivery', expectedVersion: 1, definition });
+  assert.deepEqual(f.calls.map(call => call.method), ['GET', 'GET', 'POST', 'PUT']);
+  assert.equal(f.calls[0].url, '/api/perpeto/factories/projects/factory%20project');
+  assert.equal(f.calls[1].url, '/api/perpeto/factories/projects/factory%20project/delivery?version=1');
+  assert.deepEqual(f.calls[2].body, { id: 'delivery', ...definition });
+  assert.deepEqual(f.calls[3].body, { ...definition, expectedVersion: 1 });
+  const count = f.calls.length;
+  assert.throws(() => client.createFactory({ id: 'other', definition, projectId: 'other' }), /Project comes from/);
+  assert.throws(() => client.updateFactory({ id: 'delivery', expectedVersion: 0, definition }), /version/);
+  assert.throws(() => client.readFactory('../other'));
+  assert.throws(() => client.readFactory(undefined));
+  assert.throws(() => client.createFactory({ id: 'invalid', definition: { ...definition, edges: [{ id: 'bad', type: 'workflow', source: 'missing', target: 'lead' }] } }), /Invalid factory definition/);
+  assert.equal(f.calls.length, count);
+  assert.throws(() => new FactoryClient({ ...f.config, projectId: '../other' }).listFactories(), /path-safe/);
+});
+
+test('factory writes never auto-replay and preserve drafts and expectedVersion on stale conflicts', async t => {
+  const f = await fixture(t); factoryConfig(f);
+  const client = new FactoryClient(f.config);
+  const draft = structuredClone(definition);
+  const original = structuredClone(draft);
+  f.respond(() => ({ status: 409, body: { error: { code: 'CONFLICT', message: token } } }));
+  await assert.rejects(client.updateFactory({ id: 'delivery', expectedVersion: 7, definition: draft }), /HTTP 409/);
+  assert.equal(f.calls.length, 1);
+  assert.deepEqual(f.calls[0].body, { ...draft, expectedVersion: 7 });
+  assert.deepEqual(draft, original);
+  f.respond(() => ({ status: 503, body: { error: token } }));
+  await assert.rejects(client.createFactory({ id: 'delivery', definition: draft }), /HTTP 503/);
+  assert.equal(f.calls.length, 2, 'ambiguous create must not be replayed');
+  await assert.rejects(client.updateFactory({ id: 'delivery', expectedVersion: 7, definition: draft }), /HTTP 503/);
+  assert.equal(f.calls.length, 3, 'ambiguous update must not be replayed');
+  assert.deepEqual(draft, original);
+});
+
+test('factory CLI and MCP author saved definitions while strict schemas reject overrides', async t => {
+  const f = await fixture(t); factoryConfig(f);
+  const saved = { ...definition, id: 'delivery', projectId: f.config.projectId, version: 1 };
+  f.respond(call => ({ status: call.method === 'POST' ? 201 : 200, body: call.method === 'GET' && call.url.endsWith('/factory%20project') ? { factories: [saved] } : saved }));
+  const filename = join(f.directory, 'factory.json'); writeFileSync(filename, JSON.stringify(definition));
+  for (const args of [
+    ['factories'], ['factory-read', '--id', 'delivery', '--version', '1'],
+    ['factory-create', '--id', 'delivery', '--definition', filename],
+    ['factory-update', '--id', 'delivery', '--definition', filename, '--expected-version', '1'],
+  ]) assert.equal((await run(f.configPath, args)).code, 0);
+  const output = await run(f.configPath, ['mcp'], [
+    { jsonrpc: '2.0', id: 1, method: 'initialize' },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'factory_list_definitions', arguments: {} } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'factory_read_definition', arguments: { id: 'delivery', version: 1 } } },
+    { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'factory_create_definition', arguments: { id: 'delivery', definition } } },
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'factory_update_definition', arguments: { id: 'delivery', definition, expectedVersion: 1 } } },
+    { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'factory_update_definition', arguments: { id: 'delivery', definition, expectedVersion: 1, projectId: 'other' } } },
+    { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'factory_create_definition', arguments: { id: 'delivery', definition: { ...definition, nodes: [{ ...definition.nodes[0], harness: 'invented' }] } } } },
+  ].map(value => JSON.stringify(value)).join('\n') + '\n');
+  assert.equal(output.code, 0);
+  const replies = output.stdout.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(JSON.parse(replies[1].result.content[0].text).factories[0].id, 'delivery');
+  assert.equal(JSON.parse(replies[3].result.content[0].text).version, 1);
+  assert.equal(replies[5].error.code, -32602);
+  assert.equal(replies[6].error.code, -32602);
+  assert.equal(f.calls.length, 8);
+  f.respond(() => ({ status: 409, body: { error: token } }));
+  const conflict = await run(f.configPath, ['factory-update', '--id', 'delivery', '--definition', filename, '--expected-version', '1']);
+  assert.equal(conflict.code, 1);
+  assert.match(conflict.stderr, /HTTP 409/);
+  assert.deepEqual(JSON.parse(readFileSync(filename, 'utf8')), definition);
+  assert.ok(!`${output.stdout}${output.stderr}${conflict.stdout}${conflict.stderr}`.includes(token));
 });
