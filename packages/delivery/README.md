@@ -65,16 +65,39 @@ await queue.step({ idempotencyKey: 'tick:4' }); // Atomically publish tested can
 store.close();
 ```
 
-Each completed `step`, enqueue, and result request has a durable SQLite receipt. Repeating a key and body returns the original snapshot, even after further work. Different bodies with the same key fail with `IDEMPOTENCY_CONFLICT` (409). Use a new tick key when requesting new progress. The queue config is immutable on reopen. Use a dedicated delivery DB; this package owns its schema version. Create its parent directory before opening it. `DeliveryError.toJSON()` returns the contract's `{error:{code,message}}`; host transports own HTTP mapping and authorization.
+Each state-changing `step`, enqueue, withdrawal, rejection, and result request has a durable SQLite receipt. Repeating a retained key and body returns the original snapshot, even after further work or restart. Different bodies with the same retained key fail with `IDEMPOTENCY_CONFLICT` (409). Receipts store a compact revision pointer; shared inverse edits reconstruct historical responses without copying the entire queue into every receipt. Unchanged testing/publication polls and idle ticks store neither receipts nor history. Their keys are not reserved, so use a new tick key when requesting new progress.
+
+`new MergeQueueStore(filename, { maxReceipts: 10_000, receiptRetentionMs: 604_800_000 })` sets the per-queue receipt limit and retention window (defaults: 10,000 receipts and seven days). Opening the store and dispatching mutations prune expired/excess receipts and history no retained receipt needs. Expired receipts cannot replay an old response or guarantee deduplication; entity IDs and current phase checks still apply. SQLite reuses freed pages; pruning does not shrink the database file automatically. Schema 1 stores migrate transactionally, retaining their responses as inverse edits. Queue entries, jobs, and Git candidate refs remain historical records outside receipt retention.
+
+The queue config is immutable on reopen. Use a dedicated delivery DB; this package owns its schema version. Create its parent directory before opening it. `DeliveryError.toJSON()` returns the contract's `{error:{code,message}}`; host transports own HTTP mapping and authorization.
 
 `createQueueState`, `reduceQueue`, and `selectEntries` are pure exports for engine integration. Their transition actions are internal orchestration input, not an authorization boundary. `MergeQueueStore` wraps them with transactions, receipts, and fenced worker leases. One `step` worker holds the queue at a time; independent processes get `BUSY`. If a process dies, the default lease expires after 60 seconds. A stale worker cannot persist a transition. Publication fencing depends on the adapter: local Git compares base and heads in one transaction; GitHub uses the strategy-specific safeguards below. A worker lease alone cannot fence a remote Git push.
 
 The hub must validate its node lease before accepting `recordJobResult`, register/dispatch each persisted Job idempotently, and cancel superseded queued jobs. The delivery store preserves cancelled obsolete jobs and historical evidence; the hub must mirror those cancellations. Batch jobs omit work item/run attribution because they can contain several work items; `active.entryIds` identifies the membership. Individual entries carry the shared `jobId`.
 
+Only jobs with `status === 'queued'` should count as missing work to submit to the hub. A cancelled historical job that was never mirrored must not keep the hub ticking an otherwise finished queue. An open queue has an active attempt or entries with `status === 'queued'`; terminal job history does not make it open.
+
+### Permanent failures and cancellation
+
+```js
+// Host retry policy: persist a bounded retry count, for example three attempts,
+// then reject the offending entry with a safe reason (never subprocess output).
+queue.rejectEntry({
+  entryId: 'mq_entry', reason: 'PR branch unavailable after 3 attempts.',
+}, { idempotencyKey: 'reject:mq_entry:missing-branch' });
+
+// Run cancellation also releases an entry already preparing/testing/merging.
+queue.withdraw({ entryId: 'mq_stopped_entry', reason: 'Run stopped.' }, {
+  idempotencyKey: 'withdraw:mq_stopped_entry',
+});
+```
+
+Both methods synchronously mark the entry `rejected`, retain the supplied reason, cancel an unfinished speculative Job, and clear its active attempt. Surviving batch members return to the front for fresh speculative CI. Late results for the released attempt fail with `STALE_ATTEMPT`. Retained-key retries return the original response; a new request against a terminal entry fails with `CONFLICT`. Rejection/withdrawal acquire the queue's worker lease and return `BUSY` if a tick owns it, so the host should retry after that tick. Missing entries return `NOT_FOUND`. Hosts own authorization, retry counts, permanent-error classification (such as unsupported PR URLs), and mirroring entry/job outcomes into runs. These APIs do not undo a remote publication that already happened; reconcile forge state before rejecting a potentially published attempt.
+
 ### Queue behavior
 
 - Serial takes one queued entry; batch takes up to `batchSize` in FIFO order. Both test a synthetic commit incorporating the base and every selected PR head before publication. Native GitHub publication requires `strategy: 'serial'`; batches are refused before any work to avoid partial native batch publication.
-- Changing the base requeues the attempt, cancels unfinished obsolete jobs, and creates a new candidate/job. Changing a PR head rejects that entry; enqueue the new revision with a new entry id.
+- Changing the base requeues the attempt, cancels unfinished obsolete jobs, and creates a new candidate/job. Changing a PR head, including during batch publication, rejects only that entry; enqueue the new revision with a new entry id.
 - Conflicts reject the conflicting entry with a reason; remaining batch entries return to the front. Failed or incomplete required checks bisect batches recursively, then reject a failing singleton. Later halves test against the base produced by earlier successful halves.
 - Preparing, testing, and merging are persisted separately. Restarting during testing retains the same candidate and Job. Restarting after Git publication recognizes the candidate in base ancestry and completes the SQLite acknowledgement without merging again.
 - CI failure, cancellation, and runner error are terminal results for the attempt. A singleton is rejected; a batch is split. Branch-protection publication failures reject the attempt with a safe reason. Transient adapter/transport failures throw and retain the durable phase for retry.
@@ -90,17 +113,19 @@ prepare({ baseSha, entries, method, idempotencyKey }) // { revision }
 isMerged({ baseBranch, revision })      // whether candidate has already been published
 merge({ baseBranch, baseSha, revision, entries, method, idempotencyKey, publication, evidence, publicationState })
 // -> { status: 'merged', revision, publication? }
-//  | { status: 'base_changed'|'head_changed' }
+//  | { status: 'base_changed' } | { status: 'head_changed', entryId }
 //  | { status: 'pending', publicationState } | { status: 'rejected', reason }
 ```
 
 `prepare` must be repeatable for an attempt and keep its candidate reachable across restart. `merge` owns publication recovery and PR finalization, including retries after remote publication. `atomicMerge = true` now declares an atomic publication mechanism, with the distinct guarantees below. It no longer implies that every adapter has local Git's multi-ref base/head compare-and-swap. Fast-forward mode must confirm the exact tested candidate; native GitHub mode may return GitHub's actual merge SHA tagged `publication: 'github-merge-queue'`. Entries retain both `testedRevision` and `mergedRevision`. A pending result keeps the durable merging phase and `active.publicationState`; ticks observe forge state again. The host should scope an adapter to the queue's repository. `createPullRequest` and `readChecks` are optional forge helper methods outside the queue publish interface.
 
+`head_changed` identifies the changed entry with `entryId`. For compatibility, the queue rereads heads if an older adapter omits it. If no changed entry can be identified, it throws `ADAPTER_ERROR` and retains the attempt rather than rejecting unrelated batch members.
+
 ### Local Git
 
 `LocalGitAdapter` requires a bare repository for mutations. PRs are branches addressed as `local:<short-branch-name>`. Preparation uses a fresh temporary detached worktree, with hooks/signing disabled and a fixed factory commit identity/date. All three methods (`merge`, `squash`, `rebase`) produce a durable candidate under `refs/perpeto/candidates/`. Publication uses one `git update-ref --stdin` transaction to verify the branch heads and compare-and-swap the base. The base points to the exact revision CI tested. Preparing an already-cached attempt reuses its candidate.
 
-Normal completion removes temporary worktrees. A hard process/OS crash during preparation can leave a temporary worktree for operator cleanup; the next attempt uses a fresh one. Candidate refs, historical jobs, and receipt rows are intentionally retained; no pruning/retention policy is implemented. The hub must make candidate objects available to remote user-owned runners, for example by fetching the candidate refs into a runner mirror. The adapter does not transfer objects across machines.
+Normal completion removes temporary worktrees. A hard process/OS crash during preparation can leave a temporary worktree for operator cleanup; the next attempt uses a fresh one. Candidate refs and historical jobs are intentionally retained; receipt retention is configured on `MergeQueueStore` as described above. The hub must make candidate objects available to remote user-owned runners, for example by fetching the candidate refs into a runner mirror. The adapter does not transfer objects across machines.
 
 ### GitHub CLI
 

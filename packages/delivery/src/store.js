@@ -1,23 +1,46 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { DeliveryError, requireValue, stableHash, stableJSON, string } from './common.js';
+import { requireValue, stableHash, stableJSON, string } from './common.js';
 import { createQueueState, reduceQueue } from './machine.js';
+import { inverseEdits, undoEdits } from './history.js';
 
 /** SQLite snapshot + request receipts. One aggregate per repo/base queue, WAL/FULL durability. */
 export class MergeQueueStore {
   #db;
-  constructor(filename) {
+  constructor(filename, { maxReceipts = 10_000, receiptRetentionMs = 7 * 24 * 60 * 60 * 1000 } = {}) {
     string(filename, 'filename');
+    requireValue(Number.isSafeInteger(maxReceipts) && maxReceipts > 0, 'maxReceipts must be a positive integer.');
+    requireValue(Number.isSafeInteger(receiptRetentionMs) && receiptRetentionMs > 0, 'receiptRetentionMs must be a positive integer.');
+    this.maxReceipts = maxReceipts; this.receiptRetentionMs = receiptRetentionMs;
     this.#db = new DatabaseSync(filename);
     this.#db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
-    const version = this.#db.prepare('PRAGMA user_version').get().user_version;
-    if (version > 1) { this.#db.close(); throw new DeliveryError('SCHEMA_VERSION', 'Unsupported delivery store version.'); }
-    this.#db.exec(`
-      CREATE TABLE IF NOT EXISTS delivery_queues (id TEXT PRIMARY KEY, config_hash TEXT NOT NULL, state TEXT NOT NULL) STRICT;
-      CREATE TABLE IF NOT EXISTS delivery_receipts (queue_id TEXT NOT NULL, key TEXT NOT NULL, body_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(queue_id,key)) STRICT;
-      CREATE TABLE IF NOT EXISTS delivery_locks (queue_id TEXT PRIMARY KEY, token TEXT NOT NULL, expires_at INTEGER NOT NULL) STRICT;
-      PRAGMA user_version=1;
-    `);
+    try {
+      this.#transaction(() => {
+        const version = this.#db.prepare('PRAGMA user_version').get().user_version;
+        requireValue(version <= 2, 'Unsupported delivery store version.', 'SCHEMA_VERSION');
+        this.#db.exec(`
+          CREATE TABLE IF NOT EXISTS delivery_queues (id TEXT PRIMARY KEY, config_hash TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0) STRICT;
+          CREATE TABLE IF NOT EXISTS delivery_receipts (queue_id TEXT NOT NULL, key TEXT NOT NULL, body_hash TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(queue_id,key)) STRICT;
+          CREATE TABLE IF NOT EXISTS delivery_locks (queue_id TEXT PRIMARY KEY, token TEXT NOT NULL, expires_at INTEGER NOT NULL) STRICT;
+          CREATE TABLE IF NOT EXISTS delivery_revisions (queue_id TEXT NOT NULL, revision INTEGER NOT NULL, undo TEXT NOT NULL, PRIMARY KEY(queue_id,revision)) STRICT;
+        `);
+        if (version === 1) {
+          this.#db.exec('ALTER TABLE delivery_queues ADD COLUMN revision INTEGER NOT NULL DEFAULT 0; ALTER TABLE delivery_receipts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;');
+          this.#db.prepare('UPDATE delivery_receipts SET created_at=?').run(Date.now());
+          for (const { id } of this.#db.prepare('SELECT id FROM delivery_queues').all()) this.#prune(id);
+          // Preserve old retry responses without retaining whole legacy snapshots.
+          for (const row of this.#db.prepare('SELECT rowid,queue_id,result FROM delivery_receipts').all()) {
+            const original = JSON.parse(row.result);
+            this.#db.prepare('UPDATE delivery_receipts SET result=? WHERE rowid=?')
+              .run(stableJSON({ revision: 0, undo: inverseEdits(original, this.read(row.queue_id)) }), row.rowid);
+          }
+        }
+        this.#db.exec('CREATE INDEX IF NOT EXISTS delivery_receipts_age ON delivery_receipts(queue_id,created_at); PRAGMA user_version=2;');
+        for (const { id } of this.#db.prepare('SELECT id FROM delivery_queues').all()) this.#prune(id);
+      });
+    } catch (error) {
+      this.#db.close(); throw error;
+    }
   }
   close() { this.#db.close(); }
   #transaction(fn) {
@@ -29,7 +52,7 @@ export class MergeQueueStore {
     string(queueId, 'queueId');
     const state = createQueueState(config);
     return this.#transaction(() => {
-      this.#db.prepare('INSERT INTO delivery_queues VALUES(?,?,?) ON CONFLICT(id) DO NOTHING')
+      this.#db.prepare('INSERT INTO delivery_queues(id,config_hash,state) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING')
         .run(queueId, stableHash(state.config), stableJSON(state));
       const row = this.#db.prepare('SELECT * FROM delivery_queues WHERE id=?').get(queueId);
       // Older delivery snapshots omitted the default publication strategy.
@@ -53,25 +76,51 @@ export class MergeQueueStore {
   }
   receipt(queueId, key, body) {
     string(key, 'idempotencyKey');
-    const row = this.#db.prepare('SELECT body_hash,result FROM delivery_receipts WHERE queue_id=? AND key=?').get(queueId, key);
+    // One SQLite read snapshot keeps the current state and its inverse history
+    // consistent even if a different process commits while replay is reading.
+    const row = this.#db.prepare(`SELECT r.body_hash,r.result,q.state,
+      (SELECT json_group_array(json(undo)) FROM
+        (SELECT undo FROM delivery_revisions WHERE queue_id=r.queue_id
+          AND revision>json_extract(r.result,'$.revision') ORDER BY revision DESC)) AS history
+      FROM delivery_receipts r JOIN delivery_queues q ON q.id=r.queue_id
+      WHERE r.queue_id=? AND r.key=? AND r.created_at>?`).get(queueId, key, Date.now() - this.receiptRetentionMs);
     if (!row) return null;
     requireValue(row.body_hash === stableHash(body), 'Idempotency key identifies a different request.', 'IDEMPOTENCY_CONFLICT');
-    return JSON.parse(row.result);
+    const receipt = JSON.parse(row.result);
+    let result = JSON.parse(row.state);
+    for (const edits of JSON.parse(row.history)) result = undoEdits(result, edits);
+    return receipt.undo ? undoEdits(result, receipt.undo) : result;
   }
-  #remember(queueId, key, body, result) {
-    this.#db.prepare('INSERT INTO delivery_receipts VALUES(?,?,?,?)').run(queueId, key, stableHash(body), stableJSON(result));
+  #remember(queueId, key, body, revision) {
+    this.#db.prepare('INSERT INTO delivery_receipts VALUES(?,?,?,?,?)').run(queueId, key, stableHash(body), stableJSON({ revision }), Date.now());
+  }
+  #prune(queueId) {
+    this.#db.prepare('DELETE FROM delivery_receipts WHERE queue_id=? AND created_at<=?').run(queueId, Date.now() - this.receiptRetentionMs);
+    this.#db.prepare(`DELETE FROM delivery_receipts WHERE rowid IN
+      (SELECT rowid FROM delivery_receipts WHERE queue_id=? ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET ?)`)
+      .run(queueId, this.maxReceipts);
+    // Only inverse edits newer than the oldest retained response are needed.
+    this.#db.prepare(`DELETE FROM delivery_revisions WHERE queue_id=? AND revision<=COALESCE(
+      (SELECT min(json_extract(result,'$.revision')) FROM delivery_receipts WHERE queue_id=?),
+      (SELECT revision FROM delivery_queues WHERE id=?))`).run(queueId, queueId, queueId);
   }
   /** Synchronous reducer commands are transactional and retry-safe across connections. */
   dispatch(queueId, action, { idempotencyKey, token, stepKey } = {}) {
     return this.#transaction(() => {
-      const original = this.receipt(queueId, idempotencyKey, action);
+      this.#prune(queueId);
+      const original = stepKey ? this.receipt(queueId, stepKey, { type: 'step' }) : this.receipt(queueId, idempotencyKey, action);
       if (original) return original;
-      if (!['enqueue', 'result', 'withdraw'].includes(action.type)) this.assertLock(queueId, token);
-      const result = reduceQueue(this.read(queueId), action);
-      this.#db.prepare('UPDATE delivery_queues SET state=? WHERE id=?').run(stableJSON(result), queueId);
-      this.#remember(queueId, idempotencyKey, action, result);
+      if (!['enqueue', 'result'].includes(action.type)) this.assertLock(queueId, token);
+      const before = this.read(queueId);
+      const result = reduceQueue(before, action);
+      const undo = inverseEdits(before, result);
+      if (!undo.length) return result;
+      const { revision } = this.#db.prepare('UPDATE delivery_queues SET state=?,revision=revision+1 WHERE id=? RETURNING revision').get(stableJSON(result), queueId);
+      this.#db.prepare('INSERT INTO delivery_revisions VALUES(?,?,?)').run(queueId, revision, stableJSON(undo));
       // A process crash cannot separate a phase transition from its public tick receipt.
-      if (stepKey) this.#remember(queueId, stepKey, { type: 'step' }, result);
+      if (stepKey) this.#remember(queueId, stepKey, { type: 'step' }, revision);
+      else this.#remember(queueId, idempotencyKey, action, revision);
+      this.#prune(queueId);
       return result;
     });
   }
@@ -100,7 +149,8 @@ export class MergeQueueStore {
       this.assertLock(queueId, token);
       const original = this.receipt(queueId, key, { type: 'step' });
       if (original) return original;
-      this.#remember(queueId, key, { type: 'step' }, result);
+      // Transitions write their tick receipt in the same transaction. An idle
+      // tick has no effect to deduplicate and must not add receipt/history rows.
       return result;
     });
   }
