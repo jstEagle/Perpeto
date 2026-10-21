@@ -1,0 +1,20 @@
+{
+  "host": "127.0.0.1",
+  "port": 4320,
+  "databasePath": "../.perpeto/hub/hub.sqlite",
+  "messagingDatabasePath": "../.perpeto/hub/messaging.sqlite",
+  "ownerTokenPath": "../.perpeto/hub/owner.secret",
+  "corsOrigins": [
+    "http://127.0.0.1:4321"
+  ],
+  "requestMaxBytes": 1048576,
+  "heartbeatIntervalMs": 10000,
+  "leaseDurationMs": 60000,
+  "longPollMs": 25000,
+  "maintenanceIntervalMs": 1000,
+  "enrollmentTtlMs": 600000,
+  "architectHarness": {
+    "provider": "codex",
+    "model": "gpt-6.1-sol"
+  }
+}
