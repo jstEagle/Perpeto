@@ -5,6 +5,7 @@ import { MessagingStore, MessagingError } from '../../factory-core/src/messaging
 import { HubStore } from './store.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
+import { HubDelivery } from './delivery/index.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings } from './errors.js';
 
 const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
@@ -32,8 +33,8 @@ function prepareDatabase(path) {
 export class Hub {
   constructor(config, engine) {
     this.config = config; this.engine = engine; this.listeners = new Set(); this.pending = Promise.resolve();
-    for (const path of [config.databasePath, config.messagingDatabasePath, config.ownerTokenPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    for (const path of [config.databasePath, config.messagingDatabasePath]) prepareDatabase(path);
+    for (const path of [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, config.ownerTokenPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    for (const path of [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath]) prepareDatabase(path);
     this.store = new HubStore(config.databasePath);
     this.workflows = new Workflows(this); this.observation = new Observation(this);
     try {
@@ -52,9 +53,10 @@ export class Hub {
       if (owner && owner.hash !== hash(this.ownerToken)) fail(500, 'OWNER_TOKEN_MISMATCH', 'Owner token file does not match this hub.');
       this.store.db.prepare("INSERT OR IGNORE INTO tokens VALUES(?,'owner',NULL)").run(hash(this.ownerToken));
       this.messaging = new MessagingStore(config.messagingDatabasePath);
+      this.delivery = new HubDelivery(this);
       // Hub snapshots may contain private prompts/logs. Keep all persisted files private.
-      for (const file of [config.databasePath, config.messagingDatabasePath]) chmodSync(file, 0o600);
-    } catch (error) { this.store.close(); throw error; }
+      for (const file of [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath]) chmodSync(file, 0o600);
+    } catch (error) { this.messaging?.close(); this.store.close(); throw error; }
   }
   secret(kind, entityId) { return createHmac('sha256', this.ownerToken).update(`${kind}:${entityId}`).digest('base64url'); }
   authenticate(header) {
@@ -100,6 +102,7 @@ export class Hub {
       try {
         const result = mutation ? await this.store.transaction(perform) : await perform();
         if (mutation && (path !== '/nodes/lease' || result.body.assignments.length || result.body.jobs.length)) this.notify();
+        if (this.delivery.dirty) this.delivery.schedule();
         return result;
       } catch (error) {
         if (error instanceof MessagingError) throw new HubError(error.code.includes('CONFLICT') ? 409 : error.code === 'NOT_FOUND' ? 404 : 400, error.code, error.message);
@@ -127,7 +130,7 @@ export class Hub {
   async maintenance() {
     return this.serialize(async () => {
       let changed = false;
-      await this.store.transaction(() => {
+      await this.store.transaction(async () => {
         const time = Date.now();
         for (const cancellation of this.store.list('cancellation', value => Date.parse(value.leaseExpiresAt) <= time)) this.store.remove('cancellation', cancellation.id);
         for (const machine of this.store.list('machine')) {
@@ -137,6 +140,17 @@ export class Hub {
         }
         for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, active)) {
           if (Date.parse(value.leaseExpiresAt) <= time) {
+            const run = value.runId && !value.delivery && this.engine.retriesLostWork ? this.store.get('run', value.runId) : null;
+            if (run) {
+              // The engine owns retries for run work: close this attempt and let its retry policy create the next one.
+              const attempt = value.attempt;
+              value.status = kind === 'job' ? 'error' : 'failed'; delete value.leaseExpiresAt;
+              if (kind === 'assignment') value.result = { outcome: 'failure', summary: 'Lease expired before a result arrived.' };
+              this.store.put(kind, value); this.emit(`${kind}.expired`, kind, value, { attempt, machineId: value.machineId });
+              if (kind === 'assignment') this.observation.assignment(value);
+              if (['running', 'paused'].includes(run.status)) await this.engineEvent(run, { type: 'lease.expired', kind, entityId: value.id, attempt });
+              changed = true; continue;
+            }
             value.status = 'queued'; value.attempt += 1;
             delete value.machineId; delete value.leaseExpiresAt;
             this.store.put(kind, value); this.emit(`${kind}.requeued`, kind, value, { attempt: value.attempt });
@@ -146,6 +160,8 @@ export class Hub {
       });
       if (changed) this.notify();
     });
+    // Merge queue progress (Git preparation and publication) runs outside the request serializer between its two syncs.
+    await this.delivery.pump();
   }
   fenced(kind, entityId, auth, body, read = false) {
     const value = this.store.need(kind, entityId);
@@ -165,6 +181,7 @@ export class Hub {
     value.status = 'cancelled'; delete value.leaseExpiresAt;
     this.store.put(kind, value); this.emit(`${kind}.cancelled`, kind, value);
     if (kind === 'assignment') this.observation.assignment(value);
+    if (kind === 'job' && value.delivery) this.delivery.record(value, { status: 'cancelled' });
   }
   cancellationAck(kind, entityId, auth, body) {
     if (!Number.isSafeInteger(body.attempt)) return null;
@@ -187,10 +204,15 @@ export class Hub {
   applyEffects(run, result) {
     object(result, 'engine result'); requireValue(Array.isArray(result.effects), 'Engine effects must be an array.');
     this.store.put('engine-state', { id: run.id, state: result.state ?? null });
+    // When the engine reports each flow-edge crossing itself, the hub does not derive a coarser move from nodeId changes.
+    const reportedMoves = new Set(result.effects.filter(effect => effect.type === 'event' && effect.value?.type === 'workitem.moved').map(effect => effect.value.data?.workItemId));
     for (const effect of result.effects) {
       object(effect.value, 'effect value');
       if (effect.type === 'event') {
-        this.observation.interaction(effect.value.type, { id: effect.value.assignmentId ?? run.id, runId: run.id, projectId: run.projectId, nodeId: effect.value.data?.nodeId }, effect.value.data ?? {});
+        const subject = effect.value.subject ?? { kind: 'assignment', id: effect.value.assignmentId ?? run.id };
+        const context = { id: subject.id, runId: run.id, projectId: run.projectId, nodeId: effect.value.data?.nodeId };
+        if (this.observation.isInteraction(effect.value.type)) this.observation.interaction(effect.value.type, context, effect.value.data ?? {}, subject.kind);
+        else this.emit(nonblank(effect.value.type, 'engine event type', 200), subject.kind, context, object(effect.value.data ?? {}, 'engine event data'));
         continue;
       }
       if (effect.type === 'run') {
@@ -202,13 +224,16 @@ export class Hub {
       }
       const kind = { 'work-item': 'work-item', assignment: 'assignment', job: 'job', 'merge-entry': 'merge-entry' }[effect.type];
       requireValue(Boolean(kind), 'Unknown engine effect.');
-      const value = { ...effect.value, projectId: run.projectId, runId: run.id };
-      nonblank(value.id, 'effect id', 200);
-      const previous = this.store.get(kind, value.id);
+      nonblank(effect.value.id, 'effect id', 200);
+      const previous = this.store.get(kind, effect.value.id);
       requireValue(!previous || previous.runId === run.id, 'Engine cannot modify another run.');
+      // Merge entries also carry hub delivery fields (queue, job, merged revision) that engine snapshots do not know.
+      const value = { ...(kind === 'merge-entry' ? previous : {}), ...effect.value, projectId: run.projectId, runId: run.id };
+      if (kind === 'merge-entry' && value.status === 'queued' && !value.queueId) this.delivery.dirty = true;
       if (kind === 'assignment' || kind === 'job') {
         requireValue(!previous || previous.status === 'queued', 'Engine cannot overwrite leased or finished work.');
-        value.status = 'queued'; value.attempt = previous?.attempt ?? 1; value.requirements ??= {};
+        value.status = 'queued'; value.attempt = previous?.attempt ?? value.attempt ?? 1; value.requirements ??= {};
+        if (value.notBefore !== undefined) requireValue(Number.isFinite(Date.parse(value.notBefore)), 'Invalid notBefore.');
         this.requirements(value.requirements);
         if (kind === 'job') {
           requireValue(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value.revision), 'Job revision must be a full commit SHA.');
@@ -218,7 +243,7 @@ export class Hub {
       }
       this.store.put(kind, value); this.emit(`${kind}.updated`, kind, value, { status: value.status });
       if (kind === 'assignment') this.observation.assignment(value);
-      if (kind === 'work-item' && previous && previous.nodeId !== value.nodeId) this.observation.interaction('workitem.moved', value, { workItemId: value.id, sourceNodeId: previous.nodeId, targetNodeId: value.nodeId });
+      if (kind === 'work-item' && previous && previous.nodeId !== value.nodeId && !reportedMoves.has(value.id)) this.observation.interaction('workitem.moved', value, { workItemId: value.id, sourceNodeId: previous.nodeId, targetNodeId: value.nodeId });
     }
     if (['stopped', 'completed', 'failed'].includes(run.status)) this.cancelRunWork(run);
   }
@@ -250,6 +275,8 @@ export class Hub {
         if (!(requirements.providers ?? []).every(provider => machine.providers.includes(provider))) continue;
         if (kind === 'assignment' && value.harness?.provider && !machine.providers.includes(value.harness.provider)) continue;
         if (value.runId && this.store.need('run', value.runId).status !== 'running') continue;
+        // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
+        if (value.notBefore && Date.parse(value.notBefore) > Date.now()) continue;
         value.status = 'leased'; value.machineId = machine.id;
         value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
         this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
@@ -326,7 +353,7 @@ export class Hub {
         const selected = this.workflows.version(workflow.id, workflow.activeVersion);
         const run = { id: id('run'), projectId: workflow.projectId, workflowId: workflow.id, workflowVersion: selected.version, status: 'running', startedAt: now() };
         this.store.put('run', run); this.store.put('run-workflow', { id: run.id, workflow: selected });
-        const result = await this.engine.startRun({ run, workflow: selected, input: body.input ?? null }); this.applyEffects(run, result);
+        const result = await this.engine.startRun({ run, workflow: selected, input: body.input ?? null, project: this.store.need('project', run.projectId) }); this.applyEffects(run, result);
         this.messaging.createChannel({ projectId: run.projectId, id: `run-${run.id}`, name: `Run ${run.id}` });
         this.emit('run.started', 'run', { ...run, runId: run.id }); return reply(run, 201);
       }
@@ -341,7 +368,10 @@ export class Hub {
         const target = { pause: 'paused', resume: 'running', stop: 'stopped' }[action];
         requireValue(!['stopped', 'completed', 'failed'].includes(run.status), 'Run is already terminal.');
         run.status = target; if (action === 'stop') { run.stoppedAt = now(); this.cancelRunWork(run); }
-        this.store.put('run', run); this.emit(`run.${action}`, 'run', { ...run, runId: run.id }); return reply(run);
+        this.store.put('run', run); this.emit(`run.${action}`, 'run', { ...run, runId: run.id });
+        // The engine closes its own items/merges; the hub already revoked leases above.
+        if (this.store.get('engine-state', run.id)?.state) await this.engineEvent(run, { type: { pause: 'run.paused', resume: 'run.resumed', stop: 'run.stopped' }[action], data: body.reason ? { reason: body.reason } : {} });
+        return reply(this.store.need('run', run.id));
       }
       if (action === 'inputs' && method === 'POST') {
         if (run.status !== 'running') fail(409, 'CONFLICT', 'Run must be running to accept input.');
@@ -456,6 +486,8 @@ export class Hub {
             requireValue(body.type !== 'failed' || data.outcome !== 'success', 'A failed event cannot report success.');
             value.result = { outcome: data.outcome, summary: data.summary };
             for (const key of ['branch', 'prUrl', 'headSha', 'threadRef']) if (data[key] !== undefined) value.result[key] = nonblank(data[key], key, 4096);
+            if (data.verdict !== undefined) { requireValue(['pass', 'fail'].includes(data.verdict), 'verdict must be pass or fail.'); value.result.verdict = data.verdict; }
+            if (data.items !== undefined) { requireValue(Array.isArray(data.items) && data.items.length <= 1000, 'items must be an array.'); value.result.items = data.items; }
             value.status = data.outcome === 'success' ? 'succeeded' : 'failed';
             if (value.architectRequestId) { value.result.graph = data.graph; value.result.rationale = data.rationale; }
           } else {
@@ -471,9 +503,13 @@ export class Hub {
         if (kind === 'assignment' && (final || body.type === 'started')) this.observation.assignment(value);
         if (final && value.runId) {
           const graph = this.store.need('run-workflow', value.runId).workflow.graph;
-          if (kind === 'job' || graph.nodes.some(node => node.id === value.nodeId && node.type === 'review')) this.observation.interaction('gate.result', value, { nodeId: value.nodeId, result: kind === 'job' ? value.status : data.outcome, source: kind === 'job' ? 'ci' : 'review' });
+          const review = kind === 'assignment' && graph.nodes.some(node => node.id === value.nodeId && node.type === 'review');
+          // Review gates pass or fail on verdict; a missing verdict is reported as an error, not a rejection.
+          if (kind === 'job' || review) this.observation.interaction('gate.result', value, { nodeId: value.nodeId, source: kind === 'job' ? (value.delivery ? 'merge-queue' : 'ci') : 'review',
+            result: kind === 'job' ? value.status : data.outcome === 'blocked' ? 'blocked' : data.verdict ?? 'error', ...(kind === 'job' ? { revision: value.revision } : {}) });
         }
-        if (final && value.runId) await this.engineEvent(this.store.need('run', value.runId), { type: `${kind}.finished`, [kind === 'assignment' ? 'assignmentId' : 'jobId']: value.id, data, value });
+        if (final && kind === 'job' && value.delivery) this.delivery.record(value, data);
+        else if (final && value.runId) await this.engineEvent(this.store.need('run', value.runId), { type: `${kind}.finished`, [kind === 'assignment' ? 'assignmentId' : 'jobId']: value.id, data, value });
         this.emit(`${kind}.${body.type}`, kind, value, data); return reply({ accepted: true, status: value.status });
       }
     }
@@ -553,5 +589,5 @@ export class Hub {
     }
     fail(404, 'NOT_FOUND', 'Messaging route not found.');
   }
-  async close() { await this.pending; this.messaging.close(); this.store.close(); }
+  async close() { await this.delivery.close(); await this.pending; this.messaging.close(); this.store.close(); }
 }

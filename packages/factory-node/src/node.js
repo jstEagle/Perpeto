@@ -285,6 +285,8 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         ({ registry, accountProvider } = await loadIntegrations(config, { registry, accountProvider, runtimeUrl: machine.runtimeUrl }));
         integrationsReady = true;
         await enroll();
+        // Machine-scoped integrations (the account pool) can only open once the machine ID is known.
+        await accountProvider.bind?.({ machineId });
         // Initial heartbeat may reconnect too, but no work is accepted until capacity is announced.
         await heartbeat(true);
         service.signal.throwIfAborted();

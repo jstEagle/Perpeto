@@ -259,7 +259,7 @@ test('long polling wakes on newly queued work and closes cleanly', async t => {
   assert.deepEqual((await f.request('POST', '/nodes/lease', { idempotencyKey: 'waiting' }, node.token)).body, result.body);
 });
 
-test('missing real workflow adapter fails closed; missing owner secret is not silently replaced', async t => {
+test('production default validates with the real workflow engine; missing owner secret is not silently replaced', async t => {
   const f = await fixture(t, {}, undefined);
   // fixture default is an explicit stub; create a separate production-default hub.
   const path = join(f.directory, 'production.json');
@@ -268,7 +268,7 @@ test('missing real workflow adapter fails closed; missing owner secret is not si
   const token = (await readFile(join(f.directory, 'prod.secret'), 'utf8')).trim();
   const project = await fetch(`${url}/api/v1/projects`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Test', repo: { url: '/repo', defaultBranch: 'main' } }) }).then(response => response.json());
   const workflow = await fetch(`${url}/api/v1/projects/${project.id}/workflows`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Test', graph }) });
-  assert.equal(workflow.status, 503); assert.equal((await workflow.json()).error.code, 'ENGINE_UNAVAILABLE');
+  assert.equal(workflow.status, 400); assert.equal((await workflow.json()).error.code, 'INVALID_WORKFLOW');
   await hub.close(); await rm(join(f.directory, 'prod.secret'));
   await assert.rejects(createHub({ configPath: path }), { code: 'OWNER_TOKEN_MISSING' });
   await chmod(join(f.directory, 'owner.secret'), 0o644);

@@ -3,6 +3,7 @@
   "port": 4320,
   "databasePath": "../.perpeto/hub/hub.sqlite",
   "messagingDatabasePath": "../.perpeto/hub/messaging.sqlite",
+  "deliveryDatabasePath": "../.perpeto/hub/delivery.sqlite",
   "ownerTokenPath": "../.perpeto/hub/owner.secret",
   "corsOrigins": [
     "http://127.0.0.1:4321"

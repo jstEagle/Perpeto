@@ -57,12 +57,14 @@ async function optionalPackage(name) {
 
 export async function loadIntegrations(config, { runtimeUrl, accountProvider, registry } = {}) {
   if (!accountProvider) {
-    const name = config.accountProviderPackage ?? '@perpeto/factory-accounts';
-    const mod = await optionalPackage(name);
+    // An `accounts` section without an explicit package uses the in-repo factory-accounts pool.
+    const mod = config.accountProviderPackage || config.accounts === undefined
+      ? await optionalPackage(config.accountProviderPackage ?? '@perpeto/factory-accounts')
+      : await import('./integrations/accounts.js');
     if (!mod && config.accountProviderPackage) throw new Error('Configured account provider package is unavailable.');
     if (mod) {
       if (typeof mod.createAccountProvider !== 'function') throw new Error('Account package must export createAccountProvider.');
-      accountProvider = await mod.createAccountProvider({ config: config.accounts ?? {}, configRoot: config.configRoot });
+      accountProvider = await mod.createAccountProvider({ config: config.accounts ?? {}, configRoot: config.configRoot, dataDir: config.dataDir });
     }
   }
   accountProvider ??= { async list() { return []; } };

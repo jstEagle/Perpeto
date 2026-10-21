@@ -2,7 +2,7 @@
 
 Dependency-free Node 24 HTTP control plane with its own durable SQLite state. It implements the [factory contract](../../docs/architecture.md) and the later agent-authored workflow, observation and node wire-format addenda. It never calls inference APIs.
 
-**Integration boundary:** the production workflow adapter intentionally returns `503 ENGINE_UNAVAILABLE` until the lead maps `@perpeto/factory-workflow` into [workflow-adapter.js](src/engine/workflow-adapter.js). Tests explicitly inject the in-package stub. Passing hub tests does not establish a working end-to-end factory, real metrics formulas, or a live T3 run.
+**Engine and delivery:** the default engine is [workflow-adapter.js](src/engine/workflow-adapter.js) over `@perpeto/factory-workflow`; tests may still inject the in-package stub. Merge-queue nodes run through [delivery/index.js](src/delivery/index.js) over `@perpeto/factory-delivery`, for local bare repositories only. The [e2e suite](../factory-e2e/README.md) runs a real hub, node and bare repository with a fake executor. No live T3 harness run is claimed.
 
 ## Start
 
@@ -62,7 +62,7 @@ List responses use `{projects}`, `{workflows}`, `{versions}`, `{machines}`, `{ac
 
 New workflow versions are always drafts with `authoredBy`, optional `rationale` and `parentVersion`. `versions` returns immutable saved records. Activation changes a separate `activeVersion` pointer, not historical records or live runs. A workflow head may show a newer draft alongside its older `activeVersion`; new runs use that active version. Starting a workflow with no active version returns `409 WORKFLOW_NOT_ACTIVE`.
 
-Metrics return `{nodes, edges, run, bottlenecks}` and default to a 24-hour window. State, events, usage and window bounds go to `engine.computeRunMetrics`; graph diffs, architect prompt construction and result parsing also belong to the engine interface. The hub overlays `run.activeAgents` and `run.machines` from unexpired assignment leases. Node/edge metrics and bottleneck formulas remain unverified until the real engine adapter is integrated.
+Metrics return `{nodes, edges, run, bottlenecks}` and default to a 24-hour window. State, events, usage and window bounds go to `engine.computeRunMetrics`; graph diffs, architect prompt construction and result parsing also belong to the engine interface. The hub overlays `run.activeAgents` and `run.machines` from unexpired assignment leases. Project metrics combine per-run engine metrics: counts, tokens and throughput add up, averages are weighted by finished work, and `p90` is the worst run's p90 (an upper bound, since percentiles cannot be merged from summaries). Project bottlenecks carry `runId`, and the response lists `runs`.
 
 Usage filters are `projectId`, `runId`, `machineId`, `accountId`, `provider`, `model`, `from` and `to` (inclusive ISO timestamps). Responses are `{groupBy, groups: [{key, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, records}], totals}`. Missing cost is counted as zero, without estimating provider prices. Overview returns `{activeAgents, queuedWork, tokensToday, machinesOnline}`. Tokens include input, output and both cache counters. Jobs can be filtered by project/run. Job logs return `{jobId, chunks:[{id,jobId,chunk,at}]}`; artifact upload is not implemented.
 
@@ -98,11 +98,31 @@ POST /api/v1/messaging/projects/:projectId/channels/:channelId/messages
 
 Send/read bodies, role addressing and cursor semantics match [factory messaging](../../docs/messaging.md). Each run gets `run-<runId>` automatically. Owner sends in run channels emit `agent.messaged` once per message ID. `factory-client` currently hardcodes `/api/perpeto`; it needs a base-path option at integration to use the hub prefix. That package was not modified here.
 
+## Engine mapping
+
+| Hub event | Engine event |
+| --- | --- |
+| run start, `POST /runs/:id/inputs` `{items}` | `run.started` with project repo, `input.added` |
+| assignment `completed`/`failed` | `assignment.completed`; review results pass `verdict` through, and a review `success` without a verdict is sent as an error the engine retries |
+| job `completed` | `job.completed` with `passed`, `failed`, `error` or `cancelled` |
+| expired lease on run work | the attempt is closed (`failed`/`error`) and reported as a failure, so the engine's `retry` policy creates the next attempt; architect and speculative merge jobs still requeue in the hub |
+| `POST /work-items/:id/decision` | `human.decision` |
+| pause, resume, stop | `run.paused`, `run.resumed`, `run.stopped` |
+| merge queue merged/rejected | `merge.completed`/`merge.rejected` |
+
+Engine retries carry `attempt`, `retryOf` and `notBefore`; the hub does not lease them before `notBefore`. Engine `workitem.moved` and merge `gate.result` events become hub interaction events; `assignment.state`, review/CI/human `gate.result` and `run.*` stay hub-owned to avoid duplicates. Other engine events (`loop.iteration`, `workitem.retried`, `workitem.escalated`, `workitem.blocked`, `human.requested`) are stored as-is.
+
+## Merge queue
+
+A merge entry from the engine is enqueued into one `factory-delivery` queue per project repository, base branch and merge configuration, stored in `deliveryDatabasePath`. Its CI is the steps of the ci nodes named in `requiredChecks` (or every ci node), and a passing speculative job proves those named checks. Speculative jobs are hub Jobs with a `delivery` field, leased by nodes like any other job; their results go to the queue rather than the engine. The pump runs Git preparation and publication outside the request serializer, then reconciles queue state into hub merge entries and jobs, so a crash between the two stores is repaired on the next pump. Waiting entries of a stopped run are withdrawn.
+
+Only local bare repositories (project `repo.localPath`, or an absolute path or `file://` `url`) are supported. Other repositories leave the entry queued with `deliveryError` and a `merge-entry.blocked` event; GitHub queue publication is not wired yet.
+
 ## Persistence and limits
 
 Hub entity state, immutable workflow versions, architect requests, run snapshots, engine state, leases, cancellations, jobs/logs, merge entries, account snapshots, usage, idempotency and global events are in `databasePath`. Messaging keeps its existing separate SQLite DB at `messagingDatabasePath`. Both use WAL and full synchronous writes; DB and credential files are private regular files. Hub mutations serialize through transactions and engine effects are committed with their triggering result.
 
-MessagingStore writes are a separate durability boundary. A crash can leave a message/channel durable before its hub event/idempotency response commits. Retrying a send recovers its message event by message ID, but multi-DB crash-atomic delivery is not claimed. A single hub process owns scheduling; no clustered scheduler, retention, token rotation/revocation UI, external artifact storage or real merge execution is provided here. The DB/owner secret must be backed up together.
+MessagingStore writes are a separate durability boundary. A crash can leave a message/channel durable before its hub event/idempotency response commits. Retrying a send recovers its message event by message ID, but multi-DB crash-atomic delivery is not claimed. A single hub process owns scheduling; no clustered scheduler, retention, token rotation/revocation UI or external artifact storage is provided here. Merge queue Git work for local repositories runs in the hub process. The DB/owner secret must be backed up together.
 
 ## Verify
 

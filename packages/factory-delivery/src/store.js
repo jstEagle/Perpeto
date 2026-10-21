@@ -66,7 +66,7 @@ export class MergeQueueStore {
     return this.#transaction(() => {
       const original = this.receipt(queueId, idempotencyKey, action);
       if (original) return original;
-      if (action.type !== 'enqueue' && action.type !== 'result') this.assertLock(queueId, token);
+      if (!['enqueue', 'result', 'withdraw'].includes(action.type)) this.assertLock(queueId, token);
       const result = reduceQueue(this.read(queueId), action);
       this.#db.prepare('UPDATE delivery_queues SET state=? WHERE id=?').run(stableJSON(result), queueId);
       this.#remember(queueId, idempotencyKey, action, result);
