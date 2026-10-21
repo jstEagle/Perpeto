@@ -30,6 +30,7 @@ async function fixture(t, config = {}, engine = createStubEngine()) {
     async run() {
       const project = await fixture.request('POST', '/projects', { name: 'Test', repo: { url: '/tmp/repo.git', defaultBranch: 'main' } }); assert.equal(project.status, 201);
       const workflow = await fixture.request('POST', `/projects/${project.body.id}/workflows`, { name: 'Build', purpose: 'build', graph }); assert.equal(workflow.status, 201);
+      await fixture.request('POST', `/workflows/${workflow.body.id}/activate`, { version: workflow.body.version });
       const run = await fixture.request('POST', `/workflows/${workflow.body.id}/runs`, {}); assert.equal(run.status, 201);
       return { project: project.body, workflow: workflow.body, run: run.body };
     },
@@ -291,4 +292,106 @@ test('load: 100 simulated machines concurrently lease and renew over real HTTP',
   const endedAt = performance.now(); assert.ok(renewals.every(result => result.status === 200));
   assert.equal((await f.request('GET', '/overview')).body.activeAgents, 100);
   t.diagnostic(JSON.stringify({ machines: 100, leases: 100, renewals: 100, leaseMs: +(leasedAt - start).toFixed(1), renewMs: +(endedAt - leasedAt).toFixed(1), requestsPerSecond: +(200000 / (endedAt - start)).toFixed(1) }));
+});
+
+test('workflow versions are immutable, activation selects new runs and diff calls the engine', async t => {
+  const diffs = []; const engine = { ...createStubEngine(), diffGraphs(from, to) { diffs.push({ from, to }); return { added: ['new-node'] }; } };
+  const f = await fixture(t, {}, engine); const { project, workflow, run } = await f.run();
+  const versionsBefore = (await f.request('GET', `/workflows/${workflow.id}/versions`)).body.versions;
+  const changed = { ...graph, nodes: [{ id: 'new-node', type: 'output', label: 'Done', position: { x: 0, y: 0 }, config: {} }] };
+  const draft = await f.request('PUT', `/workflows/${workflow.id}`, { name: 'Changed', graph: changed, rationale: 'Add an output.' });
+  assert.equal(draft.body.version, 2); assert.equal(draft.body.status, 'draft'); assert.equal(draft.body.activeVersion, 1); assert.equal(draft.body.parentVersion, 1); assert.equal(draft.body.authoredBy.kind, 'user');
+  const stillOld = await f.request('POST', `/workflows/${workflow.id}/runs`, {}); assert.equal(stillOld.body.workflowVersion, 1);
+  const diff = await f.request('GET', `/workflows/${workflow.id}/diff?from=1&to=2`); assert.deepEqual(diff.body, { added: ['new-node'] }); assert.deepEqual(diffs[0], { from: graph, to: changed });
+  assert.equal((await f.request('POST', `/workflows/${workflow.id}/activate`, { version: 2 })).status, 200);
+  const newer = await f.request('POST', `/workflows/${workflow.id}/runs`, {}); assert.equal(newer.body.workflowVersion, 2);
+  assert.equal((await f.request('GET', `/runs/${run.id}`)).body.workflowVersion, 1);
+  const history = (await f.request('GET', `/workflows/${workflow.id}/versions`)).body.versions;
+  assert.deepEqual(history[0], versionsBefore[0]); assert.equal(history[1].status, 'draft');
+  await f.request('POST', `/workflows/${workflow.id}/activate`, { version: 1 });
+  assert.equal((await f.request('PUT', `/workflows/${workflow.id}`, { graph: changed })).body.version, 3);
+  assert.equal((await f.request('GET', `/workflows/${workflow.id}/diff?from=99&to=1`)).status, 404);
+  const other = await f.request('POST', '/projects', { name: 'Other', repo: { url: '/other', defaultBranch: 'main' } });
+  assert.equal((await f.request('POST', `/projects/${other.body.id}/workflows/drafts`, { prompt: 'Improve', baseWorkflowId: workflow.id })).status, 400);
+  const fresh = await f.request('POST', `/projects/${project.id}/workflows`, { name: 'Inactive', graph });
+  assert.equal((await f.request('POST', `/workflows/${fresh.body.id}/runs`, {})).body.error.code, 'WORKFLOW_NOT_ACTIVE');
+  await f.restart(); assert.deepEqual((await f.request('GET', `/workflows/${workflow.id}/versions`)).body.versions[0], versionsBefore[0]);
+});
+
+test('architect assignments retry invalid graphs and save valid inactive agent-authored versions', async t => {
+  const prompts = []; const base = createStubEngine(); const engine = { ...base, buildArchitectPrompt(context) { prompts.push(context); return base.buildArchitectPrompt(context); } };
+  const f = await fixture(t, {}, engine); const { project, workflow, run } = await f.run(); const node = await f.enroll();
+  const requested = await f.request('POST', `/projects/${project.id}/workflows/drafts`, { prompt: 'Add a review gate.', baseWorkflowId: workflow.id, idempotencyKey: 'architect' });
+  assert.equal(requested.status, 202); assert.equal(requested.body.role, 'workflow-architect');
+  assert.deepEqual((await f.request('POST', `/projects/${project.id}/workflows/drafts`, { prompt: 'Add a review gate.', baseWorkflowId: workflow.id, idempotencyKey: 'architect' })).body, requested.body);
+  let assignment = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
+  assert.equal(assignment.id, requested.body.id); assert.equal(assignment.architectAttempt, 1);
+  const invalid = { leaseId: assignment.leaseId, type: 'completed', data: { outcome: 'success', summary: 'Proposed', graph: {}, rationale: 'Review first.' } };
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, invalid, node.token)).status, 200);
+  assert.equal(prompts.length, 2); assert.ok(prompts[1].validationErrors.length); assert.equal(prompts[0].project.id, project.id); assert.deepEqual(prompts[0].baseGraph, graph);
+  const first = await f.request('GET', `/assignments/${assignment.id}`); assert.ok(first.body.retryAssignmentId); assert.equal(first.body.status, 'failed');
+  assignment = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0]; assert.equal(assignment.architectAttempt, 2);
+  const valid = { leaseId: assignment.leaseId, type: 'completed', data: { outcome: 'success', summary: 'Valid proposal', graph, rationale: 'Keep the graph simple.' } };
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, valid, node.token)).status, 200);
+  const versions = (await f.request('GET', `/workflows/${workflow.id}/versions`)).body.versions;
+  assert.equal(versions.length, 2); assert.equal(versions[1].authoredBy.assignmentId, assignment.id); assert.equal(versions[1].authoredBy.prompt, 'Add a review gate.'); assert.equal(versions[1].parentVersion, 1); assert.equal(versions[1].rationale, 'Keep the graph simple.');
+  assert.equal(versions[1].status, 'draft');
+  const next = await f.request('POST', `/workflows/${workflow.id}/runs`, {}); assert.equal(next.body.workflowVersion, 1);
+  assert.equal((await f.request('GET', `/runs/${run.id}`)).body.workflowVersion, 1);
+  await f.restart(); assert.equal((await f.request('GET', `/assignments/${assignment.id}`)).body.draftVersion, 2);
+});
+
+test('architect validation stops after three attempts and never activates an invalid workflow', async t => {
+  const f = await fixture(t); const { project } = await f.run(); const node = await f.enroll();
+  const draft = await f.request('POST', `/projects/${project.id}/workflows/drafts`, { prompt: 'New factory' });
+  assert.equal(draft.status, 202);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const assignment = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0]; assert.equal(assignment.architectAttempt, attempt);
+    assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { leaseId: assignment.leaseId, type: 'completed', data: { outcome: 'success', summary: 'Invalid', graph: {}, rationale: 'Try again' } }, node.token)).status, 200);
+    if (attempt === 3) assert.equal((await f.request('GET', `/assignments/${assignment.id}`)).body.retryAssignmentId, undefined);
+  }
+  assert.equal((await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments.length, 0);
+  assert.equal((await f.request('GET', `/projects/${project.id}/workflows`)).body.workflows.length, 1);
+});
+
+test('run interaction events include roles and planned edges; controlled run messages emit once', async t => {
+  const f = await fixture(t); const { workflow, run } = await f.run();
+  const richer = { schema: graph.schema, nodes: ['builder', 'reviewer'].map(nodeId => ({ id: nodeId, type: 'agent', label: nodeId, position: { x: 0, y: 0 }, config: {} })),
+    edges: [{ id: 'msg_edge', from: { node: 'builder' }, to: { node: 'reviewer' }, kind: 'messages' }, { id: 'flow_edge', from: { node: 'builder' }, to: { node: 'reviewer' }, kind: 'flow' }] };
+  await f.request('PUT', `/workflows/${workflow.id}`, { graph: richer }); await f.request('POST', `/workflows/${workflow.id}/activate`, { version: 2 });
+  const nextRun = (await f.request('POST', `/workflows/${workflow.id}/runs`, {})).body;
+  await f.seed(nextRun.id, 1, { policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: ['reviewer'] } }); const node = await f.enroll();
+  const assignment = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0];
+  for (const [type, data] of [['workitem.moved', { sourceNodeId: 'builder', targetNodeId: 'reviewer' }], ['agent.delegated', { sourceNodeId: 'builder', targetNodeId: 'surprise' }], ['gate.result', { result: 'pass', nodeId: 'builder' }]]) {
+    assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { leaseId: assignment.leaseId, type, data }, node.token)).status, 200);
+  }
+  const send = { leaseId: assignment.leaseId, type: 'message', data: { body: 'Review this.', recipientRoleId: 'reviewer' }, idempotencyKey: 'run-message' };
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, send, node.token)).status, 200);
+  await f.request('POST', `/assignments/${assignment.id}/events`, send, node.token);
+  assert.equal((await f.request('POST', `/assignments/${assignment.id}/events`, { ...send, idempotencyKey: 'bad-message', data: { ...send.data, recipientRoleId: 'forbidden' } }, node.token)).status, 403);
+  const path = `/messaging/projects/${nextRun.projectId}/channels/run-${nextRun.id}/messages`;
+  const message = { senderRoleId: 'builder', recipientRoleId: 'reviewer', body: 'Owner message', idempotencyKey: 'owner-message' };
+  await f.request('POST', path, message); await f.request('POST', path, message);
+  assert.equal((await f.request('GET', path)).body.messages.length, 2);
+  const events = (await f.request('GET', '/events?limit=1000')).body.events.filter(event => event.runId === nextRun.id);
+  const moved = events.find(event => event.type === 'workitem.moved'); assert.equal(moved.data.edgeId, 'flow_edge'); assert.equal(moved.data.unplanned, false); assert.equal(moved.data.role, 'builder');
+  const delegated = events.find(event => event.type === 'agent.delegated'); assert.equal(delegated.data.unplanned, true);
+  const messages = events.filter(event => event.type === 'agent.messaged'); assert.equal(messages.length, 2); assert.ok(messages.every(event => event.data.edgeId === 'msg_edge' && !event.data.unplanned));
+  assert.ok(events.some(event => event.type === 'assignment.state' && event.data.state === 'leased' && event.data.machineId === node.machineId));
+  assert.ok(events.some(event => event.type === 'gate.result'));
+  assert.equal((await f.request('GET', `/runs/${run.id}/metrics`, undefined, node.token)).status, 403);
+});
+
+test('metrics call the engine with windowed state and overlay current lease locations', async t => {
+  const calls = []; const base = createStubEngine(); const engine = { ...base, computeRunMetrics(input) { calls.push(input); return { ...base.computeRunMetrics(input), bottlenecks: [{ nodeId: 'builder', reason: 'no-capacity', evidence: 'Test engine evidence', severity: 'warning' }] }; } };
+  const f = await fixture(t, {}, engine); const { project, run } = await f.run(); await f.seed(run.id, 2); const node = await f.enroll();
+  await f.request('POST', '/nodes/lease', {}, node.token);
+  const metrics = await f.request('GET', `/runs/${run.id}/metrics?window=1h`); assert.equal(metrics.status, 200); assert.equal(metrics.body.run.activeAgents, 1);
+  assert.deepEqual(metrics.body.run.machines, [{ machineId: node.machineId, activeAgents: 1, nodes: ['builder'] }]);
+  assert.equal(metrics.body.bottlenecks[0].reason, 'no-capacity'); assert.equal(calls[0].windowMs, 3600000); assert.equal(calls[0].runId, run.id); assert.ok(calls[0].events.length > 0);
+  const aggregate = await f.request('GET', `/projects/${project.id}/metrics?window=7d`); assert.equal(aggregate.body.run.activeAgents, 1); assert.equal(calls.at(-1).projectId, project.id); assert.equal(calls.at(-1).windowMs, 604800000);
+  assert.equal((await f.request('GET', `/runs/${run.id}/metrics?window=bad`)).status, 400);
+  assert.equal((await f.request('GET', '/runs/missing/metrics')).status, 404);
+  await f.request('POST', `/runs/${run.id}/stop`, {});
+  assert.equal((await f.request('GET', `/runs/${run.id}/metrics`)).body.run.machines.length, 0);
 });

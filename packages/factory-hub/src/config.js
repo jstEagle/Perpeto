@@ -9,10 +9,11 @@ export function loadConfig(filename) {
     host: '127.0.0.1', port: 4320, databasePath: './hub.sqlite', messagingDatabasePath: './messaging.sqlite',
     ownerTokenPath: './owner.secret', corsOrigins: [], requestMaxBytes: 1048576,
     heartbeatIntervalMs: 10000, leaseDurationMs: 60000, longPollMs: 25000,
-    maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
+    maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000, architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' },
   };
   requireValue(Object.keys(input).every(key => Object.hasOwn(defaults, key)), 'Unknown hub configuration field.');
   const config = { ...defaults, ...input };
+  object(config.architectHarness, 'architectHarness'); nonblank(config.architectHarness.provider, 'architect provider', 200); nonblank(config.architectHarness.model, 'architect model', 200);
   nonblank(config.host, 'host'); integer(config.port, 'port', 0, 65535);
   integer(config.requestMaxBytes, 'requestMaxBytes', 128, 16 * 1024 * 1024);
   for (const key of ['heartbeatIntervalMs', 'leaseDurationMs', 'maintenanceIntervalMs', 'enrollmentTtlMs']) integer(config[key], key, 1, 86400000);

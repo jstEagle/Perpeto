@@ -5,7 +5,13 @@ import { fail } from '../errors.js';
  * validate(graph) -> { valid: boolean, errors: unknown[] }
  * startRun({ run, workflow, input }) -> { state: JSONValue, effects: Effect[] }
  * applyEvent({ run, workflow, state, event }) -> { state: JSONValue, effects: Effect[] }
- * Effect is { type: 'work-item'|'assignment'|'job'|'merge-entry'|'run', value: object }.
+ * diffGraphs(fromGraph, toGraph) -> JSON graph diff
+ * buildArchitectPrompt({ prompt, project, machines, providers, workflows, baseGraph, validationErrors, attempt }) -> string
+ * parseArchitectResult(assignmentResult) -> { graph, rationale } (throw on malformed output)
+ * computeRunMetrics({ projectId?, runId?, runs, workflows, assignments, jobs, workItems, machines, usage, events, window, windowMs, from, at })
+ *   -> { nodes: NodeMetrics[], edges: EdgeMetrics[], run: RunMetrics, bottlenecks: Bottleneck[] }
+ * The hub overlays run.activeAgents/machines from unexpired leases.
+ * Effect is { type: 'work-item'|'assignment'|'job'|'merge-entry'|'run'|'event', value: object }.
  * Entity effects carry IDs; run effects patch the current run. State is opaque and
  * persisted atomically with effects by the hub. Engines must perform no side effects.
  *
@@ -16,6 +22,6 @@ import { fail } from '../errors.js';
  */
 export function createWorkflowAdapter() {
   const unavailable = () => fail(503, 'ENGINE_UNAVAILABLE', 'Workflow engine adapter has not been integrated.');
-  return { validate: unavailable, startRun: unavailable, applyEvent: unavailable };
+  return { validate: unavailable, startRun: unavailable, applyEvent: unavailable, diffGraphs: unavailable, buildArchitectPrompt: unavailable, parseArchitectResult: unavailable, computeRunMetrics: unavailable };
 }
 // Once integrated, import the deterministic engine from '@perpeto/factory-workflow'.

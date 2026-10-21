@@ -1,8 +1,10 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, lstatSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, lstatSync, mkdirSync, chmodSync, openSync, closeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { MessagingStore, MessagingError } from '../../factory-core/src/messaging-store.js';
 import { HubStore } from './store.js';
+import { Workflows } from './workflows.js';
+import { Observation } from './observation.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings } from './errors.js';
 
 const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
@@ -16,11 +18,24 @@ function sort(value) {
 }
 const active = value => ['leased', 'running'].includes(value.status);
 
+function prepareDatabase(path) {
+  try { closeSync(openSync(path, 'wx', 0o600)); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  for (const filename of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      const stat = lstatSync(filename);
+      requireValue(stat.isFile() && (!process.getuid || stat.uid === process.getuid()), 'Database files must be owned regular files.');
+      chmodSync(filename, 0o600);
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
+
 export class Hub {
   constructor(config, engine) {
     this.config = config; this.engine = engine; this.listeners = new Set(); this.pending = Promise.resolve();
     for (const path of [config.databasePath, config.messagingDatabasePath, config.ownerTokenPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    for (const path of [config.databasePath, config.messagingDatabasePath]) prepareDatabase(path);
     this.store = new HubStore(config.databasePath);
+    this.workflows = new Workflows(this); this.observation = new Observation(this);
     try {
       try {
         const stat = lstatSync(config.ownerTokenPath);
@@ -83,7 +98,7 @@ export class Hub {
       };
       try {
         const result = mutation ? await this.store.transaction(perform) : await perform();
-        if (mutation && path !== '/nodes/lease') this.notify();
+        if (mutation && (path !== '/nodes/lease' || result.body.assignments.length || result.body.jobs.length)) this.notify();
         return result;
       } catch (error) {
         if (error instanceof MessagingError) throw new HubError(error.code.includes('CONFLICT') ? 409 : error.code === 'NOT_FOUND' ? 404 : 400, error.code, error.message);
@@ -114,7 +129,7 @@ export class Hub {
       await this.store.transaction(() => {
         const time = Date.now();
         for (const machine of this.store.list('machine')) {
-          if (machine.status === 'online' && time - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) {
+          if (machine.status !== 'offline' && time - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) {
             machine.status = 'offline'; this.store.put('machine', machine); this.emit('machine.offline', 'machine', machine); changed = true;
           }
         }
@@ -122,7 +137,8 @@ export class Hub {
           if (Date.parse(value.leaseExpiresAt) <= time) {
             value.status = 'queued'; value.attempt += 1;
             delete value.machineId; delete value.leaseExpiresAt; delete value.leaseId;
-            this.store.put(kind, value); this.emit(`${kind}.requeued`, kind, value, { attempt: value.attempt }); changed = true;
+            this.store.put(kind, value); this.emit(`${kind}.requeued`, kind, value, { attempt: value.attempt });
+            if (kind === 'assignment') this.observation.assignment(value); changed = true;
           }
         }
       });
@@ -136,7 +152,9 @@ export class Hub {
     if (!read) {
       // A machine can reacquire the same item. Its token alone cannot fence old results.
       if (!active(value) || Date.parse(value.leaseExpiresAt) <= Date.now() ||
-          !((typeof body.leaseId === 'string' && body.leaseId === value.leaseId) || (Number.isSafeInteger(body.attempt) && body.attempt === value.attempt))) {
+          (body.leaseId === undefined && body.attempt === undefined) ||
+          (body.leaseId !== undefined && body.leaseId !== value.leaseId) ||
+          (body.attempt !== undefined && body.attempt !== value.attempt)) {
         fail(409, 'LEASE_LOST', 'A current leaseId or attempt is required.');
       }
     }
@@ -153,6 +171,10 @@ export class Hub {
     this.store.put('engine-state', { id: run.id, state: result.state ?? null });
     for (const effect of result.effects) {
       object(effect.value, 'effect value');
+      if (effect.type === 'event') {
+        this.observation.interaction(effect.value.type, { id: effect.value.assignmentId ?? run.id, runId: run.id, projectId: run.projectId, nodeId: effect.value.data?.nodeId }, effect.value.data ?? {});
+        continue;
+      }
       if (effect.type === 'run') {
         requireValue(['running', 'paused', 'stopped', 'completed', 'failed'].includes(effect.value.status), 'Invalid engine run status.');
         run.status = effect.value.status;
@@ -177,6 +199,8 @@ export class Hub {
         }
       }
       this.store.put(kind, value); this.emit(`${kind}.updated`, kind, value, { status: value.status });
+      if (kind === 'assignment') this.observation.assignment(value);
+      if (kind === 'work-item' && previous && previous.nodeId !== value.nodeId) this.observation.interaction('workitem.moved', value, { workItemId: value.id, sourceNodeId: previous.nodeId, targetNodeId: value.nodeId });
     }
     if (['stopped', 'completed', 'failed'].includes(run.status)) this.cancelRunWork(run);
   }
@@ -184,6 +208,7 @@ export class Hub {
     for (const kind of ['assignment', 'job']) for (const value of this.store.list(kind, item => item.runId === run.id && (item.status === 'queued' || active(item)))) {
       value.status = 'cancelled'; delete value.leaseExpiresAt; delete value.leaseId;
       this.store.put(kind, value); this.emit(`${kind}.cancelled`, kind, value);
+      if (kind === 'assignment') this.observation.assignment(value);
     }
   }
   requirements(value) {
@@ -214,6 +239,7 @@ export class Hub {
         value.status = 'leased'; value.machineId = machine.id; value.leaseId = id('lease');
         value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
         this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
+        if (kind === 'assignment') this.observation.assignment(value);
         result[kind === 'assignment' ? 'assignments' : 'jobs'].push(value); remaining--; available--;
       }
     }
@@ -238,6 +264,12 @@ export class Hub {
         return reply(value, 201);
       }
     }
+    if (collection === 'projects' && entityId && action === 'workflows' && childId === 'drafts' && segments.length === 4 && method === 'POST') {
+      return reply(await this.workflows.requestDraft(this.store.need('project', entityId), body), 202);
+    }
+    if (collection === 'projects' && entityId && action === 'metrics' && segments.length === 3 && method === 'GET') {
+      return reply(await this.observation.metrics({ projectId: entityId, window: query.get('window') ?? '24h' }));
+    }
     if (collection === 'projects' && entityId && segments.length <= 3) {
       const project = this.store.need('project', entityId);
       if (!action && method === 'GET') return reply(project);
@@ -256,8 +288,8 @@ export class Hub {
         this.workflowFields(body);
         const validation = await this.engine.validate(body.graph);
         if (!validation.valid) fail(400, 'INVALID_WORKFLOW', 'Workflow graph is invalid.');
-        const workflow = { id: id('wf'), projectId: entityId, name: body.name, purpose: body.purpose ?? 'custom', version: 1, graph: body.graph, status: body.status ?? 'draft' };
-        this.store.put('workflow', workflow); this.emit('workflow.created', 'workflow', workflow); return reply(workflow, 201);
+        const workflow = this.workflows.save({ id: id('wf'), projectId: entityId, name: body.name, purpose: body.purpose ?? 'custom', graph: body.graph, authoredBy: { kind: 'user' }, ...(body.rationale ? { rationale: body.rationale } : {}) });
+        this.emit('workflow.created', 'workflow', workflow); return reply(workflow, 201);
       }
       if (action === 'merge-queue' && method === 'GET') return reply({ entries: this.store.list('merge-entry', value => value.projectId === entityId) });
     }
@@ -268,14 +300,19 @@ export class Hub {
         const next = { ...workflow, ...body }; this.workflowFields(next);
         const validation = await this.engine.validate(next.graph);
         if (!validation.valid) fail(400, 'INVALID_WORKFLOW', 'Workflow graph is invalid.');
-        const value = { ...workflow, name: next.name, purpose: next.purpose, graph: next.graph, status: next.status, version: workflow.version + 1 };
-        this.store.put('workflow', value); this.emit('workflow.updated', 'workflow', value); return reply(value);
+        const value = this.workflows.save({ id: workflow.id, projectId: workflow.projectId, name: next.name, purpose: next.purpose, graph: next.graph, authoredBy: { kind: 'user' }, parentVersion: workflow.version, ...(body.rationale ? { rationale: body.rationale } : {}) });
+        this.emit('workflow.updated', 'workflow', value); return reply(value);
       }
+      if (action === 'versions' && method === 'GET') return reply({ versions: this.workflows.versions(workflow.id) });
+      if (action === 'diff' && method === 'GET') return reply(await this.workflows.diff(workflow.id, query));
+      if (action === 'activate' && method === 'POST') return reply(this.workflows.activate(workflow, integer(body.version, 'version', 1)));
       if (action === 'validate' && method === 'POST') return reply(await this.engine.validate(body.graph ?? workflow.graph));
       if (action === 'runs' && method === 'POST') {
-        const run = { id: id('run'), projectId: workflow.projectId, workflowId: workflow.id, workflowVersion: workflow.version, status: 'running', startedAt: now() };
-        this.store.put('run', run); this.store.put('run-workflow', { id: run.id, workflow });
-        const result = await this.engine.startRun({ run, workflow, input: body.input ?? null }); this.applyEffects(run, result);
+        if (!workflow.activeVersion) fail(409, 'WORKFLOW_NOT_ACTIVE', 'Activate a workflow version before starting a run.');
+        const selected = this.workflows.version(workflow.id, workflow.activeVersion);
+        const run = { id: id('run'), projectId: workflow.projectId, workflowId: workflow.id, workflowVersion: selected.version, status: 'running', startedAt: now() };
+        this.store.put('run', run); this.store.put('run-workflow', { id: run.id, workflow: selected });
+        const result = await this.engine.startRun({ run, workflow: selected, input: body.input ?? null }); this.applyEffects(run, result);
         this.messaging.createChannel({ projectId: run.projectId, id: `run-${run.id}`, name: `Run ${run.id}` });
         this.emit('run.started', 'run', { ...run, runId: run.id }); return reply(run, 201);
       }
@@ -283,6 +320,7 @@ export class Hub {
     if (collection === 'runs' && entityId && segments.length <= 3) {
       const run = this.store.need('run', entityId);
       if (!action && method === 'GET') return reply(run);
+      if (action === 'metrics' && method === 'GET') return reply(await this.observation.metrics({ runId: run.id, window: query.get('window') ?? '24h' }));
       if (action === 'work-items' && method === 'GET') return reply({ workItems: this.store.list('work-item', item => item.runId === run.id) });
       if (action === 'assignments' && method === 'GET') return reply({ assignments: this.store.list('assignment', item => item.runId === run.id) });
       if (method === 'POST' && ['pause', 'resume', 'stop'].includes(action)) {
@@ -299,7 +337,7 @@ export class Hub {
     if (collection === 'work-items' && entityId && action === 'decision' && segments.length === 3 && method === 'POST') {
       const item = this.store.need('work-item', entityId); const run = this.store.need('run', item.runId);
       if (run.status !== 'running' || item.status !== 'blocked') fail(409, 'CONFLICT', 'Work item is not awaiting a decision in a running run.');
-      await this.engineEvent(run, { type: 'human.decision', workItemId: item.id, data: body }); this.emit('work-item.decision', 'work-item', item); return reply({ accepted: true });
+      await this.engineEvent(run, { type: 'human.decision', workItemId: item.id, data: body }); this.emit('work-item.decision', 'work-item', item); this.observation.interaction('gate.result', item, { nodeId: item.nodeId, decision: body.decision, source: 'human' }); return reply({ accepted: true });
     }
     if (path === '/machines' && method === 'GET') return reply({ machines: this.store.list('machine') });
     if (path === '/machines/enrollment-codes' && method === 'POST') {
@@ -310,7 +348,7 @@ export class Hub {
       this.store.event('enrollment.created', { kind: 'enrollment', id: codeId }); return reply({ id: codeId, code, expiresAt }, 201);
     }
     if (collection === 'machines' && entityId && action === 'drain' && segments.length === 3 && method === 'POST') {
-      const machine = this.store.need('machine', entityId); machine.status = 'draining'; this.store.put('machine', machine); this.emit('machine.draining', 'machine', machine); return reply(machine);
+      const machine = this.store.need('machine', entityId); machine.status = 'draining'; machine.drainRequested = true; this.store.put('machine', machine); this.emit('machine.draining', 'machine', machine); return reply(machine);
     }
     if (path === '/nodes/enroll' && method === 'POST') {
       nonblank(body.code, 'code'); nonblank(body.name, 'name', 200); nonblank(body.arch, 'arch', 100); nonblank(body.version, 'version', 100);
@@ -332,7 +370,7 @@ export class Hub {
       for (const key of ['agents', 'jobs']) integer(body.running[key], key, 0, 100000);
       if (body.providers !== undefined) strings(body.providers, 'providers');
       machine.capacity = { maxAgents: body.capacity.maxAgents, maxJobs: body.capacity.maxJobs }; machine.running = { agents: body.running.agents, jobs: body.running.jobs };
-      machine.providers = body.providers ?? machine.providers; machine.lastHeartbeatAt = now(); if (machine.status !== 'draining') machine.status = 'online';
+      machine.providers = body.providers ?? machine.providers; machine.lastHeartbeatAt = now(); machine.status = machine.drainRequested ? 'draining' : 'online';
       if (body.accounts !== undefined) {
         requireValue(Array.isArray(body.accounts) && body.accounts.length <= 1000, 'Invalid accounts snapshot.');
         const accounts = body.accounts.map(account => {
@@ -365,11 +403,25 @@ export class Hub {
       }
       if (action === 'events' && method === 'POST') {
         const value = this.fenced(kind, entityId, auth, body); object(body.data ?? {}, 'event data');
-        const types = kind === 'assignment' ? ['started', 'progress', 'usage', 'message', 'completed', 'failed'] : ['started', 'log', 'step', 'completed'];
+        const types = kind === 'assignment' ? ['started', 'progress', 'usage', 'message', 'completed', 'failed', 'workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'] : ['started', 'log', 'step', 'completed', 'gate.result'];
         requireValue(types.includes(body.type), 'Invalid work event type.');
         const data = body.data ?? {};
+        if (['workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'].includes(body.type)) {
+          requireValue(Boolean(value.runId), 'Interaction events require a run.');
+          this.observation.interaction(body.type, value, data);
+          return reply({ accepted: true, status: value.status });
+        }
+        if (body.type === 'message') {
+          requireValue(Boolean(value.runId), 'Messages require a run.');
+          nonblank(data.recipientRoleId, 'recipientRoleId', 200);
+          if (!(value.policy?.canMessage ?? []).includes(data.recipientRoleId)) fail(403, 'FORBIDDEN', 'Assignment policy does not allow messaging this role.');
+          const sent = this.messaging.send({ projectId: value.projectId, channelId: `run-${value.runId}`, senderRoleId: value.role, recipientRoleId: data.recipientRoleId, body: data.body,
+            idempotencyKey: body.idempotencyKey ?? data.idempotencyKey ?? id('msg') });
+          this.messageInteraction(value.runId, sent.message);
+          return reply({ accepted: true, message: sent.message });
+        }
         if (body.type === 'started') value.status = 'running';
-        if (kind === 'assignment' && body.type === 'usage') this.recordUsage(value, data);
+        if (kind === 'assignment' && body.type === 'usage') { this.recordUsage(value, data); if (data.accountId) { value.accountId = data.accountId; this.observation.assignment(value); } }
         if (kind === 'job' && body.type === 'log') {
           nonblank(data.chunk, 'log chunk', this.config.requestMaxBytes); this.store.put('job-log', { id: id('log'), jobId: value.id, chunk: data.chunk, at: now() }); value.logRef = `/api/v1/jobs/${value.id}/log`;
         }
@@ -381,6 +433,7 @@ export class Hub {
             value.result = { outcome: data.outcome, summary: data.summary };
             for (const key of ['branch', 'prUrl', 'headSha', 'threadRef']) if (data[key] !== undefined) value.result[key] = nonblank(data[key], key, 4096);
             value.status = data.outcome === 'success' ? 'succeeded' : 'failed';
+            if (value.architectRequestId) { value.result.graph = data.graph; value.result.rationale = data.rationale; }
           } else {
             requireValue(data.revision === value.revision, 'Job result must match the leased revision.');
             requireValue(['passed', 'failed', 'error', 'cancelled'].includes(data.status), 'Invalid final job status.');
@@ -390,6 +443,12 @@ export class Hub {
           delete value.leaseExpiresAt; delete value.leaseId;
         }
         this.store.put(kind, value);
+        if (final && value.architectRequestId) await this.workflows.completed(value, data);
+        if (kind === 'assignment' && (final || body.type === 'started')) this.observation.assignment(value);
+        if (final && value.runId) {
+          const graph = this.store.need('run-workflow', value.runId).workflow.graph;
+          if (kind === 'job' || graph.nodes.some(node => node.id === value.nodeId && node.type === 'review')) this.observation.interaction('gate.result', value, { nodeId: value.nodeId, result: kind === 'job' ? value.status : data.outcome, source: kind === 'job' ? 'ci' : 'review' });
+        }
         if (final && value.runId) await this.engineEvent(this.store.need('run', value.runId), { type: `${kind}.finished`, [kind === 'assignment' ? 'assignmentId' : 'jobId']: value.id, data, value });
         this.emit(`${kind}.${body.type}`, kind, value, data); return reply({ accepted: true, status: value.status });
       }
@@ -440,6 +499,15 @@ export class Hub {
     }
     return { groupBy, groups: [...groups.values()].sort((a, b) => a.key.localeCompare(b.key)), totals };
   }
+  messageInteraction(runId, message) {
+    if (this.store.db.prepare("SELECT 1 FROM events WHERE type='agent.messaged' AND json_extract(data,'$.messageId')=?").get(message.id)) return;
+    const run = this.store.need('run', runId);
+    const assignments = this.store.list('assignment', value => value.runId === runId);
+    const source = assignments.find(value => value.role === message.senderRoleId);
+    const target = assignments.find(value => value.role === message.recipientRoleId);
+    this.observation.interaction('agent.messaged', { id: message.id, projectId: run.projectId, runId, nodeId: source?.nodeId ?? message.senderRoleId, role: message.senderRoleId },
+      { messageId: message.id, sourceNodeId: source?.nodeId ?? message.senderRoleId, targetNodeId: target?.nodeId ?? message.recipientRoleId, senderRoleId: message.senderRoleId, recipientRoleId: message.recipientRoleId });
+  }
   messagingRoute(method, segments, body, query) {
     const [collection, projectId, channels, channelId, messages] = segments;
     if (collection !== 'projects' || !projectId) fail(404, 'NOT_FOUND', 'Messaging route not found.');
@@ -449,7 +517,14 @@ export class Hub {
       if (method === 'POST') return this.messaging.createChannel({ projectId, id: body.id, name: body.name });
     }
     if (channels === 'channels' && channelId && messages === 'messages' && segments.length === 5) {
-      if (method === 'POST') return this.messaging.send({ ...body, projectId, channelId });
+      if (method === 'POST') {
+        const result = this.messaging.send({ ...body, projectId, channelId });
+        if (channelId.startsWith('run-')) {
+          const runId = channelId.slice(4); const run = this.store.get('run', runId);
+          if (run?.projectId === projectId) this.messageInteraction(runId, result.message);
+        }
+        return result;
+      }
       if (method === 'GET') return this.messaging.readMessages({ projectId, channelId, recipientRoleId: query.get('recipientRoleId'), after: query.get('after'), before: query.get('before'), latest: query.get('latest') === 'true', limit: query.has('limit') ? Number(query.get('limit')) : 100 });
     }
     fail(404, 'NOT_FOUND', 'Messaging route not found.');

@@ -7,11 +7,20 @@ import { createWorkflowAdapter } from './engine/workflow-adapter.js';
 async function readBody(request, limit) {
   if (request.headers['content-length'] && Number(request.headers['content-length']) > limit) fail(413, 'REQUEST_TOO_LARGE', 'Request body exceeds the configured limit.');
   let size = 0; const chunks = [];
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > limit) fail(413, 'REQUEST_TOO_LARGE', 'Request body exceeds the configured limit.');
-    chunks.push(chunk);
-  }
+  await new Promise((resolve, reject) => {
+    const cleanup = () => { request.off('data', data); request.off('end', end); request.off('error', error); request.off('aborted', aborted); };
+    const error = error => { cleanup(); reject(error); };
+    const aborted = () => error(new HubError(400, 'REQUEST_ABORTED', 'Request was interrupted.'));
+    const end = () => { cleanup(); resolve(); };
+    const data = chunk => {
+      size += chunk.length;
+      if (size > limit) {
+        cleanup(); request.resume();
+        reject(new HubError(413, 'REQUEST_TOO_LARGE', 'Request body exceeds the configured limit.'));
+      } else chunks.push(chunk);
+    };
+    request.on('data', data); request.once('end', end); request.once('error', error); request.once('aborted', aborted);
+  });
   if (!size) return {};
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers['content-type'] ?? '')) fail(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json for request bodies.');
   let body;
