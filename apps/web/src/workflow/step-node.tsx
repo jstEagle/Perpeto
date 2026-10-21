@@ -137,7 +137,9 @@ function CompactCard({ data, selected }: { data: StepData; selected: boolean }) 
       style={{ width: COMPACT_W }}
     >
       {spec.input && <Handle type="target" position={Position.Left} id="in" className="port port-in" style={{ top: PORT_Y.in }} isConnectable={false} />}
-      <span className="gnode-label">{node.label || spec.title}</span>
+      <span className="gnode-label gnode-label-wrap" title={node.label || spec.title}>
+        {node.label || spec.title}
+      </span>
       {live && <span className="dot gnode-dot" role="img" aria-label="Live" />}
       <div className="gnode-foot">
         <div className="gnode-stat">{compactStatus(metrics, bottleneck, node.type)}</div>
@@ -199,8 +201,12 @@ function StepNodeView({ data, selected }: NodeProps<StepNodeType>) {
           <TypeGlyph type={node.type} />
         </span>
         <span className="gnode-text">
-          <span className="gnode-label">{node.label || spec.title}</span>
-          <span className="gnode-meta">{nodeSummary(node)}</span>
+          <span className="gnode-label" title={node.label || spec.title}>
+            {node.label || spec.title}
+          </span>
+          <span className="gnode-meta" title={nodeSummary(node)}>
+            {nodeSummary(node)}
+          </span>
         </span>
         <span className="visually-hidden">{TYPE_LABEL[node.type]}</span>
       </div>

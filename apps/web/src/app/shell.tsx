@@ -4,6 +4,8 @@ import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { Lockup, Spindle } from '../brand/logo';
 import { useHub, useResource } from './hub-context';
 import { LiveDot } from '../components/status';
+import { activeNav, FACTORY_NAV_ENTRIES, projectNavEntries } from './nav';
+import type { NavEntry, NavKey } from './nav';
 import {
   IconAccounts,
   IconClose,
@@ -22,26 +24,22 @@ import {
   IconWorkflow,
 } from '../components/icons';
 
-type NavItem = { key: string; to: string; label: string; icon: ComponentType<{ size?: number }>; match(path: string): boolean };
+type NavItem = NavEntry & { icon: ComponentType<{ size?: number }> };
 
-const projectNav = (projectId: string): NavItem[] => {
-  const base = `/projects/${projectId}`;
-  const rest = (p: string) => (p.startsWith(base) ? p.slice(base.length).replace(/\/$/, '') : null);
-  return [
-    { key: 'overview', to: base, label: 'Overview', icon: IconOverview, match: (p) => rest(p) === '' },
-    { key: 'workflows', to: `${base}/workflows`, label: 'Workflows', icon: IconWorkflow, match: (p) => !!rest(p)?.startsWith('/workflows') },
-    { key: 'runs', to: `${base}/runs`, label: 'Runs', icon: IconRuns, match: (p) => !!rest(p)?.startsWith('/runs') },
-    { key: 'work', to: `${base}/work`, label: 'Work', icon: IconWork, match: (p) => rest(p) === '/work' },
-    { key: 'messages', to: `${base}/messages`, label: 'Messages', icon: IconMessages, match: (p) => !!rest(p)?.startsWith('/messages') },
-    { key: 'merge', to: `${base}/merge-queue`, label: 'Merge queue', icon: IconMerge, match: (p) => !!rest(p)?.startsWith('/merge-queue') },
-  ];
+const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
+  overview: IconOverview,
+  workflows: IconWorkflow,
+  runs: IconRuns,
+  work: IconWork,
+  messages: IconMessages,
+  merge: IconMerge,
+  machines: IconMachines,
+  accounts: IconAccounts,
+  usage: IconUsage,
 };
-
-const FACTORY_NAV: NavItem[] = [
-  { key: 'machines', to: '/machines', label: 'Machines', icon: IconMachines, match: (p) => p.startsWith('/machines') },
-  { key: 'accounts', to: '/accounts', label: 'Accounts', icon: IconAccounts, match: (p) => p.startsWith('/accounts') },
-  { key: 'usage', to: '/usage', label: 'Usage', icon: IconUsage, match: (p) => p.startsWith('/usage') },
-];
+const withIcon = (e: NavEntry): NavItem => ({ ...e, icon: ICONS[e.key] });
+const projectNav = (projectId: string): NavItem[] => projectNavEntries(projectId).map(withIcon);
+const FACTORY_NAV: NavItem[] = FACTORY_NAV_ENTRIES.map(withIcon);
 
 const LAST_PROJECT = 'perpeto.lastProject';
 
@@ -68,11 +66,12 @@ function useCurrentProject(pathname: string): string | null {
 }
 
 function NavLink({ item, pathname, end, onNavigate }: { item: NavItem; pathname: string; end?: React.ReactNode; onNavigate?: () => void }) {
-  const current = item.match(pathname);
+  const current = activeNav(pathname) === item.key;
   const Icon = item.icon;
   return (
     // Paths come from the route table above; the cast only satisfies the typed router.
-    <Link to={item.to as '/'} className="nav-link" aria-current={current ? 'page' : undefined} onClick={onNavigate}>
+    // `exact` stops the router marking Overview current on every page below it; the section rule above decides.
+    <Link to={item.to as '/'} activeOptions={{ exact: true }} className="nav-link" aria-current={current ? 'page' : undefined} onClick={onNavigate}>
       <Icon size={18} />
       <span>{item.label}</span>
       {end}
@@ -100,7 +99,11 @@ function ProjectSwitcher({ projectId, onNavigate }: { projectId: string | null; 
 
 /** Live dot on Runs while a run is running; open entries beside Merge queue. */
 function useProjectSignals(projectId: string | null) {
-  const runs = useResource((api) => (projectId ? api.listRuns(projectId) : Promise.resolve([])), [projectId], (e) => !!projectId && e.projectId === projectId && e.type.startsWith('run'));
+  const runs = useResource(
+    (api) => (projectId ? api.listRuns(projectId) : Promise.resolve([])),
+    [projectId],
+    (e) => !!projectId && e.projectId === projectId && e.type.startsWith('run'),
+  );
   const queue = useResource(
     (api) => (projectId ? api.mergeQueue(projectId) : Promise.resolve([])),
     [projectId],
@@ -143,7 +146,11 @@ function Navigation({ pathname, projectId, onNavigate }: { pathname: string; pro
 function AccountRow({ onNavigate }: { onNavigate?: () => void }) {
   const { api, stream, settings } = useHub();
   // The hub reports who the owner token acts for; older hubs do not, so fall back to "Owner".
-  const overview = useResource((a) => a.overview(), [], (e) => e.subject.kind === 'owner');
+  const overview = useResource(
+    (a) => a.overview(),
+    [],
+    (e) => e.subject.kind === 'owner',
+  );
   const owner = overview.data?.owner;
   const host = settings ? new URL(settings.baseUrl).host : '';
   const state = stream === 'live' ? 'Live' : stream === 'polling' ? 'Polling' : stream === 'reconnecting' ? 'Reconnecting' : stream === 'closed' ? 'Disconnected' : 'Connecting';
@@ -177,7 +184,7 @@ function TabBar({ pathname, projectId, onMore }: { pathname: string; projectId: 
       {items.map((item) => {
         const Icon = item.icon;
         return (
-          <Link key={item.key} to={item.to as '/'} aria-current={item.match(pathname) ? 'page' : undefined}>
+          <Link key={item.key} to={item.to as '/'} activeOptions={{ exact: true }} aria-current={activeNav(pathname) === item.key ? 'page' : undefined}>
             <Icon size={22} />
             {item.label}
           </Link>

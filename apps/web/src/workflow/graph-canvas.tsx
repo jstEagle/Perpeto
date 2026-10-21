@@ -68,13 +68,16 @@ const SINGLE_ROW_COLUMNS = 10;
 /** The live map shrinks to fit down to this zoom, then scrolls sideways instead. */
 export const MIN_FIT = 0.75;
 /** Height of a compact card before it is measured. */
-const COMPACT_HEIGHT = 88;
+const COMPACT_HEIGHT = 100;
 /** Height limits for view and live canvases, and the room kept for padding, legend and toolbar. */
 const MIN_HEIGHT = 300;
 const MAX_HEIGHT = 900;
 const CANVAS_CHROME = 160;
 /** Space under the graph for the legend and toolbar when fitting. */
 const FIT_BOTTOM = 72;
+/** Space above and below a single-row drawing, inside the card. */
+const ROW_PAD = 28;
+const ROW_MIN_HEIGHT = 220;
 /** Above this many nodes, only nodes and edges in view are rendered, and far-out zoom draws compact nodes. */
 export const LARGE_GRAPH = 60;
 const TRAFFIC_WORD: Record<EdgeKind, [string, string]> = {
@@ -494,9 +497,9 @@ function CanvasInner(props: GraphCanvasProps) {
       // One row: fitted between MIN_FIT and 100 %, scrolling sideways from the left when it is still too wide.
       if (scaleRef.current) {
         const zoom = scaleRef.current;
-        const room = pane.height - FIT_BOTTOM - PANE_PAD;
+        const room = pane.height - FIT_BOTTOM - ROW_PAD;
         const x = scrollRef.current ? PANE_PAD - x1 * zoom : (pane.width - (x2 - x1) * zoom) / 2 - x1 * zoom;
-        void flow.setViewport({ x, y: PANE_PAD + Math.max(0, (room - (y2 - y1) * zoom) / 2) - y1 * zoom, zoom }, { duration });
+        void flow.setViewport({ x, y: ROW_PAD + Math.max(0, (room - ROW_PAD - (y2 - y1) * zoom) / 2) - y1 * zoom, zoom }, { duration });
         return;
       }
       // Never above 100 %: a small graph sits centred at full size. Room is kept below for the legend and toolbar.
@@ -658,7 +661,13 @@ function CanvasInner(props: GraphCanvasProps) {
   const scale = singleRow && bounds && paneWidth ? Math.max(MIN_FIT, Math.min(1, (paneWidth - 2 * PANE_PAD) / bounds.w)) : 1;
   scaleRef.current = singleRow ? scale : 0;
   boundsRef.current = bounds;
-  const height = mode === 'edit' || narrow || !bounds ? undefined : Math.round(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, bounds.h * scale + CANVAS_CHROME)));
+  // A single row sizes the card to the drawing: even space above it, and the legend's band below.
+  const height =
+    mode === 'edit' || narrow || !bounds
+      ? undefined
+      : singleRow
+        ? Math.round(Math.min(MAX_HEIGHT, Math.max(ROW_MIN_HEIGHT, bounds.h * scale + 2 * ROW_PAD + FIT_BOTTOM)))
+        : Math.round(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, bounds.h * scale + CANVAS_CHROME)));
   // When even MIN_FIT is too wide, the drawing is as wide as the graph and the canvas scrolls.
   const scrollWidth = singleRow && bounds && bounds.w * scale + 2 * PANE_PAD > paneWidth + 1 ? Math.round(bounds.w * scale + 2 * PANE_PAD) : undefined;
   scrollRef.current = !!scrollWidth;
