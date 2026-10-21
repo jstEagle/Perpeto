@@ -150,9 +150,15 @@ test('Atomic git publication rejects a racing PR head change', async t => {
 
 test('SQLite worker lease fences another process and permits recovery after expiry', async t => {
   const f = await fixture(t); const second = new MergeQueueStore(f.filename); t.after(() => second.close());
+  // Lease boundaries must not depend on how long SQLite or the scheduler takes.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const token = f.store.acquire('mq_test', 20);
   await assert.rejects(f.step(), { code: 'BUSY' });
-  await new Promise(resolve => setTimeout(resolve, 30));
+  t.mock.timers.tick(19);
+  f.store.assertLock('mq_test', token);
+  assert.throws(() => second.acquire('mq_test', 1000), { code: 'BUSY' });
+  t.mock.timers.tick(1);
+  assert.throws(() => f.store.assertLock('mq_test', token), { code: 'LEASE_LOST' });
   const next = second.acquire('mq_test', 1000);
   assert.throws(() => f.store.assertLock('mq_test', token), { code: 'LEASE_LOST' });
   second.release('mq_test', next); await f.step();

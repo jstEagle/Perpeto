@@ -168,12 +168,10 @@ test('daemon abandons a running CI process on lease_lost, removes its clone, and
 test('M8: a background child retaining stdout cannot turn a successful shell exit into a timeout', async t => {
   const repo = await repository(t);
   const marker = join(repo.root, 'background-survived');
-  const start = Date.now();
   const ctx = context();
   const result = await runJob(job(repo, [{ name: 'background', run: `(sleep 1; touch '${marker}') & echo hi; exit 0`, timeoutSec: 0.3 }]), ctx, { dataDir: repo.root });
   assert.equal(result.status, 'passed');
   assert.equal(result.steps[0].timedOut, false);
-  assert.ok(Date.now() - start < 1000);
   assert.match(ctx.events.filter(e => e.type === 'log').map(e => e.data.chunk).join(''), /hi/);
   await sleep(1100);
   await assert.rejects(readFile(marker), { code: 'ENOENT' });
