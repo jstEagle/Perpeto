@@ -77,7 +77,7 @@ test('ccswap file backups import both providers, retaining disabled metadata', t
   const before = fs.readFileSync(path.join(store, 'sequence.json'));
   const account = f.add('acct_claude', 'claudeAgent', { source: { kind: 'ccswap', storePath: store, slot: 2 } });
   assert.equal(account.status, 'disabled');
-  assert.throws(() => f.select('asg_disabled', 'claudeAgent'), code('NO_ELIGIBLE_ACCOUNT'));
+  assert.throws(() => f.select('asg_disabled', 'claudeAgent'), code('ACCOUNT_POOL_EXHAUSTED'));
   f.pool.enable({ accountId: account.id, idempotencyKey: f.next() });
   const config = f.pool.bindingFor(account.id).instance.config;
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(config.homePath, '.claude.json'))), {
@@ -97,9 +97,9 @@ test('LRU, reservations, idempotency, restart and release', t => {
   assert.throws(() => f.pool.select({ ...input, assignmentId: 'asg_changed' }), code('IDEMPOTENCY_CONFLICT'));
   f.advance(1000);
   assert.equal(f.select('asg_b').account.id, 'acct_b');
-  assert.throws(() => f.select('asg_c'), code('NO_ELIGIBLE_ACCOUNT'));
+  assert.throws(() => f.select('asg_c'), code('ACCOUNT_POOL_EXHAUSTED'));
   const reopened = new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now });
-  assert.throws(() => reopened.select({ provider: 'codex', assignmentId: 'asg_d', idempotencyKey: 'after-restart' }), code('NO_ELIGIBLE_ACCOUNT'));
+  assert.throws(() => reopened.select({ provider: 'codex', assignmentId: 'asg_d', idempotencyKey: 'after-restart' }), code('ACCOUNT_POOL_EXHAUSTED'));
   f.release('asg_a');
   assert.throws(() => f.pool.select(input), code('RESERVATION_ENDED'));
   assert.equal(f.select('asg_c').account.id, 'acct_a');
@@ -160,7 +160,7 @@ test('concurrent calls and second handles cannot select a disabled account', asy
   ]);
   assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
   assert.equal(results.find(result => result.status === 'fulfilled').value.account.id, 'acct_b');
-  assert.equal(results.find(result => result.status === 'rejected').reason.code, 'NO_ELIGIBLE_ACCOUNT');
+  assert.equal(results.find(result => result.status === 'rejected').reason.code, 'ACCOUNT_POOL_EXHAUSTED');
   f.pool.disable({ accountId: 'acct_b', idempotencyKey: f.next() });
   assert.throws(() => f.pool.bindingFor('acct_b'), code('ACCOUNT_UNAVAILABLE'));
 });
@@ -263,7 +263,7 @@ test('cross-process assignment races reserve each account at most once', async t
   const run = id => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', `
       import { AccountPool } from ${JSON.stringify(modulePath)};
-      try { const pool = new AccountPool({nodeDataDir:${JSON.stringify(f.nodeDataDir)},machineId:'mch_fixture'}); console.log(JSON.stringify(pool.select({provider:'codex', assignmentId:${JSON.stringify(id)},idempotencyKey:${JSON.stringify(id)}}).account.id)); }
+      try { const pool = new AccountPool({nodeDataDir:${JSON.stringify(f.nodeDataDir)},machineId:'mch_fixture',clock:()=>${f.now()}}); console.log(JSON.stringify(pool.select({provider:'codex', assignmentId:${JSON.stringify(id)},idempotencyKey:${JSON.stringify(id)}}).account.id)); }
       catch (error) { console.log(JSON.stringify(error.code)); }
     `], { stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', error = '';
@@ -274,7 +274,7 @@ test('cross-process assignment races reserve each account at most once', async t
   });
   const results = await Promise.all([run('asg_process_a'), run('asg_process_b')]);
   assert.equal(results.filter(result => result === 'acct_b').length, 1);
-  assert.ok(results.every(result => ['acct_b', 'NO_ELIGIBLE_ACCOUNT', 'ACCOUNT_POOL_BUSY'].includes(result)));
+  assert.ok(results.every(result => ['acct_b', 'ACCOUNT_POOL_EXHAUSTED', 'ACCOUNT_POOL_BUSY'].includes(result)));
 });
 
 test('native Codex error notifications and completed-turn error unions are recognized', () => {
@@ -348,4 +348,76 @@ test('startup compacts legacy receipts even after the old registry read limit', 
   const reopened = new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now });
   assert.equal(reopened.snapshot().length, 1);
   assert.ok(fs.statSync(file).size < 1024 * 1024);
+});
+
+test('pooled exhaustion is explicit while an unenrolled provider remains distinguishable', t => {
+  const f = fixture(t);
+  assert.throws(() => f.select('asg_none'), code('NO_ELIGIBLE_ACCOUNT'));
+  f.add('acct_a');
+  f.select('asg_held');
+  assert.throws(() => f.select('asg_exhausted'), code('ACCOUNT_POOL_EXHAUSTED'));
+  f.release('asg_held');
+  f.pool.disable({ accountId: 'acct_a', idempotencyKey: f.next() });
+  assert.throws(() => f.select('asg_disabled'), code('ACCOUNT_POOL_EXHAUSTED'));
+});
+
+test('reservation expiry recovers crash leaks and fences stale select, release and renew', t => {
+  const f = fixture(t, { reservationLeaseMs: 1000 });
+  f.add('acct_a');
+  const input = { provider: 'codex', assignmentId: 'asg_a', idempotencyKey: 'first-selection' };
+  const first = f.pool.select(input);
+  assert.equal(first.reservation.expiresAt, new Date(f.now() + 1000).toISOString());
+  const reopened = new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now, reservationLeaseMs: 1000 });
+  assert.deepEqual(reopened.reservations(), [first.reservation]);
+  f.advance(1000);
+  assert.throws(() => reopened.select(input), code('RESERVATION_ENDED'));
+  const second = f.select('asg_a');
+  assert.notEqual(first.reservation.id, second.reservation.id);
+  assert.throws(() => f.pool.select(input), code('RESERVATION_ENDED'));
+  assert.throws(() => f.pool.release({ assignmentId: 'asg_a', reservationId: first.reservation.id, idempotencyKey: f.next() }), code('RESERVATION_ENDED'));
+  assert.throws(() => f.pool.renewReservation({ assignmentId: 'asg_a', reservationId: first.reservation.id, idempotencyKey: f.next() }), code('RESERVATION_ENDED'));
+  assert.deepEqual(f.pool.reservations(), [second.reservation]);
+  assert.throws(() => f.pool.bindingFor('acct_a', { reservationId: first.reservation.id }), code('RESERVATION_ENDED'));
+  f.advance(1000);
+  assert.deepEqual(f.pool.reservations(), []);
+  assert.throws(() => f.pool.bindingFor('acct_a', { reservationId: second.reservation.id }), code('RESERVATION_ENDED'));
+});
+
+test('reservation renewal is durable and retry-safe; reconciliation preserves only live tokens', t => {
+  const f = fixture(t, { reservationLeaseMs: 1000 });
+  f.add('acct_a'); f.add('acct_b');
+  const first = f.select('asg_a');
+  const second = f.select('asg_b');
+  f.advance(500);
+  const input = { assignmentId: 'asg_a', reservationId: first.reservation.id, idempotencyKey: 'renew-once' };
+  const renewed = f.pool.renewReservation(input);
+  assert.equal(renewed.expiresAt, new Date(f.now() + 1000).toISOString());
+  f.advance(400);
+  assert.deepEqual(f.pool.renewReservation(input), renewed);
+  const reconciled = f.pool.reconcileReservations({ activeReservationIds: [renewed.id], idempotencyKey: f.next() });
+  assert.deepEqual(reconciled.released, [second.reservation.id]);
+  assert.deepEqual(reconciled.reservations, [renewed]);
+  const reopened = new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now });
+  assert.deepEqual(reopened.reservations(), [renewed]);
+  assert.equal(f.select('asg_c').account.id, 'acct_b');
+  f.advance(600);
+  assert.throws(() => f.pool.renewReservation(input), code('RESERVATION_ENDED'));
+  assert.equal(f.select('asg_d').account.id, 'acct_a');
+});
+
+test('legacy reservations receive a finite lease once during migration', t => {
+  const f = fixture(t, { reservationLeaseMs: 1000 });
+  f.add('acct_a');
+  const file = path.join(f.nodeDataDir, 'accounts/registry.json');
+  const state = JSON.parse(fs.readFileSync(file));
+  state.reservations.asg_legacy = 'acct_a';
+  write(file, JSON.stringify(state));
+  const reopen = () => new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now, reservationLeaseMs: 1000 });
+  const migrated = reopen().reservations()[0];
+  assert.equal(migrated.assignmentId, 'asg_legacy');
+  f.advance(500);
+  assert.deepEqual(reopen().reservations(), [migrated]);
+  f.advance(500);
+  assert.deepEqual(reopen().reservations(), []);
+  assert.equal(f.select('asg_recovered').account.id, 'acct_a');
 });

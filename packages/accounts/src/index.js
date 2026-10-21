@@ -23,9 +23,10 @@ const canonical = value => JSON.stringify(value, (_, item) => item && typeof ite
 export class AccountPool {
   #root; #file; #lock; #machineId; #clock; #config;
 
-  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,maxReceipts?:number,receiptRetentionMs?:number,clock?:()=>number}} options */
+  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,maxReceipts?:number,receiptRetentionMs?:number,reservationLeaseMs?:number,clock?:()=>number}} options */
   constructor({ nodeDataDir, machineId, selection = 'lru', defaultCooldownMs = 300_000,
-    maxConcurrentPerAccount = 1, maxReceipts = 512, receiptRetentionMs = 86_400_000, clock = Date.now }) {
+    maxConcurrentPerAccount = 1, maxReceipts = 512, receiptRetentionMs = 86_400_000,
+    reservationLeaseMs = 300_000, clock = Date.now }) {
     guarded(() => {
       if (typeof nodeDataDir !== 'string' || !path.isAbsolute(nodeDataDir)) fail('INVALID_PATH');
       this.#machineId = identifier(machineId);
@@ -33,6 +34,7 @@ export class AccountPool {
           || defaultCooldownMs <= 0 || !Number.isSafeInteger(maxConcurrentPerAccount)
           || maxConcurrentPerAccount < 1 || !Number.isSafeInteger(maxReceipts) || maxReceipts < 1
           || maxReceipts > 1024 || !Number.isSafeInteger(receiptRetentionMs) || receiptRetentionMs < 1
+          || !Number.isSafeInteger(reservationLeaseMs) || reservationLeaseMs < 1
           || typeof clock !== 'function') fail('INVALID_CONFIG');
       privateDirectory(nodeDataDir);
       this.#root = path.join(fs.realpathSync(nodeDataDir), 'accounts');
@@ -41,11 +43,13 @@ export class AccountPool {
       this.#file = path.join(this.#root, 'registry.json');
       this.#lock = path.join(this.#root, '.lock');
       this.#clock = clock;
-      this.#config = { selection, defaultCooldownMs, maxConcurrentPerAccount, maxReceipts, receiptRetentionMs };
+      this.#config = { selection, defaultCooldownMs, maxConcurrentPerAccount, maxReceipts, receiptRetentionMs, reservationLeaseMs };
       this.#locked(() => {
         if (fs.existsSync(this.#file)) {
           const state = this.#read();
-          this.#compact(state, this.#now());
+          const now = this.#now();
+          this.#compact(state, now);
+          this.#expire(state, now);
           this.#write(state);
         }
         else this.#write({ version: 1, machineId, accounts: [], selectionSequence: 0, reservations: {}, receipts: {} });
@@ -55,7 +59,8 @@ export class AccountPool {
 
   #now() {
     const now = this.#clock();
-    if (!Number.isSafeInteger(now) || now < 0 || now + this.#config.defaultCooldownMs >= 8.64e15) fail('INVALID_CLOCK');
+    if (!Number.isSafeInteger(now) || now < 0
+        || now + Math.max(this.#config.defaultCooldownMs, this.#config.reservationLeaseMs) >= 8.64e15) fail('INVALID_CLOCK');
     return now;
   }
 
@@ -76,6 +81,27 @@ export class AccountPool {
     return state;
   }
   #write(state) { writePrivate(this.#file, `${JSON.stringify(state)}\n`); }
+  #expire(state, now) {
+    for (const [assignmentId, value] of Object.entries(state.reservations)) {
+      // Persist this migration on startup so reopening never extends a legacy lease.
+      const reservation = typeof value === 'string'
+        ? state.reservations[assignmentId] = this.#reservation(assignmentId, value, now) : value;
+      if (!reservation || reservation.assignmentId !== assignmentId
+          || !Number.isFinite(Date.parse(reservation.expiresAt))) fail('INVALID_REGISTRY');
+      if (Date.parse(reservation.expiresAt) <= now) delete state.reservations[assignmentId];
+    }
+  }
+  #reservation(assignmentId, accountId, now) {
+    return { id: `res_${randomUUID().replaceAll('-', '')}`, assignmentId, accountId,
+      expiresAt: new Date(now + this.#config.reservationLeaseMs).toISOString() };
+  }
+  #held(state, assignmentId, reservationId) {
+    identifier(assignmentId);
+    identifier(reservationId);
+    const reservation = Object.hasOwn(state.reservations, assignmentId) ? state.reservations[assignmentId] : undefined;
+    if (!reservation || reservation.id !== reservationId) fail('RESERVATION_ENDED');
+    return reservation;
+  }
   #compact(state, now) {
     const entries = Object.entries(state.receipts);
     let bytes = 0;
@@ -139,6 +165,7 @@ export class AccountPool {
       const state = this.#read();
       const now = this.#now();
       this.#compact(state, now);
+      this.#expire(state, now);
       const signature = createHash('sha256').update(canonical({ operation, input })).digest('hex');
       const receipt = Object.hasOwn(state.receipts, idempotencyKey) ? state.receipts[idempotencyKey] : undefined;
       if (receipt) {
@@ -175,7 +202,8 @@ export class AccountPool {
   /** Atomically reserve capacity before returning a local-only T3 binding. */
   select({ provider, assignmentId, idempotencyKey }) {
     const replay = (state, result) => {
-      if (state.reservations[assignmentId] !== result?.account?.id) fail('RESERVATION_ENDED');
+      if (!result?.reservation) fail('RESERVATION_ENDED');
+      this.#held(state, assignmentId, result.reservation.id);
       this.#usable(this.#record(state, result.account.id), this.#now());
     };
     return this.#mutate('select', { provider, assignmentId }, idempotencyKey, (state, now) => {
@@ -184,10 +212,10 @@ export class AccountPool {
       const reserved = Object.hasOwn(state.reservations, assignmentId) ? state.reservations[assignmentId] : undefined;
       let record;
       if (reserved) {
-        record = this.#record(state, reserved);
+        record = this.#record(state, reserved.accountId);
         if (record.provider !== provider) fail('ASSIGNMENT_CONFLICT');
       } else {
-        const counts = Object.values(state.reservations);
+        const counts = Object.values(state.reservations).map(reservation => reservation.accountId);
         const headroom = account => Math.min(100, ...Object.values(account.windows).map(window =>
           window.resetsAt && Date.parse(window.resetsAt) <= now ? 100 : 100 - window.usedPercent));
         record = state.accounts.filter(account => account.provider === provider
@@ -196,21 +224,60 @@ export class AccountPool {
           .sort((a, b) => (this.#config.selection === 'headroom' ? headroom(b) - headroom(a) : 0)
             || (a.lastUsedOrder ?? 0) - (b.lastUsedOrder ?? 0) || a.id.localeCompare(b.id))[0];
       }
-      if (!record) fail('NO_ELIGIBLE_ACCOUNT');
+      if (!record) fail(state.accounts.some(account => account.provider === provider)
+        ? 'ACCOUNT_POOL_EXHAUSTED' : 'NO_ELIGIBLE_ACCOUNT');
       this.#usable(record, now);
-      Object.defineProperty(state.reservations, assignmentId, { value: record.id, enumerable: true, writable: true, configurable: true });
+      const reservation = reserved ?? this.#reservation(assignmentId, record.id, now);
+      Object.defineProperty(state.reservations, assignmentId, { value: reservation, enumerable: true, writable: true, configurable: true });
       record.lastUsedAt = new Date(now).toISOString();
       record.lastUsedOrder = ++state.selectionSequence;
-      return { account: this.#account(record, now), binding: this.#binding(record) };
+      return { account: this.#account(record, now), binding: this.#binding(record), reservation };
     }, replay);
   }
 
-  release({ assignmentId, idempotencyKey }) {
-    return this.#mutate('release', { assignmentId }, idempotencyKey, state => {
+  release({ assignmentId, reservationId, idempotencyKey }) {
+    return this.#mutate('release', { assignmentId, reservationId }, idempotencyKey, state => {
       identifier(assignmentId);
+      if (reservationId !== undefined) this.#held(state, assignmentId, reservationId);
       const released = Object.hasOwn(state.reservations, assignmentId);
       delete state.reservations[assignmentId];
       return { released };
+    });
+  }
+
+  /** Local-only lease metadata, for reconciliation against durable assignment attempts. */
+  reservations() {
+    return guarded(() => this.#locked(() => {
+      const state = this.#read();
+      this.#expire(state, this.#now());
+      this.#compact(state, this.#now());
+      this.#write(state);
+      return structuredClone(Object.values(state.reservations));
+    }));
+  }
+
+  renewReservation({ assignmentId, reservationId, idempotencyKey }) {
+    const replay = state => { this.#held(state, assignmentId, reservationId); };
+    return this.#mutate('renew', { assignmentId, reservationId }, idempotencyKey, (state, now) => {
+      const reservation = this.#held(state, assignmentId, reservationId);
+      reservation.expiresAt = new Date(now + this.#config.reservationLeaseMs).toISOString();
+      return { ...reservation };
+    }, replay);
+  }
+
+  /** Only call after establishing which local attempts still own their live leases. */
+  reconcileReservations({ activeReservationIds, idempotencyKey }) {
+    return this.#mutate('reconcile', { activeReservationIds }, idempotencyKey, state => {
+      if (!Array.isArray(activeReservationIds)) fail('INVALID_INPUT');
+      for (const id of activeReservationIds) identifier(id);
+      const active = new Set(activeReservationIds);
+      const released = [];
+      for (const [assignmentId, reservation] of Object.entries(state.reservations)) {
+        if (active.has(reservation.id)) continue;
+        delete state.reservations[assignmentId];
+        released.push(reservation.id);
+      }
+      return { released, reservations: Object.values(state.reservations) };
     });
   }
 
@@ -263,9 +330,13 @@ export class AccountPool {
   }
 
   /** Recheck eligibility immediately before launching a new thread. Local only. */
-  bindingFor(accountId) {
+  bindingFor(accountId, { reservationId } = {}) {
     return guarded(() => this.#locked(() => {
-      const record = this.#record(this.#read(), accountId);
+      const state = this.#read();
+      this.#expire(state, this.#now());
+      if (reservationId !== undefined && !Object.values(state.reservations)
+        .some(reservation => reservation.id === reservationId && reservation.accountId === accountId)) fail('RESERVATION_ENDED');
+      const record = this.#record(state, accountId);
       this.#usable(record, this.#now());
       return this.#binding(record);
     }));
