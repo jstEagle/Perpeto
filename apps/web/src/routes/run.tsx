@@ -580,4 +580,3 @@ function AddInputDialog({ open, onClose, runId }: { open: boolean; onClose(): vo
     </Dialog>
   );
 }
-
