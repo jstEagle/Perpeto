@@ -16,6 +16,7 @@ struct WorkflowsScreen: View {
     @State private var editing: Workflow?
     @State private var selection: GraphSelection?
     @FocusState private var promptFocused: Bool
+    @Environment(\.compactLayout) private var compact
 
     private var workflowId: String? {
         if composingNew { return nil }
@@ -61,7 +62,9 @@ struct WorkflowsScreen: View {
                         .buttonStyle(.perpetoPrimary)
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftProgress?.stage.isWorking == true)
-                    Text("⌘↩").font(PerpetoFont.mono()).foregroundStyle(PerpetoColor.muted)
+                    if !Platform.isPhoneOrPad {
+                        Text("⌘↩").font(PerpetoFont.mono()).foregroundStyle(PerpetoColor.muted)
+                    }
                 }
                 if let progress = draftProgress {
                     ArchitectProgressView(progress: progress) {
@@ -97,13 +100,13 @@ struct WorkflowsScreen: View {
         let active = state.activeVersion(of: id)
         let pending = state.pendingDraft(of: id)
         let shown = viewingVersion.flatMap { v in versions.first { $0.version == v } } ?? pending ?? active ?? versions.last
-        VStack(alignment: .leading, spacing: 0) {
+        let inner = VStack(alignment: .leading, spacing: 0) {
             header(id: id, active: active)
-                .padding(.horizontal, PerpetoSpacing.x(6))
+                .padding(.horizontal, PerpetoSpacing.x(compact ? 4 : 6))
                 .padding(.top, PerpetoSpacing.x(5))
                 .padding(.bottom, PerpetoSpacing.x(4))
             askBar(id: id, name: active?.name ?? shown?.name ?? "this workflow")
-                .padding(.horizontal, PerpetoSpacing.x(6))
+                .padding(.horizontal, PerpetoSpacing.x(compact ? 4 : 6))
                 .padding(.bottom, PerpetoSpacing.x(4))
             if let progress = draftProgress {
                 ArchitectProgressView(progress: progress) {
@@ -116,26 +119,41 @@ struct WorkflowsScreen: View {
             if let shown {
                 let base = shown.status == .active ? nil : (active ?? shown.parentVersion.flatMap { p in versions.first { $0.version == p } })
                 let diff = base.map { WorkflowDiff(from: $0, to: shown) }
-                HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
-                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
-                        if let diff, let base {
-                            DiffSummary(diff: diff, baseVersion: base.version)
-                        }
-                        GraphViewport(graph: shown.graph, mode: diff.map { .diff($0) } ?? .view, selection: $selection)
+                let mapColumn = VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
+                    if let diff, let base {
+                        DiffSummary(diff: diff, baseVersion: base.version)
                     }
-                    VersionPanel(
-                        store: store, shown: shown, active: active, versions: versions, diff: diff,
-                        select: { viewingVersion = $0 },
-                        activate: { Task { await store.activate(shown); viewingVersion = nil } },
-                        askForChanges: { promptFocused = true },
-                        editByHand: { editing = shown },
-                        startRun: { Task { await store.startRun(projectId: project.id, workflowId: id) ; navigator.route = .project(project.id, .runs) } },
-                        selection: selection, graph: shown.graph)
-                        .frame(width: 340)
+                    GraphViewport(graph: shown.graph, mode: diff.map { .diff($0) } ?? .view, selection: $selection)
                 }
-                .padding(.horizontal, PerpetoSpacing.x(6))
-                .padding(.bottom, PerpetoSpacing.x(6))
+                let panel = VersionPanel(
+                    store: store, shown: shown, active: active, versions: versions, diff: diff,
+                    select: { viewingVersion = $0 },
+                    activate: { Task { await store.activate(shown); viewingVersion = nil } },
+                    askForChanges: { promptFocused = true },
+                    editByHand: { editing = shown },
+                    startRun: { Task { await store.startRun(projectId: project.id, workflowId: id) ; navigator.route = .project(project.id, .runs) } },
+                    selection: selection, graph: shown.graph, scrolls: !compact)
+                if compact {
+                    // iPhone: proposal first (what changed and why, Activate,
+                    // Ask for changes), then the drawing.
+                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
+                        panel
+                        mapColumn.frame(height: 420)
+                    }
+                    .padding(.horizontal, PerpetoSpacing.x(4))
+                    .padding(.bottom, PerpetoSpacing.x(4))
+                } else {
+                    HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
+                        mapColumn
+                        panel.frame(width: 340)
+                    }
+                    .padding(.horizontal, PerpetoSpacing.x(6))
+                    .padding(.bottom, PerpetoSpacing.x(6))
+                }
             }
+        }
+        Group {
+            if compact { ScrollView { inner } } else { inner }
         }
         .onChange(of: navigator.composeWorkflowRequest) { _, _ in composingNew = true }
         .onChange(of: navigator.editWorkflowRequest) { _, _ in editing = shown }
@@ -330,9 +348,26 @@ struct VersionPanel: View {
     var selection: GraphSelection?
     var graph: WorkflowGraph
 
+    /// The hub's workflow package is the authority; local checks show until it answers.
+    @State private var hubValidation: (version: Int, result: ValidationResult)?
+
+    /// False when a parent already scrolls, as on iPhone.
+    var scrolls = true
+
     var body: some View {
-        let validation = WorkflowValidator.validate(shown.graph)
-        ScrollView {
+        let validation = hubValidation.flatMap { $0.version == shown.version ? $0.result : nil } ?? WorkflowValidator.validate(shown.graph)
+        Group {
+            if scrolls { ScrollView { content(validation) } } else { content(validation) }
+        }
+        .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.panel))
+        .overlay(RoundedRectangle(cornerRadius: PerpetoRadius.panel).strokeBorder(PerpetoColor.border))
+        .task(id: "\(shown.id)@\(shown.version)") {
+            let result = await store.validate(shown)
+            hubValidation = (shown.version, result)
+        }
+    }
+
+    private func content(_ validation: ValidationResult) -> some View {
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
                 HStack(spacing: PerpetoSpacing.x(2)) {
                     Text(shown.status == .draft && shown.version > (active?.version ?? 0) ? "Version \(shown.version) proposal" : "Version \(shown.version)")
@@ -366,9 +401,6 @@ struct VersionPanel: View {
                 history
             }
             .padding(PerpetoSpacing.x(4))
-        }
-        .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.panel))
-        .overlay(RoundedRectangle(cornerRadius: PerpetoRadius.panel).strokeBorder(PerpetoColor.border))
     }
 
     private func statusLabel(_ w: Workflow) -> (String, StatusTone) {

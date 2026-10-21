@@ -36,15 +36,25 @@ public struct FigureStrip: View {
     var figures: [Figure]
     public init(_ figures: [Figure]) { self.figures = figures }
 
+    @Environment(\.compactLayout) private var compact
+
     public var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            ForEach(Array(figures.enumerated()), id: \.offset) { index, figure in
-                if index > 0 { Rule(vertical: true).padding(.horizontal, PerpetoSpacing.x(4)) }
-                figure
+        if compact {
+            // Two stable columns with ruled rows rather than squeezed figures.
+            LazyVGrid(columns: [GridItem(.flexible(), alignment: .topLeading), GridItem(.flexible(), alignment: .topLeading)], alignment: .leading, spacing: PerpetoSpacing.x(4)) {
+                ForEach(Array(figures.enumerated()), id: \.offset) { _, figure in figure }
             }
+            .panel(padding: PerpetoSpacing.x(4))
+        } else {
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(Array(figures.enumerated()), id: \.offset) { index, figure in
+                    if index > 0 { Rule(vertical: true).padding(.horizontal, PerpetoSpacing.x(4)) }
+                    figure
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .panel(padding: PerpetoSpacing.x(4))
         }
-        .fixedSize(horizontal: false, vertical: true)
-        .panel(padding: PerpetoSpacing.x(4))
     }
 }
 

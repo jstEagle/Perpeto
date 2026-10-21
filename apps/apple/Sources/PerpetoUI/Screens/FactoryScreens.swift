@@ -19,6 +19,7 @@ struct TablePanel<Content: View>: View {
 
 struct MachinesScreen: View {
     var store: FactoryStore
+    @Environment(\.compactLayout) private var compact
     @State private var selection: Machine.ID?
     @State private var enrollment: EnrollmentCode?
     @State private var confirmDrain: Machine?
@@ -42,6 +43,18 @@ struct MachinesScreen: View {
                     Button("Enroll machine") { Task { enrollment = await store.enrollmentCode() } }.buttonStyle(.perpetoPrimary)
                 }
                 .panel()
+            } else if compact {
+                // Stacked rows instead of a table squeezed to one column.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
+                            if index > 0 { Rule() }
+                            MachineRow(machine: machine) { confirmDrain = machine }
+                                .padding(.vertical, PerpetoSpacing.x(3))
+                        }
+                    }
+                    .panel()
+                }
             } else {
                 TablePanel {
                     Table(machines, selection: $selection) {
@@ -75,7 +88,7 @@ struct MachinesScreen: View {
                 }
             }
         }
-        .padding(PerpetoSpacing.x(6))
+        .screenPadding()
         .sheet(item: Binding(get: { enrollment.map(EnrollmentSheet.Item.init) }, set: { enrollment = $0?.code })) { item in
             EnrollmentSheet(code: item.code, isDemo: store.isDemo)
         }
@@ -83,6 +96,44 @@ struct MachinesScreen: View {
             Button("Drain machine") { if let m = confirmDrain { Task { await store.drain(m) } } }
         } message: {
             Text("It stops taking new assignments and jobs. Work already running finishes first.")
+        }
+    }
+}
+
+/// One machine as a stacked row for narrow screens.
+struct MachineRow: View {
+    var machine: Machine
+    var drain: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(machine.name).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
+                Spacer()
+                StatusLabel(machine.status.label)
+            }
+            Mono("\(machine.os) · \(machine.arch) · v\(machine.version)")
+            Grid(alignment: .leading, horizontalSpacing: PerpetoSpacing.x(4), verticalSpacing: PerpetoSpacing.x(1.5)) {
+                GridRow {
+                    Text("Agents").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                    CapacityCell(used: machine.running.agents, capacity: machine.capacity.maxAgents)
+                }
+                GridRow {
+                    Text("CI jobs").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                    CapacityCell(used: machine.running.jobs, capacity: machine.capacity.maxJobs)
+                }
+                GridRow {
+                    Text("Providers").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                    Text(machine.providers.map(Format.provider).joined(separator: ", ")).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink)
+                }
+                GridRow {
+                    Text("Heartbeat").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                    Text(Format.relative(machine.lastHeartbeatAt)).font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.muted)
+                }
+            }
+        }
+        .contextMenu {
+            if machine.status == .online { Button("Drain \(machine.name)…", action: drain) }
         }
     }
 }

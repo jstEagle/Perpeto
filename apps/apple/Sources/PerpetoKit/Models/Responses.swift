@@ -40,7 +40,10 @@ public struct UsageGroup: Codable, Hashable, Identifiable, Sendable {
     public var outputTokens: Int
     public var cacheReadTokens: Int
     public var cacheWriteTokens: Int
+    /// The hub reports 0 when providers gave no cost.
     public var costUsd: Double?
+    /// Usage records in the group.
+    public var records: Int?
 
     public var id: String { key }
     public var totalTokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens }
@@ -96,25 +99,33 @@ public struct EnrollmentCode: Codable, Hashable, Sendable {
     }
 }
 
-/// `GET /health`
+/// `GET /health`: `{ status: "ok", version }`
 public struct HubHealth: Codable, Hashable, Sendable {
-    public var ok: Bool?
+    public var status: String?
     public var version: String?
 }
 
-/// `POST /projects/:id/workflows/drafts` returns the architect assignment to follow.
-public struct DraftRequestResult: Codable, Hashable, Sendable {
-    public var assignment: Assignment?
-    public var assignmentId: String?
-    public var workflowId: String?
+/// `{ accepted: true }`, returned by decisions and run inputs.
+public struct Accepted: Codable, Hashable, Sendable {
+    public var accepted: Bool
+}
 
-    public var followAssignmentId: String? { assignment?.id ?? assignmentId }
+/// `GET /events`: one page in ascending `seq` order. `nextCursor` is the last
+/// returned `seq`, or the requested `after` when the page is empty.
+public struct EventPage: Codable, Hashable, Sendable {
+    public var events: [HubEvent]
+    public var nextCursor: Int?
+}
 
-    public init(assignment: Assignment? = nil, assignmentId: String? = nil, workflowId: String? = nil) {
-        self.assignment = assignment
-        self.assignmentId = assignmentId
-        self.workflowId = workflowId
+/// `GET /jobs/:id/log`
+public struct JobLog: Codable, Hashable, Sendable {
+    public struct Chunk: Codable, Hashable, Sendable {
+        public var chunk: String
+        public var at: Date?
     }
+    public var jobId: String
+    public var chunks: [Chunk]
+    public var text: String { chunks.map(\.chunk).joined() }
 }
 
 // MARK: - Messaging (@perpeto/messaging model, served under /api/v1/messaging)
@@ -162,10 +173,12 @@ public struct MessagePage: Codable, Hashable, Sendable {
     }
 }
 
-/// Decodes a list from a bare array or from an object holding the list under
-/// `items`, `data`, or the resource name (for example `{ "projects": [...] }`).
-public struct ListEnvelope<Element: Decodable>: Decodable {
-    public var items: [Element]
+/// Hub list responses hold one array named after the resource, for example
+/// `{ "projects": [...] }` or `{ "groups": [...], "totals": {...} }`.
+struct KeyedList<Element: Decodable>: Decodable {
+    static var keyInfo: CodingUserInfoKey { CodingUserInfoKey(rawValue: "perpeto.listKey")! }
+
+    var items: [Element]
 
     struct AnyKey: CodingKey {
         var stringValue: String
@@ -174,18 +187,10 @@ public struct ListEnvelope<Element: Decodable>: Decodable {
         init?(intValue: Int) { nil }
     }
 
-    public init(from decoder: Decoder) throws {
-        if let array = try? decoder.singleValueContainer().decode([Element].self) {
-            items = array
-            return
+    init(from decoder: Decoder) throws {
+        guard let key = decoder.userInfo[Self.keyInfo] as? String else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "No list key configured."))
         }
-        let container = try decoder.container(keyedBy: AnyKey.self)
-        for key in ["items", "data"] + container.allKeys.map(\.stringValue) {
-            if let array = try? container.decode([Element].self, forKey: AnyKey(stringValue: key)) {
-                items = array
-                return
-            }
-        }
-        throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Expected a list or an object containing one."))
+        items = try decoder.container(keyedBy: AnyKey.self).decode([Element].self, forKey: AnyKey(stringValue: key))
     }
 }

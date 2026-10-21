@@ -126,3 +126,45 @@ struct LogoTests {
         #expect(path.boundingRect == CGRect(x: 10, y: 10, width: 5, height: 3.75))
     }
 }
+
+@Suite("Editor history")
+struct GraphHistoryTests {
+    static func graph(_ x: Double) -> WorkflowGraph {
+        WorkflowGraph(nodes: [GraphNode(id: "a", type: .input, label: "A", position: .init(x: x, y: 0))], edges: [])
+    }
+
+    @Test func undoRedoRoundTrip() {
+        var history = GraphHistory()
+        history.record(Self.graph(0), name: "Move node")
+        history.record(Self.graph(16), name: "Move node")
+        #expect(history.undo(from: Self.graph(32)) == Self.graph(16))
+        #expect(history.undo(from: Self.graph(16)) == Self.graph(0))
+        #expect(history.undo(from: Self.graph(0)) == nil)
+        #expect(history.redo(from: Self.graph(0)) == Self.graph(16))
+        #expect(history.redo(from: Self.graph(16)) == Self.graph(32))
+        #expect(!history.canRedo)
+    }
+
+    @Test func newEditClearsRedo() {
+        var history = GraphHistory()
+        history.record(Self.graph(0), name: "Add node")
+        _ = history.undo(from: Self.graph(16))
+        history.record(Self.graph(0), name: "Delete")
+        #expect(!history.canRedo)
+        #expect(history.undoName == "Delete")
+    }
+
+    @Test func typingCoalesces() {
+        var history = GraphHistory()
+        let start = Date(timeIntervalSince1970: 0)
+        history.record(Self.graph(0), name: "Edit label", coalesceKey: "label:a", at: start)
+        history.record(Self.graph(1), name: "Edit label", coalesceKey: "label:a", at: start.addingTimeInterval(0.5))
+        history.record(Self.graph(2), name: "Edit label", coalesceKey: "label:a", at: start.addingTimeInterval(0.9))
+        #expect(history.undoStack.count == 1)
+        // After a pause, the next keystroke starts a new step.
+        history.record(Self.graph(3), name: "Edit label", coalesceKey: "label:a", at: start.addingTimeInterval(3))
+        #expect(history.undoStack.count == 2)
+        #expect(history.undo(from: Self.graph(4)) == Self.graph(3))
+        #expect(history.undo(from: Self.graph(3)) == Self.graph(0))
+    }
+}

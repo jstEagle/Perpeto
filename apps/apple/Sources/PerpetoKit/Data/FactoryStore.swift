@@ -14,9 +14,18 @@ public final class FactoryStore {
     public var lastError: String?
     /// Architect progress per project while a draft is being written.
     public private(set) var drafts: [String: DraftProgress] = [:]
+    /// Window for run and project metrics. Changing it refetches them.
+    public private(set) var metricsWindow: MetricsWindow = .day
 
     private var eventTask: Task<Void, Never>?
     private var draftTasks: [String: Task<Void, Never>] = [:]
+    /// Live events are coalesced: bursts of events trigger one refetch.
+    private var pendingRuns: Set<String> = []
+    private var pendingProjects: Set<String> = []
+    private var pendingFactory = false
+    private var refreshTask: Task<Void, Never>?
+    /// Quiet period before refetching after a live event.
+    public var eventDebounce: Duration = .milliseconds(750)
 
     public init(source: FactoryDataSource) {
         self.source = source
@@ -46,6 +55,7 @@ public final class FactoryStore {
     public func project(_ id: String) -> Project? { factory.projects.first { $0.id == id } }
     public func state(_ projectId: String) -> ProjectState { projectStates[projectId] ?? .empty }
     public func machine(_ id: String?) -> Machine? { factory.machines.first { $0.id == id } }
+    public var machineNames: [String: String] { Dictionary(factory.machines.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a }) }
 
     public func refresh() async {
         isLoading = true
@@ -53,7 +63,7 @@ public final class FactoryStore {
         do {
             factory = try await source.loadFactory()
             for project in factory.projects {
-                projectStates[project.id] = try await source.loadProject(project.id)
+                projectStates[project.id] = try await source.loadProject(project.id, window: metricsWindow)
             }
             lastUpdated = Date()
             lastError = nil
@@ -65,7 +75,7 @@ public final class FactoryStore {
 
     public func reloadProject(_ id: String) async {
         do {
-            projectStates[id] = try await source.loadProject(id)
+            projectStates[id] = try await source.loadProject(id, window: metricsWindow)
         } catch {
             lastError = describe(error, operation: "Loading the project")
         }
@@ -86,12 +96,81 @@ public final class FactoryStore {
         }
     }
 
-    private func apply(_ event: HubEvent) {
-        guard let projectId = event.projectId else { return }
-        var state = projectStates[projectId] ?? .empty
-        state.events.insert(event, at: 0)
-        if state.events.count > 1000 { state.events.removeLast(state.events.count - 1000) }
-        projectStates[projectId] = state
+    func apply(_ event: HubEvent) {
+        guard !event.isHousekeeping else { return }
+        if let projectId = event.projectId {
+            var state = projectStates[projectId] ?? .empty
+            state.events.insert(event, at: 0)
+            if state.events.count > 1000 { state.events.removeLast(state.events.count - 1000) }
+            projectStates[projectId] = state
+        }
+        scheduleRefresh(for: event)
+    }
+
+    /// Decides what an event invalidates, then refetches after a quiet period
+    /// so a burst of interactions costs one round of requests.
+    private func scheduleRefresh(for event: HubEvent) {
+        let type = event.type
+        if type.hasPrefix("machine.") || type.hasPrefix("enrollment.") || type.hasSuffix(".usage") {
+            pendingFactory = true
+        }
+        if let runId = event.runId, projectStates[event.projectId ?? ""]?.runs.contains(where: { $0.id == runId }) == true {
+            pendingRuns.insert(runId)
+        }
+        if let projectId = event.projectId,
+           type.hasPrefix("workflow.") || type.hasPrefix("merge-entry.") || type.hasPrefix("project.") || type == "run.started"
+            || (event.runId != nil && projectStates[projectId]?.runs.contains(where: { $0.id == event.runId }) != true) {
+            pendingProjects.insert(projectId)
+        }
+        guard refreshTask == nil, pendingFactory || !pendingRuns.isEmpty || !pendingProjects.isEmpty else { return }
+        refreshTask = Task { [weak self] in
+            try? await Task.sleep(for: self?.eventDebounce ?? .milliseconds(750))
+            await self?.flushRefresh()
+        }
+    }
+
+    private func flushRefresh() async {
+        let runs = pendingRuns, projects = pendingProjects, factoryChanged = pendingFactory
+        pendingRuns = []
+        pendingProjects = []
+        pendingFactory = false
+        refreshTask = nil
+        if factoryChanged, let factory = try? await source.loadFactory() { self.factory = factory }
+        for projectId in projects {
+            await reloadProject(projectId, keepEvents: true)
+        }
+        for runId in runs {
+            guard let projectId = projectStates.first(where: { $0.value.runs.contains { $0.id == runId } })?.key,
+                  !projects.contains(projectId),
+                  let snapshot = try? await source.loadRun(runId, window: metricsWindow) else { continue }
+            projectStates[projectId]?.apply(snapshot)
+        }
+        lastUpdated = Date()
+    }
+
+    /// Reloads a project but keeps live events already received.
+    private func reloadProject(_ id: String, keepEvents: Bool) async {
+        let events = projectStates[id]?.events ?? []
+        await reloadProject(id)
+        if keepEvents, var state = projectStates[id] {
+            let known = Set(state.events.map(\.seq))
+            state.events = (state.events + events.filter { !known.contains($0.seq) }).sorted { $0.seq > $1.seq }
+            projectStates[id] = state
+        }
+    }
+
+    // MARK: Metrics window
+
+    /// Changes the metrics window and refetches metrics for every loaded run.
+    public func setMetricsWindow(_ window: MetricsWindow) async {
+        guard window != metricsWindow else { return }
+        metricsWindow = window
+        for (projectId, state) in projectStates {
+            for runId in state.runMetrics.keys {
+                guard let snapshot = try? await source.loadRun(runId, window: window) else { continue }
+                projectStates[projectId]?.apply(snapshot)
+            }
+        }
     }
 
     // MARK: Workflow authoring
@@ -150,10 +229,18 @@ public final class FactoryStore {
         }
     }
 
-    public func decide(projectId: String, workItemId: String, _ decision: HubClient.Decision) async {
-        await perform("Recording the decision", projectId: projectId) {
-            _ = try await self.source.decide(workItemId: workItemId, decision)
+    /// Answers the wait the person saw: sends the item's `decisionId`. If the
+    /// item has moved on, the hub refuses it and the project reloads.
+    public func decide(projectId: String, item: WorkItem, _ decision: HubClient.Decision) async {
+        do {
+            try await source.decide(workItemId: item.id, decision, decisionId: item.decisionId)
+            lastError = nil
+        } catch HubError.conflict(let code, _) where code == "STALE_DECISION" || code == "CONFLICT" {
+            lastError = "\(item.title) now waits for a different decision, so yours was not applied. The list is refreshed; decide again if it still needs you."
+        } catch {
+            lastError = describe(error, operation: "Recording the decision")
         }
+        await reloadProject(projectId)
     }
 
     public func send(projectId: String, channelId: String, body: String) async {

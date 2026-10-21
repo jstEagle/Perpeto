@@ -5,10 +5,16 @@ public struct HubDataSource: FactoryDataSource {
     public let client: HubClient
     /// Role the owner sends messages as.
     public let ownerRoleId: String
+    /// How many of the newest runs get work, assignments and metrics loaded.
+    public let detailedRuns: Int
+    /// Delay between architect status checks.
+    public let pollInterval: Duration
 
-    public init(client: HubClient, ownerRoleId: String = "owner") {
+    public init(client: HubClient, ownerRoleId: String = "owner", detailedRuns: Int = 8, pollInterval: Duration = .seconds(1)) {
         self.client = client
         self.ownerRoleId = ownerRoleId
+        self.detailedRuns = detailedRuns
+        self.pollInterval = pollInterval
     }
 
     public var isDemo: Bool { false }
@@ -23,36 +29,30 @@ public struct HubDataSource: FactoryDataSource {
         return try await FactoryState(projects: projects, machines: machines, accounts: accounts, jobs: jobs, overview: overview, usage: usage)
     }
 
-    public func loadProject(_ projectId: String) async throws -> ProjectState {
+    public func loadProject(_ projectId: String, window: MetricsWindow) async throws -> ProjectState {
         async let workflowsCall = client.workflows(projectId: projectId)
+        async let runsCall = client.runs(projectId: projectId)
         async let mergeQueue = client.mergeQueue(projectId: projectId)
         async let usage = usageBundle(projectId: projectId)
         async let channelsCall = (try? client.channels(projectId: projectId)) ?? []
-        async let metrics = try? client.projectMetrics(projectId: projectId, window: .day)
-        async let eventsCall = (try? client.events(after: nil, limit: 500)) ?? []
+        async let metrics = try? client.projectMetrics(projectId: projectId, window: window)
+        async let eventsCall = try? client.recentEvents(count: 1000) { $0.projectId == projectId && !$0.isHousekeeping }
 
         let workflows = try await workflowsCall
         var versions: [String: [Workflow]] = [:]
         for workflow in workflows {
-            versions[workflow.id] = ((try? await client.versions(workflowId: workflow.id)) ?? [workflow]).sorted { $0.version < $1.version }
+            versions[workflow.id] = Self.markActive((try? await client.versions(workflowId: workflow.id)) ?? [workflow], head: workflow)
         }
 
-        // Runs are reached through events and work items; the contract has no
-        // project run list, so collect run IDs from the event log.
-        let events = await eventsCall.filter { $0.projectId == projectId }
-        let runIds = Array(Set(events.compactMap(\.runId)))
-        var runs: [Run] = []
+        let runs = try await runsCall
         var items: [WorkItem] = []
         var assignments: [Assignment] = []
         var runMetrics: [String: MetricsSnapshot] = [:]
-        for runId in runIds {
-            guard let run = try? await client.run(runId) else { continue }
-            runs.append(run)
-            items += (try? await client.workItems(runId: runId)) ?? []
-            assignments += (try? await client.assignments(runId: runId)) ?? []
-            if run.status == .running || run.status == .paused {
-                runMetrics[runId] = try? await client.runMetrics(runId: runId, window: .day)
-            }
+        for run in runs.prefix(detailedRuns) {
+            guard let snapshot = try? await loadRun(run, window: window) else { continue }
+            items += snapshot.workItems
+            assignments += snapshot.assignments
+            runMetrics[run.id] = snapshot.metrics
         }
 
         let channels = await channelsCall
@@ -60,11 +60,36 @@ public struct HubDataSource: FactoryDataSource {
         for channel in channels {
             messages[channel.id] = (try? await client.messages(projectId: projectId, channelId: channel.id))?.messages ?? []
         }
+        // Newest first, like the live feed.
+        let events = (await eventsCall)?.events.reversed() ?? []
 
         return try await ProjectState(
-            workflows: workflows, versions: versions, runs: runs.sorted { $0.startedAt > $1.startedAt }, workItems: items,
+            workflows: workflows, versions: versions, runs: runs, workItems: items,
             assignments: assignments, mergeQueue: mergeQueue, channels: channels, messages: messages, usage: usage,
-            metrics: metrics, runMetrics: runMetrics, events: events)
+            metrics: metrics, runMetrics: runMetrics, events: Array(events))
+    }
+
+    public func loadRun(_ runId: String, window: MetricsWindow) async throws -> RunSnapshot {
+        try await loadRun(try await client.run(runId), window: window)
+    }
+
+    private func loadRun(_ run: Run, window: MetricsWindow) async throws -> RunSnapshot {
+        async let items = client.workItems(runId: run.id)
+        async let assignments = client.assignments(runId: run.id)
+        // 409 NO_RUN_STATE when the engine kept nothing for this run.
+        async let metrics = try? client.runMetrics(runId: run.id, window: window)
+        return try await RunSnapshot(run: run, workItems: items, assignments: assignments, metrics: metrics)
+    }
+
+    /// Version records are always stored as drafts; the head carries the
+    /// `activeVersion` pointer. Mark that version active for display.
+    static func markActive(_ versions: [Workflow], head: Workflow) -> [Workflow] {
+        let active = head.status == .active ? (head.activeVersion ?? head.version) : head.activeVersion
+        return versions.sorted { $0.version < $1.version }.map { version in
+            var version = version
+            if version.version == active { version.status = .active }
+            return version
+        }
     }
 
     private func usageBundle(projectId: String?) async throws -> UsageBundle {
@@ -75,39 +100,44 @@ public struct HubDataSource: FactoryDataSource {
         return try await UsageBundle(byDay: day.sorted { $0.key < $1.key }, byProvider: provider, byModel: model, byMachine: machine)
     }
 
-    /// Requests a draft, then follows the architect assignment through the
-    /// event stream until a new draft version appears.
+    /// Requests a draft, then follows the architect assignment with
+    /// `GET /assignments/:id`, including retries after invalid results, until
+    /// the hub reports a saved draft or gives up.
     public func requestDraft(projectId: String, prompt: String, baseWorkflowId: String?) -> AsyncThrowingStream<DraftProgress, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let result = try await client.requestDraft(projectId: projectId, prompt: prompt, baseWorkflowId: baseWorkflowId)
-                    let assignmentId = result.followAssignmentId
-                    continuation.yield(DraftProgress(assignmentId: assignmentId, stage: .queued))
-                    let latestSeq = (try? await client.events(after: nil, limit: 1))?.last?.seq
-                    for try await event in client.eventStream(after: latestSeq) {
-                        guard event.subject.id == assignmentId || event.data["assignmentId"]?.stringValue == assignmentId else { continue }
-                        let state = event.data["state"]?.stringValue ?? event.data["status"]?.stringValue
-                        switch state {
-                        case "leased": continuation.yield(DraftProgress(assignmentId: assignmentId, stage: .reading))
-                        case "running": continuation.yield(DraftProgress(assignmentId: assignmentId, stage: .drafting))
-                        case "failed", "cancelled":
-                            continuation.yield(DraftProgress(assignmentId: assignmentId, stage: .failed, detail: event.data["summary"]?.stringValue))
-                            continuation.finish()
-                            return
-                        case "succeeded":
-                            continuation.yield(DraftProgress(assignmentId: assignmentId, stage: .validating))
-                            let workflows = try await client.workflows(projectId: projectId)
-                            let candidates = try await withThrowingTaskGroup(of: [Workflow].self) { group in
-                                for workflow in workflows { group.addTask { try await client.versions(workflowId: workflow.id) } }
-                                return try await group.reduce(into: [Workflow]()) { $0 += $1 }
+                    var assignment = try await client.requestDraft(projectId: projectId, prompt: prompt, baseWorkflowId: baseWorkflowId)
+                    var attempt = 1
+                    var detail: String?
+                    while !Task.isCancelled {
+                        let stage: DraftProgress.Stage
+                        switch assignment.status {
+                        case .queued: stage = .queued
+                        case .leased: stage = .reading
+                        case .running: stage = .drafting
+                        case .succeeded, .failed, .cancelled, .unknown:
+                            if let next = assignment.retryAssignmentId {
+                                attempt += 1
+                                let count = assignment.architectErrors?.count ?? 0
+                                detail = "Attempt \(attempt): fixing \(count == 1 ? "1 validation error" : "\(count) validation errors") from the last draft."
+                                assignment = try await client.assignment(next)
+                                continue
                             }
-                            let draft = candidates.filter { $0.authoredBy?.assignmentId == assignmentId }.max { $0.version < $1.version }
-                            continuation.yield(DraftProgress(assignmentId: assignmentId, stage: draft == nil ? .failed : .ready, draft: draft))
+                            if let workflowId = assignment.draftWorkflowId, let version = assignment.draftVersion {
+                                continuation.yield(DraftProgress(assignmentId: assignment.id, stage: .validating, attempt: attempt, detail: detail))
+                                let draft = try await client.versions(workflowId: workflowId).first { $0.version == version }
+                                continuation.yield(DraftProgress(assignmentId: assignment.id, stage: draft == nil ? .failed : .ready, attempt: attempt, draft: draft))
+                            } else {
+                                let reason = assignment.architectErrors?.first?.message ?? assignment.result?.summary
+                                continuation.yield(DraftProgress(assignmentId: assignment.id, stage: .failed, attempt: attempt, detail: reason))
+                            }
                             continuation.finish()
                             return
-                        default: break
                         }
+                        continuation.yield(DraftProgress(assignmentId: assignment.id, stage: stage, attempt: attempt, detail: detail))
+                        try await Task.sleep(for: pollInterval)
+                        assignment = try await client.assignment(assignment.id)
                     }
                     continuation.finish()
                 } catch {
@@ -123,7 +153,9 @@ public struct HubDataSource: FactoryDataSource {
     public func validate(_ workflow: Workflow) async throws -> ValidationResult { try await client.validate(workflowId: workflow.id, graph: workflow.graph) }
     public func control(runId: String, _ action: HubClient.RunControl) async throws -> Run { try await client.control(runId: runId, action) }
     public func startRun(workflowId: String) async throws -> Run { try await client.startRun(workflowId: workflowId) }
-    public func decide(workItemId: String, _ decision: HubClient.Decision) async throws -> WorkItem { try await client.decide(workItemId: workItemId, decision) }
+    public func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws {
+        try await client.decide(workItemId: workItemId, decision, decisionId: decisionId)
+    }
     public func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message {
         try await client.sendMessage(projectId: projectId, channelId: channelId, senderRoleId: ownerRoleId, recipientRoleId: nil, body: body)
     }
