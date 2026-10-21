@@ -90,3 +90,55 @@ test('hub validates merge publication before a workflow can reach delivery', asy
   merge.config.strategy = 'batch'; assert.equal(adapter.validate(graph).valid, false);
   merge.config.publication = 'invalid'; assert.equal(adapter.validate(graph).valid, false);
 });
+
+const node = (id, type, config = {}) => ({ id, type, label: id, position: { x: 0, y: 0 }, config });
+const flow = (from, to, port) => ({ id: `${from}-${port ?? 'next'}-${to}`, kind: 'flow', from: { node: from, ...(port ? { port } : {}) }, to: { node: to } });
+
+/** A hub on the real engine adapter with one enrolled machine that leases agents and jobs. */
+async function engineHub(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'perpeto-hub-engine-'));
+  const configPath = join(directory, 'hub.json');
+  await writeFile(configPath, JSON.stringify({ port: 0, longPollMs: 0, maintenanceIntervalMs: 20, heartbeatIntervalMs: 60000 }));
+  const hub = await createHub({ configPath }); const url = await hub.listen();
+  t.after(async () => { await hub.close(); await rm(directory, { recursive: true, force: true }); });
+  const owner = (await readFile(join(directory, 'owner.secret'), 'utf8')).trim();
+  const request = async (method, path, body, token = owner) => {
+    const response = await fetch(`${url}/api/v1${path}`, { method, headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    return { status: response.status, body: await response.json() };
+  };
+  const code = (await request('POST', '/machines/enrollment-codes', {})).body.code;
+  const machine = (await request('POST', '/nodes/enroll', { code, name: 'machine', os: 'linux', arch: 'x64', providers: ['codex'], version: 'test' })).body;
+  await request('POST', '/nodes/heartbeat', { status: 'online', capacity: { maxAgents: 1, maxJobs: 1 }, running: { agents: 0, jobs: 0 }, providers: ['codex'] }, machine.token);
+  const project = (await request('POST', '/projects', { name: 'Adapter', repo: { url: '/tmp/unused.git', defaultBranch: 'main' } })).body;
+  return {
+    request, token: machine.token,
+    async start(value, items = [{ title: 'Feature' }]) {
+      const workflow = (await request('POST', `/projects/${project.id}/workflows`, { name: 'Flow', graph: value })).body;
+      assert.equal((await request('POST', `/workflows/${workflow.id}/activate`, { version: 1 })).status, 200, JSON.stringify(workflow));
+      return (await request('POST', `/workflows/${workflow.id}/runs`, { input: { items } })).body;
+    },
+    lease: async kind => (await request('POST', '/nodes/lease', { kinds: [kind], max: 1 }, machine.token)).body[kind === 'job' ? 'jobs' : 'assignments'][0],
+    finish: (assignment, data) => request('POST', `/assignments/${assignment.id}/events`, { attempt: assignment.attempt, type: data.outcome === 'failure' ? 'failed' : 'completed', data }, machine.token),
+  };
+}
+
+test('cancelling a run CI job reports the cancelled attempt to the engine, which retries it and finishes the run (H4)', async t => {
+  const hub = await engineHub(t);
+  const run = await hub.start({ schema: 'perpeto.workflow/1', nodes: [
+    node('ideas', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build it.' }),
+    node('ci', 'ci', { steps: [{ name: 'test', run: 'true' }], retry: { maxAttempts: 3, backoffSec: 0 } }), node('done', 'output'),
+  ], edges: [flow('ideas', 'builder'), flow('builder', 'ci'), flow('ci', 'done', 'pass'), flow('ci', 'done', 'fail')] });
+  const build = await hub.lease('assignment');
+  assert.equal((await hub.finish(build, { outcome: 'success', summary: 'Built.', branch: 'feature', headSha: 'a'.repeat(40) })).status, 200);
+  const first = await hub.lease('job'); assert.ok(first);
+  assert.equal((await hub.request('POST', `/jobs/${first.id}/cancel`, {})).body.status, 'cancelled');
+  // The node's cancellation acknowledgement is accepted and does not report the attempt a second time.
+  const ack = await hub.request('POST', `/jobs/${first.id}/events`, { attempt: first.attempt, type: 'completed', data: { status: 'cancelled', revision: first.revision, configHash: first.configHash } }, hub.token);
+  assert.equal(ack.status, 200);
+  const retry = await hub.lease('job');
+  assert.ok(retry, 'the engine queued another CI attempt'); assert.notEqual(retry.id, first.id); assert.equal(retry.revision, first.revision);
+  assert.equal((await hub.request('POST', `/jobs/${retry.id}/events`, { attempt: retry.attempt, type: 'completed', data: { status: 'passed', revision: retry.revision, configHash: retry.configHash } }, hub.token)).status, 200);
+  assert.equal((await hub.request('GET', `/runs/${run.id}`)).body.status, 'completed');
+  const events = (await hub.request('GET', '/events?limit=1000')).body.events.filter(event => event.runId === run.id);
+  assert.equal(events.filter(event => event.type === 'workitem.retried' && event.data.reason === 'job_cancelled').length, 1);
+});

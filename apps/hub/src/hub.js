@@ -218,11 +218,12 @@ export class Hub {
     this.emit(`${kind}.cancellation-acknowledged`, kind, this.store.need(kind, entityId));
     return { status: 200, body: { accepted: true, status: 'cancelled' } };
   }
-  async engineEvent(run, event) {
+  async engineEvent(run, event) { this.applyEffects(run, await this.engineStep(run, event)); }
+  /** Compute the engine's response to an event without applying it. Engines are pure, so this doubles as validation. */
+  engineStep(run, event) {
     const workflow = this.store.need('run-workflow', run.id).workflow;
     const snapshot = this.store.need('engine-state', run.id);
-    const result = await this.engine.applyEvent({ run, workflow, state: snapshot.state, event });
-    this.applyEffects(run, result);
+    return this.engine.applyEvent({ run, workflow, state: snapshot.state, event });
   }
   applyEffects(run, result) {
     object(result, 'engine result'); requireValue(Array.isArray(result.effects), 'Engine effects must be an array.');
@@ -477,7 +478,12 @@ export class Hub {
       }
       if (action === 'cancel' && kind === 'job' && method === 'POST') {
         const value = this.store.need(kind, entityId);
-        if (value.status === 'queued' || active(value)) this.cancelWork(kind, value);
+        if (value.status === 'queued' || active(value)) {
+          this.cancelWork(kind, value);
+          // The engine owns retries for run CI: report the cancelled attempt so its retry policy applies and the run can finish.
+          const run = value.runId && !value.delivery ? this.store.get('run', value.runId) : null;
+          if (run && ['running', 'paused'].includes(run.status)) await this.engineEvent(run, { type: 'job.finished', jobId: value.id, data: { status: 'cancelled', revision: value.revision }, value });
+        }
         return reply(value);
       }
       if (action === 'renew' && method === 'POST') {
