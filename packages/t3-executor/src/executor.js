@@ -8,7 +8,7 @@ import { assignmentContext, buildPrompt } from './prompt.js';
 import { outputInstructions, outputKind, parseRoleResult } from './results.js';
 import { ThreadTracker, TERMINAL_RUN_STATUSES } from './thread-state.js';
 import { keepAccountReservation } from './account-lease.js';
-import { branchName, isDirty, prepareWorkspace, publishBranch, pullRequestUrl, revisionOf } from './workspace.js';
+import { branchName, isDirty, localPullRequestUrl, prepareWorkspace, publishBranch, pullRequestUrl, revisionOf } from './workspace.js';
 
 /** Harness option keys the executor consumes instead of forwarding as model options. */
 const RESERVED_OPTIONS = new Set(['runtimeMode', 'interactionMode']);
@@ -148,6 +148,11 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       const provider = assignment?.harness?.provider;
       if (typeof provider !== 'string' || !provider || provider === 'fake' || typeof assignment?.harness?.model !== 'string') return false;
       return !Array.isArray(machine?.providers) || machine.providers.includes(provider);
+    },
+    /** Driver kinds T3 reports enabled and ready, so the node can advertise harnesses its PATH does not show. */
+    async providers({ signal } = {}) {
+      const providers = (await (await client()).getConfig({ signal }))?.providers ?? [];
+      return [...new Set(providers.filter(item => item.enabled !== false && item.status === 'ready' && typeof item.driver === 'string').map(item => item.driver))];
     },
     async run(assignment, ctx) {
       try { return await runAssignment(await client(), assignment, ctx); }
@@ -549,6 +554,9 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
           const published = await publishBranch(checkout, evidence.branch);
           await report({ type: 'progress', data: { interaction: 'branch.published', branch: evidence.branch, headSha: revision.headSha, published: published.published, ...(published.reason ? { reason: published.reason } : {}) } });
           if (published.failed) return { outcome: 'failure', summary: clip(`${published.reason}\n\n${summary}`), ...evidence };
+          // Without a forge the merge queue needs the published branch as `local:<branch>`.
+          const localPr = published.published && !evidence.prUrl ? localPullRequestUrl(assignment.repo, evidence.branch) : undefined;
+          if (localPr) evidence.prUrl = localPr;
         }
       }
       return { outcome: 'success', summary: parsed.unclipped ? summary : clip(summary), ...parsed.fields, ...evidence };

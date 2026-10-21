@@ -1,8 +1,7 @@
-import Charts
 import PerpetoKit
 import SwiftUI
 
-/// Runs, and the approved graph as the live map of the selected run.
+/// Runs: the list, or one run's live map.
 struct RunsScreen: View {
     var store: FactoryStore
     @Bindable var navigator: Navigator
@@ -10,26 +9,27 @@ struct RunsScreen: View {
     var state: ProjectState
 
     @State private var selection: GraphSelection?
-    @State private var window: MetricsWindow = .day
-    @State private var confirmStop = false
 
-    private var run: Run? {
-        state.runs.first { $0.id == navigator.selectedRunId } ?? state.runs.first { $0.status == .running } ?? state.runs.first
-    }
-
-    @Environment(\.compactLayout) private var compact
+    private var run: Run? { state.runs.first { $0.id == navigator.selectedRunId } }
 
     var body: some View {
         Group {
-            if compact && navigator.selectedRunId == nil && !state.runs.isEmpty {
-                RunsList(state: state) { navigator.selectedRunId = $0.id }
-            } else if let run {
-                RunDetail(store: store, project: project, state: state, run: run, selection: $selection, window: $window, confirmStop: $confirmStop,
-                          runPicker: AnyView(runPicker(current: run)))
-            } else {
-                EmptyState("No runs yet", message: "Activate a workflow, then start a run to see work move through it.") {
-                    Button("Open workflows") { navigator.route = .project(project.id, .workflows) }.buttonStyle(.perpetoPrimary)
+            if let run {
+                RunDetail(store: store, navigator: navigator, project: project, state: state, run: run, selection: $selection)
+                    .id(run.id)
+            } else if state.runs.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: PerpetoGap.cards) {
+                        ScreenHeader("Runs")
+                        EmptyState("No runs yet", message: "Activate a workflow, then start a run to see work move through it.", systemImage: "play.circle") {
+                            Button("Open workflows") { navigator.route = .project(project.id, .workflows) }.buttonStyle(.perpetoPrimary)
+                        }
+                        .card()
+                    }
+                    .screenPadding()
                 }
+            } else {
+                RunsList(state: state, store: store) { navigator.selectedRunId = $0.id }
             }
         }
         .onChange(of: navigator.selectedRunId) { _, _ in selection = nil }
@@ -37,47 +37,67 @@ struct RunsScreen: View {
             if let id { selection = .node(id) }
         }
     }
+}
 
-    @ViewBuilder
-    private func runPicker(current: Run) -> some View {
-        if compact {
-            Button { navigator.selectedRunId = nil } label: { Label("All runs", systemImage: "chevron.left") }
-                .buttonStyle(.perpetoGhost)
-        } else {
-            runMenu
+/// Runs newest first. Tapping one opens its live map.
+struct RunsList: View {
+    var state: ProjectState
+    var store: FactoryStore
+    var open: (Run) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: PerpetoGap.cards) {
+                ScreenHeader("Runs", subtitle: "Each run follows the workflow version that was active when it started.")
+                    .padding(.bottom, PerpetoSpacing.x(2))
+                RowList(state.runs) { run in
+                    Button { open(run) } label: { row(run) }.buttonStyle(.plain)
+                }
+                .card()
+            }
+            .screenPadding()
         }
     }
 
-    private var runMenu: some View {
-        Menu {
-            ForEach(state.runs) { r in
-                Button {
-                    navigator.selectedRunId = r.id
-                } label: {
-                    Text("\(workflowName(r)) v\(r.workflowVersion), \(r.status.label.0.lowercased()), started \(Format.relative(r.startedAt))")
+    private func row(_ run: Run) -> some View {
+        let name = state.workflows.first { $0.id == run.workflowId }?.name ?? "Workflow"
+        let active = state.assignments.filter { $0.runId == run.id && $0.isWorking }.count
+        return HStack(spacing: PerpetoSpacing.x(4)) {
+            IconTile(ProjectSection.runs.systemImage)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: PerpetoSpacing.x(2)) {
+                    Text("\(name) run").font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
+                    Tag("v\(run.workflowVersion)")
+                }
+                HStack(spacing: 5) {
+                    Mono(run.id)
+                    Text("· Started \(Format.relative(run.startedAt))" + (active > 0 ? " · \(Format.plural(active, "agent")) working" : ""))
+                        .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).lineLimit(1)
                 }
             }
-        } label: {
-            Label("\(Format.plural(state.runs.count, "run"))", systemImage: "list.bullet")
+            Spacer(minLength: PerpetoSpacing.x(2))
+            StatusLabel(run.status.label)
+            Image(systemName: "chevron.right").font(.system(size: 11, weight: .medium)).foregroundStyle(PerpetoColor.faint)
         }
-        .fixedSize()
-        .help("Choose a run")
-    }
-
-    private func workflowName(_ run: Run) -> String {
-        state.workflows.first { $0.id == run.workflowId }?.name ?? run.workflowId
+        .contentShape(Rectangle())
     }
 }
 
 struct RunDetail: View {
     var store: FactoryStore
+    var navigator: Navigator
     var project: Project
     var state: ProjectState
     var run: Run
     @Binding var selection: GraphSelection?
-    @Binding var window: MetricsWindow
-    @Binding var confirmStop: Bool
-    var runPicker: AnyView
+
+    enum Tab: Hashable { case map, work, timeline }
+    @State private var tab: Tab = .map
+    @State private var confirmStop = false
+    @State private var moreIssues = false
+    @State private var showAllActivity = false
+    @State private var nodeDetails = false
+    @Environment(\.compactLayout) private var compact
 
     private var workflow: Workflow? {
         state.version(run.workflowVersion, of: run.workflowId) ?? state.workflows.first { $0.id == run.workflowId }
@@ -86,479 +106,492 @@ struct RunDetail: View {
     private var metrics: MetricsSnapshot? { state.runMetrics[run.id] }
     private var runEvents: [HubEvent] { state.events.filter { $0.runId == run.id && $0.interaction != .unknown } }
     private var runItems: [WorkItem] { state.workItems.filter { $0.runId == run.id } }
-
-    @Environment(\.compactLayout) private var compact
+    private var bottlenecks: [Bottleneck] {
+        (metrics?.bottlenecks ?? []).filter { $0.severity != .info }.sorted { $0.severity.rank > $1.severity.rank }
+    }
 
     var body: some View {
-        Group {
-            if compact { compactBody } else { regularBody }
+        ScrollView {
+            VStack(alignment: .leading, spacing: PerpetoGap.cards) {
+                header.padding(.bottom, PerpetoSpacing.x(compact ? 0 : 2))
+                if let top = bottlenecks.first { attentionCard(top) }
+                switcher
+                switch tab {
+                case .map: mapSection
+                case .work: workList
+                case .timeline: ActivityCard(events: runEvents, graph: workflow?.graph, messages: state.messagesById, machines: store.machineNames, limit: nil, showAll: .constant(true))
+                }
+            }
+            .screenPadding()
         }
         .confirmationDialog("Stop this run?", isPresented: $confirmStop) {
             Button("Stop run", role: .destructive) { Task { await store.control(run, .stop) } }
         } message: {
             Text("Agents finish their current turn and no new work starts. Stopped runs cannot be resumed.")
         }
-    }
-
-    @ViewBuilder
-    private var map: some View {
-        if let workflow {
-            if let metrics {
-                GraphViewport(graph: workflow.graph, mode: .live(LiveOverlay(metrics: metrics, workItems: runItems, events: runEvents)), selection: $selection)
-            } else {
-                GraphViewport(graph: workflow.graph, mode: .view, selection: $selection)
-                    .overlay(alignment: .top) {
-                        Text(run.status == .running ? "Waiting for the first measurements from the hub." : "This run has finished. Live measurements are kept only for active runs.")
-                            .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-                            .padding(PerpetoSpacing.x(2))
-                            .background(PerpetoColor.surface, in: RoundedRectangle(cornerRadius: PerpetoRadius.control))
-                            .padding(PerpetoSpacing.x(3))
-                    }
-            }
-        }
-    }
-
-    /// iPhone: one scrolling column. Tapping a node or edge opens its
-    /// numbers in a sheet that leaves the map visible and usable.
-    private var compactBody: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
-                compactHeader
-                map.frame(height: 440)
-                SelectionPanel(state: state, run: run, graph: workflow?.graph, metrics: metrics, selection: nil, items: runItems)
-                if let metrics {
-                    VelocityPanel(metrics: metrics, window: store.metricsWindow)
-                    WhereRunningPanel(store: store, state: state, run: run, metrics: metrics, graph: workflow?.graph)
-                }
-                InteractionFeed(events: runEvents, selection: selection, graph: workflow?.graph, messages: state.messagesById, machines: store.machineNames)
-                    .frame(height: 360)
-            }
-            .padding(PerpetoSpacing.x(4))
-        }
-        .sheet(isPresented: Binding(get: { selection != nil }, set: { if !$0 { selection = nil } })) {
+        .sheet(isPresented: Binding(get: { compact && selection != nil }, set: { if !$0 { selection = nil } })) {
             ScrollView {
-                SelectionPanel(state: state, run: run, graph: workflow?.graph, metrics: metrics, selection: selection, items: runItems)
+                SelectionCard(state: state, run: run, graph: workflow?.graph, metrics: metrics, selection: selection, items: runItems, close: { selection = nil })
                     .padding(PerpetoSpacing.x(4))
             }
             .background(PerpetoColor.canvas)
             .presentationDetents([.medium, .large])
             .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+            .presentationCornerRadius(PerpetoRadius.sheet)
         }
     }
 
-    private var compactHeader: some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            HStack(spacing: PerpetoSpacing.x(2)) {
-                Text(workflow?.name ?? "Run").font(PerpetoFont.display(PerpetoType.text24)).displayTracking(PerpetoType.text24).foregroundStyle(PerpetoColor.ink)
-                Text("version \(run.workflowVersion)").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
-                Spacer(minLength: 0)
-                StatusLabel(run.status.label)
-            }
-            HStack(spacing: PerpetoSpacing.x(2)) {
-                Mono(run.id).lineLimit(1).truncationMode(.middle)
-                Text("Started \(Format.relative(run.startedAt))").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).fixedSize()
-            }
-            HStack(spacing: PerpetoSpacing.x(2)) {
-                runPicker
-                Spacer(minLength: 0)
-                windowPicker
-            }
-            if let metrics {
-                FigureStrip([
-                    Figure("Active agents", value: "\(metrics.run.activeAgents)"),
-                    Figure("In progress", value: "\(metrics.run.wip)"),
-                    Figure("Cycle time p90", value: Format.duration(metrics.run.cycleTimeSec.p90)),
-                    Figure("Tokens per item", value: Format.tokens(metrics.run.tokensPerItem)),
-                ])
-            }
-            controls
-        }
-    }
+    // MARK: Header
 
-    private var windowPicker: some View {
-        Picker("Window", selection: Binding(get: { store.metricsWindow }, set: { window in Task { await store.setMetricsWindow(window) } })) {
-            ForEach(MetricsWindow.allCases) { Text($0.rawValue).tag($0) }
-        }
-        .pickerStyle(.segmented)
-        .fixedSize()
-        .help("Measurement window for the map, velocity and bottlenecks")
-    }
-
-    private var regularBody: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-                .padding(.horizontal, PerpetoSpacing.x(5))
-                .padding(.vertical, PerpetoSpacing.x(4))
-            HStack(alignment: .top, spacing: 0) {
-                VStack(spacing: PerpetoSpacing.x(3)) {
-                    map
-                    InteractionFeed(events: runEvents, selection: selection, graph: workflow?.graph, messages: state.messagesById, machines: store.machineNames)
-                        .frame(height: 210)
-                }
-                .padding(.leading, PerpetoSpacing.x(5))
-                .padding(.bottom, PerpetoSpacing.x(5))
-                ScrollView {
-                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
-                        SelectionPanel(state: state, run: run, graph: workflow?.graph, metrics: metrics, selection: selection, items: runItems)
-                        if let metrics {
-                            VelocityPanel(metrics: metrics, window: store.metricsWindow)
-                            WhereRunningPanel(store: store, state: state, run: run, metrics: metrics, graph: workflow?.graph)
-                        }
-                    }
-                    .padding(.horizontal, PerpetoSpacing.x(4))
-                    .padding(.bottom, PerpetoSpacing.x(5))
-                }
-                .frame(width: 340)
-            }
-        }
-    }
-
-    /// One row when it fits; otherwise the measurements move to a second row.
     private var header: some View {
-        ViewThatFits(in: .horizontal) {
-            oneRowHeader
-            VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-                HStack(alignment: .center, spacing: PerpetoSpacing.x(4)) {
-                    titleBlock.fixedSize()
-                    runPicker
-                    Spacer()
-                    if metrics != nil { windowPicker }
-                    controls
-                }
-                if let metrics { minis(metrics) }
-            }
-        }
-    }
-
-    private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
-            HStack(spacing: PerpetoSpacing.x(2)) {
-                Text(workflow?.name ?? "Run").font(PerpetoFont.display(PerpetoType.text24)).displayTracking(PerpetoType.text24).foregroundStyle(PerpetoColor.ink)
-                Text("version \(run.workflowVersion)").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
-                StatusLabel(run.status.label)
-            }
-            HStack(spacing: PerpetoSpacing.x(2)) {
-                Mono(run.id).lineLimit(1).truncationMode(.middle).frame(maxWidth: 260, alignment: .leading)
-                Text("Started \(Format.relative(run.startedAt))" + (run.stoppedAt.map { ", ended \(Format.relative($0))" } ?? ""))
-                    .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-                    .fixedSize()
-            }
-        }
-    }
-
-    private func minis(_ metrics: MetricsSnapshot) -> some View {
-        HStack(spacing: PerpetoSpacing.x(5)) {
-            mini("Active agents", "\(metrics.run.activeAgents)")
-            mini("In progress", "\(metrics.run.wip)")
-            mini("Cycle time p90", Format.duration(metrics.run.cycleTimeSec.p90))
-            mini("Tokens per item", Format.tokens(metrics.run.tokensPerItem))
-        }
-        .fixedSize()
-    }
-
-    private var oneRowHeader: some View {
-        HStack(alignment: .center, spacing: PerpetoSpacing.x(4)) {
-            titleBlock.fixedSize()
-            runPicker.fixedSize()
-            Spacer(minLength: PerpetoSpacing.x(4))
-            if let metrics {
-                minis(metrics)
-                windowPicker
-            }
-            controls.fixedSize()
-        }
-    }
-
-    private func mini(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-            Text(value).font(PerpetoFont.figure(PerpetoType.text16)).foregroundStyle(PerpetoColor.ink)
+        ScreenHeader(
+            "\(workflow?.name ?? "Workflow") run",
+            back: ("Runs", { navigator.selectedRunId = nil }),
+            status: run.status.label,
+            meta: { RunMeta(run: run) }
+        ) {
+            HStack(spacing: PerpetoSpacing.x(3)) { controls }.fullWidthButtons(compact)
         }
     }
 
     @ViewBuilder
     private var controls: some View {
-        HStack(spacing: PerpetoSpacing.x(2)) {
-            switch run.status {
-            case .running:
-                Button { Task { await store.control(run, .pause) } } label: { Label("Pause", systemImage: "pause") }
-                    .buttonStyle(.perpetoSecondary)
-                    .keyboardShortcut("p", modifiers: [.command, .shift])
-                Button { confirmStop = true } label: { Label("Stop", systemImage: "stop") }
-                    .buttonStyle(.perpetoSecondary)
-            case .paused:
-                Button { Task { await store.control(run, .resume) } } label: { Label("Resume", systemImage: "play") }
-                    .buttonStyle(.perpetoPrimary)
-                    .keyboardShortcut("p", modifiers: [.command, .shift])
-                Button { confirmStop = true } label: { Label("Stop", systemImage: "stop") }
-                    .buttonStyle(.perpetoSecondary)
-            default:
-                EmptyView()
-            }
+        switch run.status {
+        case .running:
+            Button { Task { await store.control(run, .pause) } } label: { Label("Pause", systemImage: "pause") }
+                .buttonStyle(.perpetoSecondary)
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            Button { confirmStop = true } label: { Label("Stop", systemImage: "stop") }
+                .buttonStyle(.perpetoSecondary)
+        case .paused:
+            Button { Task { await store.control(run, .resume) } } label: { Label("Resume", systemImage: "play") }
+                .buttonStyle(.perpetoPrimary)
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            Button { confirmStop = true } label: { Label("Stop", systemImage: "stop") }
+                .buttonStyle(.perpetoSecondary)
+        default:
+            EmptyView()
         }
     }
-}
 
-/// Runs newest first, for narrow screens. Tapping one opens its live map.
-struct RunsList: View {
-    var state: ProjectState
-    var open: (Run) -> Void
+    // MARK: Attention
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
-                ScreenHeader("Runs", subtitle: "Each run follows the workflow version that was active when it started.")
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(state.runs.enumerated()), id: \.element.id) { index, run in
-                        if index > 0 { Rule() }
-                        Button { open(run) } label: { row(run) }
-                            .buttonStyle(.plain)
+    private func attentionCard(_ top: Bottleneck) -> some View {
+        let label = workflow?.graph.node(top.nodeId)?.label ?? top.nodeId
+        let draft = state.pendingDraft(of: run.workflowId)
+        let actions = HStack(spacing: PerpetoSpacing.x(2)) {
+            Button("Show on map") {
+                tab = .map
+                selection = .node(top.nodeId)
+            }
+            .buttonStyle(.perpetoGhost)
+            if let draft {
+                Button("Review proposal") {
+                    navigator.selectedWorkflowId = draft.id
+                    navigator.route = .project(project.id, .workflows)
+                }
+                .buttonStyle(.perpetoPrimary)
+                .controlSize(.small)
+            }
+        }
+        return VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
+            HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
+                StatusIcon(.warning, size: 20).padding(.top, 1)
+                VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
+                    Text("\(label) is \(top.reason.title.lowercased())").font(PerpetoType.text(PerpetoType.text16, weight: .medium)).foregroundStyle(PerpetoColor.ink)
+                    Text(top.evidence).perpetoBody(PerpetoType.text14, color: PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: PerpetoLayout.readingMax, alignment: .leading)
+                    if compact { actions.padding(.top, PerpetoSpacing.x(2)) }
+                }
+                if !compact {
+                    Spacer(minLength: PerpetoSpacing.x(4))
+                    actions
+                }
+            }
+            if bottlenecks.count > 1 {
+                Disclosure(Format.plural(bottlenecks.count - 1, "more issue"), isExpanded: $moreIssues) {
+                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
+                        ForEach(bottlenecks.dropFirst()) { b in
+                            VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
+                                Text("\(workflow?.graph.node(b.nodeId)?.label ?? b.nodeId) is \(b.reason.title.lowercased())")
+                                    .font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
+                                Text(b.evidence).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
                 }
-                .panel()
+                .padding(.leading, PerpetoSpacing.x(9))
             }
-            .screenPadding()
+        }
+        .card()
+    }
+
+    // MARK: Switcher
+
+    private var switcher: some View {
+        let tabs = PillPicker([(value: Tab.map, title: "Live map", count: nil), (value: .work, title: "Work", count: runItems.count), (value: .timeline, title: "Timeline", count: nil)], selection: $tab)
+        let window = PillPicker(MetricsWindow.allCases.map { ($0, $0.shortTitle) },
+                                selection: Binding(get: { store.metricsWindow }, set: setWindow))
+        return Group {
+            if compact {
+                VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) { tabs; window }
+            } else {
+                HStack {
+                    tabs
+                    Spacer()
+                    window.help("Measurement window for the map, velocity and bottlenecks")
+                }
+            }
         }
     }
 
-    private func row(_ run: Run) -> some View {
-        let name = state.workflows.first { $0.id == run.workflowId }?.name ?? run.workflowId
-        let active = state.assignments.filter { $0.runId == run.id && $0.isWorking }.count
-        return HStack(alignment: .center, spacing: PerpetoSpacing.x(3)) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: PerpetoSpacing.x(2)) {
-                    Text(name).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
-                    Text("v\(run.workflowVersion)").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+    private func setWindow(_ window: MetricsWindow) {
+        Task { await store.setMetricsWindow(window) }
+    }
+
+    // MARK: Map
+
+    @ViewBuilder
+    private var mapSection: some View {
+        if let workflow {
+            let mode: GraphMode = metrics.map { .live(LiveOverlay(metrics: $0, workItems: runItems, events: runEvents)) } ?? .view
+            if compact {
+                StepList(graph: workflow.graph, live: metrics.map { LiveOverlay(metrics: $0, workItems: runItems, events: runEvents) }, selection: $selection)
+            } else {
+                GraphViewport(graph: workflow.graph, mode: mode, selection: $selection, initialRoleScope: .selected)
+                    .frame(height: mapHeight(workflow.graph, mode: mode))
+                    .overlay(alignment: .top) {
+                        if metrics == nil {
+                            Text(run.status == .running ? "Waiting for the first measurements from the hub." : "This run has ended. Live measurements are kept only while a run is active.")
+                                .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                                .padding(.horizontal, PerpetoSpacing.x(4)).frame(height: 32)
+                                .background(Capsule().fill(PerpetoColor.surface)).pillElevation(.card, height: 32)
+                                .padding(PerpetoSpacing.x(4))
+                        }
+                    }
+                if selection != nil {
+                    SelectionCard(state: state, run: run, graph: workflow.graph, metrics: metrics, selection: selection, items: runItems, close: { selection = nil })
+                        .transition(.opacity)
                 }
-                Mono(run.id).lineLimit(1).truncationMode(.middle)
-                Text("Started \(Format.relative(run.startedAt))" + (active > 0 ? ", \(Format.plural(active, "agent")) working" : ""))
-                    .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
             }
-            Spacer(minLength: 0)
-            StatusLabel(run.status.label)
-            Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(PerpetoColor.muted)
         }
-        .padding(.vertical, PerpetoSpacing.x(3))
-        .contentShape(Rectangle())
+        AdaptiveColumns(sideWidth: 380) {
+            ActivityCard(events: runEvents, graph: workflow?.graph, messages: state.messagesById, machines: store.machineNames, limit: 5, showAll: $showAllActivity)
+        } side: {
+            if let metrics {
+                VelocityCard(metrics: metrics, window: store.metricsWindow)
+                WhereRunningCard(store: store, metrics: metrics, graph: workflow?.graph)
+            }
+        }
+        if let metrics, let graph = workflow?.graph {
+            Disclosure("Node details", isExpanded: $nodeDetails) {
+                NodeTable(graph: graph, metrics: metrics) { selection = .node($0) }
+            }
+            .card()
+        }
+    }
+
+    /// Tall enough for the drawing at 100%, within reason.
+    private func mapHeight(_ graph: WorkflowGraph, mode: GraphMode) -> CGFloat {
+        min(720, max(400, GraphCanvas.layout(graph: graph, mode: mode, include: { _ in false }).contentSize.height + 24))
+    }
+
+    // MARK: Work
+
+    private var workList: some View {
+        Group {
+            if runItems.isEmpty {
+                EmptyState("No work yet", message: "Work items appear when the planner splits this run's input.", systemImage: "checklist")
+            } else {
+                RowList(runItems) { item in
+                    HStack(spacing: PerpetoSpacing.x(3)) {
+                        RowText(item.title, meta: "\(workflow?.graph.node(item.nodeId)?.label ?? item.nodeId)" + (item.iteration > 1 ? " · round \(item.iteration)" : "") + (item.prUrl.map { " · \(Format.prNumber($0))" } ?? ""))
+                        Spacer(minLength: PerpetoSpacing.x(2))
+                        StatusLabel(item.statusLabel)
+                    }
+                }
+            }
+        }
+        .card()
     }
 }
 
-/// Detail for the selected node or edge, or the run's bottlenecks.
-struct SelectionPanel: View {
+extension MetricsWindow {
+    /// "1 h", "24 h", "7 d" for the window picker.
+    var shortTitle: String {
+        switch self {
+        case .hour: "1 h"
+        case .day: "24 h"
+        case .week: "7 d"
+        }
+    }
+
+    var startLabel: String {
+        switch self {
+        case .hour: "1 h ago"
+        case .day: "24 h ago"
+        case .week: "7 d ago"
+        }
+    }
+
+    var metaTitle: String {
+        switch self {
+        case .hour: "Last hour"
+        case .day: "Last 24 h"
+        case .week: "Last 7 days"
+        }
+    }
+}
+
+// MARK: Cards
+
+/// The latest events, a line of meta each; the rest on demand.
+struct ActivityCard: View {
+    var events: [HubEvent]
+    var graph: WorkflowGraph?
+    var messages: [String: Message]
+    var machines: [String: String]
+    var limit: Int?
+    @Binding var showAll: Bool
+
+    var body: some View {
+        let shown = (limit == nil || showAll) ? events : Array(events.prefix(limit ?? 5))
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
+            SectionTitle("Activity", detail: Format.plural(events.count, "event"))
+            if events.isEmpty {
+                Text("No interactions recorded yet.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted).padding(.top, PerpetoSpacing.x(3))
+            } else {
+                RowList(shown) { event in
+                    EventRow(event: event, graph: graph, messages: messages, machines: machines)
+                }
+                if let limit, events.count > limit {
+                    Button(showAll ? "Show fewer" : "Show all \(events.count)") { showAll.toggle() }
+                        .buttonStyle(.plain)
+                        .font(PerpetoFont.captionMedium)
+                        .foregroundStyle(PerpetoColor.inkSoft)
+                        .padding(.top, PerpetoSpacing.x(2))
+                }
+            }
+        }
+        .card()
+    }
+}
+
+/// One event: time, what happened, and one line of meta.
+struct EventRow: View {
+    var event: HubEvent
+    var graph: WorkflowGraph?
+    var messages: [String: Message] = [:]
+    var machines: [String: String] = [:]
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: PerpetoSpacing.x(5)) {
+            Text(event.at.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
+                .font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.muted)
+                .frame(width: 40, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).fixedSize(horizontal: false, vertical: true)
+                if let meta { Text(meta).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).lineLimit(2) }
+            }
+            Spacer(minLength: 0)
+            if let result = event.data["result"]?.stringValue, ["fail", "failed", "error"].contains(result) {
+                StatusLabel("Failed", tone: .error)
+            }
+        }
+    }
+
+    private func label(_ id: String?) -> String? { id.map { graph?.node($0)?.label ?? $0 } }
+
+    private var route: String? {
+        guard let from = label(event.sourceNodeId), let to = label(event.targetNodeId) else { return nil }
+        return "\(from) to \(to)"
+    }
+
+    private var title: String {
+        if let summary = event.data["summary"]?.stringValue { return summary }
+        if let id = event.data["messageId"]?.stringValue, let message = messages[id] { return message.body }
+        switch event.interaction {
+        case .agentMessaged:
+            let sender = event.data["senderRoleId"]?.stringValue ?? event.data["role"]?.stringValue ?? label(event.sourceNodeId) ?? "An agent"
+            return "\(sender.capitalizedFirst) messaged \(event.data["recipientRoleId"]?.stringValue ?? label(event.targetNodeId) ?? "a role")"
+        case .agentDelegated: return "\((event.data["role"]?.stringValue ?? label(event.sourceNodeId) ?? "An agent").capitalizedFirst) delegated to \(label(event.targetNodeId) ?? "a role")"
+        case .workitemMoved: return "Work moved \(route.map { "from " + $0.replacingOccurrences(of: " to ", with: " to ") } ?? "on")"
+        case .gateResult:
+            let result = event.data["result"]?.stringValue ?? "done"
+            return "\(label(event.data["nodeId"]?.stringValue) ?? "A gate") \(["pass", "passed"].contains(result) ? "passed" : result == "blocked" ? "is waiting for a person" : "failed")"
+        case .assignmentState:
+            let who = (event.data["role"]?.stringValue ?? label(event.data["nodeId"]?.stringValue) ?? "An agent").capitalizedFirst
+            let state = event.data["state"]?.stringValue ?? "updated"
+            return "\(who) \(state == "running" ? "started" : state)" + (event.data["machineId"]?.stringValue.map { " on \(machines[$0] ?? $0)" } ?? "")
+        case .unknown: return event.type
+        }
+    }
+
+    private var meta: String? {
+        var parts: [String] = []
+        if event.isUnplanned { parts.append(event.interaction == .agentDelegated ? "Unplanned delegation" : "Unplanned message") }
+        if let route, event.interaction != .assignmentState { parts.append(route) } else if let node = label(event.data["nodeId"]?.stringValue) { parts.append(node) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+extension String {
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
+}
+
+/// Two numbers and the trend bars.
+struct VelocityCard: View {
+    var metrics: MetricsSnapshot
+    var window: MetricsWindow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(5)) {
+            SectionTitle("Velocity", detail: window.metaTitle)
+            FigureStrip([
+                Figure("Items done per day", value: String(format: "%.1f", metrics.run.velocity.itemsDonePerDay)),
+                Figure.duration("Cycle time", seconds: metrics.run.cycleTimeSec.avg),
+            ])
+            if metrics.run.velocity.trend.allSatisfy({ $0 == 0 }) {
+                Text("No items finished in this window.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+            } else {
+                TrendBars(metrics.run.velocity.trend, start: window.startLabel).frame(height: 104)
+            }
+        }
+        .card()
+    }
+}
+
+/// Machine rows with slot meters.
+struct WhereRunningCard: View {
+    var store: FactoryStore
+    var metrics: MetricsSnapshot
+    var graph: WorkflowGraph?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
+            SectionTitle("Where work is running")
+            let loads = metrics.run.machines
+            if loads.isEmpty {
+                Text("No machine holds work for this run right now.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted).padding(.top, PerpetoSpacing.x(3))
+            } else {
+                RowList(loads) { load in
+                    let machine = store.machine(load.machineId)
+                    let capacity = machine?.capacity.maxAgents ?? max(load.activeAgents, 1)
+                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
+                        HStack {
+                            Mono(machine?.name ?? load.machineId, color: PerpetoColor.ink, size: PerpetoType.text14)
+                            Spacer()
+                            Text("\(load.activeAgents) of \(capacity) slots").font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.muted)
+                        }
+                        Meter(Double(load.activeAgents) / Double(capacity))
+                        Text(load.nodes.map { graph?.node($0)?.label ?? $0 }.joined(separator: ", "))
+                            .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                    }
+                }
+            }
+        }
+        .card()
+    }
+}
+
+/// The selected node or edge: three numbers, the rest on demand, and the
+/// work currently there.
+struct SelectionCard: View {
     var state: ProjectState
     var run: Run
     var graph: WorkflowGraph?
     var metrics: MetricsSnapshot?
     var selection: GraphSelection?
     var items: [WorkItem]
+    var close: () -> Void
+    @State private var more = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(5)) {
             if let id = selection?.nodeId, let node = graph?.node(id) {
-                nodeDetail(node)
-            } else if let id = selection?.edgeId, let edge = graph?.edges.first(where: { $0.id == id }), let graph {
-                EdgeInspector(edge: edge, graph: graph, metric: metrics?.edge(id), delete: nil).padding(-PerpetoSpacing.x(4))
-            } else {
-                SectionTitle("Bottlenecks", detail: metrics.map { "\($0.bottlenecks.count) measured" })
-                if let metrics, !metrics.bottlenecks.isEmpty {
-                    ForEach(metrics.bottlenecks.sorted { $0.severity.rank > $1.severity.rank }) { b in
-                        BottleneckRow(bottleneck: b, label: graph?.node(b.nodeId)?.label ?? b.nodeId)
+                head(node.label, meta: node.harness.map { "\(node.type.title) · \(Format.model($0.model))" } ?? node.type.title, icon: node.type.systemImage)
+                if let m = metrics?.node(id) {
+                    FigureStrip([
+                        Figure("Active", value: m.concurrency.map { "\(m.active) of \($0)" } ?? "\(m.active)", size: PerpetoType.text24),
+                        Figure("Queued", value: "\(m.queued)", size: PerpetoType.text24),
+                        Figure("Wait, p90", value: Format.duration(m.waitSec.p90), size: PerpetoType.text24),
+                    ])
+                    Disclosure("More metrics", isExpanded: $more) {
+                        FigureStrip([
+                            Figure("Service time", value: Format.duration(m.serviceSec.avg), size: PerpetoType.text20),
+                            Figure("Throughput", value: Format.rate(m.throughputPerHour), size: PerpetoType.text20),
+                            Figure("Failure rate", value: m.failureRate.map(Format.percent) ?? "n/a", size: PerpetoType.text20),
+                        ])
                     }
-                } else {
-                    Text(metrics == nil ? "No measurements for this run." : "Nothing is holding work up.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
                 }
-                Text("Select a node or edge on the map for its numbers.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                ForEach(metrics?.bottlenecks(for: id) ?? []) { b in
+                    HStack(alignment: .top, spacing: PerpetoSpacing.x(3)) {
+                        StatusIcon(b.severity.tone)
+                        Text(b.evidence).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                let here = items.filter { $0.nodeId == id && $0.status != .done }
+                if !here.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Work here").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
+                        RowList(here) { item in
+                            HStack {
+                                Text(item.title).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(1)
+                                Spacer()
+                                if item.iteration > 1 { Text("round \(item.iteration)").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted) }
+                                StatusLabel(item.statusLabel)
+                            }
+                        }
+                    }
+                }
+            } else if let id = selection?.edgeId, let graph, let edge = graph.edges.first(where: { $0.id == id }) {
+                let name = { (n: String) in graph.node(n)?.label ?? n }
+                head("\(name(edge.from.node)) to \(name(edge.to.node))", meta: EdgeStyle.meaning(edge.kind), icon: "arrow.right")
+                FigureStrip([Figure(edge.kind == .flow ? "Items moved" : "Interactions", value: "\(metrics?.edge(id)?.count ?? 0)", size: PerpetoType.text24)])
             }
         }
-        .panel()
+        .card()
     }
 
-    @ViewBuilder
-    private func nodeDetail(_ node: GraphNode) -> some View {
-        HStack(spacing: PerpetoSpacing.x(2)) {
-            Image(systemName: node.type.systemImage).foregroundStyle(PerpetoColor.muted)
-            Text(node.label).font(PerpetoFont.heading).foregroundStyle(PerpetoColor.ink)
+    private func head(_ title: String, meta: String, icon: String) -> some View {
+        HStack(spacing: PerpetoSpacing.x(3)) {
+            IconTile(icon)
+            RowText(title, meta: meta)
             Spacer()
-            Text(node.type.title).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-        }
-        if let m = metrics?.node(node.id) {
-            Grid(alignment: .leading, horizontalSpacing: PerpetoSpacing.x(4), verticalSpacing: PerpetoSpacing.x(2)) {
-                GridRow { cell("Active", m.concurrency.map { "\(m.active) of \($0)" } ?? "\(m.active)"); cell("Queued", "\(m.queued)") }
-                GridRow { cell("Wait avg", Format.duration(m.waitSec.avg)); cell("Wait p90", Format.duration(m.waitSec.p90)) }
-                GridRow { cell("Service avg", Format.duration(m.serviceSec.avg)); cell("Throughput", Format.rate(m.throughputPerHour)) }
-                GridRow { cell("Utilization", m.utilization.map(Format.percent) ?? "n/a"); cell("Failure rate", m.failureRate.map(Format.percent) ?? "n/a") }
-                GridRow { cell("Done", "\(m.done)"); cell("Tokens", Format.tokens(m.tokens)) }
-            }
-        }
-        ForEach(metrics?.bottlenecks(for: node.id) ?? []) { b in
-            BottleneckRow(bottleneck: b, label: node.label)
-        }
-        let here = items.filter { $0.nodeId == node.id && $0.status != .done }
-        if !here.isEmpty {
-            Rule()
-            Text("Work here").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
-            ForEach(here) { item in
-                HStack(spacing: PerpetoSpacing.x(2)) {
-                    StatusLabel(item.status.label).frame(width: 64, alignment: .leading)
-                    Text(item.title).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(1)
-                    Spacer(minLength: 0)
-                    if item.iteration > 1 {
-                        Text("it. \(item.iteration)").font(PerpetoFont.mono()).foregroundStyle(item.iteration >= 3 ? PerpetoColor.warning : PerpetoColor.muted)
-                    }
-                }
-            }
-        }
-    }
-
-    private func cell(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-            Text(value).font(PerpetoFont.bodyMedium.monospacedDigit()).foregroundStyle(PerpetoColor.ink)
+            IconButton("xmark", label: "Close details", action: close)
         }
     }
 }
 
-struct BottleneckRow: View {
-    var bottleneck: Bottleneck
-    var label: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: PerpetoSpacing.x(2)) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(bottleneck.severity.tone == .neutral ? PerpetoColor.muted : bottleneck.severity.tone.color)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: PerpetoSpacing.x(2)) {
-                    Text("\(label): \(bottleneck.reason.title.lowercased())").font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
-                    StatusLabel(bottleneck.severity.title, tone: bottleneck.severity.tone)
-                }
-                Text(bottleneck.evidence).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.ink).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-}
-
-struct VelocityPanel: View {
+/// Every step's numbers, behind "Node details".
+struct NodeTable: View {
+    var graph: WorkflowGraph
     var metrics: MetricsSnapshot
-    var window: MetricsWindow
+    var select: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            SectionTitle("Velocity", detail: "items done, \(window.title.lowercased())")
-            VelocityChart(trend: metrics.run.velocity.trend, window: window).frame(height: 110)
-            Grid(alignment: .leading, horizontalSpacing: PerpetoSpacing.x(4), verticalSpacing: PerpetoSpacing.x(2)) {
+        let rows = graph.flowOrder.filter { metrics.node($0.id) != nil }
+        Grid(alignment: .leading, horizontalSpacing: PerpetoSpacing.x(6), verticalSpacing: PerpetoSpacing.x(3)) {
+            GridRow {
+                ForEach(["Step", "Active", "Queued", "Wait, p90", "Throughput", "Failure rate"], id: \.self) { title in
+                    Text(title).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                        .gridColumnAlignment(title == "Step" ? .leading : .trailing)
+                }
+            }
+            ForEach(rows) { node in
+                let m = metrics.node(node.id)!
+                Divider().overlay(PerpetoColor.border).gridCellUnsizedAxes(.horizontal)
                 GridRow {
-                    Figure("Per day", value: String(format: "%.1f", metrics.run.velocity.itemsDonePerDay))
-                    Figure("In progress", value: "\(metrics.run.wip)")
+                    Button(node.label) { select(node.id) }.buttonStyle(.plain).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
+                    Text(m.concurrency.map { "\(m.active) of \($0)" } ?? "\(m.active)")
+                    Text("\(m.queued)")
+                    Text(Format.duration(m.waitSec.p90))
+                    Text(Format.rate(m.throughputPerHour))
+                    Text(m.failureRate.map(Format.percent) ?? "n/a")
                 }
-                GridRow {
-                    Figure("Cycle time", value: Format.duration(metrics.run.cycleTimeSec.avg), detail: "p90 " + Format.duration(metrics.run.cycleTimeSec.p90))
-                    Figure("Tokens per item", value: Format.tokens(metrics.run.tokensPerItem))
-                }
+                .font(PerpetoFont.body.monospacedDigit())
+                .foregroundStyle(PerpetoColor.ink)
             }
-        }
-        .panel()
-    }
-}
-
-/// Machines → agents → nodes for the run.
-struct WhereRunningPanel: View {
-    var store: FactoryStore
-    var state: ProjectState
-    var run: Run
-    var metrics: MetricsSnapshot
-    var graph: WorkflowGraph?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            SectionTitle("Where work is running", detail: Format.plural(metrics.run.machines.count, "machine"))
-            ForEach(Array(metrics.run.machines.enumerated()), id: \.element.id) { index, load in
-                if index > 0 { Rule() }
-                let machine = store.machine(load.machineId)
-                VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
-                    HStack(spacing: PerpetoSpacing.x(2)) {
-                        Image(systemName: "desktopcomputer").foregroundStyle(PerpetoColor.muted).font(.system(size: 12))
-                        Text(machine?.name ?? load.machineId).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
-                        if let machine { StatusLabel(machine.status.label) }
-                        Spacer()
-                        Text(Format.plural(load.activeAgents, "agent")).font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.ink)
-                    }
-                    if let machine {
-                        Meter(Double(machine.running.agents) / Double(max(machine.capacity.maxAgents, 1)))
-                        Text("\(machine.running.agents) of \(machine.capacity.maxAgents) agent slots, \(machine.running.jobs) of \(machine.capacity.maxJobs) CI slots")
-                            .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-                    }
-                    ForEach(state.assignments.filter { $0.runId == run.id && $0.machineId == load.machineId && $0.isWorking }) { a in
-                        HStack(spacing: PerpetoSpacing.x(2)) {
-                            Rectangle().fill(PerpetoColor.border).frame(width: 8, height: 1)
-                            Text(a.role).font(PerpetoFont.mono()).foregroundStyle(PerpetoColor.ink)
-                            Image(systemName: "arrow.right").font(.system(size: 9)).foregroundStyle(PerpetoColor.muted)
-                            Text(graph?.node(a.nodeId)?.label ?? a.nodeId).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.ink)
-                            Spacer()
-                        }
-                    }
-                    ForEach(store.factory.jobs.filter { $0.runId == run.id && $0.machineId == load.machineId && ($0.status == .running || $0.status == .leased) }) { job in
-                        HStack(spacing: PerpetoSpacing.x(2)) {
-                            Rectangle().fill(PerpetoColor.border).frame(width: 8, height: 1)
-                            Text(job.id).font(PerpetoFont.mono()).foregroundStyle(PerpetoColor.ink)
-                            Image(systemName: "arrow.right").font(.system(size: 9)).foregroundStyle(PerpetoColor.muted)
-                            Text("CI at \(Format.shortSha(job.revision))").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.ink)
-                            Spacer()
-                        }
-                    }
-                }
-            }
-        }
-        .panel()
-    }
-}
-
-/// Interaction events for the run, filtered by the map selection.
-struct InteractionFeed: View {
-    var events: [HubEvent]
-    var selection: GraphSelection?
-    var graph: WorkflowGraph?
-    var messages: [String: Message] = [:]
-    var machines: [String: String] = [:]
-
-    private var filtered: [HubEvent] {
-        switch selection {
-        case .node(let id): events.filter { $0.nodeIds.contains(id) }
-        case .edge(let id): events.filter { $0.edgeId == id }
-        case nil: events
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionTitle("Interactions", detail: filterDetail) {
-                Text("\(filtered.count) events, \(filtered.filter(\.isUnplanned).count) unplanned")
-                    .font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.muted)
-            }
-            .padding(.bottom, PerpetoSpacing.x(2))
-            Rule()
-            if filtered.isEmpty {
-                Text("No interactions recorded for this selection.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted).padding(.top, PerpetoSpacing.x(3))
-                Spacer()
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(filtered) { event in
-                            EventRow(event: event, graph: graph, messages: messages, machines: machines).padding(.vertical, PerpetoSpacing.x(2))
-                            Rule()
-                        }
-                    }
-                }
-            }
-        }
-        .panel()
-    }
-
-    private var filterDetail: String {
-        switch selection {
-        case .node(let id): "involving \(graph?.node(id)?.label ?? id)"
-        case .edge(let id): "on edge \(id)"
-        case nil: "all roles"
         }
     }
 }

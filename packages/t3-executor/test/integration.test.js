@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 
 import { createT3Executor, T3Client, parseRoleResult, outputKind } from '../src/index.js';
 import { startFakeT3, build } from './fake-t3.js';
+import { localPullRequestUrl } from '../src/workspace.js';
 import { createAccountProvider } from '@perpeto/node';
 
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -96,6 +97,7 @@ test('builders clone repo.url, publish the work branch and rework from it', asyn
   assert.equal(first.outcome, 'success');
   assert.equal(first.branch, 'perpeto/wi_7');
   assert.equal(git(origin, 'rev-parse', 'refs/heads/perpeto/wi_7'), first.headSha, 'branch head published to origin');
+  assert.equal(first.prUrl, 'local:perpeto/wi_7', 'a local origin has no forge, so the merge queue gets the branch');
   assert.ok(events.some(event => event.data.interaction === 'branch.published' && event.data.published));
   const prompt = fake.state.commands.find(item => item.tag === 'orchestration.launchThread').payload.initialMessage.text;
   assert.match(prompt, /Work on branch perpeto\/wi_7 and commit your changes there/);
@@ -115,8 +117,29 @@ test('builders clone repo.url, publish the work branch and rework from it', asyn
   // Nothing new committed: nothing is pushed.
   reply(fake, 'Nothing to change.');
   const pushes = events.filter(event => event.data.interaction === 'branch.published').length;
-  await executor.run(base({ repo, attempt: 3 }), await ctx());
+  const third = await executor.run(base({ repo, attempt: 3 }), await ctx());
   assert.equal(events.filter(event => event.data.interaction === 'branch.published').length, pushes);
+  assert.equal(third.prUrl, undefined, 'no new push, so the work item keeps its earlier reference');
+});
+
+test('providers lists the driver kinds T3 reports enabled and ready', async t => {
+  const fake = await startFakeT3({ providers: [
+    { instanceId: 'codex', driver: 'codex', enabled: true, status: 'ready' },
+    { instanceId: 'codex_work', driver: 'codex', enabled: true, status: 'ready' },
+    { instanceId: 'claudeAgent', driver: 'claudeAgent', enabled: true, status: 'error' },
+    { instanceId: 'cursor', driver: 'cursor', enabled: false, status: 'ready' },
+  ] });
+  const executor = createT3Executor({ config: { url: fake.url }, createClient: settings => new T3Client({ baseUrl: settings.url, token: 'test-token', pingMs: 0 }) });
+  t.after(async () => { await executor.close(); await fake.close(); });
+  assert.deepEqual(await executor.providers(), ['codex']);
+});
+
+test('local pull request references cover local bare repositories only', () => {
+  assert.equal(localPullRequestUrl({ url: '/srv/app.git', defaultBranch: 'main' }, 'perpeto/wi_1'), 'local:perpeto/wi_1');
+  assert.equal(localPullRequestUrl({ url: 'file:///srv/app.git' }, 'b'), 'local:b');
+  assert.equal(localPullRequestUrl({ url: 'https://github.com/o/r.git', localPath: '/src/r' }, 'b'), undefined);
+  assert.equal(localPullRequestUrl({ url: 'git@github.com:o/r.git' }, 'b'), undefined);
+  assert.equal(localPullRequestUrl({ url: 'https://gitlab.example/o/r.git' }, 'b'), undefined);
 });
 
 function fakeAccounts({ bindingError } = {}) {

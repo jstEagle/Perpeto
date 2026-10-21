@@ -30,8 +30,12 @@ struct PerpetoiOSApp: App {
                                 ToolbarItem(placement: .cancellationAction) { Button("Done") { showConnection = false } }
                             }
                     }
+                    .tint(PerpetoColor.ink)
                 }
-                .task { await LaunchOptions.apply(to: navigator, store: store) }
+                .task {
+                    await LaunchOptions.apply(to: navigator, store: store)
+                    if CommandLine.arguments.contains("--settings") { showConnection = true }
+                }
                 // Dark mode is intentionally undefined in brand/README.md.
                 .preferredColorScheme(.light)
         }
@@ -43,6 +47,7 @@ struct PerpetoiOSApp: App {
 ///     (`runs` opens the running run's map; `runs-list` the list of runs)
 ///   --node <node id>     select a node on the run map
 ///   --detail-only        hide the sidebar (iPad)
+///   --settings           open the hub connection sheet
 ///   --hub-url <url> --hub-token-file <path>   read a live hub; the token
 ///     comes from an owner-only file, never an argument
 enum LaunchOptions {

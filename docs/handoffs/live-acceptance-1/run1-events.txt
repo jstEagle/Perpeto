@@ -1,0 +1,58 @@
+05:16:14 run.started run:run_a37a00d1 
+05:16:17 assignment.updated assignment:asg_a37a00d1 queued
+05:16:17 assignment.state assignment:asg_a37a00d1 queued planner
+05:16:17 workitem.moved workItem:wi_a37a00d1f input-plan input planner
+05:16:17 run.input run:run_a37a00d1 
+05:16:17 assignment.leased assignment:asg_a37a00d1 m
+05:16:17 assignment.state assignment:asg_a37a00d1 leased planner m
+05:16:17 assignment.state assignment:asg_a37a00d1 running planner m
+05:16:17 assignment.started assignment:asg_a37a00d1 
+05:16:17 assignment.progress assignment:asg_a37a00d1 thread.started
+05:16:18 assignment.progress assignment:asg_a37a00d1 turn.started
+05:16:38 assignment.usage assignment:asg_a37a00d1 
+05:16:38 assignment.progress assignment:asg_a37a00d1 completed turn.finished
+05:16:40 assignment.state assignment:asg_a37a00d1 succeeded planner m
+05:16:40 assignment.updated assignment:asg_a37a00d1 queued
+05:16:40 assignment.state assignment:asg_a37a00d1 queued builder
+05:16:40 workitem.moved workItem:wi_a37a00d1f plan-delivery planner delivery-loop
+05:16:40 loop.iteration workItem:wi_a37a00d1f delivery-loop
+05:16:40 workitem.moved workItem:wi_a37a00d1f delivery-review delivery-loop review-loop
+05:16:40 loop.iteration workItem:wi_a37a00d1f review-loop
+05:16:40 workitem.moved workItem:wi_a37a00d1f review-build review-loop builder
+05:16:40 assignment.completed assignment:asg_a37a00d1 
+05:16:40 assignment.leased assignment:asg_a37a00d1 m
+05:16:40 assignment.state assignment:asg_a37a00d1 leased builder m
+05:16:40 assignment.state assignment:asg_a37a00d1 running builder m
+05:16:40 assignment.started assignment:asg_a37a00d1 
+05:16:40 assignment.progress assignment:asg_a37a00d1 thread.started
+05:16:41 assignment.progress assignment:asg_a37a00d1 turn.started
+05:17:37 assignment.usage assignment:asg_a37a00d1 
+05:17:37 assignment.progress assignment:asg_a37a00d1 completed turn.finished
+05:17:39 assignment.progress assignment:asg_a37a00d1 branch.published
+05:17:39 assignment.state assignment:asg_a37a00d1 succeeded builder m
+05:17:39 assignment.updated assignment:asg_a37a00d1 queued
+05:17:39 assignment.state assignment:asg_a37a00d1 queued reviewer
+05:17:39 workitem.moved workItem:wi_a37a00d1f build-review builder reviewer
+05:17:39 assignment.completed assignment:asg_a37a00d1 
+05:17:39 assignment.leased assignment:asg_a37a00d1 m
+05:17:39 assignment.state assignment:asg_a37a00d1 leased reviewer m
+05:17:39 assignment.state assignment:asg_a37a00d1 running reviewer m
+05:17:39 assignment.started assignment:asg_a37a00d1 
+05:17:39 assignment.progress assignment:asg_a37a00d1 thread.started
+05:17:40 assignment.progress assignment:asg_a37a00d1 turn.started
+05:18:05 assignment.usage assignment:asg_a37a00d1 
+05:18:06 assignment.progress assignment:asg_a37a00d1 completed turn.finished
+05:18:08 assignment.state assignment:asg_a37a00d1 succeeded reviewer m
+05:18:08 gate.result assignment:asg_a37a00d1 pass review reviewer m
+05:18:08 job.updated job:job_a37a00d1 queued
+05:18:08 workitem.moved workItem:wi_a37a00d1f review-pass reviewer ci
+05:18:08 assignment.completed assignment:asg_a37a00d1 pass
+05:18:08 job.leased job:job_a37a00d1 m
+05:18:08 job.started job:job_a37a00d1 
+05:18:08 job.step job:job_a37a00d1 passed
+05:18:08 job.step job:job_a37a00d1 passed
+05:18:08 gate.result assignment:job_a37a00d1 passed ci ci m
+05:18:08 workitem.moved workItem:wi_a37a00d1f ci-pass ci merge
+05:18:08 run.updated run:run_a37a00d1 failed
+05:18:08 job.completed job:job_a37a00d1 passed
+RUN failed

@@ -425,7 +425,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     cleanupTask ??= (async () => {
       service.abort(); polling.abort();
       await Promise.allSettled([heartbeatTask, rotationLoopTask, rotationTask, ...pollTasks]);
-      try { if (integrationsReady) await accountProvider?.close?.(); }
+      try { if (integrationsReady) { await registry?.close?.(); await accountProvider?.close?.(); } }
       finally {
         try { if (runtimeAttempted) await runtime.stop(); }
         finally {
@@ -460,6 +460,11 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         machine.runtimeUrl = await runtime.start({ signal: service.signal });
         ({ registry, accountProvider } = await loadIntegrations(config, { registry, accountProvider, runtimeUrl: machine.runtimeUrl }));
         integrationsReady = true;
+        // The runtime may run harnesses this daemon's PATH does not show (another Node version, a managed CLI).
+        const reported = await registry.providers?.({ signal: AbortSignal.any([service.signal, AbortSignal.timeout(10000)]) }) ?? [];
+        for (const provider of reported) {
+          if (!machine.providers.includes(provider) && (!config.providers || config.providers.includes(provider))) machine.providers.push(provider);
+        }
         machine.providers = machine.providers.filter(provider => registry.find({ harness: { provider, model: 'discovery' }, requirements: {}, policy: {} }, machine));
         await enroll();
         // Machine-scoped integrations (the account pool) can only open once the machine ID is known.

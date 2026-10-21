@@ -1,369 +1,334 @@
-import Charts
 import PerpetoKit
 import SwiftUI
 
+/// Project overview: what is live, what needs a person, the goals, then
+/// recent runs and the merge queue. Three numbers up front; the rest behind
+/// "More metrics".
 struct OverviewScreen: View {
     var store: FactoryStore
     var navigator: Navigator
     var project: Project
     var state: ProjectState
 
+    @State private var moreMetrics = false
+    @State private var moreIssues = false
+    @State private var showDocs = false
+    @Environment(\.compactLayout) private var compact
+
     private var liveRun: Run? { state.runs.first { $0.status == .running } ?? state.runs.first { $0.status == .paused } }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: PerpetoSpacing.x(6)) {
-                header
-                FigureStrip([
-                    Figure("Active agents", value: "\(state.activeAgents)", detail: "across \(Format.plural(Set(state.assignments.filter(\.isWorking).compactMap(\.machineId)).count, "machine"))"),
-                    Figure("Queued work", value: "\(state.queuedWork)", detail: "\(state.workItems.filter { $0.status == .active }.count) items active"),
-                    Figure("Tokens today", value: Format.tokens(state.usage.today), detail: Format.tokens(state.usage.total) + " in \(Format.plural(state.usage.byDay.count, "day"))"),
-                    Figure("Items done per day", value: state.metrics.map { String(format: "%.1f", $0.run.velocity.itemsDonePerDay) } ?? "—", detail: state.metrics.map { "WIP \($0.run.wip)" } ?? "No run measured yet"),
-                    Figure("Cycle time p90", value: state.metrics.map { Format.duration($0.run.cycleTimeSec.p90) } ?? "—", detail: state.metrics.map { "avg " + Format.duration($0.run.cycleTimeSec.avg) } ?? " "),
-                ])
+            VStack(alignment: .leading, spacing: PerpetoGap.cards) {
+                header.padding(.bottom, PerpetoSpacing.x(compact ? 0 : 4))
+                liveCard
                 AdaptiveColumns {
-                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
-                        bottleneckPanel
-                        agentsPanel
-                    }
+                    attentionCard
+                    goalsCard
                 } side: {
-                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
-                        velocityPanel
-                        usagePanel
-                    }
+                    runsCard
+                    mergeCard
                 }
-                activityPanel
             }
             .screenPadding()
-            .frame(maxWidth: 1240, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
+    // MARK: Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            Text(project.name)
-                .font(PerpetoFont.display())
-                .displayTracking()
-                .foregroundStyle(PerpetoColor.ink)
-            // Wraps onto two lines rather than widening the page on a phone.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: PerpetoSpacing.x(3)) { repoLine; runLine }
-                VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) { repoLine; runLine }
+        ScreenHeader(project.name, meta: {
+            HStack(spacing: 6) {
+                Mono(Format.repoName(project.repo.url), color: PerpetoColor.inkSoft, size: compact ? PerpetoType.text13 : PerpetoType.text14)
+                Text("on")
+                Mono(project.repo.defaultBranch, color: PerpetoColor.inkSoft, size: compact ? PerpetoType.text13 : PerpetoType.text14)
             }
-            if !project.goals.isEmpty {
-                VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
-                    ForEach(project.goals, id: \.self) { goal in
-                        HStack(alignment: .firstTextBaseline, spacing: PerpetoSpacing.x(2)) {
-                            Rectangle().fill(PerpetoColor.accent).frame(width: 6, height: 2).offset(y: -3)
-                            Text(goal).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink)
-                        }
-                    }
+        }) {
+            if !compact {
+                Menu {
+                    Button("Refresh") { Task { await store.refresh() } }
+                    Button("Open workflows") { navigator.route = .project(project.id, .workflows) }
+                    Button("All runs") { navigator.selectedRunId = nil; navigator.route = .project(project.id, .runs) }
+                } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(PerpetoColor.inkSoft)
+                        .frame(width: PerpetoControl.height, height: PerpetoControl.height).contentShape(Circle())
                 }
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                .accessibilityLabel("More actions")
             }
-        }
-    }
-
-    private var repoLine: some View {
-        HStack(spacing: PerpetoSpacing.x(3)) {
-            Mono(Format.repoName(project.repo.url)).lineLimit(1)
-            Tag(project.repo.defaultBranch, systemImage: "arrow.triangle.branch")
+            primaryAction.fullWidthButtons(compact)
         }
     }
 
     @ViewBuilder
-    private var runLine: some View {
+    private var primaryAction: some View {
         if let run = liveRun {
-            HStack(spacing: PerpetoSpacing.x(3)) {
-                StatusLabel(run.status.label)
-                Mono(run.id).lineLimit(1).truncationMode(.middle)
-            }
+            Button { openRun(run) } label: { Label("Open live map", systemImage: "arrow.right").labelStyle(TrailingIconLabelStyle()) }
+                .buttonStyle(.perpetoPrimary)
+        } else if state.workflows.isEmpty {
+            Button("Draft a workflow") { navigator.route = .project(project.id, .workflows) }.buttonStyle(.perpetoPrimary)
+        } else {
+            Button("Open workflows") { navigator.route = .project(project.id, .workflows) }.buttonStyle(.perpetoPrimary)
         }
     }
 
-    @ViewBuilder
-    private var bottleneckPanel: some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            SectionTitle("Top bottleneck", detail: state.metrics?.window.map { "measured over \($0)" })
-            if let top = state.metrics?.topBottleneck, let run = liveRun {
-                let label = state.workflows.first { $0.id == run.workflowId }?.graph.node(top.nodeId)?.label ?? top.nodeId
-                HStack(alignment: .top, spacing: PerpetoSpacing.x(3)) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(top.severity.tone.color)
-                        .font(.system(size: 16))
-                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
-                        HStack(spacing: PerpetoSpacing.x(2)) {
-                            Text("\(label): \(top.reason.title.lowercased())")
-                                .font(PerpetoFont.title(PerpetoType.text16))
-                                .foregroundStyle(PerpetoColor.ink)
-                            StatusLabel(top.severity.title, tone: top.severity.tone)
-                        }
-                        Text(top.evidence).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).fixedSize(horizontal: false, vertical: true)
-                        if let others = state.metrics?.bottlenecks.filter({ $0 != top }), !others.isEmpty {
-                            Text("Also: " + others.map { $0.reason.title.lowercased() + " at " + (state.workflows.first { $0.id == run.workflowId }?.graph.node($0.nodeId)?.label ?? $0.nodeId) }.joined(separator: "; ") + ".")
-                                .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+    private func openRun(_ run: Run) {
+        navigator.selectedRunId = run.id
+        navigator.route = .project(project.id, .runs)
+    }
+
+    // MARK: Live
+
+    private var liveCard: some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(6)) {
+            let lead = VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
+                HStack(spacing: PerpetoSpacing.x(3)) {
+                    if let run = liveRun, run.status == .running { LiveDot() } else { StatusIcon(liveRun == nil ? .neutral : .paused) }
+                    Text(liveTitle).font(PerpetoType.text(PerpetoType.text16, weight: .medium)).foregroundStyle(PerpetoColor.ink)
+                }
+                if let run = liveRun {
+                    RunMeta(run: run).padding(.leading, PerpetoSpacing.x(6))
+                } else {
+                    Text("Start a run from Workflows to see work move.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                }
+            }
+            if compact {
+                lead
+                FigureStrip(headline)
+            } else {
+                HStack(alignment: .top, spacing: PerpetoSpacing.x(8)) {
+                    lead.frame(maxWidth: .infinity, alignment: .leading)
+                    FigureStrip(headline).frame(maxWidth: 560)
+                }
+            }
+            Disclosure("More metrics", isExpanded: $moreMetrics) {
+                FigureStrip(more)
+            }
+        }
+        .card()
+    }
+
+    private var liveTitle: String {
+        guard let run = liveRun else { return "No run is live" }
+        let name = state.workflows.first { $0.id == run.workflowId }?.name ?? "Workflow"
+        return run.status == .running ? "\(name) run is live" : "\(name) run is paused"
+    }
+
+    private var headline: [Figure] {
+        [
+            Figure("Agents working", value: "\(state.activeAgents)"),
+            Figure("Queued work", value: "\(state.queuedWork)"),
+            Figure("Tokens today", value: Format.tokens(state.usage.today)),
+        ]
+    }
+
+    private var more: [Figure] {
+        let m = state.metrics?.run
+        return [
+            Figure("Items done per day", value: m.map { String(format: "%.1f", $0.velocity.itemsDonePerDay) } ?? "n/a", size: PerpetoType.text20),
+            Figure("Cycle time, p90", value: Format.duration(m?.cycleTimeSec.p90), size: PerpetoType.text20),
+            Figure("Tokens per item", value: Format.tokens(m?.tokensPerItem), size: PerpetoType.text20),
+        ]
+    }
+
+    // MARK: Attention
+
+    private struct Issue: Identifiable {
+        var id: String
+        var title: String
+        var detail: String
+        var tone: StatusTone
+        var draft: Workflow?
+        var nodeId: String?
+        var workItem: WorkItem?
+    }
+
+    private var issues: [Issue] {
+        var result: [Issue] = []
+        let graph = liveRun.flatMap { run in state.version(run.workflowVersion, of: run.workflowId)?.graph ?? state.workflows.first { $0.id == run.workflowId }?.graph }
+        for b in (state.metrics?.bottlenecks ?? []).sorted(by: { $0.severity.rank > $1.severity.rank }) where b.severity != .info {
+            let label = graph?.node(b.nodeId)?.label ?? b.nodeId
+            let draft = liveRun.flatMap { state.pendingDraft(of: $0.workflowId) }
+            result.append(Issue(id: b.id, title: "\(label) is \(b.reason.title.lowercased())",
+                                detail: b.evidence + (result.isEmpty ? (draft.map { " Workflow v\($0.version) proposes a change." } ?? "") : ""),
+                                tone: .warning, draft: result.isEmpty ? draft : nil, nodeId: b.nodeId))
+        }
+        for item in state.workItems where item.status == .blocked && item.decisionId != nil {
+            result.append(Issue(id: item.id, title: "Approval needed: \(item.title)", detail: "A person decides before this work continues.", tone: .approval, workItem: item))
+        }
+        for workflow in state.workflows {
+            if let draft = state.pendingDraft(of: workflow.id), !result.contains(where: { $0.draft?.version == draft.version }) {
+                result.append(Issue(id: "draft-\(workflow.id)", title: "Workflow v\(draft.version) is ready to review",
+                                    detail: draft.rationale ?? "A new draft of \(workflow.name) waits for activation.", tone: .warning, draft: draft))
+            }
+        }
+        return result
+    }
+
+    private var attentionCard: some View {
+        let all = issues
+        return VStack(alignment: .leading, spacing: PerpetoSpacing.x(5)) {
+            SectionTitle("Needs attention", detail: all.isEmpty ? nil : "\(all.count) open")
+            if let first = all.first {
+                issue(first)
+                if all.count > 1 {
+                    Disclosure(Format.plural(all.count - 1, "more issue"), isExpanded: $moreIssues) {
+                        VStack(alignment: .leading, spacing: PerpetoSpacing.x(6)) {
+                            ForEach(all.dropFirst()) { issue($0) }
                         }
                     }
+                    .padding(.leading, PerpetoSpacing.x(9))
                 }
+            } else {
+                HStack(spacing: PerpetoSpacing.x(3)) {
+                    StatusIcon(.success)
+                    Text("Nothing needs you. Work is moving at the expected rate.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
+                }
+            }
+        }
+        .card()
+    }
+
+    private func issue(_ issue: Issue) -> some View {
+        HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
+            StatusIcon(issue.tone, size: 20).padding(.top, 1)
+            VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
+                Text(issue.title).font(PerpetoType.text(PerpetoType.text16, weight: .medium)).foregroundStyle(PerpetoColor.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(issue.detail).perpetoBody(PerpetoType.text14, color: PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: PerpetoSpacing.x(2)) {
-                    if let draft = state.pendingDraft(of: run.workflowId) {
-                        Button("Review proposal, version \(draft.version)") {
-                            navigator.selectedWorkflowId = run.workflowId
+                    if let draft = issue.draft {
+                        Button("Review proposal") {
+                            navigator.selectedWorkflowId = draft.id
                             navigator.route = .project(project.id, .workflows)
                         }
-                        .buttonStyle(.perpetoPrimary)
+                        .buttonStyle(.perpetoSecondary)
                     }
-                    Button("Open live map") {
-                        navigator.selectedRunId = run.id
-                        navigator.route = .project(project.id, .runs)
+                    if issue.workItem != nil {
+                        Button("Open work") { navigator.route = .project(project.id, .work) }.buttonStyle(.perpetoSecondary)
                     }
-                    .buttonStyle(.perpetoSecondary)
+                    if let node = issue.nodeId, let run = liveRun {
+                        Button("Show on map") {
+                            navigator.selectedNodeId = node
+                            openRun(run)
+                        }
+                        .buttonStyle(.perpetoGhost)
+                    }
                 }
+                .padding(.top, PerpetoSpacing.x(3))
+            }
+        }
+    }
+
+    // MARK: Goals
+
+    private var goalsCard: some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
+            SectionTitle("Goals")
+            if project.goals.isEmpty {
+                Text("Add goals so the planner knows what to aim for.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
+                    .padding(.top, PerpetoSpacing.x(3))
             } else {
-                Text(liveRun == nil ? "No run is active. Start a run from Workflows to measure flow." : "No bottleneck measured. Work is moving at the expected rate.")
-                    .font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .panel()
-    }
-
-    private var agentsPanel: some View {
-        let working = state.assignments.filter(\.isWorking)
-        return VStack(alignment: .leading, spacing: 0) {
-            SectionTitle("Active agents", detail: Format.plural(working.count, "agent") + " working")
-                .padding(.bottom, PerpetoSpacing.x(3))
-            if working.isEmpty {
-                Text("No agents are working on this project.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
-            }
-            ForEach(Array(working.enumerated()), id: \.element.id) { index, assignment in
-                if index > 0 { Rule() }
-                AgentRow(assignment: assignment, item: state.workItems.first { $0.id == assignment.workItemId }, machine: store.machine(assignment.machineId))
-                    .padding(.vertical, PerpetoSpacing.x(2.5))
-            }
-        }
-        .panel()
-    }
-
-    private var velocityPanel: some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            SectionTitle("Velocity", detail: "items done, \(store.metricsWindow.title.lowercased())")
-            if let metrics = state.metrics {
-                VelocityChart(trend: metrics.run.velocity.trend, window: store.metricsWindow)
-                    .frame(height: 120)
-                HStack {
-                    Figure("Per day", value: String(format: "%.1f", metrics.run.velocity.itemsDonePerDay))
-                    Figure("Tokens per item", value: Format.tokens(metrics.run.tokensPerItem))
+                RowList(project.goals.map { IdentifiedText(text: $0) }) { goal in
+                    Text(goal.text).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).fixedSize(horizontal: false, vertical: true)
                 }
-            } else {
-                Text("Velocity appears once a run finishes its first item.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
             }
-        }
-        .panel()
-    }
-
-    private var usagePanel: some View {
-        VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            SectionTitle("Token usage", detail: "last 14 days")
-            TokenDayChart(groups: state.usage.byDay, compact: true)
-                .frame(height: 120)
-        }
-        .panel()
-    }
-
-    private var activityPanel: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionTitle("Recent activity")
-                .padding(.bottom, PerpetoSpacing.x(3))
-            if state.events.isEmpty {
-                Text("Nothing has happened in this project yet.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
-            }
-            ForEach(Array(state.events.prefix(6).enumerated()), id: \.element.id) { index, event in
-                if index > 0 { Rule() }
-                EventRow(event: event, graph: state.workflows.first?.graph, messages: state.messagesById, machines: store.machineNames)
-                    .padding(.vertical, PerpetoSpacing.x(2))
-            }
-        }
-        .panel()
-    }
-}
-
-struct AgentRow: View {
-    var assignment: Assignment
-    var item: WorkItem?
-    var machine: Machine?
-
-    @Environment(\.compactLayout) private var compact
-
-    var body: some View {
-        if compact {
-            // Stacked: role and status, then the item, then model and machine.
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(assignment.role).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
-                    Spacer()
-                    StatusLabel(assignment.status.label)
-                }
-                Text(item?.title ?? assignment.workItemId ?? assignment.nodeId)
-                    .font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(1)
-                Mono("\(assignment.harness.model) · \(machine?.name ?? "unassigned")").lineLimit(1)
-            }
-        } else {
-            wide
-        }
-    }
-
-    private var wide: some View {
-        HStack(spacing: PerpetoSpacing.x(3)) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(assignment.role).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
-                Mono(assignment.harness.model)
-            }
-            .frame(width: 140, alignment: .leading)
-            Text(item?.title ?? assignment.workItemId ?? assignment.nodeId)
-                .font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text(machine?.name ?? "Unassigned").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-                .frame(width: 110, alignment: .leading)
-            StatusLabel(assignment.status.label)
-                .frame(width: 80, alignment: .leading)
-        }
-    }
-}
-
-/// One line of the interaction feed. Times and IDs are monospace. Reads the
-/// hub's interaction fields: `sourceNodeId`, `targetNodeId`, `role`,
-/// `senderRoleId`/`recipientRoleId` on messages, `state` and `result`.
-struct EventRow: View {
-    var event: HubEvent
-    var graph: WorkflowGraph?
-    /// Messages by ID, so an `agent.messaged` row can show what was said.
-    var messages: [String: Message] = [:]
-    /// Machine names by ID, so rows say where work ran.
-    var machines: [String: String] = [:]
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: PerpetoSpacing.x(3)) {
-            Text(Format.clock(event.at)).font(PerpetoFont.mono()).foregroundStyle(PerpetoColor.muted)
-            Image(systemName: icon).font(.system(size: 11)).foregroundStyle(event.isUnplanned ? PerpetoColor.error : PerpetoColor.muted).frame(width: 14)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: PerpetoSpacing.x(2)) {
-                    Text(route).font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.ink)
-                    if event.isUnplanned { StatusLabel("Unplanned", tone: .error) }
-                    if let result = event.data["result"]?.stringValue {
-                        let passed = result == "pass" || result == "passed"
-                        StatusLabel(passed ? "Passed" : result == "blocked" ? "Blocked" : "Failed", tone: passed ? .success : result == "blocked" ? .warning : .error)
+            if !project.docs.isEmpty {
+                Disclosure("Docs and requirements · \(project.docs.count)", isExpanded: $showDocs) {
+                    RowList(project.docs) { doc in
+                        HStack {
+                            RowText(doc.title, meta: doc.kind.rawValue.capitalized)
+                            Spacer()
+                            if let path = doc.path ?? doc.url { Mono(path) }
+                        }
                     }
                 }
-                if let detail {
-                    Text(detail).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(2)
+                .padding(.top, PerpetoSpacing.x(3))
+            }
+        }
+        .card()
+    }
+
+    // MARK: Side
+
+    private var runsCard: some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
+            SectionTitle("Runs") {
+                if !state.runs.isEmpty {
+                    CardLink("All") { navigator.selectedRunId = nil; navigator.route = .project(project.id, .runs) }
                 }
             }
-            Spacer(minLength: 0)
+            if state.runs.isEmpty {
+                Text("No runs yet.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted).padding(.top, PerpetoSpacing.x(3))
+            } else {
+                RowList(Array(state.runs.prefix(3))) { run in
+                    Button { openRun(run) } label: {
+                        HStack {
+                            RowText(run.id, meta: "v\(run.workflowVersion) · \(Format.relative(run.startedAt))", mono: true)
+                            Spacer(minLength: PerpetoSpacing.x(2))
+                            StatusLabel(run.status.label)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
+        .card()
     }
 
-    private func label(_ id: String?) -> String? { id.map { graph?.node($0)?.label ?? $0 } }
-
-    private var detail: String? {
-        if let summary = event.data["summary"]?.stringValue { return summary }
-        if let id = event.data["messageId"]?.stringValue, let message = messages[id] { return message.body }
-        if event.isUnplanned {
-            let kind = event.interaction == .agentDelegated ? "delegates" : event.interaction == .agentMessaged ? "messages" : "flow"
-            return "No \(kind) edge connects these nodes in the approved graph."
+    private var mergeCard: some View {
+        let queue = state.mergeQueue
+        let rows: [(String, StatusTone, Int)] = [
+            ("Testing", .running, queue.filter { $0.status == .testing || $0.status == .merging }.count),
+            ("Queued", .neutral, queue.filter { $0.status == .queued }.count),
+            ("Merged", .success, queue.filter { $0.status == .merged }.count),
+            ("Rejected", .dismissed, queue.filter { $0.status == .rejected }.count),
+        ].filter { $0.2 > 0 }
+        return VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
+            SectionTitle("Merge queue") { CardLink("Open") { navigator.route = .project(project.id, .mergeQueue) } }
+            if rows.isEmpty {
+                Text("The queue is empty.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted).padding(.top, PerpetoSpacing.x(3))
+            } else {
+                RowList(rows.map { IdentifiedText(text: $0.0, tone: $0.1, count: $0.2) }) { row in
+                    HStack {
+                        StatusLabel(row.text, tone: row.tone ?? .neutral)
+                        Spacer()
+                        Text("\(row.count ?? 0)").font(PerpetoFont.body.monospacedDigit()).foregroundStyle(PerpetoColor.ink)
+                    }
+                }
+            }
         }
-        switch event.interaction {
-        case .assignmentState:
-            return [event.data["machineId"]?.stringValue.map { "on \(machines[$0] ?? $0)" }, event.data["attempt"]?.intValue.map { "attempt \($0)" }]
-                .compactMap { $0 }.joined(separator: ", ").nilIfEmpty
-        case .gateResult:
-            return event.data["revision"]?.stringValue.map { "At \($0.prefix(7))" }
-        default: return nil
-        }
+        .card()
     }
+}
 
-    private var route: String {
-        let from = label(event.sourceNodeId)
-        let to = label(event.targetNodeId)
-        switch event.interaction {
-        case .agentMessaged:
-            let sender = event.data["senderRoleId"]?.stringValue ?? event.data["role"]?.stringValue ?? from
-            let recipient = event.data["recipientRoleId"]?.stringValue ?? to
-            return "\(sender ?? "?") messaged \(recipient ?? "everyone")"
-        case .agentDelegated: return "\(event.data["role"]?.stringValue ?? from ?? "?") delegated to \(to ?? "?")"
-        case .workitemMoved: return "\(from ?? "?") → \(to ?? "?")"
-        case .gateResult: return "\(label(event.data["nodeId"]?.stringValue) ?? "Gate") result"
-        case .assignmentState:
-            let who = event.data["role"]?.stringValue ?? label(event.data["nodeId"]?.stringValue) ?? "Assignment"
-            return "\(who) \(event.data["state"]?.stringValue ?? "")"
-        case .unknown: return event.type
-        }
-    }
+/// Plain text with an identity, for simple lists.
+struct IdentifiedText: Identifiable {
+    var text: String
+    var tone: StatusTone?
+    var count: Int?
+    var id: String { text }
+}
 
-    private var icon: String {
-        switch event.interaction {
-        case .agentMessaged: "bubble.left"
-        case .agentDelegated: "arrow.turn.down.right"
-        case .workitemMoved: "arrow.right"
-        case .gateResult: "checkmark.seal"
-        case .assignmentState: "person.crop.square"
-        case .unknown: "circle"
+/// "run_7q4m2x · Workflow v3 · Started 3 days ago"
+struct RunMeta: View {
+    var run: Run
+    var body: some View {
+        HStack(spacing: 5) {
+            Mono(run.id, color: PerpetoColor.muted)
+            Text("· Workflow v\(run.workflowVersion) · Started \(Format.relative(run.startedAt))")
+                .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).lineLimit(1)
         }
     }
 }
 
-struct VelocityChart: View {
-    var trend: [Double]
-    /// The hub returns 12 buckets for 1h, 24 for 24h and 7 for 7d.
-    var window: MetricsWindow = .week
-
-    var body: some View {
-        if trend.allSatisfy({ $0 == 0 }) {
-            Text("No items finished in this window.")
-                .font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        } else {
-            chart
-        }
-    }
-
-    private var chart: some View {
-        Chart {
-            ForEach(Array(trend.enumerated()), id: \.offset) { index, value in
-                BarMark(x: .value("Day", dayLabel(index)), y: .value("Items", value), width: .ratio(0.55))
-                    .foregroundStyle(index == trend.count - 1 ? PerpetoColor.accent : PerpetoColor.ink)
-                    .cornerRadius(2)
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                AxisGridLine().foregroundStyle(PerpetoColor.border)
-                AxisValueLabel().font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-            }
-        }
-        .chartXAxis {
-            // Label every bucket for a week, fewer for hourly and five-minute buckets.
-            AxisMarks(values: axisLabels) { _ in AxisValueLabel().font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted) }
-        }
-        .accessibilityLabel("Items done, \(window.title.lowercased()), in \(trend.count) buckets")
-    }
-
-    private var axisLabels: [String] {
-        let step = trend.count > 12 ? 6 : trend.count > 7 ? 3 : 1
-        // The newest bucket is labelled only for a week; at the edge of an
-        // hourly chart its label would be clipped.
-        return trend.indices.filter { (trend.count - 1 - $0) % step == 0 && (step == 1 || $0 != trend.count - 1) }.map(dayLabel)
-    }
-
-    private func dayLabel(_ index: Int) -> String {
-        let offset = trend.count - 1 - index
-        switch window {
-        case .week:
-            return offset == 0 ? "Today" : Date().addingTimeInterval(Double(-offset) * 86400).formatted(.dateTime.weekday(.abbreviated))
-        case .day:
-            return offset == 0 ? "Now" : "−\(offset) h"
-        case .hour:
-            return offset == 0 ? "Now" : "−\(offset * 5) m"
+/// A trailing arrow for actions that open something: "Open live map →".
+struct TrailingIconLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: PerpetoSpacing.x(2)) {
+            configuration.title
+            configuration.icon.font(.system(size: 13, weight: .semibold))
         }
     }
 }

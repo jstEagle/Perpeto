@@ -27,9 +27,9 @@ public struct HubConnectionView: View {
 
     public var body: some View {
         #if os(macOS)
-        form.frame(width: 520)
+        form.frame(width: 580)
         #else
-        ScrollView { form }.background(PerpetoColor.surface)
+        ScrollView { form }.background(PerpetoColor.canvas)
         #endif
     }
 
@@ -38,50 +38,75 @@ public struct HubConnectionView: View {
             HStack(spacing: PerpetoSpacing.x(3)) {
                 SpindleShape().fill(PerpetoColor.ink).frame(width: 28, height: 28)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Hub connection").font(PerpetoFont.title()).foregroundStyle(PerpetoColor.ink)
+                    Text("Hub connection").font(PerpetoType.title(PerpetoType.text24)).foregroundStyle(PerpetoColor.ink)
                     Text("Without a hub, the app shows demo data that stays on \(device).").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
-                Text("Hub address").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
-                TextField("https://hub.example.com", text: $url).font(PerpetoFont.mono(PerpetoType.text14)).perpetoField()
+                Text("Hub address").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.ink)
+                TextField("Hub address", text: $url, prompt: Text(verbatim: "https://hub.example.com").foregroundStyle(PerpetoColor.muted)).font(PerpetoFont.mono(PerpetoType.text14)).perpetoField()
                     #if os(iOS)
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                     #endif
                 Text("HTTPS is required except for localhost.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
             }
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
-                Text("Owner token").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.muted)
+                Text("Owner token").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.ink)
                 SecureField(hasToken ? "Saved in Keychain. Enter a new token to replace it." : "Paste the owner token", text: $token).perpetoField()
                 Text("Stored in \(keychain). It is never written to preferences or logs.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let status { StatusLabel(status.0, tone: status.1) }
+            #if os(macOS)
             HStack(spacing: PerpetoSpacing.x(2)) {
-                if hasToken {
-                    Button("Remove token", role: .destructive) {
-                        settings.tokens.delete()
-                        hasToken = false
-                        Task { await store.use(DemoDataSource()) }
-                        status = ("Token removed. Showing demo data.", .neutral)
-                    }
-                    .buttonStyle(.perpetoGhost)
-                }
+                removeButton
                 Spacer()
-                Button("Test connection") { Task { await test() } }
-                    .buttonStyle(.perpetoSecondary)
-                    .disabled(url.isEmpty || working)
-                Button("Save and connect") { Task { await save() } }
-                    .buttonStyle(.perpetoPrimary)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(url.isEmpty || (!hasToken && token.isEmpty) || working)
+                testButton
+                saveButton
             }
+            #else
+            VStack(spacing: PerpetoSpacing.x(3)) {
+                saveButton.controlSize(.large)
+                testButton.controlSize(.large)
+                removeButton
+            }
+            .fullWidthButtons()
+            #endif
         }
+        .card()
         .padding(PerpetoSpacing.x(6))
-        .background(PerpetoColor.surface)
+        .background(PerpetoColor.canvas)
         .onAppear {
             url = settings.hubURLString
             hasToken = settings.tokens.read() != nil
         }
+    }
+
+    @ViewBuilder
+    private var removeButton: some View {
+        if hasToken {
+            Button("Remove token", role: .destructive) {
+                settings.tokens.delete()
+                hasToken = false
+                Task { await store.use(DemoDataSource()) }
+                status = ("Token removed. Showing demo data.", .neutral)
+            }
+            .buttonStyle(.perpetoGhost)
+        }
+    }
+
+    private var testButton: some View {
+        Button("Test connection") { Task { await test() } }
+            .buttonStyle(.perpetoSecondary)
+            .disabled(url.isEmpty || working)
+    }
+
+    private var saveButton: some View {
+        Button("Save and connect") { Task { await save() } }
+            .buttonStyle(.perpetoPrimary)
+            .keyboardShortcut(.defaultAction)
+            .disabled(url.isEmpty || (!hasToken && token.isEmpty) || working)
     }
 
     private func client() throws -> HubClient {
