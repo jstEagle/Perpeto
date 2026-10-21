@@ -30,6 +30,10 @@ async function repository(t) {
   return { root, source, bare, revision, latest };
 }
 
+async function remainingJobs(root) {
+  return readdir(join(root, 'jobs')).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+}
+
 function context(controller = new AbortController()) {
   const events = [];
   return { events, signal: controller.signal, report: async event => { events.push(event); } };
@@ -54,7 +58,7 @@ test('CI clones a bare repo at the exact commit, streams bounded redacted logs, 
   assert.equal(chunks.join('').includes('secret-value'), false);
   assert.equal(chunks.join('').includes('token=ABCD'), false);
   assert.match(chunks.join(''), /\[REDACTED\]/);
-  assert.deepEqual(await readdir(join(repo.root, 'jobs')), []);
+  assert.deepEqual(await remainingJobs(repo.root), []);
   assert.equal(await readFile(join(repo.source, 'value.txt'), 'utf8'), 'newer revision\n');
 });
 
@@ -67,7 +71,7 @@ test('CI stops after a failed step and reports revision-bound step evidence', as
   assert.equal(result.steps[0].exitCode, 7);
   assert.equal(ctx.events.find(event => event.type === 'step').data.configHash, 'config_exact');
   assert.equal(JSON.stringify(ctx.events).includes('SHOULD_NOT_RUN'), false);
-  assert.deepEqual(await readdir(join(repo.root, 'jobs')), []);
+  assert.deepEqual(await remainingJobs(repo.root), []);
 });
 
 test('CI timeout terminates the shell and child processes', async t => {
@@ -80,7 +84,7 @@ test('CI timeout terminates the shell and child processes', async t => {
   assert.ok(Date.now() - started < 2000);
   await sleep(550);
   await assert.rejects(readFile(marker), { code: 'ENOENT' });
-  assert.deepEqual(await readdir(join(repo.root, 'jobs')), []);
+  assert.deepEqual(await remainingJobs(repo.root), []);
 });
 
 test('CI cancellation kills running work and returns cancelled evidence', async t => {
@@ -93,7 +97,7 @@ test('CI cancellation kills running work and returns cancelled evidence', async 
   const result = await running;
   assert.equal(result.status, 'cancelled');
   assert.equal(result.steps[0].status, 'cancelled');
-  assert.deepEqual(await readdir(join(repo.root, 'jobs')), []);
+  assert.deepEqual(await remainingJobs(repo.root), []);
 });
 
 test('CI rejects moving revisions and inaccessible commits with no false pass', async t => {
@@ -102,7 +106,7 @@ test('CI rejects moving revisions and inaccessible commits with no false pass', 
     const result = await runJob({ ...job(repo, []), revision }, context(), { dataDir: repo.root });
     assert.equal(result.status, 'error');
   }
-  assert.deepEqual(await readdir(join(repo.root, 'jobs')), []);
+  assert.deepEqual(await remainingJobs(repo.root), []);
 });
 
 test('redaction spans input chunks, preserves UTF-8, masks oversized lines, and never exceeds the chunk limit', async () => {
@@ -155,7 +159,125 @@ test('daemon abandons a running CI process on lease_lost, removes its clone, and
   hub.lost = true;
   await eventually(() => node.status.running.jobs === 0);
   assert.equal(hub.events.filter(event => event.type === 'completed').length, 0);
-  assert.deepEqual(await readdir(join(config.dataDir, 'jobs')), []);
+  assert.deepEqual(await remainingJobs(config.dataDir), []);
   await sleep(550);
   await assert.rejects(readFile(marker), { code: 'ENOENT' });
+});
+
+
+test('M8: a background child retaining stdout cannot turn a successful shell exit into a timeout', async t => {
+  const repo = await repository(t);
+  const marker = join(repo.root, 'background-survived');
+  const start = Date.now();
+  const ctx = context();
+  const result = await runJob(job(repo, [{ name: 'background', run: `(sleep 1; touch '${marker}') & echo hi; exit 0`, timeoutSec: 0.3 }]), ctx, { dataDir: repo.root });
+  assert.equal(result.status, 'passed');
+  assert.equal(result.steps[0].timedOut, false);
+  assert.ok(Date.now() - start < 1000);
+  assert.match(ctx.events.filter(e => e.type === 'log').map(e => e.data.chunk).join(''), /hi/);
+  await sleep(1100);
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+});
+
+test('M18: thousands of short lines share bounded log requests with no dropped UTF-8 or secrets', async () => {
+  const events = [];
+  const stream = createLogStream({ maxBytes: 128, literals: ['secret'], step: 0, stream: 'stdout', report: async e => events.push(e) });
+  const input = '🙂 secret\n'.repeat(3000);
+  for (const line of input.split(/(?<=\n)/)) await stream.write(Buffer.from(line));
+  await stream.end();
+  assert.ok(events.length < 500, `one request per line: ${events.length}`);
+  assert.equal(events.map(e => e.data.chunk).join(''), '🙂 [REDACTED]\n'.repeat(3000));
+  assert.ok(events.every(e => Buffer.byteLength(e.data.chunk) <= 128));
+});
+
+test('M18: quiet output flushes within a time bound and flush errors propagate', async () => {
+  const events = [];
+  const stream = createLogStream({ maxBytes: 128, flushMs: 20, step: 0, stream: 'stdout', report: async e => events.push(e) });
+  await stream.write(Buffer.from('still running\n'));
+  assert.equal(events.length, 0);
+  await eventually(() => events.length === 1, 300);
+  await stream.end();
+  const failed = createLogStream({ flushMs: 5, report: async () => { throw new Error('log delivery failed'); } });
+  await failed.write(Buffer.from('line\n'));
+  await sleep(30);
+  await assert.rejects(failed.end(), /log delivery failed/);
+});
+
+test('H6: CI cannot inherit environment credentials or read node secrets, including through symlinks', async t => {
+  const repo = await repository(t);
+  const dataDir = join(repo.root, 'private-data');
+  const outside = join(repo.root, 'external-credentials');
+  await mkdir(dataDir);
+  await writeFile(join(dataDir, 'machine.json'), 'NODE_SECRET', { mode: 0o600 });
+  await writeFile(outside, 'EXTERNAL_SECRET', { mode: 0o600 });
+  const previous = process.env.PERPETO_NODE_TEST_TOKEN;
+  process.env.PERPETO_NODE_TEST_TOKEN = 'ENV_SECRET';
+  t.after(() => { if (previous === undefined) delete process.env.PERPETO_NODE_TEST_TOKEN; else process.env.PERPETO_NODE_TEST_TOKEN = previous; });
+  const ctx = context();
+  const command = `test -z "$PERPETO_NODE_TEST_TOKEN" && ! cat '${dataDir}/machine.json' && ! cat '${outside}' && ln -s '${outside}' linked && ! cat linked && test "$HOME" != '${process.env.HOME}' && pwd`;
+  const result = await runJob(job(repo, [{ name: 'isolation', run: command }]), ctx, { dataDir, protectedPaths: [outside] });
+  assert.equal(result.status, 'passed');
+  const output = ctx.events.filter(e => e.type === 'log').map(e => e.data.chunk).join('');
+  assert.equal(/NODE_SECRET|EXTERNAL_SECRET|ENV_SECRET/.test(output), false);
+  assert.equal(output.includes(`${dataDir}/jobs`), false);
+  const checkout = ctx.events.filter(e => e.type === 'log' && e.data.stream === 'stdout').map(e => e.data.chunk).join('').trim().split('\n').at(-1);
+  assert.match(checkout, /perpeto-ci-.*\/source$/);
+  await assert.rejects(readFile(join(checkout, 'value.txt')), { code: 'ENOENT' });
+});
+
+
+test('M5: heartbeat cancellation stops CI and acknowledges the exact job revision and attempt', async t => {
+  let cancel = false;
+  const hub = await fakeHub(t, { ttl: 5000, heartbeat: () => cancel ? { cancel: { jobs: ['job_test'], assignments: [] } } : {} });
+  const repo = await repository(t);
+  const { configPath } = await nodeConfig(t, hub, { capacity: { maxAgents: 0, maxJobs: 1 }, timing: { heartbeatMs: 20, renewMs: 2000 } });
+  hub.jobs.push(job(repo, [{ name: 'wait', run: 'echo running; sleep 30' }]));
+  const node = await createNode({ configPath });
+  addCleanup(t, () => node.stop({ drain: false }));
+  await node.start();
+  await eventually(() => hub.events.some(e => e.type === 'log'));
+  cancel = true;
+  await eventually(() => node.status.running.jobs === 0, 1500);
+  const ack = hub.events.filter(e => e.type === 'cancelled');
+  assert.equal(ack.length, 1);
+  assert.equal(ack[0].attempt, 1);
+  assert.equal(ack[0].data.revision, repo.revision);
+  assert.equal(ack[0].data.configHash, 'config_exact');
+  assert.equal(hub.events.filter(e => e.type === 'completed').length, 0);
+});
+
+test('H6: daemon protects external credential/redaction/account paths and redacts its token automatically', async t => {
+  const hub = await fakeHub(t, { ttl: 5000 });
+  const repo = await repository(t);
+  const { dir, configPath, config } = await nodeConfig(t, hub, { capacity: { maxAgents: 0, maxJobs: 1 } });
+  const credentialFile = join(dir, 'outside-machine.json');
+  const redactionFile = join(dir, 'redaction.json');
+  const accountDir = join(dir, 'outside-accounts');
+  await mkdir(accountDir, { mode: 0o700 });
+  await writeFile(join(accountDir, 'secret'), 'ACCOUNT_SECRET', { mode: 0o600 });
+  await writeFile(redactionFile, JSON.stringify({ literals: ['EXACT_SECRET'] }), { mode: 0o600 });
+  await writeFile(configPath, JSON.stringify({ ...config, credentialFile, accounts: { nodeDataDir: accountDir }, jobs: { redactionFile } }));
+  hub.jobs.push(job(repo, [{ name: 'probe', run: `! cat '${credentialFile}' && ! cat '${redactionFile}' && ! cat '${accountDir}/secret' && printf 'private-machine-token\\nEXACT_SECRET\\n'` }]));
+  const node = await createNode({ configPath });
+  addCleanup(t, () => node.stop({ drain: false }));
+  await node.start();
+  await eventually(() => hub.events.some(e => e.type === 'completed'), 5000);
+  assert.equal(hub.events.find(e => e.type === 'completed').data.status, 'passed');
+  const output = hub.events.filter(e => e.type === 'log').map(e => e.data.chunk).join('');
+  assert.equal(/private-machine-token|EXACT_SECRET|ACCOUNT_SECRET/.test(output), false);
+  assert.match(output, /REDACTED/);
+});
+
+test('H6: trusted checkout remote rewrites remain available without exposing Git config to CI steps', async t => {
+  const repo = await repository(t);
+  const configFile = join(repo.root, 'checkout.gitconfig');
+  const remote = 'https://perpeto-fixture.invalid/repo.git';
+  await writeFile(configFile, `[url "${repo.bare}"]\n  insteadOf = ${remote}\n# CONFIG_SECRET\n`, { mode: 0o600 });
+  const previous = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = configFile;
+  t.after(() => { if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = previous; });
+  const ctx = context();
+  const result = await runJob({ ...job(repo, [{ name: 'verify', run: `test -z "$GIT_CONFIG_GLOBAL" && ! cat '${configFile}' && git rev-parse HEAD` }]), repo: remote }, ctx, { dataDir: repo.root });
+  assert.equal(result.status, 'passed');
+  assert.equal(JSON.stringify(ctx.events).includes('CONFIG_SECRET'), false);
 });

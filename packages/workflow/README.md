@@ -18,7 +18,7 @@ import {
 | Code | Meaning |
 | --- | --- |
 | `INVALID_GRAPH`, `INVALID_SCHEMA`, `LIMIT_EXCEEDED` | Not a `perpeto.workflow/1` object, or over 500 nodes or 2000 edges |
-| `INVALID_NODE`, `INVALID_EDGE`, `DUPLICATE_ID`, `UNKNOWN_NODE_TYPE`, `INVALID_EDGE_KIND` | Malformed nodes and edges |
+| `INVALID_NODE`, `INVALID_EDGE`, `DUPLICATE_ID`, `UNKNOWN_NODE_TYPE`, `INVALID_EDGE_KIND` | Malformed nodes and edges. Node, edge and role ids may not be `Object.prototype` names such as `constructor` |
 | `DANGLING_EDGE` | Edge points at a missing node |
 | `MISSING_CONFIG`, `INVALID_CONFIG`, `INVALID_HARNESS`, `INVALID_POLICY`, `INVALID_RETRY`, `LOOP_BOUNDS` | Node config is missing or has the wrong shape. `maxIterations` is 1 to 100, `retry.maxAttempts` 1 to 10 and `retry.backoffSec` 0 to 86400 |
 | `INVALID_ESCALATION` | `onExhausted` doesn't name another human, agent or review node, or `onBlocked` doesn't name a human node |
@@ -59,7 +59,7 @@ These semantics go beyond the contract table:
 
 ## Run engine
 
-`step(state, event)` returns `{ state, effects, ignored? }`. It is pure, never mutates `state`, and is deterministic:
+`step(state, event)` returns `{ state, effects, ignored? }`. It is pure, never mutates `state`, and is deterministic. It works copy-on-write: the new state shares every entity the event did not touch with `state`, so treat both as immutable. Its cost follows what the event changes, plus pointer-level copying and scanning of the entity tables.
 
 - IDs are `wi_`, `asg_`, `job_` and `mq_` plus the run suffix and a counter, for example `asg_ab12_3`.
 - Time comes only from `event.at`.
@@ -75,7 +75,7 @@ Events are `{ id, type, at, data }`:
 | `assignment.completed` | `{ assignmentId, result: AssignmentResult }` |
 | `job.completed` | `{ jobId, status: 'passed', 'failed', 'error' or 'cancelled', summary?, logRef? }` |
 | `merge.completed` / `merge.rejected` | `{ mergeId, mergedSha? }` / `{ mergeId, reason }` |
-| `human.decision` | `{ workItemId, decision: 'pass' or 'fail', note? }` |
+| `human.decision` | `{ workItemId, decision: 'pass' or 'fail', note?, decisionId? }` |
 | `run.paused`, `run.resumed`, `run.stopped` | `{}`, or `{ reason? }` for `run.stopped` |
 
 Assignment results are interpreted by the role that produced them:
@@ -84,6 +84,8 @@ Assignment results are interpreted by the role that produced them:
 - **Review:** `verdict` decides the gate: `pass` passes and `fail` returns the work, with the summary as feedback in the next agent prompt. A legacy result with `outcome: 'success'` and no verdict passes, and `gate.result` carries `legacyVerdict: true`. `outcome: 'failure'` without a verdict is an error, never a rejection.
 - **Planner:** `success` may include `items: [{ title, body? }]`, truncated to `maxItems`. Each item becomes a child work item at the planner's next node. The parent stays `active` until every child finishes, then becomes `done`, or `failed` if any child failed. With no items, the original item continues as the work item.
 - **Any role:** `failure` from a planner or agent is an error. `blocked` goes to the node's human gate if it has one. Otherwise the item waits as `blocked` at the node until `human.decision` either retries it (`pass`, with the optional note as feedback) or fails it (`fail`).
+
+Every wait for a person gets a `decisionId` (`hd_` plus the run suffix and a counter), carried in `item.waiting`, `human.requested` and the in-place `workitem.blocked`. A decision that names a different `decisionId` throws `STALE_DECISION`, so a retried request or a second person answering cannot pass the item's next gate. Hosts should always send it; a decision without one still applies to whatever the item waits for now.
 
 ### Retries and escalation
 
@@ -122,8 +124,8 @@ Emitted event types:
 - `gate.result` `{ workItemId, nodeId, gate, result, assignmentId | jobId | mergeId, summary?, legacyVerdict? }`
 - `workitem.retried` `{ workItemId, nodeId, attempt, maxAttempts, reason, summary, assignmentId | jobId, notBefore? }`
 - `workitem.escalated` `{ workItemId, from, to, reason: 'retries_exhausted' | 'loop_limit' | 'blocked', evidence }`
-- `workitem.blocked` `{ workItemId, nodeId, summary, routedTo? }`
-- `human.requested` `{ workItemId, nodeId, prompt, context?: { kind, from, summary } }`
+- `workitem.blocked` `{ workItemId, nodeId, summary, routedTo? | decisionId? }`
+- `human.requested` `{ workItemId, nodeId, decisionId, prompt, context?: { kind, from, summary } }`
 - `loop.iteration`, `planner.items_truncated`
 - `run.started`, `run.paused`, `run.resumed`, `run.stopped`, `run.completed`, `run.failed`
 
@@ -143,7 +145,11 @@ const { effects, state, duplicate, ignored, seq } = store.apply(runId, event);
 for (const { id, effect } of store.pendingEffects({ limit: 100 })) { /* execute */ store.ackEffects([id]); }
 ```
 
-`apply` runs `step` in one `BEGIN IMMEDIATE` transaction. It stores the event, the new state, rows for work items, assignments, jobs and merge entries, and the effects in an outbox:
+`apply` runs the engine in one `BEGIN IMMEDIATE` transaction. It stores the event, the rows of the work items, assignments, jobs and merge entries the event created or changed, the run's own fields (status, counters, timestamps) and the effects in an outbox. The plan is stored once when the run starts. The latest state of the 64 most recently used runs stays in memory and advances in place, so an event costs the same however long the run is: about 0.15 ms at 100 or 2,000 finished items with 4 KB bodies (`test/persistence-cost.test.js`), against 14 ms and 209 ms at 100 and 1,000 before. Another store on the same file is detected by sequence number and the run is reloaded from its rows.
+
+- The result's `state` is a private copy, made when first read, of the run as of that event. Reading it costs time in proportion to the run, so hosts on a hot path should read entities instead. Read after a later event on the run, it replays the log up to its event.
+- Events are stepped as stored, with sorted keys, so `verify` reproduces the state exactly.
+- Schema 1 files (the whole state rewritten on every event) are migrated when opened.
 
 - Event ids deduplicate per run. A repeat with the same type and data returns the original effects with `duplicate: true`, even with a different `at`. Different content under the same id throws `IDEMPOTENCY_CONFLICT`.
 - Rejected events leave no trace.

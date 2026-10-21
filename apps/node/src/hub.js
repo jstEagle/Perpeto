@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
+export const jitter = cap => Math.floor(Math.random() * (cap + 1));
 export const sleep = (ms, signal) => delay(ms, undefined, { signal });
 export class HubError extends Error {
   constructor(status, code = 'HUB_UNAVAILABLE') {
@@ -40,7 +41,7 @@ export class HubClient {
       try { return await this.post(path, body, { signal, key }); }
       catch (error) {
         if (!error.retryable) throw error;
-        await sleep(wait, signal);
+        await sleep(jitter(wait), signal);
         wait = Math.min(wait * 2, this.config.timing.backoffMaxMs);
       }
     }

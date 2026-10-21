@@ -1,12 +1,14 @@
 import { hostname } from 'node:os';
-import { mkdir, readFile, open, unlink } from 'node:fs/promises';
+import { mkdir, readFile, open, unlink, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { loadConfig, readSecret, writePrivate } from './config.js';
-import { HubClient, HubError, sleep } from './hub.js';
+import { HubClient, HubError, sleep, jitter } from './hub.js';
 import { detectProviders, loadIntegrations } from './executors.js';
 import { loadRedaction, runJob } from './job.js';
 import { createRuntimeSupervisor } from './runtime.js';
+
+import { processIdentity } from './lock.js';
 
 const VERSION = '0.1.0';
 const accountFields = ['id', 'machineId', 'provider', 'label', 'status', 'cooldownUntil', 'lastUsedAt'];
@@ -22,7 +24,13 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   const polling = new AbortController();
   const active = new Map();
   let seen = {};
+  let settledReservations = {};
+  let settlementWrites = Promise.resolve();
+  let freshEnrollment = false;
   let journalWrites = Promise.resolve();
+  let lastAccounts;
+  let namespaceAllAccounts = false;
+  let token;
   let machineId;
   let machine;
   let heartbeatTask;
@@ -60,10 +68,11 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   async function lock() {
     await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
     const path = resolve(config.dataDir, 'daemon.lock');
+    const startedAt = await processIdentity(process.pid);
     const acquire = async () => {
       const file = await open(path, 'wx', 0o600);
       lockPath = path;
-      try { await file.writeFile(String(process.pid)); }
+      try { await file.writeFile(JSON.stringify({ pid: process.pid, startedAt })); }
       finally { await file.close(); }
     };
     try { await acquire(); return; }
@@ -74,13 +83,18 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     try { recovery = await open(recoveryPath, 'wx', 0o600); }
     catch { throw new Error('Node data directory lock is being recovered.'); }
     try {
-      let pid;
-      try { pid = Number(await readFile(path, 'utf8')); }
+      let owner;
+      try { owner = JSON.parse(await readFile(path, 'utf8')); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (pid !== undefined) {
+      if (owner !== undefined) {
+        const pid = typeof owner === 'number' ? owner : owner?.pid;
         if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Node data directory has an invalid lock.');
-        try { process.kill(pid, 0); throw new Error('Node data directory is already in use.'); }
-        catch (error) { if (error.code !== 'ESRCH') throw error; }
+        let alive = true;
+        try { process.kill(pid, 0); }
+        catch (error) { if (error.code !== 'ESRCH') throw error; alive = false; }
+        if (alive && (typeof owner === 'number' || !owner.startedAt || await processIdentity(pid) === owner.startedAt)) {
+          throw new Error('Node data directory is already in use.');
+        }
         await unlink(path);
       }
       await acquire();
@@ -92,7 +106,8 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     catch (error) { if (error.code !== 'ENOENT') throw new Error('Invalid machine credential file.'); }
     if (credentials?.token && credentials?.machineId) {
       if (typeof credentials.token !== 'string' || /[\r\n]/.test(credentials.token) || typeof credentials.machineId !== 'string') throw new Error('Invalid machine credential file.');
-      machineId = credentials.machineId; hub.setToken(credentials.token); return;
+      machineId = credentials.machineId; token = credentials.token; hub.setToken(token);
+      freshEnrollment = credentials.pendingAccountRebind === true; return;
     }
     if (!config.enrollmentCodeFile) throw new Error('Enrollment requires an owner-only enrollmentCodeFile.');
     const code = (await readSecret(config.enrollmentCodeFile)).trim();
@@ -102,19 +117,65 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     const result = await hub.retry('/nodes/enroll', { code, name: machine.name, os: machine.os, arch: machine.arch,
       labels: machine.labels, providers: machine.providers, version: VERSION }, { signal: service.signal, key: enrollmentKey });
     if (!result?.machineId || typeof result.machineId !== 'string' || !result.token || typeof result.token !== 'string' || /[\r\n]/.test(result.token)) throw new Error('Invalid enrollment response.');
-    await writePrivate(config.credentialFile, { machineId: result.machineId, token: result.token });
-    machineId = result.machineId; hub.setToken(result.token);
+    await writePrivate(config.credentialFile, { machineId: result.machineId, token: result.token, pendingAccountRebind: true });
+    machineId = result.machineId; token = result.token; hub.setToken(token); freshEnrollment = true;
   }
   function persistSeen(item) {
     seen[item.key] = Math.max(seen[item.key] ?? -1, item.attempt);
-    journalWrites = journalWrites.then(() => writePrivate(resolve(config.dataDir, 'leases.json'), seen));
-    return journalWrites;
+    const write = journalWrites.then(() => writePrivate(resolve(config.dataDir, 'leases.json'), seen));
+    // Each caller sees its failure; subsequent leases still get their own durable write.
+    journalWrites = write.catch(() => {});
+    return write;
   }
+  const scopedAccountId = id => `${machineId}:${createHash('sha256').update(id).digest('hex')}`;
+  // Existing consumers retain pool-generated UUID identities; operator-chosen IDs are machine-scoped.
+  const publicAccountId = id => !namespaceAllAccounts && /^acct_[a-f0-9]{32}$/.test(id) ? id : scopedAccountId(id);
   async function heartbeat(retry = false) {
-    // Explicit allowlist prevents account adapters from accidentally sending credentials.
-    const accounts = (await accountProvider.list()).map(account => Object.fromEntries(accountFields.filter(key => typeof account[key] === 'string').map(key => [key, account[key]])));
-    const result = await hub[retry ? 'retry' : 'post']('/nodes/heartbeat', { capacity: config.capacity, running: status().running,
-      accounts, providers: machine.providers, status: draining ? 'draining' : 'online' }, { signal: service.signal });
+    let accounts = lastAccounts;
+    let localAccounts;
+    try {
+      // Namespace public IDs without changing executor-local account IDs/bindings.
+      localAccounts = await accountProvider.list();
+      accounts = localAccounts.map(account => ({
+        ...Object.fromEntries(accountFields.filter(key => typeof account[key] === 'string').map(key => [key, account[key]])),
+        ...(typeof account.id === 'string' ? { id: publicAccountId(account.id) } : {}),
+        machineId,
+      }));
+    } catch { /* A local account snapshot failure must not interrupt leased work. */ }
+    const body = { capacity: config.capacity, running: status().running, labels: machine.labels,
+      ...(accounts ? { accounts } : {}), providers: machine.providers, status: draining ? 'draining' : 'online' };
+    let result;
+    try {
+      result = await hub[retry ? 'retry' : 'post']('/nodes/heartbeat', body, { signal: service.signal });
+      lastAccounts = accounts;
+    } catch (error) {
+      if (!(error instanceof HubError) || ![400, 409].includes(error.status) || !accounts) throw error;
+      // A deliberately duplicated legacy UUID must also get a machine-scoped public ID.
+      if (error.status === 409 && localAccounts && !namespaceAllAccounts) {
+        namespaceAllAccounts = true;
+        body.accounts = accounts.map((account, index) => ({ ...account, id: scopedAccountId(localAccounts[index].id) }));
+        try {
+          result = await hub[retry ? 'retry' : 'post']('/nodes/heartbeat', body, { signal: service.signal });
+          lastAccounts = body.accounts;
+        } catch (retryError) {
+          if (!(retryError instanceof HubError) || ![400, 409].includes(retryError.status)) throw retryError;
+        }
+      }
+      if (!result) {
+        // Bad metadata cannot prevent liveness/cancellation delivery.
+        delete body.accounts;
+        result = await hub[retry ? 'retry' : 'post']('/nodes/heartbeat', body, { signal: service.signal });
+      }
+    }
+    for (const [kind, ids] of [['assignment', result.cancel?.assignments], ['job', result.cancel?.jobs]]) {
+      if (!Array.isArray(ids)) continue;
+      for (const id of ids) {
+        const record = active.get(`${kind}:${id}`);
+        if (!record || record.cancelRequested) continue;
+        record.cancelRequested = true;
+        record.work.abort(new Error('Hub cancelled execution.'));
+      }
+    }
     if (result.status === 'draining' || result.machine?.status === 'draining') drain();
   }
   async function heartbeatLoop() {
@@ -125,32 +186,36 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       catch (error) {
         if (service.signal.aborted) return;
         if (!(error instanceof HubError) || !error.retryable) { fatal(error); return; }
-        wait = backoff;
+        wait = jitter(backoff);
         backoff = Math.min(backoff * 2, config.timing.backoffMaxMs);
       }
     }
   }
   const pathFor = record => `/${record.kind === 'assignment' ? 'assignments' : 'jobs'}/${encodeURIComponent(record.item.id)}`;
   async function report(record, event) {
+    if (record.cancelRequested && event.type !== 'cancelled') throw record.work.signal.reason;
     if (record.lost || Date.now() >= record.expires) { lose(record); throw record.lease.signal.reason; }
     try {
-      return await hub.retry(`${pathFor(record)}/events`, { ...event, attempt: record.attempt }, { signal: record.lease.signal });
+      const outgoing = event.type === 'usage' && typeof event.data?.accountId === 'string'
+        ? { ...event, data: { ...event.data, accountId: publicAccountId(event.data.accountId) } } : event;
+      return await hub.retry(`${pathFor(record)}/events`, { ...outgoing, attempt: record.attempt }, { signal: record.lease.signal });
     } catch (error) {
       if (error.code === 'lease_lost' || error.status === 409) lose(record);
       throw error;
     }
   }
   async function renewLoop(record) {
-    while (!record.lease.signal.aborted) {
+    while (!record.lease.signal.aborted && !record.cancelRequested) {
       try {
         await sleep(Math.min(config.timing.renewMs, Math.max(1, (record.expires - Date.now()) / 3)), record.lease.signal);
+        if (record.cancelRequested) return;
         const result = await hub.retry(`${pathFor(record)}/renew`, { attempt: record.attempt }, { signal: record.lease.signal });
         const expires = Date.parse(result.leaseExpiresAt ?? result.lease?.leaseExpiresAt);
         if (!Number.isFinite(expires) || expires <= Date.now()) { lose(record); return; }
         record.expires = expires;
         armExpiry(record);
       } catch (error) {
-        if (record.lease.signal.aborted) return;
+        if (record.lease.signal.aborted || record.cancelRequested) return;
         // A rejected renewal cannot establish ownership, regardless of its HTTP status.
         lose(record); return;
       }
@@ -170,14 +235,23 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       const ctx = { signal: record.work.signal, report: event => report(record, event), workspace,
         runtimeUrl: machine.runtimeUrl, accountProvider };
       let result;
-      if (record.kind === 'job') result = await runJob(record.item, ctx, {
-        ...config.jobs, dataDir: config.dataDir, redaction: await loadRedaction(config),
-      });
-      else {
+      if (record.kind === 'job') {
+        const redaction = await loadRedaction(config);
+        result = await runJob(record.item, ctx, {
+          ...config.jobs, dataDir: config.dataDir,
+          protectedPaths: [config.credentialFile, config.enrollmentCodeFile,
+            config.jobs?.redactionFile && resolve(config.configRoot, config.jobs.redactionFile),
+            config.accounts?.nodeDataDir && resolve(config.configRoot, config.accounts.nodeDataDir),
+            config.runtime?.repoRoot && resolve(config.configRoot, config.runtime.repoRoot, '.perpeto'),
+            ...[config.runtime, config.runtime?.t3].flatMap(settings => [settings?.credentialFile, settings?.baseDir].filter(Boolean).map(path => resolve(config.configRoot, path))),
+            ...(config.jobs?.protectedPaths ?? [])].filter(Boolean),
+          redaction: { ...redaction, literals: [...redaction.literals, token] },
+        });
+      } else {
         await report(record, { type: 'started', data: {} });
         const executor = registry.find(record.item, machine);
-        if (!executor) result = { outcome: 'blocked', summary: 'No compatible executor is installed.' };
-        else result = await executor.run(record.item, ctx);
+        if (!executor) result = { outcome: 'failure', summary: 'No compatible executor is installed.' };
+        else { record.executed = true; result = await executor.run(record.item, ctx); }
         if (!['success', 'failure', 'blocked'].includes(result?.outcome) || typeof result.summary !== 'string') throw new Error('Invalid executor result.');
       }
       record.work.signal.throwIfAborted();
@@ -186,14 +260,24 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       if (!record.lost) {
         const data = record.kind === 'job'
           ? { status: record.work.signal.aborted ? 'cancelled' : 'error', revision: record.item.revision, configHash: record.item.configHash, steps: [], artifacts: [] }
-          : { outcome: record.work.signal.aborted ? 'blocked' : 'failure', summary: record.work.signal.aborted ? 'Node execution was cancelled.' : 'Executor failed.' };
-        await report(record, { type: record.kind === 'job' ? 'completed' : 'failed', data }).catch(() => lose(record));
+          : { outcome: 'failure', summary: record.work.signal.aborted ? 'Node execution was cancelled.' : 'Executor failed.' };
+        await report(record, { type: record.cancelRequested ? 'cancelled' : record.kind === 'job' ? 'completed' : 'failed', data }).catch(() => lose(record));
       }
     } finally {
       record.lease.abort();
       clearTimeout(record.expiryTimer);
       await renewal;
-      // Assignment workspaces may contain useful changes; the executor owns their cleanup.
+      let pendingReservation;
+      try { if (record.executed) pendingReservation = await accountProvider.settledReservation?.({ assignmentId: record.item.id, attempt: record.attempt }); }
+      catch { /* Uncertain reservations keep their finite lease. */ }
+      if (pendingReservation) {
+        settledReservations[`${record.item.id}-${record.attempt}`] = pendingReservation;
+        const write = settlementWrites.then(() => writePrivate(resolve(config.dataDir, 'settled-reservations.json'), settledReservations));
+        // Persistence failure keeps recovery conservative; the reservation can still expire.
+        settlementWrites = write.catch(() => {});
+        await settlementWrites;
+      }
+      if (record.kind === 'assignment') await rm(workspace, { recursive: true, force: true }).catch(() => {});
       active.delete(record.key);
       notify();
     }
@@ -206,6 +290,18 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     return (!req.os || req.os === machine.os) && (req.labels ?? []).every(value => machine.labels.includes(value)) &&
       (req.providers ?? []).every(value => machine.providers.includes(value));
   }
+  async function relinquish(item, kind) {
+    if (!['assignment', 'job'].includes(kind) || typeof item?.id !== 'string' || !Number.isSafeInteger(item.attempt)) return;
+    // Never finalise a duplicate response for an attempt that is still executing locally.
+    if (active.has(`${kind}:${item.id}`) || (seen[`${kind}:${item.id}`] ?? -1) >= item.attempt) return;
+    const data = kind === 'assignment'
+      ? { outcome: 'failure', summary: 'Node cannot accept this lease; retry on a compatible machine.' }
+      : { status: 'error', revision: item.revision, configHash: item.configHash, steps: [], artifacts: [] };
+    // There is no release route yet. A fenced terminal event frees the slot immediately,
+    // including when only the node clock considers the lease expired.
+    await hub.retry(`/${kind === 'assignment' ? 'assignments' : 'jobs'}/${encodeURIComponent(item.id)}/events`,
+      { type: kind === 'assignment' ? 'failed' : 'completed', attempt: item.attempt, data }, { signal: service.signal }).catch(() => {});
+  }
   async function pollLoop(kind) {
     const limit = kind === 'job' ? config.capacity.maxJobs : config.capacity.maxAgents;
     let wait = config.timing.backoffMinMs;
@@ -213,19 +309,20 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       try {
         const used = [...active.values()].filter(item => item.kind === kind).length;
         if (used >= limit) { await sleep(config.timing.pollIdleMs, polling.signal); continue; }
-        const response = await hub.retry('/nodes/lease', { kinds: [kind], max: limit - used }, { signal: polling.signal });
+        const response = await hub.retry('/nodes/lease', { kinds: [kind], max: Math.min(1000, limit - used) }, { signal: polling.signal });
         const items = response.leases ?? response.items ?? [
           ...(response.assignments ?? []).map(item => ({ kind: 'assignment', ...item })),
           ...(response.jobs ?? []).map(item => ({ kind: 'job', ...item })),
         ];
         if (!Array.isArray(items)) throw new Error('Invalid lease response.');
         for (const value of items) {
-          if (polling.signal.aborted) break;
           const inner = value.assignment ?? value.job ?? value.item;
           const item = inner ? { ...inner, leaseExpiresAt: value.leaseExpiresAt ?? inner.leaseExpiresAt, attempt: value.attempt ?? inner.attempt } : value;
-          if (value.kind && value.kind !== kind) continue;
-          if ([...active.values()].filter(item => item.kind === kind).length >= limit) break;
-          if (!accepts(item, kind)) continue;
+          const itemKind = value.kind ?? kind;
+          if (polling.signal.aborted || itemKind !== kind || [...active.values()].filter(item => item.kind === kind).length >= limit || !accepts(item, kind)) {
+            await relinquish(item, itemKind);
+            continue;
+          }
           const record = { kind, item, key: `${kind}:${item.id}`, attempt: item.attempt, expires: Date.parse(item.leaseExpiresAt),
             work: new AbortController(), lease: new AbortController(), lost: false };
           active.set(record.key, record);
@@ -238,7 +335,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       } catch (error) {
         if (polling.signal.aborted) return;
         if (!(error instanceof HubError) || !error.retryable) { fatal(error); return; }
-        await sleep(wait, polling.signal).catch(() => {});
+        await sleep(jitter(wait), polling.signal).catch(() => {});
         wait = Math.min(wait * 2, config.timing.backoffMaxMs);
       }
     }
@@ -275,6 +372,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         try { seen = JSON.parse(await readFile(resolve(config.dataDir, 'leases.json'), 'utf8')); }
         catch (error) { if (error.code !== 'ENOENT') throw new Error('Invalid lease journal.'); }
         if (!seen || typeof seen !== 'object' || Array.isArray(seen) || Object.values(seen).some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('Invalid lease journal.');
+        try { settledReservations = JSON.parse(await readSecret(resolve(config.dataDir, 'settled-reservations.json'))); }
+        catch (error) { if (error.code !== 'ENOENT') throw new Error('Invalid settled-reservation journal.'); }
+        if (!settledReservations || typeof settledReservations !== 'object' || Array.isArray(settledReservations) || Object.values(settledReservations).some(value => typeof value !== 'string' || !/^res_[a-zA-Z0-9_-]+$/.test(value))) throw new Error('Invalid settled-reservation journal.');
         const detected = await detectProviders();
         machine = { name: config.name ?? hostname(), os: process.platform === 'win32' ? 'windows' : process.platform,
           arch: process.arch, labels: config.labels, providers: config.providers ? detected.filter(provider => config.providers.includes(provider)) : detected,
@@ -284,9 +384,16 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         machine.runtimeUrl = await runtime.start({ signal: service.signal });
         ({ registry, accountProvider } = await loadIntegrations(config, { registry, accountProvider, runtimeUrl: machine.runtimeUrl }));
         integrationsReady = true;
+        machine.providers = machine.providers.filter(provider => registry.find({ harness: { provider, model: 'discovery' }, requirements: {}, policy: {} }, machine));
         await enroll();
         // Machine-scoped integrations (the account pool) can only open once the machine ID is known.
-        await accountProvider.bind?.({ machineId });
+        if (typeof accountProvider.prepare === 'function') {
+          await accountProvider.prepare({ machineId, reEnroll: freshEnrollment, settledReservations });
+          // Successful reconciliation consumed these proofs; keep only future pending settlements.
+          if (Object.keys(settledReservations).length) await writePrivate(resolve(config.dataDir, 'settled-reservations.json'), {});
+          settledReservations = {};
+        } else await accountProvider.bind?.({ machineId });
+        if (freshEnrollment) await writePrivate(config.credentialFile, { machineId, token });
         // Initial heartbeat may reconnect too, but no work is accepted until capacity is announced.
         await heartbeat(true);
         service.signal.throwIfAborted();
