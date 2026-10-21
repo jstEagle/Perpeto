@@ -126,3 +126,9 @@ The live checks used existing harness logins on this machine, temporary T3 base 
 - Document the executor progress `interaction` values in the table above, and `threadRef` as `t3-thread://v1/<threadId>`.
 - Name the work-branch convention. The executor uses `assignment.branch`, then `workItem.branch`, then `perpeto/<workItemId>`. This matches the e2e executor, but not `factory-delivery`'s `branchName()`.
 - `AgentPolicy`: an empty `allowedSubagentProviders` allows none, and a policy is fixed once a thread starts.
+
+## Live acceptance 3 follow-ups: command contracts, 21 October 2026
+
+The fake T3 validates every RPC request against `WsRpcGroup` from the real vendored contracts, using T3's JSON codec before recording a command, creating a project/thread or invoking a handler. This covers launch (thread creation and initial turn), all dispatched commands (including steering, interruption and runtime decisions), provider setup and subscriptions. It resolves Effect alongside the contracts to avoid mixing two installed Effect instances. The executor's test-only `effect` dependency is pinned to the vendored version, `4.0.5`; the explicitly authorized root lockfile update adds only that package and dependency edge. Factory-only `npm ci` needs no upstream installation.
+
+Regression fixtures accept valid launch/create/start/steer/interrupt/decision/project commands, then remove required fields and require RPC rejection without side effects. The pre-fix steer fixture removes both `createdBy` and `creationSource`. Temporarily expecting that fixture to succeed produced exit 1 with `T3RpcError: Missing key at ["createdBy"]`; the rejecting assertion was then restored. These tests first failed against the unchecked fake with `Missing expected rejection`. This is real contract validation with a fake server, not a new live harness acceptance run.

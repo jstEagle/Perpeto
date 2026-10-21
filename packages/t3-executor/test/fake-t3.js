@@ -4,6 +4,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { createRequire } from 'node:module';
+import { WsRpcGroup } from '../../../vendor/t3code/packages/contracts/src/rpc.ts';
+
+// Resolve Effect from the contracts themselves so an installed upstream workspace
+// and a factory-only npm install both use the same Effect instance as the schemas.
+const requireContracts = createRequire(new URL('../../../vendor/t3code/packages/contracts/package.json', import.meta.url));
+const Schema = await import(requireContracts.resolve('effect/Schema'));
+// Use the same schemas and JSON codec as T3's real WebSocket transport.
+const decodeRequests = new Map([...WsRpcGroup.requests].map(([tag, rpc]) =>
+  [tag, Schema.decodeUnknownSync(Schema.toCodecJson(rpc.payloadSchema))]));
 import { AgentPolicyStore, AgentPolicyError } from '../src/policy-store.js';
 
 /** Minimal server-side WebSocket (RFC 6455): unfragmented text frames only. */
@@ -154,6 +164,10 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
       const reply = value => ws.send({ _tag: 'Exit', requestId: message.id, exit: { _tag: 'Success', value } });
       const fail = (tag, text) => ws.send({ _tag: 'Exit', requestId: message.id, exit: { _tag: 'Failure', cause: [{ _tag: 'Fail', error: { _tag: tag, message: text } }] } });
       const payload = message.payload;
+      const decode = decodeRequests.get(message.tag);
+      if (!decode) return fail('UnknownRpc', `Unknown ${message.tag}`);
+      try { decode(payload); }
+      catch (error) { return fail('InvalidRequest', error.message); }
       switch (message.tag) {
         case 'server.getConfig': return reply({ providers: state.providers });
         case 'server.getSettings': return reply({ providerInstances: state.providerInstances ?? {} });

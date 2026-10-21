@@ -21,6 +21,7 @@
   "devDependencies": {
     "@perpeto/hub": "*",
     "@perpeto/node": "*",
-    "@perpeto/sdk": "*"
+    "@perpeto/sdk": "*",
+    "effect": "4.0.5"
   }
 }
