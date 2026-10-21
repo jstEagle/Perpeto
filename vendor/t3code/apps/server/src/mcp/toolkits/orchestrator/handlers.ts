@@ -1,5 +1,5 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
-import { OrchestratorToolkit } from "./tools.ts";
+import { FactoryToolkit, OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 
 import { readCaller } from "../../threadAccess.ts";
@@ -152,3 +152,10 @@ const handlers = {
 } satisfies McpToolAccess.Handlers<typeof OrchestratorToolkit.tools>;
 
 export const layer = McpToolAccess.toLayer(OrchestratorToolkit, handlers);
+
+export const layerFactory = McpToolAccess.toLayer(FactoryToolkit, {
+  orchestrator_capabilities: handlers.orchestrator_capabilities,
+  delegate_task: handlers.delegate_task,
+  task_status: handlers.task_status,
+  task_cancel: handlers.task_cancel,
+});

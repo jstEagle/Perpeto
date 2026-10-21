@@ -294,7 +294,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       // Attach the policy before the first turn so no delegation can precede it.
       let policyEnforced = true;
       try {
-        await t3.setPolicy(threadId, { maxSubagents: policy.maxSubagents ?? 0, allowedSubagentProviders: policy.allowedSubagentProviders ?? [] }, { signal });
+        await t3.setPolicy(threadId, { t3Tools: 'policy', maxSubagents: policy.maxSubagents ?? 0, allowedSubagentProviders: policy.allowedSubagentProviders ?? [] }, { signal });
       } catch (error) {
         if (error instanceof T3HttpError && (error.status === 404 || error.status === 503)) {
           policyEnforced = false;

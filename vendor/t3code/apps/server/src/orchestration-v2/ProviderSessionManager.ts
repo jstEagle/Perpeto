@@ -44,6 +44,7 @@ import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ServerSettings from "../serverSettings.ts";
+import * as PerpetoAgentPolicy from "../perpeto/AgentPolicy.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EventSink from "./EventSink.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
@@ -449,11 +450,31 @@ export const layerWithOptions = (
                 // the credential it started with, so a thread that detaches and
                 // re-attaches across a workspace handoff must come back to the
                 // same token or the process's tool calls fail auth.
+                const thread = yield* projectionStore.getThreadShell(threadId).pipe(Effect.orDie);
+                const factoryPolicy = PerpetoAgentPolicy.factoryPolicy(
+                  threadId,
+                  thread?.lineage.rootThreadId,
+                );
+                if (
+                  factoryPolicy !== undefined &&
+                  (factoryPolicy.maxSubagents === 0 ||
+                    factoryPolicy.allowedSubagentProviders.length === 0)
+                ) {
+                  yield* mcpSessionRegistry.revokeThread(threadId);
+                  yield* mcpSessions.clear(threadId);
+                  return { mcpCredentialId: undefined, issued: false };
+                }
                 const { browser: browserToolsAvailable, device: deviceToolsAvailable } =
-                  yield* agentAccessSettings(threadId);
+                  factoryPolicy === undefined
+                    ? yield* agentAccessSettings(threadId)
+                    : { browser: false, device: false };
                 const capabilities = new Set<
                   import("../mcp/McpInvocationContext.ts").McpCapability
-                >(["orchestration", "worktree", "pull-requests"]);
+                >(
+                  factoryPolicy === undefined
+                    ? ["orchestration", "worktree", "pull-requests"]
+                    : ["orchestration"],
+                );
                 if (browserToolsAvailable) capabilities.add("preview");
                 if (deviceToolsAvailable) capabilities.add("device");
                 const existing = yield* mcpSessions.read(threadId);
@@ -477,6 +498,7 @@ export const layerWithOptions = (
                     resolved !== undefined &&
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
+                    (resolved.factoryTools === true) === (factoryPolicy !== undefined) &&
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
                     resolved.capabilities.has("device") === deviceToolsAvailable
                   ) {
@@ -490,6 +512,7 @@ export const layerWithOptions = (
                   providerInstanceId,
                   browserToolsAvailable,
                   capabilities,
+                  ...(factoryPolicy === undefined ? {} : { factoryTools: true }),
                 });
                 yield* mcpSessions.set(credential.config);
                 reserveMcpCredential(threadId, credential.config.providerSessionId);

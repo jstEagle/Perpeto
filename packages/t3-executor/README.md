@@ -51,7 +51,7 @@ A minted session gets `orchestration:read`, `orchestration:operate` and `provide
    - A local working checkout (`localPath`) gets a T3-managed worktree on the work branch. An existing branch or worktree is reused.
    - Otherwise the executor clones `url` (or a bare `localPath`) into `ctx.workspace/repo`, starting from `origin/<branch>` when an earlier attempt published it.
    - The work branch is `assignment.branch`, then `workItem.branch`, then `perpeto/<workItemId>`.
-3. **Thread.** The executor finds or creates the T3 project for the workspace root (T3 allows one project per root). It attaches the `AgentPolicy` to a deterministic thread ID, then launches the thread with the prompt.
+3. **Thread.** The executor finds or creates the T3 project for the workspace root (T3 allows one project per root). It attaches the `AgentPolicy`, including `t3Tools: "policy"`, to a deterministic thread ID, then launches the thread with the prompt.
    - The prompt is the assignment prompt plus project goals, docs, the work item, subagent limits and, for structured roles, the answer format.
    - IDs derive from the assignment ID and attempt, so a relaunch after a node crash resumes the same thread instead of starting a second one.
 4. **Follow.** The executor subscribes to the thread, plus child threads that it delegates or creates, and reports through `ctx.report`. See [progress events](#progress-and-usage-events).
@@ -78,15 +78,15 @@ Context before the agent does anything, from Codex rollouts (`gpt-6.1-sol`, low 
 
 | Part of the first model call | Live run 1 (operator setup) | Factory instance |
 | --- | --- | --- |
-| Input tokens, first call | 27,710 to 31,545 (nine turns; builder 31,347) | 15,252 (builder) |
+| Input tokens, first call | 27,710 to 31,545 (nine turns; builder 31,347) | 13,562 (builder, after tool filtering) |
 | Skills list | 41,160 characters | none |
 | Memories | about 12,000 characters | none |
 | `~/.codex/AGENTS.md` | 4,939 characters | none |
 | SessionStart hook output | about 1,780 characters | none |
-| T3 orchestration, runtime and tool notes | 7,559 characters | 7,559 characters |
+| T3 orchestration, runtime and tool notes | 7,559 characters | none |
 | Multi-agent role and mode notes | 2,671 characters | 2,671 characters |
 
-The factory column is `node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low`, one builder turn on 21 October 2026, which also showed the commit authored and committed by `Perpeto Agent <agents@perpeto.local>`. T3's own context stays, as do its `t3-code` MCP tools; dropping them needs a per-thread switch in T3 (finding 3). The multi-agent notes come from the model catalog (`multi_agent_version: v2`) and survive both feature flags.
+The factory column is `node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low` on 21 October 2026. A fresh before/after pair used 15,256 and 13,562 first-call input tokens, a reduction of 1,694 (11.1%). Each was one builder turn in its own temporary runtime and repository, using the existing login; both committed as `Perpeto Agent <agents@perpeto.local>`. These are actual Codex rollout counts, including its own instructions and tools, rather than a characters-to-tokens estimate. The multi-agent notes come from the model catalog (`multi_agent_version: v2`) and remain.
 
 Not verified live: Claude isolation (configured and unit-tested only), and whether `--setting-sources` also hides user-scope MCP servers in `~/.claude.json`.
 
@@ -116,16 +116,28 @@ T3 counts cache reads and writes inside `inputTokens` ([`TurnTokenUsage`](../../
 
 ## AgentPolicy enforcement
 
+### Factory prompt and tool filtering
+
+The executor sets `t3Tools: "policy"` through the existing policy PUT route before launch. T3 reads it when preparing the provider session. Like the budget, this setting is immutable, persistent and inherited by descendants, including through `lineage.rootThreadId` before a child is linked. Existing policies migrate to `"full"`, preserving upstream behavior.
+
+- With `maxSubagents: 0` or no allowed subagent providers, T3 attaches no app-owned MCP session. This removes the app tool catalog and its orchestration notes across providers.
+- Otherwise the session uses `/mcp/perpeto`, which exposes only `orchestrator_capabilities`, `delegate_task`, `task_status` and `task_cancel`. The existing atomic policy checks still refuse forbidden providers and exhausted budgets. Status and cancellation remain available after budget exhaustion.
+- Factory credentials are refused at the full `/mcp` endpoint, and full credentials are refused at the factory endpoint. Thread management, scheduling, previews, HTML, device, worktree and PR tools are absent from the factory catalog and cannot be called there.
+- Codex and Claude omit the T3 orchestration notes even when delegation MCP is attached. **Known gap:** delegation-enabled Cursor, OpenCode and ACP providers still receive T3 notes from their separate provider packages. Those packages were deliberately left unpatched. Zero-subagent threads do not attach MCP and avoid those notes.
+
+This requires the rebuilt runtime; older runtimes may ignore `t3Tools`. It filters T3's app-owned surface, not provider-native tools or the underlying OS. A runtime without policy routes still reports `policy.unenforced` and cannot provide this filtering. Claude prompt assembly is tested; only Codex was exercised live for this change.
+
+
 | Creation path | Enforced | How |
 | --- | --- | --- |
 | `delegate_task` (app-owned child task) | **Refused before dispatch** | Vendor patch in [OrchestratorMcpService.ts](../../vendor/t3code/apps/server/src/mcp/OrchestratorMcpService.ts) `delegateTask` |
 | `create_threads` | **Refused before dispatch** | Same file, `createThreads` |
 | `t3_thread_launch` by an agent | **Refused before dispatch** | [project/handlers.ts](../../vendor/t3code/apps/server/src/mcp/toolkits/project/handlers.ts) |
 | Provider-native subagents (Claude Agent/Task tool, Codex multi-agent) | **Detected after start, then the run is interrupted** | The executor reports each `subagent.updated` with `origin: provider_native` to `/native-subagents`. A refusal stops the run. |
-| `t3_thread_fork`, `schedule_task` | Not enforced | Not patched |
+| `t3_thread_fork`, `schedule_task` | Hidden from factory sessions | No factory MCP access; upstream full sessions keep existing behavior |
 
 How the policy store works:
-- A policy (`maxSubagents`, `allowedSubagentProviders`) is attached once per root thread and cannot be widened later. Children are linked to it, or resolved through `lineage.rootThreadId`, so the whole tree shares one budget.
+- A policy (`maxSubagents`, `allowedSubagentProviders`, `t3Tools`) is attached once per root thread and cannot be widened later. Children are linked to it, or resolved through `lineage.rootThreadId`, so the whole tree shares one budget.
 - Reservations are atomic in SQLite (`perpeto-agent-policy.sqlite` in T3's state directory, through [policy-store.js](src/policy-store.js)). Retries with the same request key are idempotent, and failed dispatches release their reservation.
 - `allowedSubagentProviders` matches a driver kind or an instance ID. An empty list allows none.
 - Threads with no policy keep upstream behavior.
@@ -180,7 +192,7 @@ Source: `vendor/t3code` at the pinned commit. Verified live where noted.
 
 - `node --test packages/t3-executor/test/*.test.js` runs against a fake T3 server ([test/fake-t3.js](test/fake-t3.js)). The fake is real HTTP plus a minimal WebSocket using T3's RPC framing and chunk acknowledgement, and the real policy store backs its policy routes. One test drives the real `@perpeto/node` account provider and pool with a synthetic credential.
 - [Account lease tests](test/account-leases.test.js) use a real pool with synthetic credentials and short leases to cover repeated renewal, hung/lost renewals, root and child interruption, launch cancellation races, fenced cleanup, token forwarding and exhaustion with a ready default login present.
-- Vendor tests: `apps/server/src/perpeto/AgentPolicy*.test.ts`, run with `vp test run`.
+- Vendor tests: `apps/server/src/perpeto/AgentPolicy*.test.ts` and `FactoryMcp.test.ts`, plus provider session, Codex/Claude prompt assembly and MCP toolkit tests, run with `vp test run`.
 - **Opt-in live check** (not part of `npm test`; it uses this machine's existing harness logins):
 
   ```sh

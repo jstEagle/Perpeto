@@ -3,6 +3,7 @@ export interface AgentPolicy {
   threadId: string;
   maxSubagents: number;
   allowedSubagentProviders: string[];
+  t3Tools: "full" | "policy";
   used: number;
   createdAt: string;
 }
@@ -36,12 +37,12 @@ export class AgentPolicyError extends Error {
   constructor(code: string, message: string);
   code: string;
 }
-export function normalizePolicy(input: unknown): { maxSubagents: number; allowedSubagentProviders: string[] };
+export function normalizePolicy(input: unknown): { maxSubagents: number; allowedSubagentProviders: string[]; t3Tools: "full" | "policy" };
 export class AgentPolicyStore {
   constructor(filename: string, options?: { busyTimeoutMs?: number });
   close(): void;
-  setPolicy(input: { threadId: string; maxSubagents: unknown; allowedSubagentProviders: unknown }): { policy: AgentPolicy; created: boolean };
-  getPolicy(threadId: string): AgentPolicy | null;
+  setPolicy(input: { threadId: string; maxSubagents: unknown; allowedSubagentProviders: unknown; t3Tools?: unknown }): { policy: AgentPolicy; created: boolean };
+  getPolicy(threadId: string, rootThreadId?: string | null): AgentPolicy | null;
   authorize(input: AuthorizeInput): Decision;
   recordCreated(input: { requestKey: string; callerThreadId: string; rootThreadId?: string | null; childThreadId?: string | null; childRef?: string | null }): boolean;
   release(input: { requestKey: string; callerThreadId: string; rootThreadId?: string | null }): boolean;

@@ -50,13 +50,13 @@ it.layer(
           );
           return { status: response.status, body: yield* response.json };
         });
-      const policy = { maxSubagents: 1, allowedSubagentProviders: ["claudeAgent"] };
+      const policy = { maxSubagents: 1, allowedSubagentProviders: ["claudeAgent"], t3Tools: "policy" };
       expect((yield* request("PUT", prefix, undefined, policy)).status).toBe(401);
       expect((yield* request("PUT", prefix, reader.token, policy)).status).toBe(403);
       expect((yield* request("GET", prefix, reader.token)).status).toBe(404);
       expect(yield* request("PUT", prefix, operator.token, policy)).toMatchObject({
         status: 200,
-        body: { created: true, policy: { threadId: "thread:root", maxSubagents: 1, used: 0 } },
+        body: { created: true, policy: { threadId: "thread:root", maxSubagents: 1, used: 0, t3Tools: "policy" } },
       });
       expect((yield* request("PUT", prefix, operator.token, policy)).body).toMatchObject({ created: false });
       expect(

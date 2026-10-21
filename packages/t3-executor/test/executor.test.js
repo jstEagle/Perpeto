@@ -52,7 +52,7 @@ test('runs a turn: policy first, launch with model options, usage, timing and re
   assert.ok(order.indexOf('PUT /api/perpeto/agent-policies') >= 0, 'policy attached');
   const launch = fake.state.commands.find(item => item.tag === 'orchestration.launchThread').payload;
   assert.ok(fake.state.requests.findIndex(item => item.method === 'PUT') < fake.state.requests.findIndex(item => item.path === '/api/orchestration/threads/' + launch.threadId), 'policy precedes thread reads');
-  assert.deepEqual(fake.policies.getPolicy(launch.threadId), { ...fake.policies.getPolicy(launch.threadId), maxSubagents: 1, allowedSubagentProviders: ['codex'] });
+  assert.deepEqual(fake.policies.getPolicy(launch.threadId), { ...fake.policies.getPolicy(launch.threadId), maxSubagents: 1, allowedSubagentProviders: ['codex'], t3Tools: 'policy' });
   assert.deepEqual(launch.modelSelection, { instanceId: launch.modelSelection.instanceId, model: 'gpt-test', options: [{ id: 'reasoningEffort', value: 'high' }] });
   assert.match(launch.modelSelection.instanceId, /^perpeto_codex_/, 'factory work runs on the isolated instance');
   assert.equal(launch.runtimeMode, 'auto');

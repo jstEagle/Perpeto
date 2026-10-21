@@ -32,15 +32,16 @@ const optionalString = (value, label) => value === undefined || value === null ?
 /** @param {unknown} input */
 export function normalizePolicy(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_INPUT', 'Policy must be an object.');
-  const { maxSubagents, allowedSubagentProviders } = /** @type {Record<string, unknown>} */ (input);
+  const { maxSubagents, allowedSubagentProviders, t3Tools = 'full' } = /** @type {Record<string, unknown>} */ (input);
   if (!Number.isSafeInteger(maxSubagents) || /** @type {number} */ (maxSubagents) < 0 || /** @type {number} */ (maxSubagents) > 10000) {
     fail('INVALID_INPUT', 'maxSubagents must be an integer between 0 and 10000.');
   }
   if (!Array.isArray(allowedSubagentProviders) || allowedSubagentProviders.length > MAX_PROVIDERS) {
     fail('INVALID_INPUT', `allowedSubagentProviders must be an array of at most ${MAX_PROVIDERS} provider names.`);
   }
+  if (!['full', 'policy'].includes(t3Tools)) fail('INVALID_INPUT', 't3Tools must be full or policy.');
   const providers = [...new Set(allowedSubagentProviders.map(item => string(item, 'provider name', 100)))].sort();
-  return { maxSubagents: /** @type {number} */ (maxSubagents), allowedSubagentProviders: providers };
+  return { maxSubagents: /** @type {number} */ (maxSubagents), allowedSubagentProviders: providers, t3Tools };
 }
 
 export class AgentPolicyStore {
@@ -57,7 +58,7 @@ export class AgentPolicyStore {
       this.#db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       this.#db.exec('BEGIN IMMEDIATE');
       const version = this.#db.prepare('PRAGMA user_version').get().user_version;
-      if (version > 1) fail('SCHEMA_VERSION', `Unsupported agent policy schema version ${version}.`);
+      if (version > 2) fail('SCHEMA_VERSION', `Unsupported agent policy schema version ${version}.`);
       if (version === 0) this.#db.exec(`
         CREATE TABLE policies (
           thread_id TEXT PRIMARY KEY,
@@ -97,6 +98,7 @@ export class AgentPolicyStore {
         CREATE INDEX decisions_policy ON decisions(policy_thread_id, seq);
         PRAGMA user_version = 1;
       `);
+      if (version < 2) this.#db.exec("ALTER TABLE policies ADD COLUMN t3_tools TEXT NOT NULL DEFAULT 'full'; PRAGMA user_version = 2;");
       this.#db.exec('COMMIT');
     } catch (error) {
       try { this.#db.exec('ROLLBACK'); } catch { /* No active transaction. */ }
@@ -128,6 +130,7 @@ export class AgentPolicyStore {
       threadId: row.thread_id,
       maxSubagents: row.max_subagents,
       allowedSubagentProviders: JSON.parse(row.allowed_providers),
+      t3Tools: row.t3_tools,
       used: row.used,
       createdAt: row.created_at,
     };
@@ -154,7 +157,7 @@ export class AgentPolicyStore {
       const existing = this.#row(threadId);
       if (existing) {
         const current = this.#present(existing);
-        if (current.maxSubagents !== policy.maxSubagents ||
+        if (current.t3Tools !== policy.t3Tools || current.maxSubagents !== policy.maxSubagents ||
             JSON.stringify(current.allowedSubagentProviders) !== JSON.stringify(policy.allowedSubagentProviders)) {
           fail('CONFLICT', 'A different policy is already attached to this thread.');
         }
@@ -163,16 +166,16 @@ export class AgentPolicyStore {
       if (this.#db.prepare('SELECT 1 FROM links WHERE thread_id = ?').get(threadId)) {
         fail('CONFLICT', 'This thread is already governed by its parent policy.');
       }
-      this.#db.prepare('INSERT INTO policies(thread_id, max_subagents, allowed_providers, created_at) VALUES (?, ?, ?, ?)')
-        .run(threadId, policy.maxSubagents, JSON.stringify(policy.allowedSubagentProviders), new Date().toISOString());
+      this.#db.prepare('INSERT INTO policies(thread_id, max_subagents, allowed_providers, created_at, t3_tools) VALUES (?, ?, ?, ?, ?)')
+        .run(threadId, policy.maxSubagents, JSON.stringify(policy.allowedSubagentProviders), new Date().toISOString(), policy.t3Tools);
       return { policy: this.#present(this.#row(threadId)), created: true };
     });
   }
 
   /** @returns policy governing the thread, or null when the thread is unrestricted. */
-  getPolicy(threadId) {
+  getPolicy(threadId, rootThreadId = null) {
     string(threadId, 'threadId');
-    const row = this.#governing(threadId);
+    const row = this.#governing(threadId) ?? this.#governing(rootThreadId);
     return row ? this.#present(row) : null;
   }
 

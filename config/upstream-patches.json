@@ -4,19 +4,74 @@
     "sha256": "2d2db23b2685952e39ce081b009c2c6f00099c1da0810f272652c87cf89b5d10",
     "upstreamHash": "7aa0faadf442b1bc706e7606ae4cf799b98d593019b37c59c2d392a5df78b595"
   },
+  "apps/server/src/mcp/McpHttpServer.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "9ce096b2d8db980d3f3e4534da412cc1119ab1d05f25174e5bf97a7fcac25f7d",
+    "upstreamHash": "8c235800f59ffff9161b9abcb48d9d6dba61ed3d0ddc799a6038d3ddbe9e9e55"
+  },
+  "apps/server/src/mcp/McpInvocationContext.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "f9a85bf030f4dffd5c4ca383618c00343348391794a8b71b2296ee6a614985f4",
+    "upstreamHash": "c3d3f37df4ced1c5aee614442f2e81f4dc7423e1e4bf3068a2d20cd1dfc80885"
+  },
+  "apps/server/src/mcp/McpSessionRegistry.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "1f843c503aafaf3f89378e593366b41e2c6b6c0cfb7d0da743f85a571897d706",
+    "upstreamHash": "97dcb9fd892e3dc233c6ef784da7610b0202b259d094df4abac6746261ee9100"
+  },
   "apps/server/src/mcp/OrchestratorMcpService.ts": {
     "reason": "Enforce Perpeto AgentPolicy (maxSubagents, allowedSubagentProviders) on agent-created delegated tasks and threads; expose per-thread policy and decision routes for the @perpeto/t3-executor package.",
     "sha256": "8c6449a8b1ce119c838dce50203da6922da9f7432c787275c47be44743179027",
     "upstreamHash": "7a7f98f38f6edbba26637a9b51a76a1365e47400705e7bbc6e2f2af071bf9a12"
+  },
+  "apps/server/src/mcp/toolkits/orchestrator/handlers.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "4e52ecda96f5b49178a9f5cca4b3dcac62e41ffb818fa24bf4c5e41f24fb4adf",
+    "upstreamHash": "95ecdc93f6f4b5e1eb94cae3d1d3b65c6fed0884960b10eb599ec953581d923f"
+  },
+  "apps/server/src/mcp/toolkits/orchestrator/tools.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "c615e9ff80d2a9b8014338511355489af2298b2d9366e66662e7b46c5f3a3435",
+    "upstreamHash": "b7a697515b7a2930bbba53c0140b02bde4aa69f7afdb98cd02b09cf16ea4b59d"
   },
   "apps/server/src/mcp/toolkits/project/handlers.ts": {
     "reason": "Enforce Perpeto AgentPolicy (maxSubagents, allowedSubagentProviders) on agent-created delegated tasks and threads; expose per-thread policy and decision routes for the @perpeto/t3-executor package.",
     "sha256": "af28af72db05b7e40e633144d1a77e980119c9337c95fe44a281906c3ba30b08",
     "upstreamHash": "8be24c91418bbc4ba8c09c2153ec3cb5408a43fa4cd573cdb33823d75b95d2af"
   },
+  "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "80f589b8004ba8d7294f8b72179c1a744bcf630910f563eb5555afbe5883466e",
+    "upstreamHash": "624eccb789e485940de03b3580b4ac9eb76bd5470a125d10a39f2d8688c6e4e3"
+  },
+  "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "e362d0d042d8335826f7df8b57f928920ef29540fa4e99832b6dc781d871c14e",
+    "upstreamHash": "06b5cf9b0aca49fab3ed4000306a32faa2395b293078e34c6ea608039f57797d"
+  },
+  "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "8afe41f9ff9f88e18c92124153b1fbd401dae857253f91f93d0e75dbecdfe2d1",
+    "upstreamHash": "1471fa0dcca753c98bd6163e8a2f49c54f19e843ca1f881afe0197da3cc018d0"
+  },
+  "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "1f2fbe956df57bf6408be4b658cf097578e1f520603cb718bf9a304371dbefcc",
+    "upstreamHash": "76bc13ac2f76824cbff844796f2f54842009a3935a1eea7f35f6113b6c3e30f6"
+  },
+  "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "afa31c146c2716682ed23025af75e70c4349cd686422df5117269aa3721f7126",
+    "upstreamHash": "a03450c88f88e14f01aebb8575bab46b90ad46315972c7e113550040d1d28ff1"
+  },
+  "apps/server/src/orchestration-v2/ProviderSessionManager.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "906b948d5fd0efd53961e3df8931e24f1e12c84c99c4eebc1aa50874a4c18d8c",
+    "upstreamHash": "aad86e59196395bb00cea8b70387fc80e14746f47a2d2ebf9d0e34ad45a37b55"
+  },
   "apps/server/src/perpeto/AgentPolicy.http.test.ts": {
-    "reason": "Enforce Perpeto AgentPolicy (maxSubagents, allowedSubagentProviders) on agent-created delegated tasks and threads; expose per-thread policy and decision routes for the @perpeto/t3-executor package.",
-    "sha256": "801d45c6aabc3f699a14ac440d2df9ca4c7ad8147b4bb9e47b0912908c3fca93",
+    "reason": "Enforce Perpeto AgentPolicy (maxSubagents, allowedSubagentProviders) on agent-created delegated tasks and threads; expose per-thread policy and decision routes for the @perpeto/t3-executor package. Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "3e34db4405555e1858ebda3eba817dbe3eb3924df9b79ff84bb86d0e0a20323d",
     "upstreamHash": null
   },
   "apps/server/src/perpeto/AgentPolicy.test.ts": {
@@ -25,8 +80,13 @@
     "upstreamHash": null
   },
   "apps/server/src/perpeto/AgentPolicy.ts": {
-    "reason": "Enforce Perpeto AgentPolicy (maxSubagents, allowedSubagentProviders) on agent-created delegated tasks and threads; expose per-thread policy and decision routes for the @perpeto/t3-executor package. Import shared storage from the restructured packages/ layout.",
-    "sha256": "9071f140e1abe420fada735b4d8981e22956dbb57d1cb8a7c6b6e006eddc0ac5",
+    "reason": "Enforce Perpeto AgentPolicy (maxSubagents, allowedSubagentProviders) on agent-created delegated tasks and threads; expose per-thread policy and decision routes for the @perpeto/t3-executor package. Import shared storage from the restructured packages/ layout. Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "f3f454c66c6912b6702eca2dc01d7f05d1c2d967b2fdbb4c103173af628aa793",
+    "upstreamHash": null
+  },
+  "apps/server/src/perpeto/FactoryMcp.test.ts": {
+    "reason": "Filter factory-thread T3 prompts and app-owned MCP tools through the immutable Perpeto AgentPolicy setting; preserve policy-allowed delegation and upstream full sessions.",
+    "sha256": "0e803d84678041c04e0e7013951e9075d21ffb59449bf971aec975858105f348",
     "upstreamHash": null
   },
   "apps/server/src/perpeto/Messaging.ts": {

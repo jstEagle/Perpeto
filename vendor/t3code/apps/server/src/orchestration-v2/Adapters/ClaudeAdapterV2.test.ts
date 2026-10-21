@@ -215,6 +215,26 @@ function makeClaudeTestTurnInput(input: {
 }
 
 describe("ClaudeAdapterV2 runtime query policy", () => {
+  it("omits T3 notes for the factory MCP endpoint while retaining delegation", () => {
+    const base = {
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "factory",
+      resume: false,
+      cwd: "/workspace",
+    };
+    const upstream = ClaudeAdapterV2.makeClaudeQueryOptions({
+      ...base,
+      mcpServers: { "t3-code": { type: "http", url: "http://localhost/mcp" } },
+    });
+    const factory = ClaudeAdapterV2.makeClaudeQueryOptions({
+      ...base,
+      mcpServers: { "t3-code": { type: "http", url: "http://localhost/mcp/perpeto" } },
+    });
+    assert.include(JSON.stringify(upstream.systemPrompt), "T3 Code orchestration");
+    assert.notInclude(JSON.stringify(factory.systemPrompt), "T3 Code orchestration");
+    assert.isDefined(factory.mcpServers?.["t3-code"]);
+  });
+
   it.each([false, true])("requests thinking summaries with resume=%s", (resume) => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,

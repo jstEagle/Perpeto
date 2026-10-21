@@ -290,3 +290,11 @@ export const OrchestratorToolkit = Toolkit.make(
   ThreadWaitTool,
   ThreadInterruptTool,
 );
+
+/** Minimal catalog for factory roles that may delegate under AgentPolicy. */
+export const FactoryToolkit = Toolkit.make(
+  OrchestratorCapabilitiesTool,
+  DelegateTaskTool,
+  TaskStatusTool,
+  TaskCancelTool,
+);

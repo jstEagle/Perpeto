@@ -116,6 +116,7 @@ import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEve
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "../../provider/codexLaunchArgs.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
+import * as PerpetoAgentPolicy from "../../perpeto/AgentPolicy.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import {
   MCP_APP_EXTENSION_ID,
@@ -718,6 +719,7 @@ export function buildCodexTurnStartParams(input: {
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   readonly modelSelection: ModelSelection;
   readonly hasT3Mcp?: boolean;
+  readonly factoryTools?: boolean;
   readonly browserToolsAvailable?: boolean;
   readonly deviceToolsAvailable?: boolean;
   /** ChatGPT token sharing does not accept service tiers. */
@@ -744,10 +746,10 @@ export function buildCodexTurnStartParams(input: {
       input.omitServiceTier === true
         ? undefined
         : getCodexServiceTierOptionValue(input.modelSelection);
-    const developerInstructions =
-      input.hasT3Mcp !== true
-        ? undefined
-        : buildCodexDeveloperInstructions(input.runtimePolicy.interactionMode);
+    const hasT3Mcp = input.hasT3Mcp === true && input.factoryTools !== true;
+    const developerInstructions = !hasT3Mcp
+      ? undefined
+      : buildCodexDeveloperInstructions(input.runtimePolicy.interactionMode);
     // An app's context is text an MCP server wrote, so it goes in as untrusted
     // context: Codex renders it as quoted user-side input, never as developer
     // instructions.
@@ -757,16 +759,15 @@ export function buildCodexTurnStartParams(input: {
         { kind: "untrusted" as const, value: entry.text },
       ]),
     );
-    const t3Context =
-      input.hasT3Mcp === true
-        ? buildCodexAdditionalContext(
-            { model: input.modelSelection.model, reasoningEffort: effort ?? "medium" },
-            {
-              browser: input.browserToolsAvailable ?? true,
-              device: input.deviceToolsAvailable ?? false,
-            },
-          )
-        : undefined;
+    const t3Context = hasT3Mcp
+      ? buildCodexAdditionalContext(
+          { model: input.modelSelection.model, reasoningEffort: effort ?? "medium" },
+          {
+            browser: input.browserToolsAvailable ?? true,
+            device: input.deviceToolsAvailable ?? false,
+          },
+        )
+      : undefined;
     const additionalContext =
       t3Context === undefined && Object.keys(appContext).length === 0
         ? undefined
@@ -6191,6 +6192,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
               hasT3Mcp: mcpSession !== undefined,
+              factoryTools: PerpetoAgentPolicy.isFactoryMcpSession(mcpSession),
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,
