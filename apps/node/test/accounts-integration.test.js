@@ -32,7 +32,12 @@ test('account adapter binds after enrollment, reserves per attempt and never exp
   const first = await provider.acquire({ provider: 'codex', assignmentId: 'asg_1', attempt: 1 });
   assert.equal(first.account.id, account.id); assert.equal(first.binding.providerInstanceId, `factory_${account.id}`);
   assert.deepEqual(await provider.acquire({ provider: 'codex', assignmentId: 'asg_1', attempt: 1 }), first, 'same attempt replays its reservation');
-  assert.equal(await provider.acquire({ provider: 'codex', assignmentId: 'asg_1', attempt: 2 }), null, 'a newer attempt does not share the older reservation');
+  if (first.reservation) {
+    await assert.rejects(provider.acquire({ provider: 'codex', assignmentId: 'asg_1', attempt: 2 }), { code: 'ACCOUNT_POOL_EXHAUSTED' },
+      'an enrolled but exhausted pool must not fall back to a default login');
+  } else {
+    assert.equal(await provider.acquire({ provider: 'codex', assignmentId: 'asg_1', attempt: 2 }), null, 'legacy pool compatibility');
+  }
   assert.equal(await provider.acquire({ provider: 'fake', assignmentId: 'asg_2' }), null, 'providers without pool support fall back');
   assert.deepEqual(await provider.release(first, { assignmentId: 'asg_1', attempt: 1 }), { released: true });
   assert.equal((await provider.acquire({ provider: 'codex', assignmentId: 'asg_1', attempt: 2 })).account.id, account.id);
@@ -51,4 +56,38 @@ test('node heartbeats report factory-accounts snapshots once enrolled', async t 
   const account = operator.pool.importAccount({ provider: 'codex', label: 'Fixture', source: await codexSource(t), idempotencyKey: 'import' });
   await eventually(() => hub.heartbeats.some(beat => beat.accounts.some(value => value.id === account.id && value.machineId === 'mch_test' && value.status === 'active')));
   assert.ok(hub.heartbeats.every(beat => !JSON.stringify(beat).includes('fixture-codex-secret')));
+});
+
+test('account reservation tokens and fresh renewal keys survive the node adapter unchanged', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'perpeto-reservation-contract-'));
+  addCleanup(t, () => rm(dataDir, { recursive: true, force: true }));
+  const provider = createAccountProvider({ dataDir });
+  provider.bind({ machineId: 'mch_contract' });
+  const calls = [];
+  const reservationId = 'rsv_original';
+  provider.pool.renewReservation = async input => {
+    calls.push(['renew', input]);
+    return { id: reservationId, assignmentId: input.assignmentId, accountId: 'acct_test', expiresAt: '2026-10-22T00:00:00.000Z' };
+  };
+  t.mock.method(provider.pool, 'observe', async input => { calls.push(['observe', input]); });
+  t.mock.method(provider.pool, 'release', async input => { calls.push(['release', input]); return { released: true }; });
+  t.mock.method(provider.pool, 'bindingFor', async (...input) => { calls.push(['bindingFor', input]); return { providerInstanceId: 'factory_acct_test' }; });
+  assert.equal(typeof provider.renewReservation, 'function');
+  for (const key of ['renew-tick-1', 'renew-tick-2']) {
+    const receipt = await provider.renewReservation({ assignmentId: 'asg_test', attempt: 3, reservationId, idempotencyKey: key });
+    assert.equal(receipt.id, reservationId);
+    assert.equal(receipt.accountId, 'acct_test');
+    assert.equal(receipt.expiresAt, '2026-10-22T00:00:00.000Z');
+  }
+  await provider.observe({ accountId: 'acct_test', reservationId, message: { status: 'ok' }, idempotencyKey: 'observe-1' });
+  await provider.bindingFor('acct_test', { reservationId });
+  await provider.release({ reservation: { id: reservationId } }, { assignmentId: 'asg_test', attempt: 3, reservationId, result: { outcome: 'success' } });
+  assert.deepEqual(calls.slice(0, 2).map(([, input]) => input), [
+    { assignmentId: 'asg_test-3', reservationId, idempotencyKey: 'renew-tick-1' },
+    { assignmentId: 'asg_test-3', reservationId, idempotencyKey: 'renew-tick-2' },
+  ]);
+  assert.equal(calls[2][1].reservationId, reservationId);
+  assert.deepEqual(calls[3][1], ['acct_test', { reservationId }]);
+  assert.equal(calls[4][1].reservationId, reservationId);
+  assert.deepEqual(calls[4][1].result, { outcome: 'success' });
 });
