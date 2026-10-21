@@ -12,7 +12,7 @@ test('build template runs from input to merged output on a real hub, node and ba
   t.after(() => import('node:fs/promises').then(fs => fs.rm(repoRoot, { recursive: true, force: true })));
   const repository = await bareRepository(repoRoot);
   const initialMain = await git(repository, 'rev-parse', 'main');
-  const executor = createFactoryExecutor({ repository });
+  const executor = createFactoryExecutor({ repository, crashOnce: ['Farewell'] });
   const factory = await startFactory(t, { executor });
   const { request } = factory;
 
@@ -32,6 +32,8 @@ test('build template runs from input to merged output on a real hub, node and ba
       { name: 'test', run: 'test -f README.md && for f in features/*.txt; do grep -q "reviewed: yes" "$f" || exit 1; done', timeoutSec: 60 }];
     // The run's review loop is expected to pass first time; one rejection per item is then measurable rework.
     value.nodes.find(node => node.id === 'review-loop').config.expectedIterations = 1;
+    // Short backoff so the retry path runs within the test while still exercising notBefore.
+    value.nodes.find(node => node.id === 'builder').config.retry = { maxAttempts: 3, backoffSec: 1 };
     return value;
   });
   const workflow = await request('POST', `/projects/${project.id}/workflows`, { name: 'Build', purpose: 'build', graph });
@@ -51,11 +53,16 @@ test('build template runs from input to merged output on a real hub, node and ba
   assert.deepEqual(children.map(item => item.title).sort(), ['Farewell', 'Greeting']);
   for (const item of children) { assert.equal(item.status, 'done'); assert.equal(item.nodeId, 'shipped'); assert.match(item.headSha, /^[0-9a-f]{40}$/); assert.equal(item.loopCounts['review-loop'], 2); }
 
-  // Assignments: one planner, two builds and two reviews per item. Reviews decided on verdict.
+  // Assignments: one planner, two builds and two reviews per item, plus one retried build. Reviews decided on verdict.
   const { assignments } = await request('GET', `/runs/${run.id}/assignments`);
   const byNode = node => assignments.filter(value => value.nodeId === node);
-  assert.equal(byNode('planner').length, 1); assert.equal(byNode('builder').length, 4); assert.equal(byNode('reviewer').length, 4);
-  assert.ok(assignments.every(value => value.status === 'succeeded' && value.machineId === machineId));
+  assert.equal(byNode('planner').length, 1); assert.equal(byNode('builder').length, 5); assert.equal(byNode('reviewer').length, 4);
+  assert.ok(assignments.every(value => value.machineId === machineId));
+  const crashed = assignments.filter(value => value.status === 'failed');
+  assert.equal(crashed.length, 1); assert.equal(crashed[0].nodeId, 'builder'); assert.equal(crashed[0].result.outcome, 'failure');
+  assert.ok(assignments.filter(value => value !== crashed[0]).every(value => value.status === 'succeeded'));
+  const retry = assignments.find(value => value.retryOf === crashed[0].id);
+  assert.equal(retry.attempt, 2); assert.equal(retry.status, 'succeeded'); assert.match(retry.prompt, /This is retry 2 of 3/);
   assert.deepEqual(byNode('reviewer').map(value => value.result.verdict).sort(), ['fail', 'fail', 'pass', 'pass']);
   assert.equal(executor.calls.filter(call => call.nodeType === 'agent' && call.prompt.includes('Feedback to address (review from reviewer)')).length, 2);
 
@@ -91,7 +98,12 @@ test('build template runs from input to merged output on a real hub, node and ba
   // Events: lifecycle with machine placement, planned flow edges, review/CI/merge gates and run completion.
   const events = (await factory.events()).filter(event => event.runId === run.id);
   const types = new Set(events.map(event => event.type));
-  for (const type of ['assignment.state', 'workitem.moved', 'gate.result', 'merge-entry.updated', 'loop.iteration', 'run.updated']) assert.ok(types.has(type), type);
+  for (const type of ['assignment.state', 'workitem.moved', 'gate.result', 'merge-entry.updated', 'loop.iteration', 'workitem.retried', 'run.updated']) assert.ok(types.has(type), type);
+  // The hub did not lease the retry before the engine's backoff elapsed.
+  const retried = events.find(event => event.type === 'workitem.retried');
+  assert.equal(retried.data.assignmentId, crashed[0].id); assert.equal(retried.data.notBefore, retry.notBefore);
+  const retryLeased = events.find(event => event.type === 'assignment.state' && event.subject.id === retry.id && event.data.state === 'leased');
+  assert.ok(Date.parse(retryLeased.at) >= Date.parse(retry.notBefore), `retry leased at ${retryLeased.at}, before ${retry.notBefore}`);
   assert.ok(events.some(event => event.type === 'assignment.state' && event.data.state === 'leased' && event.data.machineId === machineId));
   const moves = events.filter(event => event.type === 'workitem.moved');
   assert.ok(moves.every(event => event.data.unplanned === false && event.data.edgeId));
@@ -107,6 +119,8 @@ test('build template runs from input to merged output on a real hub, node and ba
   const reviewer = metrics.nodes.find(node => node.nodeId === 'reviewer');
   assert.equal(reviewer.done, 2); assert.equal(reviewer.failed, 2); assert.equal(reviewer.failureRate, 0.5);
   assert.equal(metrics.edges.find(edge => edge.edgeId === 'reviewer-fail').count, 2);
+  const builder = metrics.nodes.find(node => node.nodeId === 'builder');
+  assert.equal(builder.errors, 1); assert.equal(builder.retries, 1); assert.equal(builder.done, 4);
   const rework = metrics.bottlenecks.find(value => value.reason === 'rework-loop');
   assert.equal(rework.nodeId, 'review-loop'); assert.match(rework.evidence, /average 2 iterations over 2 items \(expected 1, limit 3\)/);
   assert.ok(metrics.bottlenecks.some(value => value.reason === 'high-failure' && value.nodeId === 'reviewer' && /2 of 4 finished visits failed/.test(value.evidence)));

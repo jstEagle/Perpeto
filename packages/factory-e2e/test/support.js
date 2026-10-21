@@ -88,10 +88,11 @@ const slug = text => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|
 
 /**
  * Test executor for the e2e run. It never calls a model. Planners return work items; builders make real commits on a
- * branch of the bare repository; reviewers reject each item once, then pass it; the architect is supplied by the test.
+ * branch of the bare repository (crashing once for titles in `crashOnce`); reviewers reject each item once, then pass
+ * it; the architect is supplied by the test.
  */
-export function createFactoryExecutor({ repository, architect, usage = { inputTokens: 120, outputTokens: 30 } }) {
-  const reviews = new Map(); const calls = [];
+export function createFactoryExecutor({ repository, architect, crashOnce = [], usage = { inputTokens: 120, outputTokens: 30 } }) {
+  const reviews = new Map(); const calls = []; const crashed = new Set();
   return {
     kind: 'e2e-fake', calls,
     canRun: assignment => assignment.harness?.provider === 'fake',
@@ -109,6 +110,9 @@ export function createFactoryExecutor({ repository, architect, usage = { inputTo
           ? { outcome: 'success', verdict: 'fail', summary: 'Mark the feature file as reviewed before it can merge.' }
           : { outcome: 'success', verdict: 'pass', summary: 'Ready to merge.' };
       }
+      // Simulates a harness crash: the node reports it as a failed attempt and the engine's retry policy takes over.
+      const title = titleOf(assignment.prompt);
+      if (crashOnce.includes(title) && !crashed.has(title)) { crashed.add(title); throw new Error('Simulated harness crash.'); }
       const branch = `perpeto/${assignment.workItemId}`; const source = join(ctx.workspace, 'source');
       await git(ctx.workspace, 'clone', '--quiet', repository, source);
       const existing = await git(source, 'ls-remote', '--heads', 'origin', branch);
