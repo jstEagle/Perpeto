@@ -1,3 +1,4 @@
+import { validSchedule } from './schedule.js';
 import { WorkflowError, canonicalJson, isPlainObject, isText, sha256 } from './util.js';
 
 export const GRAPH_SCHEMA = 'perpeto.workflow/1';
@@ -118,8 +119,8 @@ const agentRole = {
 
 /** Config fields per node type. Unknown keys produce a warning, not an error, so drafts survive editor upgrades. */
 export const NODE_CONFIG = Object.freeze({
-  input: { source: required(oneOf(['manual', 'goals', 'issues'])), docs: optional(stringArray(200)) },
-  planner: { ...agentRole, maxItems: optional(integer(1, LIMITS.maxItems)) },
+  input: { source: required(oneOf(['manual', 'goals', 'issues', 'schedule'])), docs: optional(stringArray(200)), schedule: optional(value => validSchedule(value) ? null : invalid('must be a five-field UTC cron expression.')) },
+  planner: { ...agentRole, emptyResult: optional(oneOf(['continue', 'complete'])), maxItems: optional(integer(1, LIMITS.maxItems)) },
   agent: agentRole,
   review: { ...agentRole, rubric: optional(text(20000)) },
   ci: { steps: required(steps), requirements: optional(requirements), retry: optional(retry), onExhausted: optional(nodeRef) },
@@ -204,6 +205,7 @@ function analyse(graph, { providers } = {}) {
     if (providers && isPlainObject(config.harness) && typeof config.harness.provider === 'string' && !providers.includes(config.harness.provider)) {
       error('UNAVAILABLE_PROVIDER', `Node "${node.id}" uses provider "${config.harness.provider}", which no machine offers.`, at);
     }
+    if (node.type === 'input' && config.source === 'schedule' && !validSchedule(config.schedule)) error('INVALID_CONFIG', 'Schedule inputs need a five-field UTC cron schedule.', at);
     nodes.set(node.id, { ...node, config });
   }
 
