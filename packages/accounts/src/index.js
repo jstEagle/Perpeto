@@ -23,15 +23,19 @@ const canonical = value => JSON.stringify(value, (_, item) => item && typeof ite
 export class AccountPool {
   #root; #file; #lock; #machineId; #clock; #config;
 
-  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,clock?:()=>number}} options */
+  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,maxReceipts?:number,receiptRetentionMs?:number,reservationLeaseMs?:number,clock?:()=>number}} options */
   constructor({ nodeDataDir, machineId, selection = 'lru', defaultCooldownMs = 300_000,
-    maxConcurrentPerAccount = 1, clock = Date.now }) {
+    maxConcurrentPerAccount = 1, maxReceipts = 512, receiptRetentionMs = 86_400_000,
+    reservationLeaseMs = 300_000, clock = Date.now }) {
     guarded(() => {
       if (typeof nodeDataDir !== 'string' || !path.isAbsolute(nodeDataDir)) fail('INVALID_PATH');
       this.#machineId = identifier(machineId);
       if (!['lru', 'headroom'].includes(selection) || !Number.isSafeInteger(defaultCooldownMs)
           || defaultCooldownMs <= 0 || !Number.isSafeInteger(maxConcurrentPerAccount)
-          || maxConcurrentPerAccount < 1 || typeof clock !== 'function') fail('INVALID_CONFIG');
+          || maxConcurrentPerAccount < 1 || !Number.isSafeInteger(maxReceipts) || maxReceipts < 1
+          || maxReceipts > 1024 || !Number.isSafeInteger(receiptRetentionMs) || receiptRetentionMs < 1
+          || !Number.isSafeInteger(reservationLeaseMs) || reservationLeaseMs < 1
+          || typeof clock !== 'function') fail('INVALID_CONFIG');
       privateDirectory(nodeDataDir);
       this.#root = path.join(fs.realpathSync(nodeDataDir), 'accounts');
       privateDirectory(this.#root);
@@ -39,9 +43,15 @@ export class AccountPool {
       this.#file = path.join(this.#root, 'registry.json');
       this.#lock = path.join(this.#root, '.lock');
       this.#clock = clock;
-      this.#config = { selection, defaultCooldownMs, maxConcurrentPerAccount };
+      this.#config = { selection, defaultCooldownMs, maxConcurrentPerAccount, maxReceipts, receiptRetentionMs, reservationLeaseMs };
       this.#locked(() => {
-        if (fs.existsSync(this.#file)) this.#read();
+        if (fs.existsSync(this.#file)) {
+          const state = this.#read();
+          const now = this.#now();
+          this.#compact(state, now);
+          this.#expire(state, now);
+          this.#write(state);
+        }
         else this.#write({ version: 1, machineId, accounts: [], selectionSequence: 0, reservations: {}, receipts: {} });
       });
     });
@@ -49,7 +59,8 @@ export class AccountPool {
 
   #now() {
     const now = this.#clock();
-    if (!Number.isSafeInteger(now) || now < 0 || now + this.#config.defaultCooldownMs >= 8.64e15) fail('INVALID_CLOCK');
+    if (!Number.isSafeInteger(now) || now < 0
+        || now + Math.max(this.#config.defaultCooldownMs, this.#config.reservationLeaseMs) >= 8.64e15) fail('INVALID_CLOCK');
     return now;
   }
 
@@ -62,12 +73,56 @@ export class AccountPool {
 
   #read() {
     assertPrivate(this.#root, true);
-    const state = readJson(this.#file);
+    // Allow bounded recovery of legacy registries already over the old 4 MiB cap.
+    // Credential reads retain their independent, smaller limit.
+    const state = readJson(this.#file, 64 * 1024 * 1024);
     if (state?.version !== 1 || state.machineId !== this.#machineId || !Array.isArray(state.accounts)
         || !state.reservations || !state.receipts) fail('INVALID_REGISTRY');
     return state;
   }
   #write(state) { writePrivate(this.#file, `${JSON.stringify(state)}\n`); }
+  #expire(state, now) {
+    for (const [assignmentId, value] of Object.entries(state.reservations)) {
+      // Persist this migration on startup so reopening never extends a legacy lease.
+      const reservation = typeof value === 'string'
+        ? state.reservations[assignmentId] = this.#reservation(assignmentId, value, now) : value;
+      if (!reservation || reservation.assignmentId !== assignmentId
+          || !Number.isFinite(Date.parse(reservation.expiresAt))) fail('INVALID_REGISTRY');
+      if (Date.parse(reservation.expiresAt) <= now) delete state.reservations[assignmentId];
+    }
+  }
+  #reservation(assignmentId, accountId, now) {
+    return { id: `res_${randomUUID().replaceAll('-', '')}`, assignmentId, accountId,
+      expiresAt: new Date(now + this.#config.reservationLeaseMs).toISOString() };
+  }
+  #held(state, assignmentId, reservationId) {
+    identifier(assignmentId);
+    identifier(reservationId);
+    const reservation = Object.hasOwn(state.reservations, assignmentId) ? state.reservations[assignmentId] : undefined;
+    if (!reservation || reservation.id !== reservationId) fail('RESERVATION_ENDED');
+    return reservation;
+  }
+  #compact(state, now) {
+    const entries = Object.entries(state.receipts);
+    let bytes = 0;
+    const retained = [];
+    for (const [key, receipt] of entries) {
+      receipt.recordedAt ??= now;
+      if (receipt.recordedAt + this.#config.receiptRetentionMs <= now) {
+        delete state.receipts[key];
+      } else {
+        const size = Buffer.byteLength(JSON.stringify([key, receipt]));
+        bytes += size;
+        retained.push({ key, size });
+      }
+    }
+    // Bound bytes as well as count, since selection receipts include bindings.
+    for (const [index, { key, size }] of retained.entries()) {
+      if (retained.length - index <= this.#config.maxReceipts && bytes <= 1024 * 1024) break;
+      delete state.receipts[key];
+      bytes -= size;
+    }
+  }
   #record(state, id) {
     identifier(id, /^acct_[a-zA-Z0-9_-]{1,48}$/);
     const record = state.accounts.find(account => account.id === id);
@@ -93,6 +148,14 @@ export class AccountPool {
     if (this.#status(record, now) !== 'active') fail('ACCOUNT_UNAVAILABLE');
     checkHome(this.#root, this.#home(record), record.provider);
   }
+  #healthy(record) {
+    try { checkHome(this.#root, this.#home(record), record.provider); return true; }
+    catch {
+      // Quarantine locally without persisting paths, credential content or OS errors.
+      record.invalid = true;
+      return false;
+    }
+  }
   #binding(record) {
     const providerInstanceId = `factory_${record.id}`;
     const homePath = this.#home(record);
@@ -108,6 +171,9 @@ export class AccountPool {
     return guarded(() => this.#locked(() => {
       identifier(idempotencyKey, /^[a-zA-Z0-9_.:-]{1,256}$/);
       const state = this.#read();
+      const now = this.#now();
+      this.#compact(state, now);
+      this.#expire(state, now);
       const signature = createHash('sha256').update(canonical({ operation, input })).digest('hex');
       const receipt = Object.hasOwn(state.receipts, idempotencyKey) ? state.receipts[idempotencyKey] : undefined;
       if (receipt) {
@@ -115,8 +181,9 @@ export class AccountPool {
         validateReplay?.(state, receipt.result);
         return structuredClone(receipt.result);
       }
-      const result = fn(state, this.#now());
-      Object.defineProperty(state.receipts, idempotencyKey, { value: { signature, result }, enumerable: true, writable: true, configurable: true });
+      const result = fn(state, now);
+      Object.defineProperty(state.receipts, idempotencyKey, { value: { signature, result, recordedAt: now }, enumerable: true, writable: true, configurable: true });
+      this.#compact(state, now);
       this.#write(state);
       return structuredClone(result);
     }));
@@ -143,7 +210,8 @@ export class AccountPool {
   /** Atomically reserve capacity before returning a local-only T3 binding. */
   select({ provider, assignmentId, idempotencyKey }) {
     const replay = (state, result) => {
-      if (state.reservations[assignmentId] !== result?.account?.id) fail('RESERVATION_ENDED');
+      if (!result?.reservation) fail('RESERVATION_ENDED');
+      this.#held(state, assignmentId, result.reservation.id);
       this.#usable(this.#record(state, result.account.id), this.#now());
     };
     return this.#mutate('select', { provider, assignmentId }, idempotencyKey, (state, now) => {
@@ -152,34 +220,92 @@ export class AccountPool {
       const reserved = Object.hasOwn(state.reservations, assignmentId) ? state.reservations[assignmentId] : undefined;
       let record;
       if (reserved) {
-        record = this.#record(state, reserved);
+        record = this.#record(state, reserved.accountId);
         if (record.provider !== provider) fail('ASSIGNMENT_CONFLICT');
       } else {
-        const counts = Object.values(state.reservations);
+        const counts = Object.values(state.reservations).map(reservation => reservation.accountId);
         const headroom = account => Math.min(100, ...Object.values(account.windows).map(window =>
           window.resetsAt && Date.parse(window.resetsAt) <= now ? 100 : 100 - window.usedPercent));
         record = state.accounts.filter(account => account.provider === provider
           && this.#status(account, now) === 'active'
           && counts.filter(id => id === account.id).length < this.#config.maxConcurrentPerAccount)
           .sort((a, b) => (this.#config.selection === 'headroom' ? headroom(b) - headroom(a) : 0)
-            || (a.lastUsedOrder ?? 0) - (b.lastUsedOrder ?? 0) || a.id.localeCompare(b.id))[0];
+            || (a.lastUsedOrder ?? 0) - (b.lastUsedOrder ?? 0) || a.id.localeCompare(b.id))
+          .find(account => this.#healthy(account));
       }
-      if (!record) fail('NO_ELIGIBLE_ACCOUNT');
+      if (!record) {
+        // Preserve quarantines even when every candidate failed its home check.
+        this.#write(state);
+        fail(state.accounts.some(account => account.provider === provider)
+          ? 'ACCOUNT_POOL_EXHAUSTED' : 'NO_ELIGIBLE_ACCOUNT');
+      }
       this.#usable(record, now);
-      Object.defineProperty(state.reservations, assignmentId, { value: record.id, enumerable: true, writable: true, configurable: true });
+      const reservation = reserved ?? this.#reservation(assignmentId, record.id, now);
+      Object.defineProperty(state.reservations, assignmentId, { value: reservation, enumerable: true, writable: true, configurable: true });
       record.lastUsedAt = new Date(now).toISOString();
       record.lastUsedOrder = ++state.selectionSequence;
-      return { account: this.#account(record, now), binding: this.#binding(record) };
+      return { account: this.#account(record, now), binding: this.#binding(record), reservation };
     }, replay);
   }
 
-  release({ assignmentId, idempotencyKey }) {
-    return this.#mutate('release', { assignmentId }, idempotencyKey, state => {
+  release({ assignmentId, reservationId, idempotencyKey }) {
+    return this.#mutate('release', { assignmentId, reservationId }, idempotencyKey, state => {
       identifier(assignmentId);
+      if (reservationId !== undefined) this.#held(state, assignmentId, reservationId);
       const released = Object.hasOwn(state.reservations, assignmentId);
       delete state.reservations[assignmentId];
       return { released };
     });
+  }
+
+  /** Local-only lease metadata, for reconciliation against durable assignment attempts. */
+  reservations() {
+    return guarded(() => this.#locked(() => {
+      const state = this.#read();
+      this.#expire(state, this.#now());
+      this.#compact(state, this.#now());
+      this.#write(state);
+      return structuredClone(Object.values(state.reservations));
+    }));
+  }
+
+  renewReservation({ assignmentId, reservationId, idempotencyKey }) {
+    const replay = state => { this.#held(state, assignmentId, reservationId); };
+    return this.#mutate('renew', { assignmentId, reservationId }, idempotencyKey, (state, now) => {
+      const reservation = this.#held(state, assignmentId, reservationId);
+      reservation.expiresAt = new Date(now + this.#config.reservationLeaseMs).toISOString();
+      return { ...reservation };
+    }, replay);
+  }
+
+  /** Only call after establishing which local attempts still own their live leases. */
+  reconcileReservations({ activeReservationIds, idempotencyKey }) {
+    return this.#mutate('reconcile', { activeReservationIds }, idempotencyKey, state => {
+      if (!Array.isArray(activeReservationIds)) fail('INVALID_INPUT');
+      for (const id of activeReservationIds) identifier(id);
+      const active = new Set(activeReservationIds);
+      const released = [];
+      for (const [assignmentId, reservation] of Object.entries(state.reservations)) {
+        if (active.has(reservation.id)) continue;
+        delete state.reservations[assignmentId];
+        released.push(reservation.id);
+      }
+      return { released, reservations: Object.values(state.reservations) };
+    });
+  }
+
+  /** Explicit local re-enrollment only. Open with the old identity before rebinding. */
+  rebindMachine({ machineId, idempotencyKey }) {
+    const result = this.#mutate('rebind', { machineId }, idempotencyKey, state => {
+      identifier(machineId);
+      if (Object.keys(state.reservations).length) fail('ACTIVE_RESERVATIONS');
+      state.machineId = machineId;
+      // Old snapshots and selection receipts belong to the previous enrollment.
+      state.receipts = {};
+      return { machineId };
+    });
+    this.#machineId = result.machineId;
+    return result;
   }
 
   disable(input) { return this.#update('disable', input, record => { record.disabled = true; }); }
@@ -231,9 +357,13 @@ export class AccountPool {
   }
 
   /** Recheck eligibility immediately before launching a new thread. Local only. */
-  bindingFor(accountId) {
+  bindingFor(accountId, { reservationId } = {}) {
     return guarded(() => this.#locked(() => {
-      const record = this.#record(this.#read(), accountId);
+      const state = this.#read();
+      this.#expire(state, this.#now());
+      if (reservationId !== undefined && !Object.values(state.reservations)
+        .some(reservation => reservation.id === reservationId && reservation.accountId === accountId)) fail('RESERVATION_ENDED');
+      const record = this.#record(state, accountId);
       this.#usable(record, this.#now());
       return this.#binding(record);
     }));
