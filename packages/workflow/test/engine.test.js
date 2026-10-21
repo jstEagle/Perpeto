@@ -232,7 +232,7 @@ test('blocked assignments wait for a person to retry or fail them', () => {
   run.complete('planner', { outcome: 'success', items: [{ title: 'A' }, { title: 'B' }] });
   run.complete('builder', { outcome: 'blocked', summary: 'Need database credentials.' });
   const blocked = run.items(item => item.status === 'blocked')[0];
-  assert.deepEqual(blocked.waiting, { kind: 'retry', nodeId: 'builder', summary: 'Need database credentials.' });
+  assert.deepEqual(blocked.waiting, { kind: 'retry', nodeId: 'builder', summary: 'Need database credentials.', decisionId: 'hd_test1_1' });
   assert.equal(run.open('builder').length, 1);
 
   run.apply('human.decision', { workItemId: blocked.id, decision: 'pass', note: 'Credentials are in the vault now.' });

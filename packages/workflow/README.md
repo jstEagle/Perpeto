@@ -75,7 +75,7 @@ Events are `{ id, type, at, data }`:
 | `assignment.completed` | `{ assignmentId, result: AssignmentResult }` |
 | `job.completed` | `{ jobId, status: 'passed', 'failed', 'error' or 'cancelled', summary?, logRef? }` |
 | `merge.completed` / `merge.rejected` | `{ mergeId, mergedSha? }` / `{ mergeId, reason }` |
-| `human.decision` | `{ workItemId, decision: 'pass' or 'fail', note? }` |
+| `human.decision` | `{ workItemId, decision: 'pass' or 'fail', note?, decisionId? }` |
 | `run.paused`, `run.resumed`, `run.stopped` | `{}`, or `{ reason? }` for `run.stopped` |
 
 Assignment results are interpreted by the role that produced them:
@@ -84,6 +84,8 @@ Assignment results are interpreted by the role that produced them:
 - **Review:** `verdict` decides the gate: `pass` passes and `fail` returns the work, with the summary as feedback in the next agent prompt. A legacy result with `outcome: 'success'` and no verdict passes, and `gate.result` carries `legacyVerdict: true`. `outcome: 'failure'` without a verdict is an error, never a rejection.
 - **Planner:** `success` may include `items: [{ title, body? }]`, truncated to `maxItems`. Each item becomes a child work item at the planner's next node. The parent stays `active` until every child finishes, then becomes `done`, or `failed` if any child failed. With no items, the original item continues as the work item.
 - **Any role:** `failure` from a planner or agent is an error. `blocked` goes to the node's human gate if it has one. Otherwise the item waits as `blocked` at the node until `human.decision` either retries it (`pass`, with the optional note as feedback) or fails it (`fail`).
+
+Every wait for a person gets a `decisionId` (`hd_` plus the run suffix and a counter), carried in `item.waiting`, `human.requested` and the in-place `workitem.blocked`. A decision that names a different `decisionId` throws `STALE_DECISION`, so a retried request or a second person answering cannot pass the item's next gate. Hosts should always send it; a decision without one still applies to whatever the item waits for now.
 
 ### Retries and escalation
 
@@ -122,8 +124,8 @@ Emitted event types:
 - `gate.result` `{ workItemId, nodeId, gate, result, assignmentId | jobId | mergeId, summary?, legacyVerdict? }`
 - `workitem.retried` `{ workItemId, nodeId, attempt, maxAttempts, reason, summary, assignmentId | jobId, notBefore? }`
 - `workitem.escalated` `{ workItemId, from, to, reason: 'retries_exhausted' | 'loop_limit' | 'blocked', evidence }`
-- `workitem.blocked` `{ workItemId, nodeId, summary, routedTo? }`
-- `human.requested` `{ workItemId, nodeId, prompt, context?: { kind, from, summary } }`
+- `workitem.blocked` `{ workItemId, nodeId, summary, routedTo? | decisionId? }`
+- `human.requested` `{ workItemId, nodeId, decisionId, prompt, context?: { kind, from, summary } }`
 - `loop.iteration`, `planner.items_truncated`
 - `run.started`, `run.paused`, `run.resumed`, `run.stopped`, `run.completed`, `run.failed`
 

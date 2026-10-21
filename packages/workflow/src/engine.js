@@ -182,15 +182,20 @@ const HANDLERS = {
     move(ctx, item, node.id, 'fail');
   },
 
-  'human.decision'(ctx, { workItemId, decision, note }) {
+  'human.decision'(ctx, { workItemId, decision, note, decisionId }) {
     const { s } = ctx;
     if (!isText(workItemId, 200)) fail('INVALID_EVENT', 'human.decision needs workItemId.');
     if (decision !== 'pass' && decision !== 'fail') fail('INVALID_EVENT', 'decision must be pass or fail.');
     if (note !== undefined && !isText(note, 20000)) fail('INVALID_EVENT', 'note must be a nonblank string.');
+    if (decisionId !== undefined && !isText(decisionId, 200)) fail('INVALID_EVENT', 'decisionId must be a nonblank string.');
     const item = s.workItems[workItemId];
     if (!item) fail('NOT_FOUND', `Work item ${workItemId} is not part of this run.`);
     requireActive(ctx);
     if (item.status !== 'blocked') fail('NOT_WAITING', `Work item ${workItemId} is not waiting for a decision.`);
+    // A decision names the wait it answers, so a retried or second answer cannot pass the item's next gate.
+    if (decisionId !== undefined && decisionId !== item.waiting.decisionId) {
+      fail('STALE_DECISION', `Decision ${decisionId} is for an earlier wait; work item ${workItemId} now waits at ${item.nodeId}.`);
+    }
     const node = s.plan.nodes[item.nodeId];
     const waiting = item.waiting;
     delete item.waiting;
@@ -282,7 +287,7 @@ function start(ctx, data) {
     ...(repo ? { repo: { ...(repo.url ? { url: repo.url } : {}), defaultBranch: repo.defaultBranch, ...(repo.localPath ? { localPath: repo.localPath } : {}) } } : {}),
     keepOpen: keepOpen ?? false,
     status: 'running', startedAt: ctx.at, updatedAt: ctx.at, plan,
-    counters: { workItem: 0, assignment: 0, job: 0, merge: 0, queue: 0 },
+    counters: { workItem: 0, assignment: 0, job: 0, merge: 0, queue: 0, decision: 0 },
     workItems: {}, assignments: {}, jobs: {}, merges: {},
   };
   emit(ctx, 'run.started', null, { workflowId, workflowVersion, graphHash: plan.graphHash });
@@ -314,9 +319,12 @@ function requireActive(ctx) {
 }
 
 function nextId(ctx, counter, prefix) {
-  ctx.s.counters[counter] += 1;
+  ctx.s.counters[counter] = (ctx.s.counters[counter] ?? 0) + 1;
   return `${prefix}_${ctx.s.runId.slice(4)}_${ctx.s.counters[counter]}`;
 }
+
+/** Identifies one wait for a person. States from before decision ids start the counter at 0. */
+const decisionId = ctx => nextId(ctx, 'decision', 'hd');
 
 function emit(ctx, type, item, data) {
   const subject = item ? { kind: 'workItem', id: item.id } : { kind: 'run', id: ctx.s.runId };
@@ -523,13 +531,14 @@ function exhausted(ctx, item, node, { reason, failReason, message, evidence }) {
 function blocked(ctx, item, node, summary) {
   closeVisit(ctx, item, 'blocked');
   const target = node.escalation?.blocked;
-  emit(ctx, 'workitem.blocked', item, { workItemId: item.id, nodeId: node.id, summary, ...(target ? { routedTo: target } : {}) });
   if (!target) {
     item.status = 'blocked';
-    item.waiting = { kind: 'retry', nodeId: node.id, summary };
+    item.waiting = { kind: 'retry', nodeId: node.id, summary, decisionId: decisionId(ctx) };
     item.updatedAt = ctx.at;
+    emit(ctx, 'workitem.blocked', item, { workItemId: item.id, nodeId: node.id, summary, decisionId: item.waiting.decisionId });
     return;
   }
+  emit(ctx, 'workitem.blocked', item, { workItemId: item.id, nodeId: node.id, summary, routedTo: target });
   item.feedback = { kind: 'blocked', from: node.id, summary };
   escalate(ctx, item, node, target, 'blocked', { summary });
 }
@@ -580,11 +589,11 @@ function dispatch(ctx) {
       enqueueMerge(ctx, item, node);
     } else if (node.type === 'human') {
       item.status = 'blocked';
-      item.waiting = { kind: 'human', nodeId: node.id };
+      item.waiting = { kind: 'human', nodeId: node.id, decisionId: decisionId(ctx) };
       delete item.queuedSeq;
       openVisit(ctx, item, {});
       emit(ctx, 'human.requested', item, {
-        workItemId: item.id, nodeId: node.id, prompt: node.config.prompt,
+        workItemId: item.id, nodeId: node.id, decisionId: item.waiting.decisionId, prompt: node.config.prompt,
         ...(item.feedback ? { context: { kind: item.feedback.kind, from: item.feedback.from, summary: item.feedback.summary } } : {}),
       });
     }
