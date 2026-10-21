@@ -620,3 +620,43 @@ test('heartbeat labels replace enrollment labels for leasing (M9)', async t => {
   assert.equal((await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments.length, 1);
   assert.equal((await f.request('POST', '/nodes/heartbeat', { ...heartbeat, labels: [''] }, node.token)).status, 400);
 });
+
+test('a machine rotates its own token without a lockout window, and retries replay the new token (H6)', async t => {
+  const f = await fixture(t); const node = await f.enroll();
+  const body = { idempotencyKey: 'rotate-1' };
+  const rotated = await f.request('POST', '/nodes/token', body, node.token);
+  assert.equal(rotated.status, 201); assert.equal(rotated.body.machineId, node.machineId); assert.equal(rotated.body.generation, 1);
+  assert.notEqual(rotated.body.token, node.token);
+  // The old token keeps working until the new one is used, so a lost response cannot lock the machine out.
+  assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, node.token)).status, 200);
+  assert.deepEqual((await f.request('POST', '/nodes/token', body, node.token)).body, rotated.body);
+  await f.restart();
+  assert.deepEqual((await f.request('POST', '/nodes/token', body, node.token)).body, rotated.body, 'replay survives restart');
+  assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, rotated.body.token)).status, 200);
+  assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, node.token)).status, 401, 'first use of the new token retires the old one');
+  assert.equal((await f.request('POST', '/nodes/token', {}, f.owner)).status, 403);
+  for (const suffix of ['', '-wal']) {
+    const bytes = await readFile(join(f.directory, `hub.sqlite${suffix}`)).catch(() => Buffer.alloc(0));
+    assert.equal(bytes.includes(Buffer.from(rotated.body.token)), false);
+  }
+});
+
+test('the owner revokes a machine token: it stops authenticating, its leases expire to other machines, and replays cannot revive it (H6)', async t => {
+  const f = await fixture(t, { leaseDurationMs: 60000 }); const { run } = await f.run(); await f.seed(run.id);
+  const input = { code: (await f.request('POST', '/machines/enrollment-codes', {})).body.code, name: 'compromised', os: 'linux', arch: 'x64', version: 'test', providers: ['codex'], labels: ['ci'], idempotencyKey: 'enroll-revoked' };
+  const node = (await f.request('POST', '/nodes/enroll', input, null)).body; const other = await f.enroll(1);
+  const work = (await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments[0]; assert.ok(work);
+  const rotated = (await f.request('POST', '/nodes/token', { idempotencyKey: 'rotate' }, node.token)).body;
+  assert.equal((await f.request('POST', `/machines/${node.machineId}/revoke`, {}, node.token)).status, 403);
+  const revoked = await f.request('POST', `/machines/${node.machineId}/revoke`, { reason: 'Token exposed in a CI log.' });
+  assert.equal(revoked.status, 200); assert.equal(revoked.body.status, 'offline'); assert.ok(revoked.body.revokedAt);
+  for (const token of [node.token, rotated.token]) assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, token)).status, 401);
+  assert.equal((await f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type: 'completed', data: { outcome: 'success', summary: 'Forged' } }, node.token)).status, 401);
+  const moved = await eventually(async () => (await f.request('POST', '/nodes/lease', {}, other.token)).body.assignments[0]);
+  assert.equal(moved.id, work.id); assert.equal(moved.attempt, work.attempt + 1);
+  assert.equal((await f.request('POST', '/nodes/enroll', input, null)).body.machineId, node.machineId);
+  assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, (await f.request('POST', '/nodes/enroll', input, null)).body.token)).status, 401, 'an enrollment replay returns a dead token');
+  assert.equal((await f.request('POST', `/machines/${node.machineId}/revoke`, {})).status, 200, 'revoking twice is harmless');
+  await f.restart(); assert.equal((await f.request('POST', '/nodes/heartbeat', heartbeat, node.token)).status, 401);
+  assert.ok((await f.request('GET', '/events?limit=1000')).body.events.some(event => event.type === 'machine.revoked' && event.data.reason === 'Token exposed in a CI log.'));
+});
