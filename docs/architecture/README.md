@@ -63,7 +63,8 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 ## Entities
 
 ```ts
-Project      { id, name, repo: { url, defaultBranch, localPath? }, docs: DocRef[], goals: string[], createdAt, updatedAt }
+Project      { id, name, repo: { url, defaultBranch, localPath? }, docs: DocRef[], goals: Goal[], createdAt, updatedAt }
+Goal         { id, title, status: 'active'|'done'|'dropped', workItemIds, done, total }   // progress counts leaf work items linked by goalId; legacy string goals are read with title-derived ids
 DocRef       { id, title, path?: string, url?: string, kind: 'requirements'|'vision'|'spec'|'notes' }
 Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
 Run          { id, projectId, workflowId, workflowVersion, status: 'running'|'paused'|'stopped'|'completed'|'failed', startedAt, stoppedAt? }
@@ -194,6 +195,7 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /jobs/:id/bundle?attempt=N` | Git bundle of a hub-hosted job revision for the leasing machine or the owner; jobs with `source: { kind: 'hub-bundle' }` are fetched this way so any enrolled machine can run them. `409 SOURCE_UNAVAILABLE` if the revision is gone |
 | `GET /projects/:id/merge-queue` | Merge queue |
 | `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
+| `GET /owner`, `PATCH /owner` `{ name?, initials? }` | Owner display name and initials (`ownerName` in hub config), also returned by `GET /session` and `/overview` |
 | `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
 | `GET /events?after=<seq>|latest=true|before=<seq>&runId=&limit=` | Event page, always oldest first; `after` returns `{events, nextCursor, hasMore}`, `latest`/`before` add `previousCursor`; the three are mutually exclusive. `Accept: text/event-stream` streams live, also filterable by `runId` |
 | `GET /session`, `POST /session`, `DELETE /session` | Exchange the owner bearer for an HttpOnly, SameSite=Strict `perpeto_session` cookie (`sessionTtlMs`, sliding); cookie-authenticated mutations need an `Origin` in `corsOrigins` and a JSON body, else `403 CSRF_REJECTED` |
