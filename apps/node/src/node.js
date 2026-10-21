@@ -27,6 +27,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   let journalWrites = Promise.resolve();
   let lastAccounts;
   let namespaceAllAccounts = false;
+  let token;
   let machineId;
   let machine;
   let heartbeatTask;
@@ -102,7 +103,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     catch (error) { if (error.code !== 'ENOENT') throw new Error('Invalid machine credential file.'); }
     if (credentials?.token && credentials?.machineId) {
       if (typeof credentials.token !== 'string' || /[\r\n]/.test(credentials.token) || typeof credentials.machineId !== 'string') throw new Error('Invalid machine credential file.');
-      machineId = credentials.machineId; hub.setToken(credentials.token); return;
+      machineId = credentials.machineId; token = credentials.token; hub.setToken(token); return;
     }
     if (!config.enrollmentCodeFile) throw new Error('Enrollment requires an owner-only enrollmentCodeFile.');
     const code = (await readSecret(config.enrollmentCodeFile)).trim();
@@ -113,7 +114,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       labels: machine.labels, providers: machine.providers, version: VERSION }, { signal: service.signal, key: enrollmentKey });
     if (!result?.machineId || typeof result.machineId !== 'string' || !result.token || typeof result.token !== 'string' || /[\r\n]/.test(result.token)) throw new Error('Invalid enrollment response.');
     await writePrivate(config.credentialFile, { machineId: result.machineId, token: result.token });
-    machineId = result.machineId; hub.setToken(result.token);
+    machineId = result.machineId; token = result.token; hub.setToken(token);
   }
   function persistSeen(item) {
     seen[item.key] = Math.max(seen[item.key] ?? -1, item.attempt);
@@ -230,10 +231,19 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       const ctx = { signal: record.work.signal, report: event => report(record, event), workspace,
         runtimeUrl: machine.runtimeUrl, accountProvider };
       let result;
-      if (record.kind === 'job') result = await runJob(record.item, ctx, {
-        ...config.jobs, dataDir: config.dataDir, redaction: await loadRedaction(config),
-      });
-      else {
+      if (record.kind === 'job') {
+        const redaction = await loadRedaction(config);
+        result = await runJob(record.item, ctx, {
+          ...config.jobs, dataDir: config.dataDir,
+          protectedPaths: [config.credentialFile, config.enrollmentCodeFile,
+            config.jobs?.redactionFile && resolve(config.configRoot, config.jobs.redactionFile),
+            config.accounts?.nodeDataDir && resolve(config.configRoot, config.accounts.nodeDataDir),
+            config.runtime?.repoRoot && resolve(config.configRoot, config.runtime.repoRoot, '.perpeto'),
+            ...[config.runtime, config.runtime?.t3].flatMap(settings => [settings?.credentialFile, settings?.baseDir].filter(Boolean).map(path => resolve(config.configRoot, path))),
+            ...(config.jobs?.protectedPaths ?? [])].filter(Boolean),
+          redaction: { ...redaction, literals: [...redaction.literals, token] },
+        });
+      } else {
         await report(record, { type: 'started', data: {} });
         const executor = registry.find(record.item, machine);
         if (!executor) result = { outcome: 'failure', summary: 'No compatible executor is installed.' };
