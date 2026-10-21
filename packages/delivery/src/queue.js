@@ -21,9 +21,21 @@ export class MergeQueue {
   enqueue(entry, { idempotencyKey }) {
     return this.store.dispatch(this.queueId, { type: 'enqueue', entry }, { idempotencyKey });
   }
-  /** Remove a waiting entry, for example when its run stopped. Entries under test cannot be withdrawn. */
+  /** Cancel an entry and its active attempt, requeuing surviving batch members. */
   withdraw({ entryId, reason }, { idempotencyKey }) {
-    return this.store.dispatch(this.queueId, { type: 'withdraw', entryId, reason }, { idempotencyKey });
+    return this.#rejectEntry('withdraw', { entryId, reason }, idempotencyKey);
+  }
+  /** Host calls this after bounded adapter retries or a permanent input failure. */
+  rejectEntry({ entryId, reason }, { idempotencyKey }) {
+    return this.#rejectEntry('reject-entry', { entryId, reason }, idempotencyKey);
+  }
+  #rejectEntry(type, { entryId, reason }, idempotencyKey) {
+    const action = { type, entryId, reason };
+    const original = this.store.receipt(this.queueId, idempotencyKey, action);
+    if (original) return original;
+    const token = this.store.acquire(this.queueId, this.leaseMs);
+    try { return this.store.dispatch(this.queueId, action, { idempotencyKey, token }); }
+    finally { this.store.release(this.queueId, token); }
   }
   recordJobResult(result, { idempotencyKey }) {
     // Receipt lookup precedes active-attempt lookup so a retry still works after merge.
@@ -69,7 +81,16 @@ export class MergeQueue {
         revision: active.revision, entries, method: config.method, idempotencyKey: active.id,
         publication: config.publication, publicationState: active.publicationState, evidence: state.jobs.find(job => job.id === active.jobId) });
       if (result.status === 'base_changed') transition('requeue', { reason: 'Base changed during merge; speculative CI must run again.' });
-      else if (result.status === 'head_changed') transition('reject', { reason: 'PR head changed during merge; enqueue the new revision.' });
+      else if (result.status === 'head_changed') {
+        // Legacy adapters may omit the identity. Reread heads before rejecting
+        // so a single changed PR never poisons the rest of a batch.
+        let entryId = result.entryId;
+        if (!entryId) {
+          for (const entry of entries) if (await this.adapter.getHead(entry) !== entry.headSha) { entryId = entry.id; break; }
+        }
+        requireValue(entryId && entries.some(entry => entry.id === entryId), 'Adapter did not identify the changed PR.', 'ADAPTER_ERROR');
+        transition('reject', { entryId, reason: 'PR head changed during merge; enqueue the new revision.' });
+      }
       else if (result.status === 'rejected') transition('reject', { reason: result.reason });
       else if (result.status === 'pending') transition('publication-pending', { publicationState: result.publicationState ?? 'pending' });
       else {

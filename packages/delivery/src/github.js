@@ -184,7 +184,7 @@ export class GitHubAdapter {
     }
     for (const entry of entries) {
       const pr = await this.#pr(entry);
-      if (pr.headRefOid !== entry.headSha) return { status: 'head_changed' };
+      if (pr.headRefOid !== entry.headSha) return { status: 'head_changed', entryId: entry.id };
       if (pr.baseRefName !== baseBranch || pr.state !== 'OPEN') return { status: 'rejected', reason: 'PR is not open against the configured base.' };
     }
     // Explicit expected-old check immediately before the non-force push. Git's
@@ -213,7 +213,7 @@ export class GitHubAdapter {
     const entry = entries[0];
     let pr = await this.#nativePR(entry);
     const state = () => {
-      if (pr.headRefOid !== entry.headSha) return { status: 'head_changed' };
+      if (pr.headRefOid !== entry.headSha) return { status: 'head_changed', entryId: entry.id };
       if (pr.baseRefName !== baseBranch || pr.state === 'CLOSED') return { status: 'rejected', reason: 'PR is closed or targets a different base.' };
       if (pr.state === 'MERGED') return { status: 'merged', revision: sha(pr.mergeCommit?.oid), publication: 'github-merge-queue' };
       requireValue(pr.state === 'OPEN', 'Unknown GitHub PR state.', 'ADAPTER_ERROR');

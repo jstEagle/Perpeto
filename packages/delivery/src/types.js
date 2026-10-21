@@ -53,7 +53,7 @@
  * @property {(entry:MergeEntry) => Promise<string>} getHead
  * @property {(request:CandidateRequest) => Promise<{revision:string}>} prepare
  * @property {(request:{baseBranch:string,revision:string}) => Promise<boolean>} isMerged
- * @property {(request:CandidateRequest & {baseBranch:string,revision:string,evidence?:Job,publicationState?:string}) => Promise<{status:'merged',revision:string,publication?:'github-merge-queue'}|{status:'base_changed'|'head_changed'}|{status:'pending',publicationState:string}|{status:'rejected',reason:string}>} merge
+ * @property {(request:CandidateRequest & {baseBranch:string,revision:string,evidence?:Job,publicationState?:string}) => Promise<{status:'merged',revision:string,publication?:'github-merge-queue'}|{status:'base_changed'}|{status:'head_changed',entryId?:string}|{status:'pending',publicationState:string}|{status:'rejected',reason:string}>} merge
  */
 
 export {};

@@ -106,7 +106,7 @@ export class LocalGitAdapter {
     if (result.exitCode === 0) return { status: 'merged', revision };
     if (await this.isMerged({ baseBranch, revision })) return { status: 'merged', revision };
     if (await this.getBase(baseBranch) !== baseSha) return { status: 'base_changed' };
-    for (const entry of entries) if (await this.getHead(entry) !== entry.headSha) return { status: 'head_changed' };
+    for (const entry of entries) if (await this.getHead(entry) !== entry.headSha) return { status: 'head_changed', entryId: entry.id };
     throw new DeliveryError('COMMAND_FAILED', 'Could not publish tested candidate.');
   }
 }
