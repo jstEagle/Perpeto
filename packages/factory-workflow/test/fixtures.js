@@ -14,6 +14,13 @@ export class Driver {
     this.events = [];
     this.effects = [];
     this.minute = 0;
+    /** Hub-style event log: engine emit-event effects stamped with the time of the event that caused them. */
+    this.log = [];
+  }
+
+  /** Append a hub-originated event, such as a lease, to the log. */
+  hub(type, data, at = this.event('noop').at) {
+    this.log.push({ seq: this.log.length + 1, at, type, data });
   }
 
   event(type, data = {}) {
@@ -27,6 +34,9 @@ export class Driver {
     this.state = result.state;
     this.events.push(event);
     this.effects.push(...result.effects);
+    for (const effect of result.effects) {
+      if (effect.type === 'emit-event') this.log.push({ seq: this.log.length + 1, at: event.at, type: effect.event.type, data: effect.event.data });
+    }
     this.last = result;
     return result;
   }
