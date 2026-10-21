@@ -172,14 +172,26 @@ public actor DemoDataSource: FactoryDataSource {
         return run
     }
 
-    public func decide(workItemId: String, _ decision: HubClient.Decision) async throws {
+    public func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws {
         guard let projectId = projects.first(where: { $0.value.workItems.contains { $0.id == workItemId } })?.key,
               var state = projects[projectId],
               let index = state.workItems.firstIndex(where: { $0.id == workItemId }) else {
             throw HubError.http(status: 404, code: "NOT_FOUND", message: "That work item no longer exists.")
         }
+        if let decisionId, let current = state.workItems[index].decisionId, decisionId != current {
+            throw HubError.conflict(code: "STALE_DECISION", message: "This decision answers an earlier wait; the work item now waits for another decision.")
+        }
+        state.workItems[index].decisionId = nil
         state.workItems[index].status = decision == .pass ? .queued : .failed
         projects[projectId] = state
+    }
+
+    /// Marks an item as waiting for a person, for tests of stale decisions.
+    func setDecisionId(_ decisionId: String, workItemId: String) throws {
+        guard let projectId = projects.first(where: { $0.value.workItems.contains { $0.id == workItemId } })?.key,
+              let index = projects[projectId]?.workItems.firstIndex(where: { $0.id == workItemId }) else { return }
+        projects[projectId]?.workItems[index].decisionId = decisionId
+        projects[projectId]?.workItems[index].status = .blocked
     }
 
     public func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message {

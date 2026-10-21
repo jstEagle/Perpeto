@@ -180,7 +180,7 @@ public protocol FactoryDataSource: Sendable {
     func validate(_ workflow: Workflow) async throws -> ValidationResult
     func control(runId: String, _ action: HubClient.RunControl) async throws -> Run
     func startRun(workflowId: String) async throws -> Run
-    func decide(workItemId: String, _ decision: HubClient.Decision) async throws
+    func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws
     func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message
     func enrollmentCode() async throws -> EnrollmentCode
     func drain(machineId: String) async throws -> Machine

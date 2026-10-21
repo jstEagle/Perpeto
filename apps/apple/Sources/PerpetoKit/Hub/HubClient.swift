@@ -212,13 +212,17 @@ public final class HubClient: Sendable {
 
     public enum Decision: String, Encodable, Sendable { case pass, fail }
 
-    /// Decides a blocked item in a running run. The hub answers `{ accepted: true }`.
-    public func decide(workItemId: String, _ decision: Decision, note: String? = nil, idempotencyKey: String = UUID().uuidString) async throws {
+    /// Decides an item waiting at a human gate in a running run. Pass the
+    /// item's `decisionId` so the answer binds to that wait; a stale one gets
+    /// 409 `STALE_DECISION`. The hub answers `{ accepted: true, decisionId? }`.
+    public func decide(workItemId: String, _ decision: Decision, decisionId: String?, note: String? = nil, idempotencyKey: String = UUID().uuidString) async throws {
         struct Body: Encodable {
             var decision: Decision
+            var decisionId: String?
             var note: String?
         }
-        let _: Accepted = try await send("POST", "/work-items/\(escape(workItemId))/decision", body: Body(decision: decision, note: note), idempotencyKey: idempotencyKey)
+        let body = Body(decision: decision, decisionId: decisionId, note: note)
+        let _: Accepted = try await send("POST", "/work-items/\(escape(workItemId))/decision", body: body, idempotencyKey: idempotencyKey)
     }
 
     // MARK: Factory

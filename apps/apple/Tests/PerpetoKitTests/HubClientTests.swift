@@ -197,10 +197,11 @@ struct HubRouteTests {
     @Test func decisionsAndInputsReturnAccepted() async throws {
         let stub = StubTransport { _ in (202, #"{"accepted":true}"#) }
         let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)
-        try await client.decide(workItemId: "wi_1", .fail, note: "Needs tests")
+        try await client.decide(workItemId: "wi_1", .fail, decisionId: "hd_1", note: "Needs tests")
         try await client.addInputs(runId: "run_1", items: ["Add dark mode"])
         let decision = try JSONSerialization.jsonObject(with: stub.requests[0].httpBody!) as! [String: Any]
         #expect(decision["decision"] as? String == "fail")
+        #expect(decision["decisionId"] as? String == "hd_1")
         let inputs = try JSONSerialization.jsonObject(with: stub.requests[1].httpBody!) as! [String: Any]
         #expect((inputs["items"] as? [[String: Any]])?.first?["title"] as? String == "Add dark mode")
     }
@@ -318,9 +319,44 @@ actor CountingSource: FactoryDataSource {
     func validate(_ workflow: Workflow) async throws -> ValidationResult { try await demo.validate(workflow) }
     func control(runId: String, _ action: HubClient.RunControl) async throws -> Run { try await demo.control(runId: runId, action) }
     func startRun(workflowId: String) async throws -> Run { try await demo.startRun(workflowId: workflowId) }
-    func decide(workItemId: String, _ decision: HubClient.Decision) async throws { try await demo.decide(workItemId: workItemId, decision) }
+    func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws { try await demo.decide(workItemId: workItemId, decision, decisionId: decisionId) }
     func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message { try await demo.sendMessage(projectId: projectId, channelId: channelId, body: body) }
     func enrollmentCode() async throws -> EnrollmentCode { try await demo.enrollmentCode() }
     func drain(machineId: String) async throws -> Machine { try await demo.drain(machineId: machineId) }
     nonisolated func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> { AsyncThrowingStream { _ in } }
+}
+
+@Suite("Human decisions")
+struct DecisionTests {
+    @Test func workItemCarriesDecisionId() throws {
+        let item = try HubCoding.decoder().decode(WorkItem.self, from: Data("""
+        { "id": "wi_1", "runId": "run_1", "projectId": "p", "title": "Release", "nodeId": "approve", "status": "blocked",
+          "iteration": 0, "decisionId": "hd_9", "waiting": { "kind": "human", "decisionId": "hd_9" } }
+        """.utf8))
+        #expect(item.decisionId == "hd_9")
+    }
+
+    @Test func staleDecisionIsAConflict() async throws {
+        let stub = StubTransport { _ in (409, #"{"error":{"code":"STALE_DECISION","message":"This decision answers an earlier wait; the work item now waits for another decision."}}"#) }
+        let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: "t", transport: stub)
+        await #expect(throws: HubError.conflict(code: "STALE_DECISION", message: "This decision answers an earlier wait; the work item now waits for another decision.")) {
+            try await client.decide(workItemId: "wi_1", .pass, decisionId: "hd_old")
+        }
+    }
+
+    @MainActor @Test func storeExplainsAStaleDecision() async throws {
+        let demo = DemoDataSource(stageDelay: .zero)
+        let store = FactoryStore(source: demo)
+        await store.refresh()
+        let project = DemoFixtures.primaryProjectId
+        var item = try #require(store.state(project).workItems.first)
+        // The demo item waits with no decisionId; a stale one must still be refused when it has one.
+        try await demo.setDecisionId("hd_new", workItemId: item.id)
+        item.decisionId = "hd_old"
+        await store.decide(projectId: project, item: item, .pass)
+        #expect(store.lastError?.contains("now waits for a different decision") == true)
+        item.decisionId = "hd_new"
+        await store.decide(projectId: project, item: item, .pass)
+        #expect(store.lastError == nil)
+    }
 }

@@ -180,10 +180,13 @@ public struct WorkItem: Codable, Hashable, Identifiable, Sendable {
     public var headSha: String?
     public var iteration: Int
     public var parentId: String?
+    /// Set while the item waits at a human gate. A decision must send it back,
+    /// so an answer cannot apply to a later wait (409 `STALE_DECISION`).
+    public var decisionId: String?
 
     public init(
         id: String, runId: String, title: String, body: String, nodeId: String, status: Status, branch: String? = nil,
-        prUrl: String? = nil, headSha: String? = nil, iteration: Int, parentId: String? = nil
+        prUrl: String? = nil, headSha: String? = nil, iteration: Int, parentId: String? = nil, decisionId: String? = nil
     ) {
         self.id = id
         self.runId = runId
@@ -196,9 +199,10 @@ public struct WorkItem: Codable, Hashable, Identifiable, Sendable {
         self.headSha = headSha
         self.iteration = iteration
         self.parentId = parentId
+        self.decisionId = decisionId
     }
 
-    enum CodingKeys: String, CodingKey { case id, runId, title, body, nodeId, status, branch, prUrl, headSha, iteration, parentId }
+    enum CodingKeys: String, CodingKey { case id, runId, title, body, nodeId, status, branch, prUrl, headSha, iteration, parentId, decisionId }
 
     /// The hub passes engine state through; optional detail may be absent.
     public init(from decoder: Decoder) throws {
@@ -214,6 +218,7 @@ public struct WorkItem: Codable, Hashable, Identifiable, Sendable {
         headSha = try c.decodeIfPresent(String.self, forKey: .headSha)
         iteration = try c.decodeIfPresent(Int.self, forKey: .iteration) ?? 0
         parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
+        decisionId = try c.decodeIfPresent(String.self, forKey: .decisionId)
     }
 }
 

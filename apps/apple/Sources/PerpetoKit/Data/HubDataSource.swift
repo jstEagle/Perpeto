@@ -153,7 +153,9 @@ public struct HubDataSource: FactoryDataSource {
     public func validate(_ workflow: Workflow) async throws -> ValidationResult { try await client.validate(workflowId: workflow.id, graph: workflow.graph) }
     public func control(runId: String, _ action: HubClient.RunControl) async throws -> Run { try await client.control(runId: runId, action) }
     public func startRun(workflowId: String) async throws -> Run { try await client.startRun(workflowId: workflowId) }
-    public func decide(workItemId: String, _ decision: HubClient.Decision) async throws { try await client.decide(workItemId: workItemId, decision) }
+    public func decide(workItemId: String, _ decision: HubClient.Decision, decisionId: String?) async throws {
+        try await client.decide(workItemId: workItemId, decision, decisionId: decisionId)
+    }
     public func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message {
         try await client.sendMessage(projectId: projectId, channelId: channelId, senderRoleId: ownerRoleId, recipientRoleId: nil, body: body)
     }

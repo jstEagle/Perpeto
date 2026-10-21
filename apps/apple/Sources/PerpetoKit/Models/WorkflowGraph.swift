@@ -276,6 +276,9 @@ public enum WorkflowValidator {
                 if port == .fail, node.type == .mergeQueue || (node.type == .human && escalationTargets.contains(node.id)) { continue }
                 issues.append(.init(code: "UNCONNECTED_PORT", message: "\(node.label) has no edge from its \(port.rawValue) port.", severity: port == .fail ? .warning : .error, nodeId: node.id))
             }
+            for key in Self.missingConfig(node) {
+                issues.append(.init(code: "MISSING_CONFIG", message: "\(node.label) needs \(Self.configTitle[key] ?? key).", severity: .error, nodeId: node.id))
+            }
             if node.type.isAgentRole, node.harness == nil {
                 issues.append(.init(code: "NO_HARNESS", message: "\(node.label) needs a harness provider and model.", severity: .error, nodeId: node.id))
             }
@@ -294,6 +297,24 @@ public enum WorkflowValidator {
         issues.append(contentsOf: cyclesWithoutLoop(graph))
         return ValidationResult(valid: !issues.contains { $0.severity == .error }, issues: issues)
     }
+
+    /// Required config from packages/workflow `NODE_CONFIG`. Harness, loop
+    /// limits and CI steps have their own, more specific checks.
+    static func missingConfig(_ node: GraphNode) -> [String] {
+        let c = node.config
+        func text(_ key: String) -> Bool { !(c[key]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        func oneOf(_ key: String, _ options: [String]) -> Bool { c[key]?.stringValue.map(options.contains) ?? false }
+        switch node.type {
+        case .input: return oneOf("source", ["manual", "goals", "issues"]) ? [] : ["source"]
+        case .planner, .agent, .review, .human: return text("prompt") ? [] : ["prompt"]
+        case .mergeQueue:
+            return (oneOf("strategy", ["serial", "batch"]) ? [] : ["strategy"]) + (oneOf("method", ["squash", "merge", "rebase"]) ? [] : ["method"])
+        case .loop: return oneOf("until", ["review-pass", "ci-pass", "manual"]) ? [] : ["until"]
+        case .ci, .output, .unknown: return []
+        }
+    }
+
+    static let configTitle = ["source": "a work source", "prompt": "a prompt", "strategy": "a merge strategy", "method": "a merge method", "until": "a repeat condition"]
 
     static func unreachable(_ graph: WorkflowGraph) -> [ValidationIssue] {
         var seen = Set(graph.nodes.filter { $0.type == .input }.map(\.id))

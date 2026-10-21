@@ -53,6 +53,49 @@ struct LiveHubTests {
         _ = try await client.accounts()
         for grouping in UsageGrouping.allCases { _ = try await client.usage(groupBy: grouping) }
     }
+
+    /// Creates a small project whose run waits at a human gate, answers it
+    /// with its decisionId, then shows a repeat of that answer is refused.
+    @Test func humanDecisionIsBoundToItsWait() async throws {
+        let client = try #require(LiveHub.client)
+        let project = try await client.createProject(.init(name: "decision-check", repo: .init(url: "https://example.com/r.git", defaultBranch: "main")))
+        let graph = WorkflowGraph(nodes: [
+            GraphNode(id: "ideas", type: .input, label: "Ideas", position: .init(x: 0, y: 0), config: ["source": "manual"]),
+            GraphNode(id: "approve", type: .human, label: "Approve", position: .init(x: 208, y: 0), config: ["prompt": "Approve this release."]),
+            GraphNode(id: "done", type: .output, label: "Done", position: .init(x: 416, y: 0)),
+            GraphNode(id: "dropped", type: .output, label: "Dropped", position: .init(x: 416, y: 180)),
+        ], edges: [
+            GraphEdge(id: "e1", from: .init(node: "ideas"), to: .init(node: "approve"), kind: .flow),
+            GraphEdge(id: "e2", from: .init(node: "approve", port: "pass"), to: .init(node: "done"), kind: .flow),
+            GraphEdge(id: "e3", from: .init(node: "approve", port: "fail"), to: .init(node: "dropped"), kind: .flow),
+        ])
+        #expect(WorkflowValidator.validate(graph).valid)
+        var unprompted = graph
+        unprompted.nodes[1].config = [:]
+        // Local checks and the workflow package agree that a person needs a prompt.
+        #expect(WorkflowValidator.validate(unprompted).issues.contains { $0.code == "MISSING_CONFIG" })
+        await #expect(throws: HubError.self) {
+            _ = try await client.createWorkflow(projectId: project.id, name: "Unprompted", purpose: .custom, graph: unprompted)
+        }
+        let workflow = try await client.createWorkflow(projectId: project.id, name: "Approve", purpose: .custom, graph: graph)
+        _ = try await client.activate(workflowId: workflow.id, version: workflow.version)
+        let run = try await client.startRun(workflowId: workflow.id, items: ["Ship it", "Ship that"])
+        var waiting: [WorkItem] = []
+        for _ in 0..<50 where waiting.count < 2 {
+            waiting = try await client.workItems(runId: run.id).filter { $0.status == .blocked && $0.decisionId != nil }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let item = try #require(waiting.first)
+        try await client.decide(workItemId: item.id, .pass, decisionId: item.decisionId)
+        await #expect(throws: HubError.self) {
+            try await client.decide(workItemId: item.id, .pass, decisionId: item.decisionId)
+        }
+        // The data source path the app uses.
+        try await HubDataSource(client: client).decide(workItemId: waiting[1].id, .fail, decisionId: waiting[1].decisionId)
+        let after = try await client.workItems(runId: run.id)
+        #expect(after.first { $0.id == item.id }?.status != .blocked)
+        #expect(after.first { $0.id == waiting[1].id }?.status != .blocked)
+    }
 }
 
 enum LiveHub {

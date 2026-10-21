@@ -229,10 +229,18 @@ public final class FactoryStore {
         }
     }
 
-    public func decide(projectId: String, workItemId: String, _ decision: HubClient.Decision) async {
-        await perform("Recording the decision", projectId: projectId) {
-            try await self.source.decide(workItemId: workItemId, decision)
+    /// Answers the wait the person saw: sends the item's `decisionId`. If the
+    /// item has moved on, the hub refuses it and the project reloads.
+    public func decide(projectId: String, item: WorkItem, _ decision: HubClient.Decision) async {
+        do {
+            try await source.decide(workItemId: item.id, decision, decisionId: item.decisionId)
+            lastError = nil
+        } catch HubError.conflict(let code, _) where code == "STALE_DECISION" || code == "CONFLICT" {
+            lastError = "\(item.title) now waits for a different decision, so yours was not applied. The list is refreshed; decide again if it still needs you."
+        } catch {
+            lastError = describe(error, operation: "Recording the decision")
         }
+        await reloadProject(projectId)
     }
 
     public func send(projectId: String, channelId: String, body: String) async {

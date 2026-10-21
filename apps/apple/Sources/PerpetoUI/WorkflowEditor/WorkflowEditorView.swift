@@ -207,6 +207,10 @@ struct WorkflowEditorView: View {
         let maxX = workflow.graph.nodes.map(\.position.x).max() ?? 0
         var config: JSONValue = [:]
         if type.isAgentRole { config["harness"] = ["provider": "claudeAgent", "model": "claude-sonnet-5-5"] }
+        // Required by the workflow package; the inspector edits them.
+        if type.isAgentRole { config["prompt"] = .string("Describe what this \(type.title.lowercased()) should do.") }
+        if type == .human { config["prompt"] = "Decide whether this work may continue." }
+        if type == .input { config["source"] = "manual" }
         if type == .agent || type == .review { config["concurrency"] = 1 }
         if type == .loop { config = ["until": "review-pass", "maxIterations": 3] }
         if type == .mergeQueue { config = ["strategy": "serial", "method": "squash"] }
