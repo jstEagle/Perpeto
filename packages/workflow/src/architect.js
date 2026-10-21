@@ -47,7 +47,7 @@ const role = (extra = {}, required = []) => ({
 });
 const CONFIG_SCHEMAS = {
   input: { type: 'object', required: ['source'], properties: { source: { enum: ['manual', 'goals', 'issues', 'schedule'] }, docs: strings, schedule: { type: 'string', description: 'Five-field numeric UTC cron expression.' } } },
-  planner: role({ emptyResult: { enum: ['continue', 'complete'] }, maxItems: { type: 'integer', minimum: 1, maximum: LIMITS.maxItems } }),
+  planner: role({ emptyResult: { enum: ['continue', 'complete'] }, maxItems: { type: 'integer', minimum: 1, maximum: LIMITS.maxItems }, serializeOverlappingTouches: { type: 'boolean', default: true } }),
   agent: role(),
   review: role({ rubric: text }),
   ci: {
@@ -63,7 +63,8 @@ const CONFIG_SCHEMAS = {
   },
   'merge-queue': {
     type: 'object', required: ['strategy', 'method'],
-    properties: { strategy: { enum: ['serial', 'batch'] }, method: { enum: ['squash', 'merge', 'rebase'] }, requiredChecks: strings },
+    properties: { strategy: { enum: ['serial', 'batch'] }, method: { enum: ['squash', 'merge', 'rebase'] }, requiredChecks: strings,
+      onConflict: { enum: ['rebase', 'review'], default: 'rebase' }, rebaseReview: { enum: ['changed', 'always', 'never'], default: 'changed' } },
   },
   loop: {
     type: 'object', required: ['until', 'maxIterations'],
@@ -122,11 +123,11 @@ Nodes are { "id", "type", "label", "position": { "x", "y" }, "config" }. Ids use
 | type | meaning | config (* = required) |
 | --- | --- | --- |
 | input | where work enters | source* ("manual", "goals", "issues" or "schedule"), docs (doc ids), schedule (five-field UTC cron, required for schedule source) |
-| planner | agent that splits input into work items | harness*, prompt*, emptyResult ("continue" or "complete"; complete ends an explicit empty items result), maxItems (1-${LIMITS.maxItems}, default 20), concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
+| planner | agent that splits input into work items | harness*, prompt*, emptyResult ("continue" or "complete"; complete ends an explicit empty items result), maxItems (1-${LIMITS.maxItems}, default 20), serializeOverlappingTouches (boolean, default true), concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
 | agent | agent role that does a work item | harness*, prompt*, concurrency (default 1), policy, requirements, role, retry, onExhausted, onBlocked |
 | review | agent review gate; the reviewer reports verdict "pass" or "fail" | harness*, prompt*, rubric, concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
 | ci | CI gate run on a user machine at the exact head commit | steps* ([{ name, run, timeoutSec? }]), requirements, retry, onExhausted |
-| merge-queue | serialises merges into the base branch | strategy* ("serial" or "batch"), method* ("squash", "merge" or "rebase"), requiredChecks |
+| merge-queue | serialises merges into the base branch | strategy* ("serial" or "batch"), method* ("squash", "merge" or "rebase"), requiredChecks, onConflict ("rebase" default or "review"), rebaseReview ("changed" default, "always" or "never") |
 | loop | repeats its body; after maxIterations passes the item escalates to onExhausted or fails | until* ("review-pass", "ci-pass" or "manual"), maxIterations* (1-${LIMITS.maxIterations}), expectedIterations, onExhausted |
 | human | waits for a person to pass or fail the item | prompt* |
 | output | terminal: work item finished | none |
@@ -136,6 +137,8 @@ policy is { "maxSubagents"?, "allowedSubagentProviders"?, "maxTurns"?, "maxToken
 requirements is { "os"?: "darwin" | "linux" | "windows", "labels"?: [string], "providers"?: [string] }.
 retry is { "maxAttempts": 1-${LIMITS.maxAttempts} (total attempts, default 1), "backoffSec"?: 0-${LIMITS.backoffSec} }. It covers errors, not verdicts: an agent reporting failure, a review without a verdict, or a CI job that errored or was cancelled. Retry n waits backoffSec × 2^(n-1) seconds.
 onExhausted names a human, agent or review node that takes the item once retries or loop iterations run out; without it the item fails. onBlocked names a human node for items an agent reports as blocked; it defaults to onExhausted when that is a human node, otherwise blocked items wait in place for a person. A human node used as an escalation target may leave "fail" unwired: failing there ends the item.
+
+Planners should split along file/module boundaries and declare touches: string[] for every child, listing repository-relative files or module directories. Overlapping scopes wait until the earlier item finishes delivery, unless serializeOverlappingTouches is false. Conflict rejection invokes the same builder with a rebase step, then repeats CI only; rebaseReview "changed" repeats review if rebaseTouchedBeyondConflicts is true or omitted. onConflict "review" retains the normal fail route. Do not add a rebase graph node.
 
 Edges are { "id", "kind", "from": { "node", "port"? }, "to": { "node" } }:
 - "flow" moves work items. review, ci and human nodes need exactly one flow edge on port "pass" and one on port "fail". merge-queue needs "pass" and may have "fail" (without it a rejected merge fails the item). Every other node except output has exactly one unported flow edge out. Nothing flows into input or out of output.

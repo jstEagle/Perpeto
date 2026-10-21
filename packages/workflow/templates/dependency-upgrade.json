@@ -26,7 +26,7 @@
           "provider": "claudeAgent",
           "model": "claude-sonnet-5-5"
         },
-        "prompt": "Inspect dependency manifests, lockfiles and migration notes. Propose small compatible upgrade groups with risk and acceptance checks; avoid unrelated upgrades.",
+        "prompt": "Inspect dependency manifests, lockfiles and migration notes. Propose small compatible upgrade groups with risk and acceptance checks; avoid unrelated upgrades. Split along file/module boundaries and declare touches: string[] per item, including shared entry points and manifests.",
         "concurrency": 1,
         "policy": {
           "maxSubagents": 0
@@ -35,7 +35,8 @@
           "maxAttempts": 3,
           "backoffSec": 30
         },
-        "maxItems": 3
+        "maxItems": 3,
+        "serializeOverlappingTouches": true
       }
     },
     {
@@ -143,7 +144,9 @@
         "method": "squash",
         "requiredChecks": [
           "test"
-        ]
+        ],
+        "onConflict": "rebase",
+        "rebaseReview": "changed"
       }
     },
     {
