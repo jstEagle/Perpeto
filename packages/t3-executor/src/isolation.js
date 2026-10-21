@@ -7,7 +7,8 @@ import { isAbsolute, join, resolve } from 'node:path';
  * Factory agents run on their own T3 provider instance, so they never load the operator's personal
  * setup and never commit as the operator:
  * - Claude: `--setting-sources=project,local`, so ~/.claude settings, CLAUDE.md, hooks, skills and
- *   plugins stay out; the project's own CLAUDE.md and .claude settings still load. The login is kept.
+ *   plugins stay out; the project's own CLAUDE.md and .claude settings still load. claude.ai connectors and
+ *   auto memory are switched off by environment. The login is kept.
  * - Codex: a factory CODEX_HOME holding only a minimal config.toml and a link to the source home's
  *   auth.json, so ~/.codex AGENTS.md, skills, memories, hooks, plugins and MCP servers stay out, and
  *   the config disables bundled skills and those in ~/.agents/skills; the repository's AGENTS.md and
@@ -81,9 +82,13 @@ export function gitEnvironment(identity) {
   };
 }
 
-const MANAGED_ENV = new Set(Object.keys(gitEnvironment(DEFAULT_GIT_IDENTITY)));
+// Claude features that come from the account rather than ~/.claude, so --setting-sources cannot hide them:
+// claude.ai connectors (MCP servers with their own instructions) and auto memory, which also writes into ~/.claude/projects.
+const CLAUDE_ENV = { ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
 
-function withEnvironment(base, identity) {
+const MANAGED_ENV = new Set([...Object.keys(gitEnvironment(DEFAULT_GIT_IDENTITY)), ...Object.keys(CLAUDE_ENV)]);
+
+function withEnvironment(base, identity, extra = {}) {
   const kept = [];
   const dropped = [];
   for (const variable of Array.isArray(base) ? base : []) {
@@ -92,7 +97,7 @@ function withEnvironment(base, identity) {
     if (variable.sensitive || variable.valueRedacted) { dropped.push(variable.name); continue; }
     kept.push({ name: variable.name, value: String(variable.value ?? ''), sensitive: false });
   }
-  const managed = Object.entries(gitEnvironment(identity)).map(([name, value]) => ({ name, value, sensitive: false }));
+  const managed = Object.entries({ ...gitEnvironment(identity), ...extra }).map(([name, value]) => ({ name, value, sensitive: false }));
   return { environment: [...kept, ...managed], dropped };
 }
 
@@ -151,7 +156,7 @@ const digest = value => createHash('sha256').update(JSON.stringify(value)).diges
 export async function factoryInstance(base, isolation, { pooled = false, identity = isolation.identity } = {}) {
   const driver = base.driver;
   let config = { ...(base.config ?? {}) };
-  const { environment, dropped } = withEnvironment(base.environment, identity);
+  const { environment, dropped } = withEnvironment(base.environment, identity, driver === 'claudeAgent' ? CLAUDE_ENV : {});
   let codexHome;
   if (driver === 'claudeAgent') config = claudeConfig(config);
   if (driver === 'codex') {
