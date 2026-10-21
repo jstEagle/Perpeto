@@ -77,6 +77,9 @@ export async function executeJob(config, job, signal) {
     };
     child.stdout.on('data', collect); child.stderr.on('data', collect);
     child.once('error', error => { clearTimeout(timer); signal?.removeEventListener('abort',stop); reject(error); });
+    // Descendants can keep inherited output pipes open after the parent exits.
+    // Stop the group on exit so close can drain those pipes and settle promptly.
+    child.once('exit', stop);
     child.once('close', code => { stop(); clearTimeout(timer); signal?.removeEventListener('abort',stop); resolveRun({exitCode:code,output:Buffer.concat(captured).toString('utf8')}); });
   });
   try {

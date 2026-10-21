@@ -9,3 +9,5 @@ Validation: all eleven runner tests pass in an isolated source copy before integ
 Follow-up review found that the existing `once` CLI still used default signal termination, which could leave detached commands running. Both CLI execution modes now share the signal lifecycle. A fifth subprocess regression repeats active-command/descendant cancellation in `once` mode, verifies clean exit, withheld completion and eventual lost/manual-retry state. The complete runner suite now has twelve tests.
 
 No claim is made that this installs a persistent OS service, runs Windows commands, or was tested across two physical machines. A hard kill of the worker process itself cannot execute graceful cleanup; existing lease/fencing semantics still govern recovery.
+
+Follow-up: process-group cleanup also runs on the parent's `exit` event. A descendant inheriting stdout/stderr can keep `close` pending after its parent has exited, so waiting until `close` alone caused a false timeout. Both ignored and inherited descendant-pipe regressions pass, bringing the runner suite to thirteen tests.

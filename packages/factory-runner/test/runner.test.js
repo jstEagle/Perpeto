@@ -106,12 +106,13 @@ test('simultaneous independent worker processes cannot both claim one queued job
   const claims=await Promise.all([claim('one'),claim('two')]);assert.equal(claims.filter(Boolean).length,1);
 });
 
-test('normal command completion kills remaining unref descendants before cleanup',async t=>{
+for (const childStdio of ['ignore','inherit']) test(`normal command completion kills ${childStdio}-stdio descendants before cleanup`,async t=>{
   const {directory}=fixture(t),{source,sha}=repository(directory);
   const pidFile=join(directory,'grandchild.pid');
-  const script=`const {spawn}=require('node:child_process');const fs=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));child.unref();`;
+  const script=`const {spawn}=require('node:child_process');const fs=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:${JSON.stringify(childStdio)}});fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));child.unref();`;
   const result=await executeJob({repositories:{app:source},executables:{node:process.execPath},workDirectory:join(directory,'work'),toolPath:process.env.PATH,timeoutMs:3000,maxOutputBytes:1000,artifactPaths:[]},{...input,revision:sha,command:['node','-e',script]});
   assert.equal(result.exitCode,0);
+  assert.equal(result.timedOut,false,'inherited descendant pipes must not defer completion until timeout');
   const pid=Number(readFileSync(pidFile,'utf8'));
   let alive=true;
   for(let i=0;i<20;i++){try{process.kill(pid,0);}catch{alive=false;break;}await new Promise(resolve=>setTimeout(resolve,25));}
