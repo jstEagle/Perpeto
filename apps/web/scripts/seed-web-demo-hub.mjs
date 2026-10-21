@@ -144,6 +144,10 @@ console.log(`run ${run.id}`);
 const usage = (w, model, provider) =>
   report(w, 'usage', { provider, model, inputTokens: 40_000 + Math.floor(Math.random() * 60_000), outputTokens: 6_000 + Math.floor(Math.random() * 9_000), cacheReadTokens: 20_000 });
 const reviewed = new Map();
+const said = new Set();
+const asks = new Map();
+/** Sends as the assignment's role; hubs before controlled messaging refuse the event type, which the seed tolerates. */
+const say = async (w, data) => (await report(w, 'message', data).catch(() => null))?.message ?? null;
 let messagedUnplanned = 0;
 
 /** Finish work leased in an earlier round, as each role would. */
@@ -167,12 +171,25 @@ async function finish(w) {
     await report(w, 'agent.delegated', { sourceNodeId: 'builder', targetNodeId: 'helper', summary: 'Builder handed test fixtures to a helper' });
     await report(w, 'agent.messaged', { sourceNodeId: 'builder', targetNodeId: 'helper' });
     await report(w, 'agent.messaged', { sourceNodeId: 'builder', targetNodeId: 'reviewer' });
+    // Real run-channel messages through the agent path (hubs with controlled messaging), once each.
+    if (!said.has('builder')) {
+      said.add('builder');
+      const asked = await say(w, { recipientRoleId: 'reviewer', body: 'Does lease renewal need its own test, or is the expiry test enough?' });
+      if (asked) asks.set('builder', asked);
+    }
     const n = String(Math.floor(Math.random() * 400) + 100);
     await report(w, 'completed', { outcome: 'success', summary: 'Implemented with tests.', branch: `perpeto/${v.workItemId}`, prUrl: `https://github.com/lumin-products/perpeto/pull/${n}`, headSha: sha() });
   } else if (v.nodeId === 'reviewer' || v.nodeId === 'senior-reviewer') {
     const seen = reviewed.get(v.workItemId) ?? 0;
     reviewed.set(v.workItemId, seen + 1);
     if (messagedUnplanned++ < 3) await report(w, 'agent.messaged', { sourceNodeId: 'reviewer', targetNodeId: 'planner', summary: 'Reviewer asked Planner which goal this item serves' });
+    if (!said.has('reviewer')) {
+      said.add('reviewer');
+      const ask = asks.get('builder');
+      if (ask) await say(w, { parentId: ask.id, body: 'Its own test. Renewal after expiry must return 409 lease_lost.' });
+      await say(w, { recipientRoleId: 'planner', body: 'Which goal does this item serve? The description does not say.' });
+      await say(w, { recipientRoleId: 'owner', body: 'Reviews are queueing behind me. Should I review CI-blocked items last?' });
+    }
     const verdict = seen === 0 && Math.random() < 0.7 ? 'fail' : 'pass';
     await report(w, 'completed', { outcome: 'success', verdict, summary: verdict === 'fail' ? 'Missing tests for the error path.' : 'Meets the acceptance criteria.' });
   } else {

@@ -1,6 +1,7 @@
 import { HubError, newIdempotencyKey, OWNER_ROLE_ID } from './hub';
 import { decodeProject } from './goals';
-import type { EventPageResult, EventQuery, HubApi, MessageQuery, StreamState, UsageQuery, WorkflowUpdate } from './hub';
+import { decodeMessage } from './messages';
+import type { EventPageResult, EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import type {
   Account,
   Assignment,
@@ -24,6 +25,7 @@ import type {
   Project,
   Run,
   RunInput,
+  UnreadState,
   UsageRow,
   UsageSummary,
   ValidationResult,
@@ -394,18 +396,39 @@ export class HttpHub implements HubApi {
   async listChannels(projectId: string) {
     return list<Channel>(await this.#request('GET', `/messaging/projects/${enc(projectId)}/channels`), 'channels');
   }
-  readMessages(projectId: string, channelId: string, query: MessageQuery) {
-    return this.#request<MessagePage>('GET', `/messaging/projects/${enc(projectId)}/channels/${enc(channelId)}/messages`, {
-      query: { ...query },
-    });
+  async readMessages(projectId: string, channelId: string, query: MessageQuery): Promise<MessagePage> {
+    const page = await this.#request<MessagePage>('GET', `${this.#channel(projectId, channelId)}/messages`, { query: { ...query } });
+    return { ...page, messages: list<Message>(page, 'messages').map(decodeMessage) };
   }
-  async sendMessage(projectId: string, channelId: string, input: { body: string; recipientRoleId?: string }) {
-    const result = await this.#request<{ message: Message }>(
-      'POST',
-      `/messaging/projects/${enc(projectId)}/channels/${enc(channelId)}/messages`,
-      { body: { senderRoleId: OWNER_ROLE_ID, ...input } },
-    );
-    return result.message;
+  async sendMessage(projectId: string, channelId: string, input: NewMessage) {
+    const result = await this.#request<{ message: Message }>('POST', `${this.#channel(projectId, channelId)}/messages`, { body: { senderRoleId: OWNER_ROLE_ID, ...input } });
+    return decodeMessage(result.message);
+  }
+  async ackMessage(projectId: string, channelId: string, messageId: string, note?: string) {
+    const result = await this.#request<{ message: Message }>('POST', `${this.#channel(projectId, channelId)}/messages/${enc(messageId)}/ack`, {
+      body: { roleId: OWNER_ROLE_ID, ...(note ? { note } : {}) },
+    });
+    return decodeMessage(result.message);
+  }
+  /** Hubs before read cursors answer 404; the screen then shows no unread counts. */
+  async unread(projectId: string, channelId: string) {
+    try {
+      return await this.#request<UnreadState>('GET', `${this.#channel(projectId, channelId)}/unread`, { query: { roleId: OWNER_ROLE_ID, limit: 1 } });
+    } catch (error) {
+      if (error instanceof HubError && error.status === 404) return null;
+      throw error;
+    }
+  }
+  async markRead(projectId: string, channelId: string, messageId: string) {
+    try {
+      return await this.#request<UnreadState>('POST', `${this.#channel(projectId, channelId)}/read-cursor`, { body: { messageId, roleId: OWNER_ROLE_ID } });
+    } catch (error) {
+      if (error instanceof HubError && error.status === 404) return null;
+      throw error;
+    }
+  }
+  #channel(projectId: string, channelId: string) {
+    return `/messaging/projects/${enc(projectId)}/channels/${enc(channelId)}`;
   }
 }
 

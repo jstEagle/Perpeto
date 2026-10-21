@@ -113,6 +113,19 @@ await page.getByRole('button', { name: 'Resume' }).click();
 await page.getByRole('button', { name: 'Pause' }).waitFor();
 step('pause and resume');
 
+// Messages: reply in a thread, see the receipt move, acknowledge a message addressed to you.
+await page.goto(`${base}/projects/prj_perpeto/messages`);
+await page.getByText('Reviews are queueing behind me').waitFor();
+await page.getByRole('button', { name: 'Acknowledge' }).click();
+await page.getByText('Acknowledged by you').waitFor();
+await page.getByRole('button', { name: 'Reply', exact: true }).last().click();
+await page.getByPlaceholder('Reply to Reviewer').fill('Yes, review CI-blocked items last.');
+await page.locator('.composer-reply').getByRole('button', { name: 'Reply' }).click();
+await page.getByText('Yes, review CI-blocked items last.').waitFor();
+await page.getByText("Delivered into Reviewer's running turn").last().waitFor({ timeout: 6000 });
+assert.ok(await page.getByText('Unplanned').first().isVisible(), 'unplanned agent messages are marked');
+step('messages: threaded reply, delivery receipt, acknowledge, unplanned flag');
+
 // 5. Keyboard: skip link and visible focus.
 await page.goto(`${base}/`);
 await page.getByRole('heading', { name: 'Projects' }).waitFor();

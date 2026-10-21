@@ -12,6 +12,7 @@ import type {
   NodeMetrics,
   Goal,
   Project,
+  Receipt,
   Run,
   UsageRecord,
   WorkItem,
@@ -47,6 +48,8 @@ export interface DemoState {
   events: HubEvent[];
   channels: Record<string, Channel[]>;
   messages: Message[];
+  /** The owner's read cursor per `projectId|channelId`. */
+  readCursors: Record<string, string | null>;
   metrics: Record<string, MetricsSnapshot>;
   seq: number;
 }
@@ -537,21 +540,49 @@ export function createDemoState(now = Date.now()): DemoState {
   };
   const messages: Message[] = [];
   let msgN = 0;
-  const say = (projectId: string, channelId: string, minsAgo: number, sender: string, body: string, recipient: string | null = null) => {
-    messages.push({ id: `msg_${msgN++}`, projectId, channelId, senderRoleId: sender, recipientRoleId: recipient, body, createdAt: ago(minsAgo * MIN) });
+  type Say = { to?: string | null; reply?: Message; receipt?: Receipt; unplanned?: boolean };
+  /** A message as the hub stores it: replies join their parent's thread; addressed messages carry a receipt. */
+  const say = (projectId: string, channelId: string, minsAgo: number, sender: string, body: string, opts: Say = {}): Message => {
+    const id = `msg_${String(msgN++).padStart(3, '0')}`;
+    const recipient = opts.to !== undefined ? opts.to : opts.reply ? (opts.reply.senderRoleId === sender ? opts.reply.recipientRoleId : opts.reply.senderRoleId) : null;
+    const m: Message = {
+      id,
+      projectId,
+      channelId,
+      senderRoleId: sender,
+      recipientRoleId: recipient,
+      body,
+      createdAt: ago(minsAgo * MIN),
+      threadId: opts.reply?.threadId ?? id,
+      parentId: opts.reply?.id ?? null,
+      senderKind: sender === 'owner' ? 'owner' : 'agent',
+      unplanned: opts.unplanned ?? false,
+      receipt: recipient ? (opts.receipt ?? { state: 'stored' }) : null,
+    };
+    messages.push(m);
+    return m;
   };
+  const delivered = (minsAgo: number, via: 'prompt' | 'steer'): Receipt => ({ state: 'delivered', deliveredAt: ago(minsAgo * MIN), deliveredVia: via });
+  const acked = (minsAgo: number, note?: string): Receipt => ({ state: 'acked', deliveredAt: ago((minsAgo + 1) * MIN), deliveredVia: 'steer', ackedAt: ago(minsAgo * MIN), ackNote: note ?? null });
   const runCh = `run-${DEMO_IDS.run}`;
   say(DEMO_IDS.perpeto, runCh, 180, 'planner', 'Created 6 work items from docs/architecture/README.md "Observing runs". Each has acceptance criteria in its body.');
-  say(DEMO_IDS.perpeto, runCh, 64, 'builder-2', 'Does lease renewal need its own test, or is the expiry test enough?', 'reviewer');
-  say(DEMO_IDS.perpeto, runCh, 61, 'reviewer', 'Its own test. Renewal after expiry must return 409 lease_lost.', 'builder-2');
-  say(DEMO_IDS.perpeto, runCh, 58, 'reviewer', 'Please split "Delivery: merge queue batching". It mixes batching and rejection reasons.', 'planner');
+  const lease = say(DEMO_IDS.perpeto, runCh, 64, 'builder-2', 'Does lease renewal need its own test, or is the expiry test enough?', { to: 'reviewer', receipt: acked(62) });
+  say(DEMO_IDS.perpeto, runCh, 61, 'reviewer', 'Its own test. Renewal after expiry must return 409 lease_lost.', { reply: lease, receipt: delivered(60, 'steer') });
+  const split = say(DEMO_IDS.perpeto, runCh, 58, 'reviewer', 'Please split "Delivery: merge queue batching". It mixes batching and rejection reasons.', { to: 'planner', unplanned: true, receipt: delivered(57, 'prompt') });
+  say(DEMO_IDS.perpeto, runCh, 55, 'planner', 'Split into "Merge queue batching" and "Rejection reasons". Both are queued.', { reply: split, receipt: acked(54, 'Thanks') });
   say(DEMO_IDS.perpeto, runCh, 37, 'reviewer', 'Returned "Delivery: merge queue batching": 3 lint errors in queue.js. Iteration 3 of 3.');
-  say(DEMO_IDS.perpeto, runCh, 18, 'reviewer', 'What are the acceptance criteria for the SSE stream? Reconnect behaviour is not specified.', 'planner');
-  say(DEMO_IDS.perpeto, runCh, 12, 'builder-1', 'The live run map is ready for a design look before review. Screenshots are on the PR.', 'reviewer');
+  say(DEMO_IDS.perpeto, runCh, 18, 'reviewer', 'What are the acceptance criteria for the SSE stream? Reconnect behaviour is not specified.', { to: 'planner', unplanned: true });
+  say(DEMO_IDS.perpeto, runCh, 12, 'builder-1', 'The live run map is ready for a design look before review. Screenshots are on the PR.', { to: 'reviewer', receipt: delivered(11, 'steer') });
+  say(DEMO_IDS.perpeto, runCh, 8, 'reviewer', 'Reviews are queueing behind me: 7 waiting, p90 48 min. Should I review the CI-blocked items last?', { to: 'owner' });
   say(DEMO_IDS.perpeto, 'general', 300, 'owner', 'Keep the reviewer on Codex so every change gets a second model family.');
   say(DEMO_IDS.perpeto, 'general', 41, 'architect', 'Proposed Build version 4: Fast checks before review, reviewer concurrency 3. Draft only; nothing changes until it is activated.');
   say(DEMO_IDS.perpeto, 'review', 90, 'reviewer', 'Rubric for this run: correctness, tests, scope. Lint and type errors count as correctness.');
   say(DEMO_IDS.cooler, 'general', 2900, 'owner', 'Paused while we decide whether Perpeto reuses Cooler for messaging.');
+  // The owner last read the run channel before the reviewer's question, and the general channel before the architect's note.
+  const readCursors: Record<string, string | null> = {
+    [`${DEMO_IDS.perpeto}|${runCh}`]: messages.find((m) => m.body.startsWith('Returned "Delivery'))!.id,
+    [`${DEMO_IDS.perpeto}|general`]: messages.find((m) => m.channelId === 'general' && m.senderRoleId === 'owner')!.id,
+  };
 
   // Metrics for the live run.
   const nm = (m: Partial<NodeMetrics> & { nodeId: string }): NodeMetrics => ({
@@ -640,6 +671,7 @@ export function createDemoState(now = Date.now()): DemoState {
     usage,
     events,
     channels,
+    readCursors,
     messages,
     metrics: { [DEMO_IDS.run]: runMetrics, [DEMO_IDS.coolerRun]: coolerMetrics },
     seq,
