@@ -79,6 +79,8 @@ Several findings were found independently by more than one reviewer and are merg
 
 **Fixed in dfc41ca.** Node-side CI exposure is addressed; hub token revocation/rotation remains a contract request. See [node isolation limits](../../apps/node/README.md#ci-jobs-and-logs).
 
+**Hub side: Fixed in `693ae72`.** `POST /nodes/token` rotates a machine's own token (the old one works until the new one is first used) and owner-only `POST /machines/:id/revoke` deletes every token generation, marks the machine offline with `revokedAt` and expires its leases. Tokens remain HMAC-derived per machine and generation rather than random, so idempotent replays can re-derive them without storing them; revocation deletes the stored hashes, so replayed tokens no longer authenticate.
+
 - **Where:** job workspaces live under the node `dataDir` (`factory-node/src/job.js:79-81`), next to `machine.json`. Steps inherit the daemon's full environment (`job.js:98-99`), and `perpeto node start` passes the operator's shell environment to the daemon. Node tokens are `HMAC(ownerToken, machineId)` (`factory-hub/src/hub.js:61`, `404`), with no revocation route. Rotating the owner token is refused at startup (`hub.js:53`).
 - **Failure:** CI runs agent-authored code at `headSha` by design. A step that reads `../../../machine.json` printed the token unredacted into the hub job log (confirmed by reproduction). With C1, that token reaches owner routes. Without C1, it still lets the holder lease and report any work matching that machine.
 - **Fix:** move workspaces outside `dataDir`, run steps with a scrubbed allowlisted environment, add the token to CI redaction, and store random per-machine tokens with a revoke route.
@@ -129,7 +131,7 @@ The hub returns `cancel: { assignments, jobs }` (`factory-hub/src/hub.js:435-436
 
 ### Leased items the node won't run are dropped without release (M9)
 
-The hub never updates machine `labels` after enrollment (`factory-hub/src/hub.js:417-418`), while the node checks its current config labels (`node.js:206`). A mismatched item hits `continue` at `node.js:228` with no release, so it stays leased until expiry and its attempt is burned. A node clock more than one lease ahead hits the same path (`node.js:202`). Confirmed: attempts climbed from 1 to 4 with nothing running. **Fix:** send labels in heartbeats and add a lease release route.
+The hub never updates machine `labels` after enrollment (`factory-hub/src/hub.js:417-418`), while the node checks its current config labels (`node.js:206`). A mismatched item hits `continue` at `node.js:228` with no release, so it stays leased until expiry and its attempt is burned. A node clock more than one lease ahead hits the same path (`node.js:202`). Confirmed: attempts climbed from 1 to 4 with nothing running. **Fix:** send labels in heartbeats and add a lease release route. **Hub side: Fixed in `64273ba`.** Heartbeat `labels` replace enrollment labels for leasing, and `POST /assignments/:id/release` / `POST /jobs/:id/release` `{attempt, idempotencyKey?, reason?}` return unstarted work to `queued` with the same attempt, without telling the engine. The releasing machine is not offered that attempt again for one lease duration. The node still releases through a fenced terminal event until it adopts the route.
 
 ### Node IDs like `constructor` break concurrency and loop limits (M10)
 

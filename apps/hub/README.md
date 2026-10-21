@@ -48,15 +48,15 @@ Errors are `{ "error": { "code": "INVALID_INPUT", "message": "..." } }`. Lease r
 | Runs | `GET /projects/:id/runs?status=`, `POST /workflows/:id/runs`, `GET /runs/:id`, `POST /runs/:id/pause`, `/resume`, `/stop`, `/inputs` |
 | Work | `GET /runs/:id/work-items`, `GET /runs/:id/assignments`, `POST /work-items/:id/decision`, `GET /assignments/:id` |
 | Metrics | `GET /runs/:id/metrics?window=1h|24h|7d`, `GET /projects/:id/metrics?window=...` |
-| Machines | `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain` |
+| Machines | `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain`, `POST /machines/:id/revoke` |
 | Accounts | `GET /accounts` |
 | Jobs | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` |
 | Delivery | `GET /projects/:id/merge-queue` |
 | Usage | `GET /usage?groupBy=provider|model|machine|day` |
 | Overview | `GET /overview`, optionally `?projectId=...` |
 | Events | `GET /events?after=0&limit=100`, or SSE with `Accept: text/event-stream` |
-| Nodes | `POST /nodes/enroll`, `/nodes/heartbeat`, `/nodes/lease` |
-| Lease reports | `POST /assignments/:id/renew`, `/events`, and the corresponding `/jobs/:id/...` |
+| Nodes | `POST /nodes/enroll`, `/nodes/heartbeat`, `/nodes/lease`, `/nodes/token` |
+| Lease reports | `POST /assignments/:id/renew`, `/events`, `/release`, and the corresponding `/jobs/:id/...` |
 
 List responses use `{projects}`, `{workflows}`, `{runs}`, `{versions}`, `{machines}`, `{accounts}`, `{jobs}`, `{workItems}`, `{assignments}` or `{entries}`. Single entities are returned directly. Draft requests return the architect Assignment with HTTP 202. Follow it using `GET /assignments/:id`; invalid attempts expose `retryAssignmentId` and `architectErrors`, and a valid result exposes `draftWorkflowId` and `draftVersion`. There are at most three architect validation attempts, independent of lease requeue attempts. Architect assignments belong to a project before there is a run, so they omit `runId`/`workItemId`.
 
@@ -68,11 +68,15 @@ Usage filters are `projectId`, `runId`, `machineId`, `accountId`, `provider`, `m
 
 ## Node protocol
 
-Enrollment codes are single-use and expiring. An idempotent enrollment retry receives its original token, including after restart. Enrollment returns `{machineId, token}`. An `os` of `win32` (Node's platform name) is stored as `windows`. Node tokens only exist as hashes in the DB.
+Enrollment codes are single-use and expiring. An idempotent enrollment retry receives its original token, including after restart. Enrollment returns `{machineId, token}`.
 
-Heartbeat bodies carry `{capacity:{maxAgents,maxJobs}, running:{agents,jobs}, providers, accounts, status:'online'|'draining'}`. Account snapshots replace that machine's previous public metadata; unknown fields are dropped, and IDs belonging to another machine are rejected. Responses are exactly `{status, cancel:{assignments:[],jobs:[]}}`. Owner-requested drain is persistent. Offline detection also covers draining machines, and a recovered owner-drained machine remains draining.
+Tokens derive from the machine and a token generation, so they are never stored in plaintext. `POST /nodes/token` (node token, body `{idempotencyKey?}`) rotates the caller's own token and returns `201 {machineId, token, generation}`. The previous token keeps working until the new one is first used, then every older generation is retired; a retry with the old token and the same idempotency key returns the same new token, including after restart. `POST /machines/:id/revoke` (owner, body `{reason?, idempotencyKey?}`) deletes every token generation for the machine, sets `status: 'offline'` and `revokedAt`, emits `machine.revoked`, and expires the machine's leases so maintenance hands run work to the engine's retry policy and requeues the rest. Replays of earlier enrollment or rotation responses then return tokens that no longer authenticate. Revocation is permanent; enroll the machine again with a new code. An `os` of `win32` (Node's platform name) is stored as `windows`. Node tokens only exist as hashes in the DB.
+
+Heartbeat bodies carry `{capacity:{maxAgents,maxJobs}, running:{agents,jobs}, providers, labels, accounts, status:'online'|'draining'}`; `labels`, when present, replace the labels used for leasing. Account snapshots replace that machine's previous public metadata; unknown fields are dropped, and IDs belonging to another machine are rejected. Responses are exactly `{status, cancel:{assignments:[],jobs:[]}}`. Owner-requested drain is persistent. Offline detection also covers draining machines, and a recovered owner-drained machine remains draining.
 
 Lease requests carry `{kinds:['assignment','job'],max}` and return exactly `{assignments,jobs}`; a `max` above 1,000 is served as 1,000. Each work entity includes `attempt` and `leaseExpiresAt`. Every Assignment, including a workflow architect, carries a copy of its project `repo: {url, defaultBranch, localPath?}` taken when the assignment is created. Capacity uses the larger of machine-reported running work and hub-held unexpired leases, so stale or optimistic heartbeats cannot grant extra slots. OS, labels and providers must match. Paused runs cannot receive new leases. Expired run work becomes an engine-owned failed attempt and follows its retry policy. Project-scoped assignments and speculative merge jobs requeue with `attempt + 1`, including during startup recovery.
+
+`POST /assignments/:id/release` and `POST /jobs/:id/release` (leasing machine only, body `{attempt, idempotencyKey?, reason?}`) hand back work that has not started. They are fenced like renewals, return `{released: true, status: 'queued', attempt}`, keep the same `attempt`, emit `assignment.released` or `job.released`, and do not report to the engine. The releasing machine is not offered that attempt again for one lease duration. Started work returns `409 CONFLICT`; report its result instead.
 
 **Renewals and events require top-level `attempt`**. The hub checks machine ownership, attempt, active state and expiry in the same serialized DB transaction. Wrong, absent or expired attempts return `409 lease_lost`, including when the same machine reacquires the work. Renewal returns exactly `{leaseExpiresAt}`.
 
