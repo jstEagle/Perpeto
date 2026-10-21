@@ -76,7 +76,7 @@ Events are `{ id, type, at, data }`:
 Assignment results are interpreted by the role that produced them:
 
 - **Agent:** a `success` result's `branch`, `prUrl` and `headSha` become the item's. A full 40- or 64-character lowercase SHA is required.
-- **Review:** `success` passes the gate and `failure` fails it. The summary becomes feedback in the next agent prompt.
+- **Review:** `success` passes the gate and `failure` fails it. The summary becomes feedback in the next agent prompt. The hub adapter derives this outcome from the contract's `verdict` field and turns a review without a verdict into `blocked`, so a crashed reviewer is never read as a rejection.
 - **Planner:** `success` may include `items: [{ title, body? }]`, truncated to `maxItems`. Each item becomes a child work item at the planner's next node. The parent stays `active` until every child finishes, then becomes `done`, or `failed` if any child failed. With no items, the original item continues as the work item.
 - **Any role:** `blocked` parks the item as `blocked` until `human.decision` either retries it (`pass`, with the optional note as feedback) or fails it (`fail`). `failure` from a planner or agent fails the item.
 

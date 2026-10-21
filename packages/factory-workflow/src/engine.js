@@ -507,7 +507,10 @@ function buildPrompt(s, item, node, role) {
     parts.push(`Report success with result.items listing at most ${node.config.maxItems} work items as [{ "title": "…", "body": "…" }]. ` +
       'Return an empty items list when the work item is already small enough to build as one pull request.');
   }
-  if (node.type === 'review') parts.push('Report outcome "success" if the work passes review and "failure" with actionable feedback if it does not.');
+  if (node.type === 'review') {
+    parts.push('Report outcome "success" with verdict "pass" if the work passes review, or verdict "fail" with actionable feedback in the summary if it does not. ' +
+      'A review that ends without a verdict is treated as an error, not a rejection.');
+  }
   return parts.join('\n\n');
 }
 
