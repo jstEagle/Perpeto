@@ -149,10 +149,23 @@ public struct ValidationIssue: Codable, Hashable, Sendable, Identifiable {
         self.nodeId = nodeId
         self.edgeId = edgeId
     }
+
+    enum CodingKeys: String, CodingKey { case code, message, severity, nodeId, edgeId }
+
+    /// The hub lists errors and warnings separately and omits `severity`;
+    /// `ValidationResult` fills it in from the list an issue came from.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        code = try c.decodeIfPresent(String.self, forKey: .code) ?? "INVALID"
+        message = try c.decode(String.self, forKey: .message)
+        severity = try c.decodeIfPresent(Severity.self, forKey: .severity) ?? .error
+        nodeId = try c.decodeIfPresent(String.self, forKey: .nodeId)
+        edgeId = try c.decodeIfPresent(String.self, forKey: .edgeId)
+    }
 }
 
-/// Result of `POST /workflows/:id/validate`. The contract does not fix this
-/// shape; the client reads `{ valid, issues }` and also accepts `errors`.
+/// Result of `POST /workflows/:id/validate`: `{ valid, errors, warnings }`.
+/// This is a 200 even when the graph is invalid.
 public struct ValidationResult: Codable, Hashable, Sendable {
     public var valid: Bool
     public var issues: [ValidationIssue]
@@ -162,19 +175,29 @@ public struct ValidationResult: Codable, Hashable, Sendable {
         self.issues = issues
     }
 
-    enum CodingKeys: String, CodingKey { case valid, issues, errors }
+    enum CodingKeys: String, CodingKey { case valid, errors, warnings }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        issues = try c.decodeIfPresent([ValidationIssue].self, forKey: .issues)
-            ?? c.decodeIfPresent([ValidationIssue].self, forKey: .errors) ?? []
-        valid = try c.decodeIfPresent(Bool.self, forKey: .valid) ?? !issues.contains { $0.severity == .error }
+        let errors = (try c.decodeIfPresent([ValidationIssue].self, forKey: .errors) ?? []).map { issue in
+            var issue = issue
+            issue.severity = .error
+            return issue
+        }
+        let warnings = (try c.decodeIfPresent([ValidationIssue].self, forKey: .warnings) ?? []).map { issue in
+            var issue = issue
+            issue.severity = .warning
+            return issue
+        }
+        issues = errors + warnings
+        valid = try c.decodeIfPresent(Bool.self, forKey: .valid) ?? errors.isEmpty
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(valid, forKey: .valid)
-        try c.encode(issues, forKey: .issues)
+        try c.encode(issues.filter { $0.severity == .error }, forKey: .errors)
+        try c.encode(issues.filter { $0.severity != .error }, forKey: .warnings)
     }
 
     public var errorCount: Int { issues.filter { $0.severity == .error }.count }

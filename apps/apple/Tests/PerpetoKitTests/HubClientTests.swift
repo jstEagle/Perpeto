@@ -41,7 +41,7 @@ struct HubClientTests {
     }
 
     @Test func healthIsUnauthenticated() async throws {
-        let stub = StubTransport { _ in (200, #"{"ok":true,"version":"0.3.0"}"#) }
+        let stub = StubTransport { _ in (200, #"{"status":"ok","version":"0.3.0"}"#) }
         let client = try HubClient(baseURL: URL(string: "http://localhost:4320")!, token: token, transport: stub)
         let health = try await client.health()
         #expect(health.version == "0.3.0")
@@ -49,7 +49,7 @@ struct HubClientTests {
     }
 
     @Test func queryAndEscaping() async throws {
-        let stub = StubTransport { _ in (200, "[]") }
+        let stub = StubTransport { _ in (200, #"{"groupBy":"day","groups":[],"totals":{}}"#) }
         let client = try HubClient(baseURL: URL(string: "http://127.0.0.1:4320")!, token: token, transport: stub)
         _ = try await client.usage(projectId: "prj a/b", groupBy: .day)
         _ = try? await client.runMetrics(runId: "run_1", window: .week)
@@ -78,7 +78,7 @@ struct HubClientTests {
     @Test func patchProjectAndJobLog() async throws {
         let stub = StubTransport { request in
             request.url!.path().hasSuffix("/log")
-                ? (200, "step Test: ok\n")
+                ? (200, #"{"jobId":"job_1","chunks":[{"id":1,"jobId":"job_1","chunk":"step Test: ","at":"2026-10-21T09:00:00Z"},{"id":2,"jobId":"job_1","chunk":"ok\n","at":"2026-10-21T09:00:01Z"}]}"#)
                 : (200, #"{ "id": "prj_1", "name": "renamed", "repo": { "url": "u", "defaultBranch": "main" }, "docs": [], "goals": ["g"], "createdAt": "2026-10-21T09:00:00Z", "updatedAt": "2026-10-21T09:00:00Z" }"#)
         }
         let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)
@@ -92,10 +92,11 @@ struct HubClientTests {
     }
 
     @Test func draftRequestBody() async throws {
-        let stub = StubTransport { _ in (202, #"{"assignmentId":"asg_7"}"#) }
+        let stub = StubTransport { _ in (202, HubShapes.architectAssignment) }
         let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)
         let result = try await client.requestDraft(projectId: "prj_1", prompt: "Build it carefully", baseWorkflowId: nil)
-        #expect(result.followAssignmentId == "asg_7")
+        #expect(result.id == "asg_7")
+        #expect(result.runId == nil)
         let request = try #require(stub.requests.first)
         #expect(request.url?.path() == "/api/v1/projects/prj_1/workflows/drafts")
         let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
@@ -134,7 +135,7 @@ struct HubClientTests {
             "id: 7",
             "event: event",
             #"data: {"seq":7,"at":"2026-10-21T10:00:00Z","type":"workitem.moved","subject":{"kind":"workItem","id":"wi_1"},"#,
-            #"data: "data":{"fromNode":"build","toNode":"review","edgeId":"e4"}}"#,
+            #"data: "data":{"sourceNodeId":"build","targetNodeId":"review","edgeId":"e4","kind":"flow","unplanned":false}}"#,
             "",
         ]
         let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)
@@ -148,6 +149,75 @@ struct HubClientTests {
         let request = try #require(stub.requests.first)
         #expect(request.value(forHTTPHeaderField: "Accept") == "text/event-stream")
         #expect(request.url?.query() == "after=6")
+    }
+}
+
+/// Response bodies as the hub in apps/hub returns them.
+enum HubShapes {
+    static let architectAssignment = #"""
+    { "id": "asg_7", "projectId": "prj_1", "nodeId": "workflow-architect", "role": "workflow-architect", "prompt": "Build it carefully",
+      "harness": { "provider": "claudeAgent", "model": "claude-opus-5-5" },
+      "policy": { "maxSubagents": 0, "allowedSubagentProviders": [], "canMessage": [] }, "requirements": {},
+      "repo": { "url": "/tmp/repo.git", "defaultBranch": "main" }, "status": "queued", "attempt": 1,
+      "architectRequestId": "arq_1", "architectAttempt": 1, "createdAt": "2026-10-21T09:00:00.000Z" }
+    """#
+}
+
+@Suite("Hub routes and shapes")
+struct HubRouteTests {
+    let token = "secret-owner-token-123"
+
+    @Test func projectRunsAndAssignment() async throws {
+        let stub = StubTransport { request in
+            request.url!.path().hasPrefix("/api/v1/assignments/")
+                ? (200, HubShapes.architectAssignment.replacingOccurrences(of: #""status": "queued""#, with: #""status": "succeeded", "draftWorkflowId": "wf_1", "draftVersion": 2"#))
+                : (200, #"{"runs":[{"id":"run_1","projectId":"prj_1","workflowId":"wf_1","workflowVersion":1,"status":"running","startedAt":"2026-10-21T09:00:00.000Z"}]}"#)
+        }
+        let client = try HubClient(baseURL: URL(string: "http://localhost:4320")!, token: token, transport: stub)
+        let runs = try await client.runs(projectId: "prj_1", status: .running)
+        #expect(runs.map(\.id) == ["run_1"])
+        #expect(stub.requests[0].url?.absoluteString == "http://localhost:4320/api/v1/projects/prj_1/runs?status=running")
+        let assignment = try await client.assignment("asg_7")
+        #expect(assignment.draftWorkflowId == "wf_1")
+        #expect(assignment.draftVersion == 2)
+    }
+
+    @Test func saveSendsOnlyMergeableFields() async throws {
+        let stub = StubTransport { _ in
+            (200, #"{ "id": "wf_1", "projectId": "p", "name": "B", "purpose": "build", "version": 6, "status": "draft", "parentVersion": 5, "authoredBy": {"kind":"user"}, "graph": { "schema": "perpeto.workflow/1", "nodes": [], "edges": [] } }"#)
+        }
+        let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)
+        let workflow = Workflow(id: "wf_1", projectId: "p", name: "B", purpose: .build, version: 5, graph: .init(nodes: [], edges: []), status: .active)
+        let saved = try await client.saveWorkflow(workflow)
+        #expect(saved.version == 6)
+        let body = try JSONSerialization.jsonObject(with: stub.requests[0].httpBody!) as! [String: Any]
+        #expect(Set(body.keys) == ["name", "graph", "purpose", "idempotencyKey"])
+    }
+
+    @Test func decisionsAndInputsReturnAccepted() async throws {
+        let stub = StubTransport { _ in (202, #"{"accepted":true}"#) }
+        let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)
+        try await client.decide(workItemId: "wi_1", .fail, note: "Needs tests")
+        try await client.addInputs(runId: "run_1", items: ["Add dark mode"])
+        let decision = try JSONSerialization.jsonObject(with: stub.requests[0].httpBody!) as! [String: Any]
+        #expect(decision["decision"] as? String == "fail")
+        let inputs = try JSONSerialization.jsonObject(with: stub.requests[1].httpBody!) as! [String: Any]
+        #expect((inputs["items"] as? [[String: Any]])?.first?["title"] as? String == "Add dark mode")
+    }
+
+    @Test func eventsPageAndKeyedLists() async throws {
+        let stub = StubTransport { request in
+            request.url!.path().hasSuffix("/events")
+                ? (200, #"{"events":[{"seq":3,"at":"2026-10-21T09:00:00.000Z","type":"run.started","projectId":"p","runId":"r","subject":{"kind":"run","id":"r"},"data":{}}],"nextCursor":3}"#)
+                : (200, #"{"entries":[]}"#)
+        }
+        let client = try HubClient(baseURL: URL(string: "https://hub.example.com")!, token: token, transport: stub)
+        let page = try await client.events(after: 2, limit: 5000)
+        #expect(page.nextCursor == 3)
+        #expect(stub.requests[0].url?.query()?.contains("limit=1000") == true)
+        #expect(try await client.mergeQueue(projectId: "p").isEmpty)
+        // A list under the wrong key is a decoding error, not an empty list.
+        await #expect(throws: HubError.decoding("projects list")) { _ = try await client.projects() }
     }
 }
 

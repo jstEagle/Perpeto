@@ -98,7 +98,9 @@ struct EntityDecodingTests {
     @Test func eventInteraction() throws {
         let event = try decode(HubEvent.self, """
         { "seq": 42, "at": "2026-10-21T10:00:00Z", "type": "agent.messaged", "projectId": "p", "runId": "run_1",
-          "subject": { "kind": "assignment", "id": "asg_1" }, "data": { "fromNode": "build", "toNode": "plan", "unplanned": true } }
+          "subject": { "kind": "assignment", "id": "asg_1" },
+          "data": { "messageId": "msg_1", "senderRoleId": "builder", "recipientRoleId": "planner", "nodeId": "build",
+                    "sourceNodeId": "build", "targetNodeId": "plan", "role": "builder", "unplanned": true } }
         """)
         #expect(event.interaction == .agentMessaged)
         #expect(event.isUnplanned)
@@ -128,27 +130,38 @@ struct EntityDecodingTests {
 @Suite("Observing-runs metrics decoding")
 struct MetricsDecodingTests {
     static let snapshotJSON = """
-    { "window": "1h",
-      "nodes": [{ "nodeId": "review", "queued": 7, "active": 1, "done": 30, "failed": 13, "concurrency": 1, "utilization": 1.0,
+    { "nodes": [{ "nodeId": "review", "queued": 7, "active": 1, "done": 30, "failed": 13, "errors": 0, "concurrency": 1, "utilization": 1.0,
                   "waitSec": { "avg": 2280, "p90": 4260 }, "serviceSec": { "avg": 1340, "p90": 2100 },
-                  "throughputPerHour": 1.4, "failureRate": 0.43, "tokens": 3120000 }],
+                  "throughputPerHour": 1.4, "failureRate": 0.43, "tokens": 3120000, "retries": 2, "escalations": 0 },
+                { "nodeId": "in", "queued": 0, "active": 0, "done": 3, "failed": 0, "errors": 0, "concurrency": null, "utilization": null,
+                  "waitSec": { "avg": null, "p90": null }, "serviceSec": { "avg": null, "p90": null },
+                  "throughputPerHour": 0, "failureRate": null, "tokens": 0, "retries": 0, "escalations": 0 }],
       "edges": [{ "edgeId": "m1", "kind": "messages", "count": 46, "unplanned": false },
-                { "edgeId": "x", "kind": "messages", "count": 4, "unplanned": true }],
-      "RUNKEY": { "velocity": { "itemsDonePerDay": 5.5, "trend": [2, 4, 6] }, "cycleTimeSec": { "avg": 15100, "p90": 26400 },
-               "wip": 15, "tokensPerItem": 1508000, "activeAgents": 5,
+                { "edgeId": "unplanned:messages:build->plan", "kind": "messages", "count": 4, "unplanned": true, "from": "build", "to": "plan" }],
+      "runs": ["run_1"],
+      "run": { "velocity": { "itemsDonePerDay": 5.5, "trend": [2, 4, 6] }, "cycleTimeSec": { "avg": 15100, "p90": 26400 },
+               "wip": 15, "tokensPerItem": 1508000, "activeAgents": 5, "retries": 2, "escalations": 1, "waitingOnHuman": 0,
                "machines": [{ "machineId": "mch_studio", "activeAgents": 4, "nodes": ["build", "review"] }] },
       "bottlenecks": [{ "nodeId": "review", "reason": "saturated", "evidence": "Utilization 1.00", "severity": "critical" },
                       { "nodeId": "loop", "reason": "rework-loop", "evidence": "1.6 iterations", "severity": "warning" },
                       { "nodeId": "ci", "reason": "no-capacity", "evidence": "No linux machine", "severity": "info" }] }
     """
 
-    @Test(arguments: ["run", "summary"])
-    func snapshot(runKey: String) throws {
-        let snapshot = try decode(MetricsSnapshot.self, Self.snapshotJSON.replacingOccurrences(of: "RUNKEY", with: runKey))
+    @Test func snapshot() throws {
+        let snapshot = try decode(MetricsSnapshot.self, Self.snapshotJSON)
         let review = try #require(snapshot.node("review"))
         #expect(review.utilization == 1.0)
         #expect(review.waitSec.p90 == 4260)
-        #expect(snapshot.edges.filter(\.unplanned).count == 1)
+        #expect(review.retries == 2)
+        let input = try #require(snapshot.node("in"))
+        #expect(input.concurrency == nil)
+        #expect(input.waitSec.avg == nil)
+        #expect(input.failureRate == nil)
+        let unplanned = try #require(snapshot.edges.first { $0.unplanned })
+        #expect(unplanned.from == "build")
+        #expect(unplanned.to == "plan")
+        #expect(snapshot.runs == ["run_1"])
+        #expect(snapshot.run.escalations == 1)
         #expect(snapshot.edge("m1")?.kind == .messages)
         #expect(snapshot.run.velocity.trend == [2, 4, 6])
         #expect(snapshot.run.machines.first?.nodes == ["build", "review"])
@@ -164,7 +177,9 @@ struct MetricsDecodingTests {
     }
 
     @Test func roundTrip() throws {
-        let snapshot = DemoFixtures.liveMetrics()
+        var snapshot = DemoFixtures.liveMetrics()
+        // The window is the request's, not part of the body.
+        snapshot.window = nil
         let data = try HubCoding.encoder().encode(snapshot)
         #expect(try HubCoding.decoder().decode(MetricsSnapshot.self, from: data) == snapshot)
     }
@@ -174,15 +189,32 @@ struct MetricsDecodingTests {
 struct EnvelopeTests {
     struct Item: Decodable, Equatable { var id: String }
 
-    @Test(arguments: [#"[{"id":"a"}]"#, #"{"items":[{"id":"a"}]}"#, #"{"projects":[{"id":"a"}],"nextCursor":null}"#, #"{"data":[{"id":"a"}]}"#])
-    func lists(json: String) throws {
-        #expect(try decode(ListEnvelope<Item>.self, json).items == [Item(id: "a")])
+    @Test func keyedList() throws {
+        let decoder = HubCoding.decoder()
+        decoder.userInfo[KeyedList<Item>.keyInfo] = "groups"
+        let list = try decoder.decode(KeyedList<Item>.self, from: Data(#"{"groupBy":"day","groups":[{"id":"a"}],"totals":{"records":1}}"#.utf8))
+        #expect(list.items == [Item(id: "a")])
     }
 
-    @Test func validationAcceptsErrorsAlias() throws {
-        let result = try decode(ValidationResult.self, #"{"errors":[{"code":"NO_INPUT","message":"m","severity":"error"}]}"#)
+    @Test func validationSplitsErrorsAndWarnings() throws {
+        let result = try decode(ValidationResult.self, """
+        {"valid":false,"errors":[{"code":"NO_INPUT","message":"m"}],"warnings":[{"code":"UNREACHABLE","message":"w","nodeId":"x"}]}
+        """)
         #expect(result.valid == false)
         #expect(result.errorCount == 1)
+        #expect(result.warningCount == 1)
+        #expect(result.issues.last?.nodeId == "x")
+    }
+
+    @Test func lossyDocsAndArchitectAssignment() throws {
+        let project = try decode(Project.self, """
+        { "id": "prj_1", "name": "n", "repo": { "url": "u", "defaultBranch": "main" }, "docs": ["README.md", { "id": "d", "title": "Spec", "kind": "spec" }],
+          "goals": [], "createdAt": "2026-10-21T09:00:00Z", "updatedAt": "2026-10-21T09:00:00Z" }
+        """)
+        #expect(project.docs.map(\.id) == ["d"])
+        let assignment = try decode(Assignment.self, HubShapes.architectAssignment)
+        #expect(assignment.workItemId == nil)
+        #expect(assignment.architectAttempt == 1)
     }
 
     @Test func overviewDefaultsMissingCounts() throws {

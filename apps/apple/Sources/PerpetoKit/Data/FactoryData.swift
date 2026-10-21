@@ -86,6 +86,9 @@ public struct ProjectState: Sendable, Hashable {
     public static let empty = ProjectState(workflows: [], versions: [:], runs: [], workItems: [], assignments: [], mergeQueue: [], channels: [], messages: [:], usage: .empty, metrics: nil, runMetrics: [:], events: [])
 
     public var activeAgents: Int { assignments.filter(\.isWorking).count }
+    public var messagesById: [String: Message] {
+        Dictionary(messages.values.flatMap { $0 }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    }
     public var queuedWork: Int { workItems.filter { $0.status == .queued }.count }
 
     public func activeVersion(of workflowId: String) -> Workflow? {
@@ -100,6 +103,32 @@ public struct ProjectState: Sendable, Hashable {
 
     public func version(_ version: Int, of workflowId: String) -> Workflow? {
         (versions[workflowId] ?? []).first { $0.version == version }
+    }
+}
+
+/// One run's live state, refreshed together after live events.
+public struct RunSnapshot: Sendable, Hashable {
+    public var run: Run
+    public var workItems: [WorkItem]
+    public var assignments: [Assignment]
+    public var metrics: MetricsSnapshot?
+
+    public init(run: Run, workItems: [WorkItem], assignments: [Assignment], metrics: MetricsSnapshot?) {
+        self.run = run
+        self.workItems = workItems
+        self.assignments = assignments
+        self.metrics = metrics
+    }
+}
+
+extension ProjectState {
+    /// Replaces one run's data in place.
+    public mutating func apply(_ snapshot: RunSnapshot) {
+        let id = snapshot.run.id
+        if let index = runs.firstIndex(where: { $0.id == id }) { runs[index] = snapshot.run } else { runs.insert(snapshot.run, at: 0) }
+        workItems = workItems.filter { $0.runId != id } + snapshot.workItems
+        assignments = assignments.filter { $0.runId != id } + snapshot.assignments
+        runMetrics[id] = snapshot.metrics
     }
 }
 
@@ -141,14 +170,17 @@ public struct DraftProgress: Sendable, Hashable {
 public protocol FactoryDataSource: Sendable {
     var isDemo: Bool { get }
     func loadFactory() async throws -> FactoryState
-    func loadProject(_ projectId: String) async throws -> ProjectState
+    /// Loads a project with run metrics measured over `window`.
+    func loadProject(_ projectId: String, window: MetricsWindow) async throws -> ProjectState
+    /// Reloads one run: its status, work, assignments and metrics.
+    func loadRun(_ runId: String, window: MetricsWindow) async throws -> RunSnapshot
     func requestDraft(projectId: String, prompt: String, baseWorkflowId: String?) -> AsyncThrowingStream<DraftProgress, Error>
     func activate(workflowId: String, version: Int) async throws -> Workflow
     func save(_ workflow: Workflow) async throws -> Workflow
     func validate(_ workflow: Workflow) async throws -> ValidationResult
     func control(runId: String, _ action: HubClient.RunControl) async throws -> Run
     func startRun(workflowId: String) async throws -> Run
-    func decide(workItemId: String, _ decision: HubClient.Decision) async throws -> WorkItem
+    func decide(workItemId: String, _ decision: HubClient.Decision) async throws
     func sendMessage(projectId: String, channelId: String, body: String) async throws -> Message
     func enrollmentCode() async throws -> EnrollmentCode
     func drain(machineId: String) async throws -> Machine

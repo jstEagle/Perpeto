@@ -70,7 +70,7 @@ struct RunDetail: View {
     }
 
     private var metrics: MetricsSnapshot? { state.runMetrics[run.id] }
-    private var runEvents: [HubEvent] { state.events.filter { $0.runId == run.id } }
+    private var runEvents: [HubEvent] { state.events.filter { $0.runId == run.id && $0.interaction != .unknown } }
     private var runItems: [WorkItem] { state.workItems.filter { $0.runId == run.id } }
 
     var body: some View {
@@ -94,7 +94,7 @@ struct RunDetail: View {
                                 }
                         }
                     }
-                    InteractionFeed(events: runEvents, selection: selection, graph: workflow?.graph)
+                    InteractionFeed(events: runEvents, selection: selection, graph: workflow?.graph, messages: state.messagesById)
                         .frame(height: 210)
                 }
                 .padding(.leading, PerpetoSpacing.x(5))
@@ -103,7 +103,7 @@ struct RunDetail: View {
                     VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
                         SelectionPanel(state: state, run: run, graph: workflow?.graph, metrics: metrics, selection: selection, items: runItems)
                         if let metrics {
-                            VelocityPanel(metrics: metrics)
+                            VelocityPanel(metrics: metrics, window: store.metricsWindow)
                             WhereRunningPanel(store: store, state: state, run: run, metrics: metrics, graph: workflow?.graph)
                         }
                     }
@@ -141,14 +141,14 @@ struct RunDetail: View {
                     mini("Active agents", "\(metrics.run.activeAgents)")
                     mini("In progress", "\(metrics.run.wip)")
                     mini("Cycle time p90", Format.duration(metrics.run.cycleTimeSec.p90))
-                    mini("Tokens per item", Format.tokens(Int(metrics.run.tokensPerItem)))
+                    mini("Tokens per item", Format.tokens(metrics.run.tokensPerItem))
                 }
-                Picker("Window", selection: $window) {
+                Picker("Window", selection: Binding(get: { store.metricsWindow }, set: { window in Task { await store.setMetricsWindow(window) } })) {
                     ForEach(MetricsWindow.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .fixedSize()
-                .help("Measurement window. Demo data has one 24 h snapshot.")
+                .help("Measurement window for the map, velocity and bottlenecks")
             }
             controls
         }
@@ -224,10 +224,10 @@ struct SelectionPanel: View {
         }
         if let m = metrics?.node(node.id) {
             Grid(alignment: .leading, horizontalSpacing: PerpetoSpacing.x(4), verticalSpacing: PerpetoSpacing.x(2)) {
-                GridRow { cell("Active", "\(m.active) of \(m.concurrency)"); cell("Queued", "\(m.queued)") }
+                GridRow { cell("Active", m.concurrency.map { "\(m.active) of \($0)" } ?? "\(m.active)"); cell("Queued", "\(m.queued)") }
                 GridRow { cell("Wait avg", Format.duration(m.waitSec.avg)); cell("Wait p90", Format.duration(m.waitSec.p90)) }
                 GridRow { cell("Service avg", Format.duration(m.serviceSec.avg)); cell("Throughput", Format.rate(m.throughputPerHour)) }
-                GridRow { cell("Utilization", Format.percent(m.utilization)); cell("Failure rate", Format.percent(m.failureRate)) }
+                GridRow { cell("Utilization", m.utilization.map(Format.percent) ?? "n/a"); cell("Failure rate", m.failureRate.map(Format.percent) ?? "n/a") }
                 GridRow { cell("Done", "\(m.done)"); cell("Tokens", Format.tokens(m.tokens)) }
             }
         }
@@ -281,11 +281,12 @@ struct BottleneckRow: View {
 
 struct VelocityPanel: View {
     var metrics: MetricsSnapshot
+    var window: MetricsWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            SectionTitle("Velocity", detail: "items done per day")
-            VelocityChart(trend: metrics.run.velocity.trend).frame(height: 110)
+            SectionTitle("Velocity", detail: "items done, \(window.title.lowercased())")
+            VelocityChart(trend: metrics.run.velocity.trend, window: window).frame(height: 110)
             Grid(alignment: .leading, horizontalSpacing: PerpetoSpacing.x(4), verticalSpacing: PerpetoSpacing.x(2)) {
                 GridRow {
                     Figure("Per day", value: String(format: "%.1f", metrics.run.velocity.itemsDonePerDay))
@@ -293,7 +294,7 @@ struct VelocityPanel: View {
                 }
                 GridRow {
                     Figure("Cycle time", value: Format.duration(metrics.run.cycleTimeSec.avg), detail: "p90 " + Format.duration(metrics.run.cycleTimeSec.p90))
-                    Figure("Tokens per item", value: Format.tokens(Int(metrics.run.tokensPerItem)))
+                    Figure("Tokens per item", value: Format.tokens(metrics.run.tokensPerItem))
                 }
             }
         }
@@ -358,6 +359,7 @@ struct InteractionFeed: View {
     var events: [HubEvent]
     var selection: GraphSelection?
     var graph: WorkflowGraph?
+    var messages: [String: Message] = [:]
 
     private var filtered: [HubEvent] {
         switch selection {
@@ -382,7 +384,7 @@ struct InteractionFeed: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(filtered) { event in
-                            EventRow(event: event, graph: graph).padding(.vertical, PerpetoSpacing.x(2))
+                            EventRow(event: event, graph: graph, messages: messages).padding(.vertical, PerpetoSpacing.x(2))
                             Rule()
                         }
                     }

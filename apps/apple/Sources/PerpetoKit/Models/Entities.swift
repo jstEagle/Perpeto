@@ -33,6 +33,21 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
+
+    enum CodingKeys: String, CodingKey { case id, name, repo, docs, goals, createdAt, updatedAt }
+
+    /// The hub stores `docs` as an open array; entries that are not doc
+    /// references are skipped rather than failing the project.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        repo = try c.decode(Repo.self, forKey: .repo)
+        docs = (try? c.decodeIfPresent(Lossy<DocRef>.self, forKey: .docs))?.elements ?? []
+        goals = (try? c.decodeIfPresent([String].self, forKey: .goals)) ?? []
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+    }
 }
 
 public struct DocRef: Codable, Hashable, Identifiable, Sendable {
@@ -80,13 +95,15 @@ public struct Workflow: Codable, Hashable, Identifiable, Sendable {
     public var rationale: String?
     /// The version this one was derived from.
     public var parentVersion: Int?
+    /// On a workflow head: the version new runs use. Version records omit it.
+    public var activeVersion: Int?
     /// Not in the contract's entity line; read when a hub includes it.
     public var createdAt: Date?
 
     public init(
         id: String, projectId: String, name: String, purpose: Purpose, version: Int, graph: WorkflowGraph,
         status: Status, authoredBy: Authorship? = nil, rationale: String? = nil, parentVersion: Int? = nil,
-        createdAt: Date? = nil
+        activeVersion: Int? = nil, createdAt: Date? = nil
     ) {
         self.id = id
         self.projectId = projectId
@@ -98,6 +115,7 @@ public struct Workflow: Codable, Hashable, Identifiable, Sendable {
         self.authoredBy = authoredBy
         self.rationale = rationale
         self.parentVersion = parentVersion
+        self.activeVersion = activeVersion
         self.createdAt = createdAt
     }
 }
@@ -179,6 +197,24 @@ public struct WorkItem: Codable, Hashable, Identifiable, Sendable {
         self.iteration = iteration
         self.parentId = parentId
     }
+
+    enum CodingKeys: String, CodingKey { case id, runId, title, body, nodeId, status, branch, prUrl, headSha, iteration, parentId }
+
+    /// The hub passes engine state through; optional detail may be absent.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        runId = try c.decode(String.self, forKey: .runId)
+        title = try c.decode(String.self, forKey: .title)
+        body = try c.decodeIfPresent(String.self, forKey: .body) ?? ""
+        nodeId = try c.decode(String.self, forKey: .nodeId)
+        status = try c.decode(Status.self, forKey: .status)
+        branch = try c.decodeIfPresent(String.self, forKey: .branch)
+        prUrl = try c.decodeIfPresent(String.self, forKey: .prUrl)
+        headSha = try c.decodeIfPresent(String.self, forKey: .headSha)
+        iteration = try c.decodeIfPresent(Int.self, forKey: .iteration) ?? 0
+        parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
+    }
 }
 
 public struct Harness: Codable, Hashable, Sendable {
@@ -208,6 +244,17 @@ public struct AgentPolicy: Codable, Hashable, Sendable {
         self.maxTokens = maxTokens
         self.canMessage = canMessage
     }
+
+    enum CodingKeys: String, CodingKey { case maxSubagents, allowedSubagentProviders, maxTurns, maxTokens, canMessage }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        maxSubagents = try c.decodeIfPresent(Int.self, forKey: .maxSubagents) ?? 0
+        allowedSubagentProviders = try c.decodeIfPresent([String].self, forKey: .allowedSubagentProviders) ?? []
+        maxTurns = try c.decodeIfPresent(Int.self, forKey: .maxTurns)
+        maxTokens = try c.decodeIfPresent(Int.self, forKey: .maxTokens)
+        canMessage = try c.decodeIfPresent([String].self, forKey: .canMessage) ?? []
+    }
 }
 
 public struct MachineRequirements: Codable, Hashable, Sendable {
@@ -234,14 +281,30 @@ public struct AssignmentResult: Codable, Hashable, Sendable {
     public var prUrl: String?
     public var headSha: String?
     public var threadRef: String?
+    /// Review verdict, `pass` or `fail`.
+    public var verdict: String?
 
-    public init(outcome: Outcome, summary: String, branch: String? = nil, prUrl: String? = nil, headSha: String? = nil, threadRef: String? = nil) {
+    public init(outcome: Outcome, summary: String, branch: String? = nil, prUrl: String? = nil, headSha: String? = nil, threadRef: String? = nil, verdict: String? = nil) {
         self.outcome = outcome
         self.summary = summary
         self.branch = branch
         self.prUrl = prUrl
         self.headSha = headSha
         self.threadRef = threadRef
+        self.verdict = verdict
+    }
+
+    enum CodingKeys: String, CodingKey { case outcome, summary, branch, prUrl, headSha, threadRef, verdict }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        outcome = try c.decodeIfPresent(Outcome.self, forKey: .outcome) ?? .unknown
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        branch = try c.decodeIfPresent(String.self, forKey: .branch)
+        prUrl = try c.decodeIfPresent(String.self, forKey: .prUrl)
+        headSha = try c.decodeIfPresent(String.self, forKey: .headSha)
+        threadRef = try c.decodeIfPresent(String.self, forKey: .threadRef)
+        verdict = try c.decodeIfPresent(String.self, forKey: .verdict)
     }
 }
 
@@ -252,8 +315,9 @@ public struct Assignment: Codable, Hashable, Identifiable, Sendable {
     }
 
     public var id: String
-    public var runId: String
-    public var workItemId: String
+    /// Absent on project-scoped assignments such as the workflow architect.
+    public var runId: String?
+    public var workItemId: String?
     public var nodeId: String
     public var role: String
     public var prompt: String
@@ -265,9 +329,16 @@ public struct Assignment: Codable, Hashable, Identifiable, Sendable {
     public var leaseExpiresAt: Date?
     public var attempt: Int
     public var result: AssignmentResult?
+    /// Workflow architect only: set when a valid draft was saved.
+    public var draftWorkflowId: String?
+    public var draftVersion: Int?
+    /// Workflow architect only: the next attempt after an invalid result.
+    public var retryAssignmentId: String?
+    public var architectErrors: [ValidationIssue]?
+    public var architectAttempt: Int?
 
     public init(
-        id: String, runId: String, workItemId: String, nodeId: String, role: String, prompt: String, harness: Harness,
+        id: String, runId: String?, workItemId: String?, nodeId: String, role: String, prompt: String, harness: Harness,
         policy: AgentPolicy, requirements: MachineRequirements, status: Status, machineId: String? = nil,
         leaseExpiresAt: Date? = nil, attempt: Int, result: AssignmentResult? = nil
     ) {
@@ -285,6 +356,34 @@ public struct Assignment: Codable, Hashable, Identifiable, Sendable {
         self.leaseExpiresAt = leaseExpiresAt
         self.attempt = attempt
         self.result = result
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, runId, workItemId, nodeId, role, prompt, harness, policy, requirements, status, machineId, leaseExpiresAt, attempt, result
+        case draftWorkflowId, draftVersion, retryAssignmentId, architectErrors, architectAttempt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        runId = try c.decodeIfPresent(String.self, forKey: .runId)
+        workItemId = try c.decodeIfPresent(String.self, forKey: .workItemId)
+        nodeId = try c.decode(String.self, forKey: .nodeId)
+        role = try c.decodeIfPresent(String.self, forKey: .role) ?? nodeId
+        prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
+        harness = try c.decode(Harness.self, forKey: .harness)
+        policy = try c.decodeIfPresent(AgentPolicy.self, forKey: .policy) ?? AgentPolicy(maxSubagents: 0, allowedSubagentProviders: [], canMessage: [])
+        requirements = try c.decodeIfPresent(MachineRequirements.self, forKey: .requirements) ?? MachineRequirements()
+        status = try c.decode(Status.self, forKey: .status)
+        machineId = try c.decodeIfPresent(String.self, forKey: .machineId)
+        leaseExpiresAt = try c.decodeIfPresent(Date.self, forKey: .leaseExpiresAt)
+        attempt = try c.decodeIfPresent(Int.self, forKey: .attempt) ?? 1
+        result = try c.decodeIfPresent(AssignmentResult.self, forKey: .result)
+        draftWorkflowId = try c.decodeIfPresent(String.self, forKey: .draftWorkflowId)
+        draftVersion = try c.decodeIfPresent(Int.self, forKey: .draftVersion)
+        retryAssignmentId = try c.decodeIfPresent(String.self, forKey: .retryAssignmentId)
+        architectErrors = (try? c.decodeIfPresent(Lossy<ValidationIssue>.self, forKey: .architectErrors))?.elements
+        architectAttempt = try c.decodeIfPresent(Int.self, forKey: .architectAttempt)
     }
 
     public var isWorking: Bool { status == .running || status == .leased }
@@ -358,6 +457,29 @@ public struct Job: Codable, Hashable, Identifiable, Sendable {
         self.logRef = logRef
         self.artifacts = artifacts
         self.configHash = configHash
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, projectId, runId, workItemId, repo, revision, steps, requirements, status, machineId, leaseExpiresAt, attempt, logRef, artifacts, configHash
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        projectId = try c.decode(String.self, forKey: .projectId)
+        runId = try c.decodeIfPresent(String.self, forKey: .runId)
+        workItemId = try c.decodeIfPresent(String.self, forKey: .workItemId)
+        repo = (try? c.decode(String.self, forKey: .repo)) ?? (try? c.decode(Project.Repo.self, forKey: .repo))?.url ?? ""
+        revision = try c.decodeIfPresent(String.self, forKey: .revision) ?? ""
+        steps = (try? c.decodeIfPresent(Lossy<JobStep>.self, forKey: .steps))?.elements ?? []
+        requirements = try c.decodeIfPresent(MachineRequirements.self, forKey: .requirements) ?? MachineRequirements()
+        status = try c.decode(Status.self, forKey: .status)
+        machineId = try c.decodeIfPresent(String.self, forKey: .machineId)
+        leaseExpiresAt = try c.decodeIfPresent(Date.self, forKey: .leaseExpiresAt)
+        attempt = try c.decodeIfPresent(Int.self, forKey: .attempt) ?? 1
+        logRef = try c.decodeIfPresent(String.self, forKey: .logRef)
+        artifacts = (try? c.decodeIfPresent(Lossy<ArtifactRef>.self, forKey: .artifacts))?.elements ?? []
+        configHash = try c.decodeIfPresent(String.self, forKey: .configHash) ?? ""
     }
 }
 
@@ -439,6 +561,23 @@ public struct Machine: Codable, Hashable, Identifiable, Sendable {
         self.status = status
         self.lastHeartbeatAt = lastHeartbeatAt
         self.version = version
+    }
+
+    enum CodingKeys: String, CodingKey { case id, name, os, arch, labels, providers, capacity, running, status, lastHeartbeatAt, version }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        os = try c.decodeIfPresent(String.self, forKey: .os) ?? ""
+        arch = try c.decodeIfPresent(String.self, forKey: .arch) ?? ""
+        labels = try c.decodeIfPresent([String].self, forKey: .labels) ?? []
+        providers = try c.decodeIfPresent([String].self, forKey: .providers) ?? []
+        capacity = try c.decodeIfPresent(Capacity.self, forKey: .capacity) ?? Capacity(maxAgents: 0, maxJobs: 0)
+        running = try c.decodeIfPresent(Running.self, forKey: .running) ?? Running(agents: 0, jobs: 0)
+        status = try c.decode(Status.self, forKey: .status)
+        lastHeartbeatAt = try c.decodeIfPresent(Date.self, forKey: .lastHeartbeatAt) ?? .distantPast
+        version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
     }
 }
 
@@ -554,9 +693,16 @@ extension HubEvent {
     public var interaction: InteractionType { InteractionType(rawValue: type) ?? .unknown }
     /// Interactions with no matching edge are recorded with `unplanned: true`.
     public var isUnplanned: Bool { data["unplanned"]?.boolValue ?? false }
-    /// Graph node IDs this event touches, read from `data.fromNode`/`data.toNode`/`data.nodeId`.
+    /// Node that sent the work, delegation or message (`data.sourceNodeId`;
+    /// engine `workitem.moved` events use `from`).
+    public var sourceNodeId: String? { data["sourceNodeId"]?.stringValue ?? data["from"]?.stringValue }
+    /// Node on the receiving end (`data.targetNodeId`, or `to`).
+    public var targetNodeId: String? { data["targetNodeId"]?.stringValue ?? data["to"]?.stringValue }
+    /// Graph node IDs this event touches.
     public var nodeIds: [String] {
-        ["fromNode", "toNode", "nodeId"].compactMap { data[$0]?.stringValue }
+        var ids: [String] = []
+        for id in [sourceNodeId, targetNodeId, data["nodeId"]?.stringValue].compactMap({ $0 }) where !ids.contains(id) { ids.append(id) }
+        return ids
     }
     public var edgeId: String? { data["edgeId"]?.stringValue }
 }

@@ -64,7 +64,7 @@ struct NodeCard: View {
             }
         }
         .opacity(change == .removed ? 0.6 : (change == .unchanged ? 0.75 : 1))
-        .focusOutline(selected)
+        .selectionOutline(selected)
     }
 
     private var header: some View {
@@ -132,7 +132,7 @@ struct NodeCard: View {
             Rule().padding(.vertical, PerpetoSpacing.x(1))
             if let m = metrics, node.type != .input, node.type != .output {
                 HStack {
-                    stat(node.type.isAgentRole ? "\(m.active) of \(m.concurrency) active" : "\(m.active) active")
+                    stat(node.type.isAgentRole && m.concurrency != nil ? "\(m.active) of \(m.concurrency!) active" : "\(m.active) active")
                     Spacer(minLength: 2)
                     stat("\(m.queued) queued", emphasis: m.queued > 0)
                 }
@@ -141,8 +141,10 @@ struct NodeCard: View {
                     Spacer(minLength: 2)
                     stat(Format.rate(m.throughputPerHour))
                 }
-                Meter(m.utilization, tone: m.utilization >= 0.9 ? (bottleneck?.severity.tone ?? .warning) : .neutral)
-                    .accessibilityLabel("Utilization")
+                if let utilization = m.utilization {
+                    Meter(utilization, tone: utilization >= 0.9 ? (bottleneck?.severity.tone ?? .warning) : .neutral)
+                        .accessibilityLabel("Utilization")
+                }
             } else if let m = metrics {
                 stat(node.type == .output ? "\(m.done) finished" : "\(m.done) items in")
             } else {

@@ -134,13 +134,13 @@ struct OverviewScreen: View {
 
     private var velocityPanel: some View {
         VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            SectionTitle("Velocity", detail: "items done per day")
+            SectionTitle("Velocity", detail: "items done, \(store.metricsWindow.title.lowercased())")
             if let metrics = state.metrics {
-                VelocityChart(trend: metrics.run.velocity.trend)
+                VelocityChart(trend: metrics.run.velocity.trend, window: store.metricsWindow)
                     .frame(height: 120)
                 HStack {
                     Figure("Per day", value: String(format: "%.1f", metrics.run.velocity.itemsDonePerDay))
-                    Figure("Tokens per item", value: Format.tokens(Int(metrics.run.tokensPerItem)))
+                    Figure("Tokens per item", value: Format.tokens(metrics.run.tokensPerItem))
                 }
             } else {
                 Text("Velocity appears once a run finishes its first item.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
@@ -167,7 +167,7 @@ struct OverviewScreen: View {
             }
             ForEach(Array(state.events.prefix(6).enumerated()), id: \.element.id) { index, event in
                 if index > 0 { Rule() }
-                EventRow(event: event, graph: state.workflows.first?.graph)
+                EventRow(event: event, graph: state.workflows.first?.graph, messages: state.messagesById)
                     .padding(.vertical, PerpetoSpacing.x(2))
             }
         }
@@ -187,7 +187,7 @@ struct AgentRow: View {
                 Mono(assignment.harness.model)
             }
             .frame(width: 140, alignment: .leading)
-            Text(item?.title ?? assignment.workItemId)
+            Text(item?.title ?? assignment.workItemId ?? assignment.nodeId)
                 .font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text(machine?.name ?? "Unassigned").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
@@ -198,10 +198,14 @@ struct AgentRow: View {
     }
 }
 
-/// One line of the interaction feed. Times and IDs are monospace.
+/// One line of the interaction feed. Times and IDs are monospace. Reads the
+/// hub's interaction fields: `sourceNodeId`, `targetNodeId`, `role`,
+/// `senderRoleId`/`recipientRoleId` on messages, `state` and `result`.
 struct EventRow: View {
     var event: HubEvent
     var graph: WorkflowGraph?
+    /// Messages by ID, so an `agent.messaged` row can show what was said.
+    var messages: [String: Message] = [:]
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: PerpetoSpacing.x(3)) {
@@ -212,11 +216,13 @@ struct EventRow: View {
                     Text(route).font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.ink)
                     if event.isUnplanned { StatusLabel("Unplanned", tone: .error) }
                     if let result = event.data["result"]?.stringValue {
-                        StatusLabel(result == "pass" ? "Passed" : "Failed", tone: result == "pass" ? .success : .error)
+                        let passed = result == "pass" || result == "passed"
+                        StatusLabel(passed ? "Passed" : result == "blocked" ? "Blocked" : "Failed", tone: passed ? .success : result == "blocked" ? .warning : .error)
                     }
                 }
-                Text(event.data["summary"]?.stringValue ?? event.type)
-                    .font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(2)
+                if let detail {
+                    Text(detail).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(2)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -224,15 +230,37 @@ struct EventRow: View {
 
     private func label(_ id: String?) -> String? { id.map { graph?.node($0)?.label ?? $0 } }
 
-    private var route: String {
-        let from = event.data["fromRole"]?.stringValue ?? label(event.data["fromNode"]?.stringValue)
-        let to = event.data["toRole"]?.stringValue ?? label(event.data["toNode"]?.stringValue)
+    private var detail: String? {
+        if let summary = event.data["summary"]?.stringValue { return summary }
+        if let id = event.data["messageId"]?.stringValue, let message = messages[id] { return message.body }
+        if event.isUnplanned {
+            let kind = event.interaction == .agentDelegated ? "delegates" : event.interaction == .agentMessaged ? "messages" : "flow"
+            return "No \(kind) edge connects these nodes in the approved graph."
+        }
         switch event.interaction {
-        case .agentMessaged: return "\(from ?? "?") messaged \(to ?? "?")"
-        case .agentDelegated: return "\(from ?? "?") delegated to \(to ?? "?")"
-        case .workitemMoved: return "\(label(event.data["fromNode"]?.stringValue) ?? "?") → \(label(event.data["toNode"]?.stringValue) ?? "?")"
+        case .assignmentState:
+            return [event.data["machineId"]?.stringValue.map { "on \($0)" }, event.data["attempt"]?.intValue.map { "attempt \($0)" }]
+                .compactMap { $0 }.joined(separator: ", ").nilIfEmpty
+        case .gateResult:
+            return event.data["revision"]?.stringValue.map { "At \($0.prefix(7))" }
+        default: return nil
+        }
+    }
+
+    private var route: String {
+        let from = label(event.sourceNodeId)
+        let to = label(event.targetNodeId)
+        switch event.interaction {
+        case .agentMessaged:
+            let sender = event.data["senderRoleId"]?.stringValue ?? event.data["role"]?.stringValue ?? from
+            let recipient = event.data["recipientRoleId"]?.stringValue ?? to
+            return "\(sender ?? "?") messaged \(recipient ?? "everyone")"
+        case .agentDelegated: return "\(event.data["role"]?.stringValue ?? from ?? "?") delegated to \(to ?? "?")"
+        case .workitemMoved: return "\(from ?? "?") → \(to ?? "?")"
         case .gateResult: return "\(label(event.data["nodeId"]?.stringValue) ?? "Gate") result"
-        case .assignmentState: return "\(label(event.data["nodeId"]?.stringValue) ?? "Assignment") \(event.data["state"]?.stringValue ?? "")"
+        case .assignmentState:
+            let who = event.data["role"]?.stringValue ?? label(event.data["nodeId"]?.stringValue) ?? "Assignment"
+            return "\(who) \(event.data["state"]?.stringValue ?? "")"
         case .unknown: return event.type
         }
     }
@@ -251,6 +279,8 @@ struct EventRow: View {
 
 struct VelocityChart: View {
     var trend: [Double]
+    /// The hub returns 12 buckets for 1h, 24 for 24h and 7 for 7d.
+    var window: MetricsWindow = .week
 
     var body: some View {
         Chart {
@@ -267,13 +297,26 @@ struct VelocityChart: View {
             }
         }
         .chartXAxis {
-            AxisMarks { _ in AxisValueLabel().font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted) }
+            // Label every bucket for a week, fewer for hourly and five-minute buckets.
+            AxisMarks(values: axisLabels) { _ in AxisValueLabel().font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted) }
         }
-        .accessibilityLabel("Items done per day over the last \(trend.count) days")
+        .accessibilityLabel("Items done, \(window.title.lowercased()), in \(trend.count) buckets")
+    }
+
+    private var axisLabels: [String] {
+        let step = trend.count > 12 ? 6 : trend.count > 7 ? 3 : 1
+        return trend.indices.filter { (trend.count - 1 - $0) % step == 0 }.map(dayLabel)
     }
 
     private func dayLabel(_ index: Int) -> String {
         let offset = trend.count - 1 - index
-        return offset == 0 ? "Today" : Date().addingTimeInterval(Double(-offset) * 86400).formatted(.dateTime.weekday(.abbreviated))
+        switch window {
+        case .week:
+            return offset == 0 ? "Today" : Date().addingTimeInterval(Double(-offset) * 86400).formatted(.dateTime.weekday(.abbreviated))
+        case .day:
+            return offset == 0 ? "Now" : "−\(offset) h"
+        case .hour:
+            return offset == 0 ? "Now" : "−\(offset * 5) m"
+        }
     }
 }

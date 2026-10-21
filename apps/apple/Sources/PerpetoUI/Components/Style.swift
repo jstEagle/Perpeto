@@ -189,6 +189,16 @@ extension View {
     public func perpetoField() -> some View { modifier(FieldModifier()) }
 
     /// Blue focus outline with an offset, as brand/README.md specifies.
+    /// Selection on the drawing: accent at the selection stroke, offset from
+    /// the card. Blue stays reserved for keyboard focus.
+    public func selectionOutline(_ visible: Bool, radius: CGFloat = PerpetoRadius.control) -> some View {
+        overlay(
+            RoundedRectangle(cornerRadius: radius + 3, style: .continuous)
+                .strokeBorder(PerpetoColor.accent, lineWidth: 2)
+                .padding(-4)
+                .opacity(visible ? 1 : 0))
+    }
+
     public func focusOutline(_ visible: Bool, radius: CGFloat = PerpetoRadius.control) -> some View {
         overlay(
             RoundedRectangle(cornerRadius: radius + 3, style: .continuous)
