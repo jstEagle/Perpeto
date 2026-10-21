@@ -1,5 +1,5 @@
 import { HubError, OWNER_ROLE_ID } from './hub';
-import type { EventQuery, HubApi, MessageQuery, StreamState, UsageQuery, WorkflowUpdate } from './hub';
+import type { EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import { createDemoState, DEMO_IDS } from './fixtures';
 import type { DemoState } from './fixtures';
 import type {
@@ -9,6 +9,8 @@ import type {
   GoalInput,
   HubEvent,
   HumanDecision,
+  Message,
+  UnreadState,
   MetricsSnapshot,
   NewProject,
   NewWorkflow,
@@ -450,7 +452,9 @@ export class DemoHub implements HubApi {
   }
   async readMessages(projectId: string, channelId: string, query: MessageQuery) {
     await latency();
-    const all = this.#state.messages.filter((m) => m.projectId === projectId && m.channelId === channelId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const all = this.#state.messages
+      .filter((m) => m.projectId === projectId && m.channelId === channelId && (!query.threadId || m.threadId === query.threadId))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const limit = query.limit ?? 50;
     const indexOf = (cursor?: string) => (cursor ? Number(cursor.replace('c', '')) : -1);
     let page = all;
@@ -466,20 +470,67 @@ export class DemoHub implements HubApi {
       hasMore: first > 0,
     };
   }
-  async sendMessage(projectId: string, channelId: string, input: { body: string; recipientRoleId?: string }) {
+  async sendMessage(projectId: string, channelId: string, input: NewMessage) {
     await latency();
-    const message = {
-      id: shortId('msg'),
+    const parent = input.parentId ? this.#state.messages.find((m) => m.id === input.parentId) : undefined;
+    // As the hub: a reply without a recipient answers the parent's sender (or, to your own message, its recipient).
+    const recipient = input.recipientRoleId !== undefined ? input.recipientRoleId : parent ? (parent.senderRoleId === OWNER_ROLE_ID ? parent.recipientRoleId : parent.senderRoleId) : null;
+    const id = shortId('msg');
+    const message: Message = {
+      id,
       projectId,
       channelId,
       senderRoleId: OWNER_ROLE_ID,
-      recipientRoleId: input.recipientRoleId ?? null,
+      recipientRoleId: recipient,
       body: input.body,
       createdAt: new Date().toISOString(),
+      threadId: parent?.threadId ?? id,
+      parentId: parent?.id ?? null,
+      senderKind: 'owner',
+      unplanned: false,
+      receipt: recipient ? { state: 'stored' } : null,
     };
     this.#state.messages.push(message);
-    this.#emit('message.created', { kind: 'message', id: message.id }, { channelId }, { projectId });
+    this.#state.readCursors[`${projectId}|${channelId}`] = id;
+    this.#emit('message.created', { kind: 'message', id }, { channelId }, { projectId });
+    // A running role picks it up at its next renewal: the demo delivers it into the turn a moment later.
+    if (recipient && recipient !== OWNER_ROLE_ID && channelId.startsWith('run-'))
+      setTimeout(() => {
+        message.receipt = { state: 'delivered', deliveredAt: new Date().toISOString(), deliveredVia: 'steer' };
+        this.#emit('message.delivered', { kind: 'message', id }, { messageId: id, channelId, via: 'steer' }, { projectId });
+      }, 2500);
     return clone(message);
+  }
+  async ackMessage(projectId: string, channelId: string, messageId: string, note?: string) {
+    await latency();
+    const m = this.#state.messages.find((x) => x.id === messageId && x.projectId === projectId && x.channelId === channelId) ?? notFound('Message');
+    if (m.recipientRoleId !== OWNER_ROLE_ID) throw new HubError(403, 'NOT_RECIPIENT', 'This message is not addressed to you.');
+    if (m.receipt?.state !== 'acked') {
+      const now = new Date().toISOString();
+      m.receipt = { ...m.receipt, state: 'acked', deliveredAt: m.receipt?.deliveredAt ?? now, deliveredVia: m.receipt?.deliveredVia ?? 'read', ackedAt: now, ackNote: note ?? null };
+      this.#emit('message.acked', { kind: 'message', id: m.id }, { messageId: m.id, channelId, by: 'owner' }, { projectId });
+    }
+    return clone(m);
+  }
+  #unread(projectId: string, channelId: string): UnreadState {
+    const all = this.#state.messages.filter((m) => m.projectId === projectId && m.channelId === channelId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const cursor = this.#state.readCursors[`${projectId}|${channelId}`] ?? null;
+    const after = cursor ? all.slice(all.findIndex((m) => m.id === cursor) + 1) : all;
+    const unreadCount = after.filter((m) => m.senderRoleId !== OWNER_ROLE_ID && (m.recipientRoleId === OWNER_ROLE_ID || m.recipientRoleId === null)).length;
+    return { roleId: OWNER_ROLE_ID, unreadCount, lastReadMessageId: cursor };
+  }
+  async unread(projectId: string, channelId: string) {
+    await latency(40);
+    return this.#unread(projectId, channelId);
+  }
+  async markRead(projectId: string, channelId: string, messageId: string) {
+    await latency(40);
+    const all = this.#state.messages.filter((m) => m.projectId === projectId && m.channelId === channelId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const key = `${projectId}|${channelId}`;
+    const current = all.findIndex((m) => m.id === this.#state.readCursors[key]);
+    // Cursors only move forward.
+    if (all.findIndex((m) => m.id === messageId) > current) this.#state.readCursors[key] = messageId;
+    return this.#unread(projectId, channelId);
   }
 }
 

@@ -21,6 +21,7 @@ import type {
   Project,
   Run,
   RunInput,
+  UnreadState,
   UsageGroupBy,
   UsageSummary,
   ValidationResult,
@@ -59,6 +60,14 @@ export interface MessageQuery {
   before?: string;
   after?: string;
   limit?: number;
+  threadId?: string;
+}
+
+/** An owner message: to a role, to the whole channel (`null`), or a reply in a thread. */
+export interface NewMessage {
+  body: string;
+  recipientRoleId?: string | null;
+  parentId?: string;
 }
 
 export interface WorkflowUpdate {
@@ -130,7 +139,13 @@ export interface HubApi {
 
   listChannels(projectId: string): Promise<Channel[]>;
   readMessages(projectId: string, channelId: string, query: MessageQuery): Promise<MessagePage>;
-  sendMessage(projectId: string, channelId: string, input: { body: string; recipientRoleId?: string }): Promise<Message>;
+  sendMessage(projectId: string, channelId: string, input: NewMessage): Promise<Message>;
+  /** Acknowledge a message addressed to the owner. */
+  ackMessage(projectId: string, channelId: string, messageId: string, note?: string): Promise<Message>;
+  /** The owner's unread count and read cursor; `null` when the hub predates read cursors. */
+  unread(projectId: string, channelId: string): Promise<UnreadState | null>;
+  /** Move the owner's read cursor forward to this message. */
+  markRead(projectId: string, channelId: string, messageId: string): Promise<UnreadState | null>;
 }
 
 export class HubError extends Error {

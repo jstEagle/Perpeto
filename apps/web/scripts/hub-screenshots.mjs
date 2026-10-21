@@ -26,6 +26,7 @@ const screens = [
   ['hub-overview', P],
   ['hub-run-live-map', `${P}/runs/${run.id}`],
   ['hub-workflow-proposal', `${P}/workflows/${workflow.id}?version=${workflow.version}`],
+  ['hub-messages', `${P}/messages?channel=run-${run.id}`],
   ['hub-machines', '/machines'],
   ['hub-usage', '/usage'],
 ];

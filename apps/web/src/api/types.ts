@@ -377,6 +377,20 @@ export interface Channel {
   name: string;
 }
 
+/**
+ * Delivery evidence for an addressed message (docs/architecture/messaging.md).
+ * States only move forward. None of them proves the agent understood or complied.
+ */
+export interface Receipt {
+  state: 'stored' | 'delivered' | 'acked';
+  deliveredAt?: IsoTime | null;
+  /** In the assignment's first prompt, steered into a running turn, or acked without being offered. */
+  deliveredVia?: 'prompt' | 'steer' | 'read' | null;
+  deliveredTo?: Id | null;
+  ackedAt?: IsoTime | null;
+  ackNote?: string | null;
+}
+
 export interface Message {
   id: string;
   projectId: string;
@@ -385,6 +399,21 @@ export interface Message {
   recipientRoleId: string | null;
   body: string;
   createdAt: IsoTime;
+  /** The thread's root id; a root is its own thread. Older hubs omit it, and the client fills in the message id. */
+  threadId: string;
+  parentId: string | null;
+  senderKind?: 'owner' | 'agent' | null;
+  senderAssignmentId?: Id | null;
+  /** An agent sent it outside the run's messages edges; the workflow flags rather than refuses it. */
+  unplanned: boolean;
+  receipt: Receipt | null;
+}
+
+/** GET …/unread for one role: messages addressed to it or the channel after its read cursor. */
+export interface UnreadState {
+  roleId: string;
+  unreadCount: number;
+  lastReadMessageId: string | null;
 }
 
 export interface MessagePage {
