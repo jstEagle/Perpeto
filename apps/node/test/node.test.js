@@ -282,8 +282,11 @@ test('M9: incompatible leases are relinquished immediately and heartbeat carries
   const { configPath } = await nodeConfig(t, hub, { labels: ['current'] });
   hub.assignments.push(assignment('asg_wrong_labels', { requirements: { labels: ['old'] } }));
   const node = await startNode(t, configPath);
-  await eventually(() => completed(hub).length === 1);
-  assert.equal(completed(hub)[0].data.outcome, 'failure');
+  await eventually(() => hub.releases.length === 1);
+  assert.equal(hub.releases[0].attempt, 1);
+  assert.equal(hub.releases[0].path, '/api/v1/assignments/asg_wrong_labels/release');
+  assert.equal(typeof hub.releases[0].reason, 'string');
+  assert.equal(completed(hub).length, 0);
   assert.equal(hub.events.filter(e => e.type === 'started').length, 0);
   assert.deepEqual(hub.heartbeats[0].labels, ['current']);
   assert.equal(node.status.running.agents, 0);
@@ -326,4 +329,30 @@ test('M7: a conflicting legacy UUID is scoped before retrying its account snapsh
   const node = await startNode(t, configPath, { accountProvider: { async list() { return [{ id, provider: 'codex', label: 'shared', status: 'active' }]; } } });
   assert.equal(node.status.state, 'running');
   assert.match(hub.heartbeats.at(-1).accounts[0].id, /^mch_test:/);
+});
+
+
+test('M9: incompatible jobs release with a stable retry key and no terminal evidence', async t => {
+  const hub = await fakeHub(t);
+  const { configPath } = await nodeConfig(t, hub, { capacity: { maxAgents: 0, maxJobs: 1 } });
+  hub.dropRelease = true;
+  hub.jobs.push({ id: 'job_declined', attempt: 3, requirements: { labels: ['absent'] } });
+  const node = await startNode(t, configPath);
+  await eventually(() => hub.requests.filter(r => r.path.endsWith('/release')).length === 2);
+  const requests = hub.requests.filter(r => r.path.endsWith('/release'));
+  assert.ok(requests.every(r => r.path === '/api/v1/jobs/job_declined/release' && r.body.attempt === 3));
+  assert.equal(requests[0].body.idempotencyKey, requests[1].body.idempotencyKey);
+  assert.equal(hub.releases.length, 1);
+  assert.equal(hub.events.length, 0);
+  assert.equal(node.status.state, 'running');
+});
+
+test('M9: a rejected release cannot turn into a terminal event or kill the node', async t => {
+  const hub = await fakeHub(t, { release: () => ({ statusCode: 409, body: { error: { code: 'CONFLICT' } } }) });
+  const { configPath } = await nodeConfig(t, hub);
+  hub.assignments.push(assignment('asg_declined', { requirements: { labels: ['absent'] } }));
+  const node = await startNode(t, configPath);
+  await eventually(() => hub.releases.length === 1);
+  assert.equal(hub.events.length, 0);
+  assert.equal(node.status.state, 'running');
 });

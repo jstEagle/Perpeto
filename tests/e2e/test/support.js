@@ -57,7 +57,7 @@ export async function startFactory(t, { executor, hub: hubConfig = {}, node: nod
   cleanups.push(() => hub.close());
   const owner = (await readFile(join(root, 'hub/owner.secret'), 'utf8')).trim();
   const request = async (method, path, body) => {
-    const response = await fetch(`${url}/api/v1${path}`, { method, headers: { Authorization: `Bearer ${owner}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const response = await fetch(`${url}/api/v1${path}`, { method, signal: AbortSignal.timeout(10000), headers: { Authorization: `Bearer ${owner}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const data = await response.json();
     if (!response.ok) throw Object.assign(new Error(`${method} ${path} -> ${response.status} ${data?.error?.code}: ${data?.error?.message}`), { status: response.status, body: data });
     return data;
@@ -149,11 +149,14 @@ async function processHub(configPath, options) {
       import { HubDelivery } from ${JSON.stringify(import.meta.resolve('@perpeto/hub/delivery'))};
       import { existsSync, writeFileSync } from 'node:fs';
       import { setTimeout as sleep } from 'node:timers/promises';
+      let released = existsSync(${JSON.stringify(release)});
       const sync = HubDelivery.prototype.sync;
       HubDelivery.prototype.sync = async function (...args) {
-        if ([...this.queues.values()].some(queue => queue.state.entries.some(entry => entry.status === 'merged')) && !existsSync(${JSON.stringify(release)})) {
+        released ||= existsSync(${JSON.stringify(release)});
+        if (!released && [...this.queues.values()].some(queue => queue.state.entries.some(entry => entry.status === 'merged')) && !existsSync(${JSON.stringify(release)})) {
           writeFileSync(${JSON.stringify(barrier)}, 'delivery committed before hub sync');
           while (!existsSync(${JSON.stringify(release)})) await sleep(20);
+          released = true;
         }
         return sync.apply(this, args);
       };
@@ -183,6 +186,11 @@ async function processHub(configPath, options) {
     get url() { return url; },
     async kill() { child.kill('SIGKILL'); await exited; },
     async restart() { await start(); },
-    async close() { child.kill('SIGTERM'); await exited; },
+    async close() {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill('SIGTERM');
+      const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+      try { await exited; } finally { clearTimeout(timer); }
+    },
   };
 }
