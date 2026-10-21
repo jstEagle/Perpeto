@@ -472,7 +472,7 @@ test('CLI starts from JSON, serves liveness, shuts down, and never prints creden
   const { spawn } = await import('node:child_process');
   const f = await fixture(t); const configPath = join(f.directory, 'cli.json');
   await writeFile(configPath, JSON.stringify({ port: 0, databasePath: './cli.sqlite', messagingDatabasePath: './cli-messaging.sqlite', ownerTokenPath: './cli.secret' }));
-  const process = spawn(globalThis.process.execPath, ['apps/hub/bin/perpeto-hub.js', '--config', configPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const process = spawn(globalThis.process.execPath, [new URL('../bin/perpeto-hub.js', import.meta.url).pathname, '--config', configPath], { stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; let errors = '';
   process.stdout.on('data', data => { output += data; }); process.stderr.on('data', data => { errors += data; });
   const exited = new Promise(resolve => process.once('exit', (code, signal) => resolve({ code, signal })));

@@ -38,7 +38,7 @@ const { values: args } = parseArgs({ options: {
 } });
 if (!existsSync(serverEntry)) { console.error('Build the runtime first: npm run setup && npm run build.'); process.exit(2); }
 
-const home = await mkdtemp(join(tmpdir(), 'perpeto-factory-t3-live-'));
+const home = await mkdtemp(join(tmpdir(), 'perpeto-t3-executor-live-'));
 const port = await new Promise(resolvePort => { const probe = createServer(); probe.listen(0, '127.0.0.1', () => { const { port: value } = probe.address(); probe.close(() => resolvePort(value)); }); });
 const origin = `http://127.0.0.1:${port}`;
 const runtime = spawn(process.execPath, [serverEntry, 'serve', '--base-dir', join(home, 'runtime'), '--host', '127.0.0.1', '--port', String(port), '--no-browser', '--auto-bootstrap-project-from-cwd=false'], { stdio: 'ignore' });

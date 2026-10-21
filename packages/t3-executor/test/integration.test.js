@@ -14,7 +14,7 @@ const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@example.c
 
 async function setup(t, { accountProvider, fakeOptions } = {}) {
   const fake = await startFakeT3(fakeOptions);
-  const root = await mkdtemp(join(tmpdir(), 'factory-t3-int-'));
+  const root = await mkdtemp(join(tmpdir(), 't3-executor-int-'));
   const executor = createT3Executor({ accountProvider, config: { url: fake.url, settleMs: 30, pollMs: 10, interruptGraceMs: 300, accountReadyTimeoutMs: 500 },
     createClient: settings => new T3Client({ baseUrl: settings.url, token: 'test-token', pingMs: 0 }) });
   const events = [];
@@ -180,8 +180,8 @@ test('blocks and releases when the account becomes ineligible or is not signed i
 });
 
 test('with the real node account provider, a usage limit cools the reserved account', async t => {
-  const dataDir = await mkdtemp(join(tmpdir(), 'factory-t3-pool-'));
-  const home = await mkdtemp(join(tmpdir(), 'factory-t3-codex-home-'));
+  const dataDir = await mkdtemp(join(tmpdir(), 't3-executor-pool-'));
+  const home = await mkdtemp(join(tmpdir(), 't3-executor-codex-home-'));
   t.after(() => Promise.all([rm(dataDir, { recursive: true, force: true }), rm(home, { recursive: true, force: true })]));
   await chmod(dataDir, 0o700); await chmod(home, 0o700);
   // Synthetic fixture credential; no real account is read.

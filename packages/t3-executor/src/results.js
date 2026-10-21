@@ -1,5 +1,5 @@
 /**
- * Structured results some roles must return (docs/architecture.md, AssignmentResult):
+ * Structured results some roles must return (docs/architecture/README.md, AssignmentResult):
  * reviews `verdict`, planners `items`, the workflow architect `graph` + `rationale`.
  * Agents write them as a fenced JSON block in their final message.
  */

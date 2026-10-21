@@ -20,7 +20,7 @@ function assignment(extra = {}) {
 
 async function harness(t, options = {}) {
   const fake = await startFakeT3(options);
-  const workspace = await mkdtemp(join(tmpdir(), 'factory-t3-ws-'));
+  const workspace = await mkdtemp(join(tmpdir(), 't3-executor-ws-'));
   const executor = createT3Executor({ config: { url: fake.url, settleMs: 30, pollMs: 10, interruptGraceMs: 500, ...options.config }, createClient: settings => new T3Client({ baseUrl: settings.url, token: 'test-token', pingMs: 0 }) });
   const events = [];
   const controller = new AbortController();
@@ -243,7 +243,7 @@ test('works in a T3 worktree for a local checkout and reports its branch and hea
 test('prompt requires text and credential files must be owner-only', async t => {
   assert.throws(() => buildPrompt({ prompt: '  ' }), /prompt is required/);
   assert.match(buildPrompt({ prompt: 'x', policy: { maxSubagents: 0, allowedSubagentProviders: [] } }), /do not create subagents/);
-  const directory = await mkdtemp(join(tmpdir(), 'factory-t3-cred-'));
+  const directory = await mkdtemp(join(tmpdir(), 't3-executor-cred-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, 'session.secret');
   await writeFile(file, 'abc\n', { mode: 0o644 });

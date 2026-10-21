@@ -3,9 +3,19 @@
 .env.*
 !.env.example
 node_modules/
-dist/
 coverage/
 *.log
+*.tsbuildinfo
+
+# Build output for every app and package
+dist/
+apps/apple/.build/
+apps/apple/.swiftpm/
+apps/apple/build/
+apps/web/test-results/
+# Generated design tokens are committed so the web and Apple clients need no build step;
+# packages/design-tokens tests fail if they drift from brand/.
+!packages/design-tokens/dist/
 
 # Local motion preview artifacts
 .hyperframes/
@@ -13,4 +23,3 @@ coverage/
 # Perpeto runtime state and generated tooling caches
 .perpeto/
 .vite-plus/
-*.tsbuildinfo

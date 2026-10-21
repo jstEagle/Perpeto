@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { AgentPolicyStore, AgentPolicyError } from '../src/policy-store.js';
 
 function withStore(run) {
-  const directory = mkdtempSync(join(tmpdir(), 'factory-t3-policy-'));
+  const directory = mkdtempSync(join(tmpdir(), 't3-executor-policy-'));
   const filename = join(directory, 'policy.sqlite');
   const store = new AgentPolicyStore(filename);
   try { return run(store, filename); } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
