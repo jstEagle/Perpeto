@@ -142,3 +142,30 @@ test('cancelling a run CI job reports the cancelled attempt to the engine, which
   const events = (await hub.request('GET', '/events?limit=1000')).body.events.filter(event => event.runId === run.id);
   assert.equal(events.filter(event => event.type === 'workitem.retried' && event.data.reason === 'job_cancelled').length, 1);
 });
+
+test('results the engine would reject become explicit failures the engine retries, never a lost 400 (M1)', async t => {
+  const hub = await engineHub(t);
+  const run = await hub.start({ schema: 'perpeto.workflow/1', nodes: [
+    node('ideas', 'input', { source: 'manual' }), node('builder', 'agent', { harness, prompt: 'Build it.', retry: { maxAttempts: 3, backoffSec: 0 } }), node('done', 'output'),
+  ], edges: [flow('ideas', 'builder'), flow('builder', 'done')] });
+  for (const invalid of [{ headSha: 'abc1234' }, { branch: 'b'.repeat(300) }]) {
+    const build = await hub.lease('assignment');
+    const response = await hub.finish(build, { outcome: 'success', summary: 'Pushed my change.', branch: 'feature', ...invalid });
+    assert.equal(response.status, 200); assert.equal(response.body.status, 'failed'); assert.match(response.body.reason, /result\.(headSha|branch)/);
+    const stored = (await hub.request('GET', `/assignments/${build.id}`)).body;
+    assert.equal(stored.status, 'failed'); assert.equal(stored.result.outcome, 'failure');
+    assert.match(stored.result.summary, /Pushed my change\./); assert.match(stored.result.summary, /result\.(headSha|branch)/);
+  }
+  const last = await hub.lease('assignment'); assert.equal(last.attempt, 3);
+  assert.equal((await hub.finish(last, { outcome: 'success', summary: 'Fixed.', branch: 'feature', headSha: 'b'.repeat(40) })).status, 200);
+  assert.equal((await hub.request('GET', `/runs/${run.id}`)).body.status, 'completed');
+
+  const planned = await hub.start({ schema: 'perpeto.workflow/1', nodes: [
+    node('ideas', 'input', { source: 'manual' }), node('planner', 'planner', { harness, prompt: 'Plan.', maxItems: 4, retry: { maxAttempts: 2, backoffSec: 0 } }), node('done', 'output'),
+  ], edges: [flow('ideas', 'planner'), flow('planner', 'done')] });
+  const plan = await hub.lease('assignment');
+  const response = await hub.finish(plan, { outcome: 'success', summary: 'Two items.', items: [{ title: 'One', body: null }, { title: 't'.repeat(201) }] });
+  assert.equal(response.status, 200); assert.equal(response.body.status, 'failed');
+  const retry = await hub.lease('assignment'); assert.equal(retry.retryOf, plan.id);
+  assert.equal((await hub.request('GET', `/runs/${planned.id}`)).body.status, 'running');
+});

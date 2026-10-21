@@ -496,7 +496,7 @@ export class Hub {
         const value = this.fenced(kind, entityId, auth, body); object(body.data ?? {}, 'event data');
         const types = kind === 'assignment' ? ['started', 'progress', 'usage', 'message', 'completed', 'failed', 'workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'] : ['started', 'log', 'step', 'completed', 'gate.result'];
         requireValue(types.includes(body.type), 'Invalid work event type.');
-        const data = body.data ?? {};
+        let data = body.data ?? {};
         if (['workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'].includes(body.type)) {
           requireValue(Boolean(value.runId), 'Interaction events require a run.');
           this.observation.interaction(body.type, value, data);
@@ -537,7 +537,24 @@ export class Hub {
           }
           delete value.leaseExpiresAt;
         }
+        // Validate a run result with the engine before acknowledging it. A result the engine refuses (a short SHA, an
+        // oversized branch or item) becomes an explicit failure carrying the reason and the agent's summary, which the
+        // engine retries, instead of a 400 that makes the node discard the result.
+        let outcome = null; let refused = null;
+        if (final && kind === 'assignment' && value.runId) {
+          const run = this.store.need('run', value.runId);
+          const event = result => ({ type: 'assignment.finished', assignmentId: value.id, data: result, value });
+          try { outcome = await this.engineStep(run, event(data)); }
+          catch (error) {
+            if (!(error instanceof HubError) || error.code !== 'INVALID_EVENT') throw error;
+            refused = error.message;
+            data = { outcome: 'failure', summary: `The hub could not accept this result: ${refused}\n\n${data.summary}` };
+            value.result = { outcome: 'failure', summary: data.summary }; value.status = 'failed';
+            outcome = await this.engineStep(run, event(data));
+          }
+        }
         this.store.put(kind, value);
+        if (refused) this.emit('assignment.result-refused', kind, value, { reason: refused });
         if (final && value.architectRequestId) await this.workflows.completed(value, data);
         if (kind === 'assignment' && (final || body.type === 'started')) this.observation.assignment(value);
         if (final && value.runId) {
@@ -548,8 +565,9 @@ export class Hub {
             result: kind === 'job' ? value.status : data.outcome === 'blocked' ? 'blocked' : data.verdict ?? 'error', ...(kind === 'job' ? { revision: value.revision } : {}) });
         }
         if (final && kind === 'job' && value.delivery) this.delivery.record(value, data);
+        else if (outcome) this.applyEffects(this.store.need('run', value.runId), outcome);
         else if (final && value.runId) await this.engineEvent(this.store.need('run', value.runId), { type: `${kind}.finished`, [kind === 'assignment' ? 'assignmentId' : 'jobId']: value.id, data, value });
-        this.emit(`${kind}.${body.type}`, kind, value, data); return reply({ accepted: true, status: value.status });
+        this.emit(`${kind}.${body.type}`, kind, value, data); return reply({ accepted: true, status: value.status, ...(refused ? { reason: refused } : {}) });
       }
     }
     if (path === '/events' && method === 'GET') {
