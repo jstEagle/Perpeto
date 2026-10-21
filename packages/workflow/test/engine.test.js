@@ -255,7 +255,7 @@ test('human gates route on the decision', () => {
   );
   const run = new Driver();
   run.start({ graph });
-  run.complete('auditor', { outcome: 'success', items: [] });
+  run.complete('auditor', { outcome: 'success', summary: 'Keep this improvement whole.' });
   run.complete('improver', built(1));
   run.complete('reviewer', { outcome: 'success' });
   run.apply('job.completed', { jobId: run.openJob().id, status: 'passed' });

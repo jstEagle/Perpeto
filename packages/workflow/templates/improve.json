@@ -25,14 +25,16 @@
       "config": {
         "harness": {
           "provider": "claudeAgent",
-          "model": "claude-opus-5-5"
+          "model": "claude-sonnet-5-5"
         },
         "maxItems": 5,
-        "prompt": "Audit the repository against the project goals and docs. Propose the highest-value, low-risk improvements as independent work items, each small enough for one pull request, with evidence for why it matters.",
+        "prompt": "Continuously audit unfinished goals and observed metrics against repository evidence and previous run outcomes. Propose the highest-value measurable improvements as small independent items with baseline, target and verification method. Avoid duplicate, already active or completed work. When no justified improvement remains, return an explicit empty items array; never invent busywork.",
         "retry": {
           "maxAttempts": 2,
           "backoffSec": 60
-        }
+        },
+        "concurrency": 1,
+        "emptyResult": "complete"
       }
     },
     {
