@@ -578,3 +578,45 @@ test('lease max is clamped, a finished lease frees its slot before the next hear
   assert.equal(windows.status, 201);
   assert.equal((await f.request('GET', '/machines')).body.machines.find(machine => machine.id === windows.body.machineId).os, 'windows');
 });
+
+test('a machine releases leased work back to the queue without spending an attempt or telling the engine (M9)', async t => {
+  const base = createStubEngine(); const seen = [];
+  const engine = { ...base, applyEvent(input) { seen.push(input.event.type); return base.applyEvent(input); } };
+  const f = await fixture(t, {}, engine); const { run } = await f.run(); await f.seed(run.id, 1, { requirements: { labels: ['ci'] } });
+  const node = await f.enroll(); const other = await f.enroll(1);
+  const work = (await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, node.token)).body.assignments[0];
+  const path = `/assignments/${work.id}/release`; const events = seen.length;
+  assert.equal((await f.request('POST', path, { attempt: work.attempt + 1, reason: 'Wrong attempt' }, node.token)).body.error.code, 'lease_lost');
+  assert.equal((await f.request('POST', path, { attempt: work.attempt }, other.token)).status, 409);
+  assert.equal((await f.request('POST', path, { attempt: work.attempt })).status, 403, 'owners cancel instead');
+  const body = { attempt: work.attempt, reason: 'Labels no longer match this machine.', idempotencyKey: 'release-1' };
+  const released = await f.request('POST', path, body, node.token);
+  assert.equal(released.status, 200); assert.deepEqual(released.body, { released: true, status: 'queued', attempt: work.attempt });
+  assert.deepEqual((await f.request('POST', path, body, node.token)).body, released.body, 'idempotent retry');
+  const stored = (await f.request('GET', `/assignments/${work.id}`)).body;
+  assert.equal(stored.status, 'queued'); assert.equal(stored.attempt, work.attempt); assert.equal(stored.machineId, undefined); assert.equal(stored.leaseExpiresAt, undefined);
+  assert.equal(seen.length, events, 'the engine is not told about a release');
+  assert.equal((await f.request('POST', `/assignments/${work.id}/renew`, { attempt: work.attempt }, node.token)).status, 409);
+  assert.equal((await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, node.token)).body.assignments.length, 0, 'not offered straight back to the releasing machine');
+  const again = (await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, other.token)).body.assignments[0];
+  assert.equal(again.id, work.id); assert.equal(again.attempt, work.attempt);
+  // Started work cannot be released; its result decides the attempt.
+  await f.request('POST', `/assignments/${again.id}/events`, { attempt: again.attempt, type: 'started' }, other.token);
+  assert.equal((await f.request('POST', path, { attempt: again.attempt }, other.token)).status, 409);
+  const events2 = (await f.request('GET', '/events?limit=1000')).body.events;
+  assert.equal(events2.filter(event => event.type === 'assignment.released' && event.data.reason === body.reason).length, 1);
+
+  await f.request('POST', `/runs/${run.id}/inputs`, { jobs: [{ id: 'job_release', revision: 'a'.repeat(40), configHash: 'hash', repo: '/tmp/repo', steps: [] }] });
+  const job = (await f.request('POST', '/nodes/lease', { kinds: ['job'] }, node.token)).body.jobs[0];
+  assert.equal((await f.request('POST', `/jobs/${job.id}/release`, { attempt: job.attempt }, node.token)).body.status, 'queued');
+  assert.equal((await f.request('GET', `/jobs/${job.id}`)).body.attempt, job.attempt);
+});
+
+test('heartbeat labels replace enrollment labels for leasing (M9)', async t => {
+  const f = await fixture(t); const { run } = await f.run(); await f.seed(run.id, 1, { requirements: { labels: ['gpu'] } }); const node = await f.enroll();
+  assert.equal((await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments.length, 0);
+  assert.equal((await f.request('POST', '/nodes/heartbeat', { ...heartbeat, labels: ['ci', 'gpu'] }, node.token)).status, 200);
+  assert.deepEqual((await f.request('GET', '/machines')).body.machines[0].labels, ['ci', 'gpu']);
+  assert.equal((await f.request('POST', '/nodes/lease', {}, node.token)).body.assignments.length, 1);
+  assert.equal((await f.request('POST', '/nodes/heartbeat', { ...heartbeat, labels: [''] }, node.token)).status, 400);
+});

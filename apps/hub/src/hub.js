@@ -38,7 +38,7 @@ function nodeRoute(method, segments) {
   if (collection === 'nodes') return method === 'POST' && segments.length === 2 && ['heartbeat', 'lease'].includes(entityId);
   if (!['assignments', 'jobs'].includes(collection) || !entityId || segments.length > 3) return false;
   if (action === undefined) return method === 'GET';
-  if (method === 'POST') return ['renew', 'events'].includes(action);
+  if (method === 'POST') return ['renew', 'events', 'release'].includes(action);
   return method === 'GET' && collection === 'jobs' && action === 'log';
 }
 
@@ -311,7 +311,8 @@ export class Hub {
         if (value.runId && !value.delivery && this.store.need('run', value.runId).status !== 'running') continue;
         // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
         if (value.notBefore && Date.parse(value.notBefore) > Date.now()) continue;
-        value.status = 'leased'; value.machineId = machine.id;
+        if (value.releasedBy?.machineId === machine.id && Date.parse(value.releasedBy.until) > Date.now()) continue;
+        value.status = 'leased'; value.machineId = machine.id; delete value.releasedBy;
         value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
         this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
         if (kind === 'assignment') this.observation.assignment(value);
@@ -455,9 +456,10 @@ export class Hub {
       for (const key of ['maxAgents', 'maxJobs']) integer(body.capacity[key], key, 0, 100000);
       for (const key of ['agents', 'jobs']) integer(body.running[key], key, 0, 100000);
       if (body.providers !== undefined) strings(body.providers, 'providers');
+      if (body.labels !== undefined) strings(body.labels, 'labels');
       requireValue(body.status === undefined || ['online', 'draining'].includes(body.status), 'Invalid heartbeat status.');
       machine.capacity = { maxAgents: body.capacity.maxAgents, maxJobs: body.capacity.maxJobs }; machine.running = { agents: body.running.agents, jobs: body.running.jobs };
-      machine.providers = body.providers ?? machine.providers; machine.lastHeartbeatAt = now(); machine.status = machine.drainRequested || body.status === 'draining' ? 'draining' : 'online';
+      machine.providers = body.providers ?? machine.providers; machine.labels = body.labels ?? machine.labels; machine.lastHeartbeatAt = now(); machine.status = machine.drainRequested || body.status === 'draining' ? 'draining' : 'online';
       if (body.accounts !== undefined) {
         requireValue(Array.isArray(body.accounts) && body.accounts.length <= 1000, 'Invalid accounts snapshot.');
         const accounts = body.accounts.map(account => {
@@ -495,6 +497,22 @@ export class Hub {
           if (run && ['running', 'paused'].includes(run.status)) await this.engineEvent(run, { type: 'job.finished', jobId: value.id, data: { status: 'cancelled', revision: value.revision }, value });
         }
         return reply(value);
+      }
+      if (action === 'release' && method === 'POST') {
+        if (auth.kind !== 'node') fail(403, 'FORBIDDEN', 'Only the machine holding a lease can release it.');
+        const value = this.fenced(kind, entityId, auth, body);
+        if (body.reason !== undefined) nonblank(body.reason, 'reason', 1000);
+        if (value.status !== 'leased') fail(409, 'CONFLICT', 'Started work cannot be released; report its result instead.');
+        // The work never started, so it returns to the queue with the same attempt and the engine is not told. The
+        // releasing machine is not offered this attempt again for one lease duration, which also keeps a late request
+        // from the released lease (the HTTP request timeout is 30 s) from matching a new lease of the same attempt.
+        const machineId = value.machineId;
+        value.status = 'queued'; delete value.machineId; delete value.leaseExpiresAt;
+        value.releasedBy = { machineId, until: new Date(Date.now() + this.config.leaseDurationMs).toISOString() };
+        this.store.put(kind, value);
+        this.emit(`${kind}.released`, kind, value, { machineId, attempt: value.attempt, ...(body.reason ? { reason: body.reason } : {}) });
+        if (kind === 'assignment') this.observation.assignment(value);
+        return reply({ released: true, status: 'queued', attempt: value.attempt });
       }
       if (action === 'renew' && method === 'POST') {
         const value = this.fenced(kind, entityId, auth, body); value.leaseExpiresAt = new Date(Date.now() + this.config.leaseDurationMs).toISOString();
