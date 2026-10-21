@@ -193,7 +193,7 @@ test('all owner workflow routes, graph validation, pause/resume/stop and human d
   const base = createStubEngine(); const seen = [];
   const engine = { ...base, applyEvent(input) { seen.push(input); return base.applyEvent(input); } };
   const f = await fixture(t, {}, engine); const { project, workflow, run } = await f.run();
-  assert.equal((await f.request('PATCH', `/projects/${project.id}`, { goals: ['Build well'] })).body.goals[0], 'Build well');
+  assert.equal((await f.request('PATCH', `/projects/${project.id}`, { goals: ['Build well'] })).body.goals[0].title, 'Build well');
   assert.equal((await f.request('GET', `/projects/${project.id}`)).status, 200);
   assert.equal((await f.request('GET', `/projects/${project.id}/workflows`)).body.workflows.length, 1);
   assert.equal((await f.request('GET', `/workflows/${workflow.id}`)).status, 200);

@@ -8,6 +8,7 @@ import { assignmentContext, buildPrompt } from './prompt.js';
 import { outputInstructions, outputKind, parseRoleResult } from './results.js';
 import { ThreadTracker, TERMINAL_RUN_STATUSES } from './thread-state.js';
 import { keepAccountReservation } from './account-lease.js';
+import { factoryInstance, gitIdentity, resolveIsolation } from './isolation.js';
 import { branchName, isDirty, localPullRequestUrl, prepareWorkspace, publishBranch, pullRequestUrl, revisionOf } from './workspace.js';
 
 /** Harness option keys the executor consumes instead of forwarding as model options. */
@@ -86,8 +87,8 @@ function harnessTarget(assignment) {
 }
 
 /** Pick a ready, enabled T3 provider instance for the harness's driver kind. */
-export function chooseInstance(providers, provider, preferredInstanceId) {
-  const candidates = (providers ?? []).filter(item => item.enabled !== false && (item.driver === provider || item.instanceId === provider));
+export function chooseInstance(providers, provider, preferredInstanceId, { exclude = () => false } = {}) {
+  const candidates = (providers ?? []).filter(item => item.enabled !== false && (item.driver === provider || item.instanceId === provider) && !exclude(item));
   const ready = candidates.filter(item => item.status === 'ready');
   return ready.find(item => item.instanceId === preferredInstanceId) ?? ready.find(item => item.instanceId === provider) ?? ready[0] ?? null;
 }
@@ -98,6 +99,9 @@ export function chooseInstance(providers, provider, preferredInstanceId) {
  */
 export function createT3Executor({ config = {}, runtimeUrl, accountProvider, createClient } = {}) {
   const settings = resolveSettings(config, runtimeUrl);
+  const isolation = resolveIsolation(settings);
+  /** Factory instances this executor registered, by id, with the mutation it sent. */
+  const registered = new Map();
   let clientPromise = null;
 
   async function makeClient() {
@@ -117,29 +121,63 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     return clientPromise;
   }
 
-  /** Register the account's provider instance with T3 and wait until it is ready. */
-  async function registerAccountInstance(t3, accounts, selection, { signal }) {
+  /** Register a provider instance with T3 (unless this executor already sent the same one) and wait until it is ready. */
+  async function ensureInstance(t3, mutation, { signal, force = false, label }) {
+    const key = JSON.stringify(mutation);
+    if (force || registered.get(mutation.instanceId) !== key) {
+      await t3.upsertProviderInstance(mutation, { signal });
+      registered.set(mutation.instanceId, key);
+    }
+    const deadline = Date.now() + settings.accountReadyTimeoutMs;
+    let refreshed = false;
+    while (Date.now() < deadline) {
+      const providers = (await t3.getConfig({ signal }))?.providers ?? [];
+      const found = providers.find(item => item.instanceId === mutation.instanceId);
+      if (found && found.enabled !== false && found.status === 'ready') return { ok: true, instance: found };
+      if (found?.auth?.status === 'unauthenticated') {
+        return { ok: false, authFailure: true, summary: `${label} is not signed in to ${found.driver ?? 'its provider'} on this machine.` };
+      }
+      if (!refreshed) { refreshed = true; await t3.refreshProvider(mutation.instanceId, { signal }).catch(() => {}); }
+      await sleep(settings.pollMs, signal);
+      signal.throwIfAborted();
+    }
+    registered.delete(mutation.instanceId);
+    return { ok: false, summary: `${label}'s T3 provider instance did not become ready.` };
+  }
+
+  /** Register the account's provider instance with T3, isolated for factory work, and wait until it is ready. */
+  async function registerAccountInstance(t3, accounts, selection, { signal, identity }) {
     const accountId = selection.account?.id ?? selection.binding.accountId;
     let binding = selection.binding;
     if (typeof accounts.bindingFor === 'function') {
       try { binding = await accounts.bindingFor(accountId, { reservationId: selection.reservation?.id }); }
       catch (error) { return { ok: false, summary: `Account ${accountId} is not eligible (${error?.code ?? 'unavailable'}).` }; }
     }
-    await t3.upsertProviderInstance(binding.mutation, { signal });
-    const deadline = Date.now() + settings.accountReadyTimeoutMs;
-    let refreshed = false;
-    while (Date.now() < deadline) {
-      const providers = (await t3.getConfig({ signal }))?.providers ?? [];
-      const found = providers.find(item => item.instanceId === binding.providerInstanceId);
-      if (found && found.enabled !== false && found.status === 'ready') return { ok: true, instance: found };
-      if (found?.auth?.status === 'unauthenticated') {
-        return { ok: false, authFailure: true, summary: `Account ${accountId} is not signed in to ${found.driver ?? 'its provider'} on this machine.` };
-      }
-      if (!refreshed) { refreshed = true; await t3.refreshProvider(binding.providerInstanceId, { signal }).catch(() => {}); }
-      await sleep(settings.pollMs, signal);
-      signal.throwIfAborted();
+    let mutation = binding.mutation;
+    if (isolation.mode === 'factory') {
+      ({ mutation } = await factoryInstance({ instanceId: binding.mutation.instanceId, ...binding.mutation.instance }, isolation, { pooled: true, identity }));
     }
-    return { ok: false, summary: `Account ${accountId}'s T3 provider instance did not become ready.` };
+    return ensureInstance(t3, mutation, { signal, force: true, label: `Account ${accountId}` });
+  }
+
+  /** The factory instance derived from a ready operator instance: project settings only, factory Git identity. */
+  async function registerFactoryInstance(t3, base, { signal, identity, report }) {
+    const settingsSnapshot = await t3.getSettings({ signal }).catch(() => null);
+    const configured = settingsSnapshot?.providerInstances?.[base.instanceId] ?? {};
+    let derived;
+    try {
+      derived = await factoryInstance({ instanceId: base.instanceId, driver: base.driver, displayName: configured.displayName ?? base.displayName,
+        config: configured.config, environment: configured.environment }, isolation, { identity });
+    } catch (error) {
+      if (error?.code === 'ISOLATION_AUTH_DIVERGED') return { ok: false, summary: error.message };
+      throw error;
+    }
+    const ready = await ensureInstance(t3, derived.mutation, { signal, label: `Factory instance ${derived.instanceId}` });
+    if (ready.ok) {
+      await report({ type: 'progress', data: { interaction: 'isolation.bound', providerInstanceId: derived.instanceId, baseInstanceId: base.instanceId,
+        gitIdentity: identity, ...(derived.dropped.length ? { droppedEnvironment: derived.dropped } : {}) } });
+    }
+    return ready;
   }
 
   return {
@@ -218,9 +256,12 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     async function execute() {
       signal.throwIfAborted();
       if (selection && !selection.binding) return { outcome: 'failure', summary: 'The account pool returned no provider binding. Retry with backoff.' };
+      let identity;
+      try { identity = gitIdentity(assignment.gitIdentity ?? assignmentContext(assignment).project?.gitIdentity) ?? isolation.identity; }
+      catch (error) { return { outcome: 'blocked', summary: `Invalid project ${error.message}` }; }
       let instance;
       if (selection?.binding) {
-        const registered = await registerAccountInstance(t3, accounts, selection, { signal });
+        const registered = await registerAccountInstance(t3, accounts, selection, { signal, identity });
         if (!registered.ok) {
           if (registered.authFailure) await observe({ failure: { code: 'auth_required', message: 'Not logged in' } }, 'auth');
           return { outcome: 'blocked', summary: registered.summary };
@@ -229,8 +270,14 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         await report({ type: 'progress', data: { interaction: 'account.bound', accountId, provider: target.provider, providerInstanceId: instance.instanceId } });
       } else {
         const serverConfig = await t3.getConfig({ signal });
-        instance = chooseInstance(serverConfig?.providers, target.provider);
+        // Factory instances are derived from operator instances, never from each other or from pooled accounts.
+        instance = chooseInstance(serverConfig?.providers, target.provider, undefined, { exclude: item => /^(?:perpeto|factory)_/.test(item.instanceId) });
         if (!instance) return { outcome: 'blocked', summary: `No ready T3 provider instance for ${target.provider} on this machine.` };
+        if (isolation.mode === 'factory') {
+          const isolated = await registerFactoryInstance(t3, instance, { signal, identity, report });
+          if (!isolated.ok) return { outcome: 'blocked', summary: isolated.summary };
+          instance = isolated.instance;
+        }
       }
 
       const { repo, workItem } = assignmentContext(assignment);
@@ -247,7 +294,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       // Attach the policy before the first turn so no delegation can precede it.
       let policyEnforced = true;
       try {
-        await t3.setPolicy(threadId, { maxSubagents: policy.maxSubagents ?? 0, allowedSubagentProviders: policy.allowedSubagentProviders ?? [] }, { signal });
+        await t3.setPolicy(threadId, { t3Tools: 'policy', maxSubagents: policy.maxSubagents ?? 0, allowedSubagentProviders: policy.allowedSubagentProviders ?? [] }, { signal });
       } catch (error) {
         if (error instanceof T3HttpError && (error.status === 404 || error.status === 503)) {
           policyEnforced = false;
@@ -264,6 +311,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       if (kind === 'work' && workspace.mode !== 'workspace') {
         extra.push(`Work on branch ${branch} and commit your changes there. ${settings.publishBranch ? 'The factory pushes the branch to origin when you finish; do not push other branches.' : ''}`.trim());
       }
+      const delivery = settings.publishBranch && localPullRequestUrl(assignment.repo, branch) ? 'local' : 'forge';
       const runtimeMode = RUNTIME_MODES.has(target.overrides.runtimeMode) ? target.overrides.runtimeMode : settings.runtimeMode;
       const interactionMode = target.overrides.interactionMode === 'plan' ? 'plan' : settings.interactionMode;
       signal.throwIfAborted();
@@ -275,7 +323,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
           title: (workItem?.title ?? assignment.role ?? 'Perpeto assignment').slice(0, 120),
           modelSelection: { instanceId: instance.instanceId, model: target.model, ...(target.options.length ? { options: target.options } : {}) },
           runtimeMode, interactionMode, workspaceStrategy: workspace.workspaceStrategy,
-          initialMessage: { messageId: stableId('perpeto-msg', assignment.id, String(attempt)), text: buildPrompt(assignment, { extra }), attachments: [] },
+          initialMessage: { messageId: stableId('perpeto-msg', assignment.id, String(attempt)), text: buildPrompt(assignment, { extra, kind, delivery }), attachments: [] },
         }, { signal, timeoutMs: 300000 });
       } catch (error) {
         // Launch can have reached T3 before cancellation rejects its reply.

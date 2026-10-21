@@ -29,7 +29,13 @@ import {
 | `LOOP_CONDITION_UNMATCHED` | `until: review-pass` without a review gate whose fail edge returns to the loop, and likewise for `ci-pass` and `manual` (human) |
 | `INVALID_DELEGATION`, `INVALID_MESSAGES_EDGE` | `delegates` must run from a planner or agent to an agent, and `messages` must connect planner, agent or review roles |
 
-Warnings, which don't block a graph: `UNKNOWN_KEY`, `UNKNOWN_CONFIG_KEY`, `DUPLICATE_EDGE`, `NO_PATH_TO_OUTPUT`, `LOOP_NEVER_REPEATS`, `POLICY_CANMESSAGE_DERIVED`, `POLICY_SUBAGENTS_WITHOUT_DELEGATION`, `DELEGATION_UNUSED` and `DELEGATE_PROVIDER_NOT_ALLOWED`.
+Warnings, which don't block a graph: `UNKNOWN_KEY`, `UNKNOWN_CONFIG_KEY`, `DUPLICATE_EDGE`, `NO_PATH_TO_OUTPUT`, `LOOP_NEVER_REPEATS`, `POLICY_CANMESSAGE_DERIVED`, `POLICY_SUBAGENTS_WITHOUT_DELEGATION`, `DELEGATION_UNUSED` and `DELEGATE_PROVIDER_NOT_ALLOWED`. These flag valid values that are fragile in unattended runs:
+
+| Code | When |
+| --- | --- |
+| `NO_RETRY` | A planner, agent, review or CI node makes one attempt (`retry` missing or `maxAttempts: 1`) and has no `onExhausted` target |
+| `RETRY_WITHOUT_BACKOFF` | It retries with `backoffSec` 0 |
+| `LOOP_LIMIT_HIGH` | A loop allows more than `SAFE_MAX_ITERATIONS` (10) passes |
 
 These semantics go beyond the contract table:
 
@@ -82,8 +88,25 @@ Assignment results are interpreted by the role that produced them:
 
 - **Agent:** a `success` result's `branch`, `prUrl` and `headSha` become the item's. A full 40- or 64-character lowercase SHA is required.
 - **Review:** `verdict` decides the gate: `pass` passes and `fail` returns the work, with the summary as feedback in the next agent prompt. A legacy result with `outcome: 'success'` and no verdict passes, and `gate.result` carries `legacyVerdict: true`. `outcome: 'failure'` without a verdict is an error, never a rejection.
-- **Planner:** `success` may include `items: [{ title, body? }]`, truncated to `maxItems`. Each item becomes a child work item at the planner's next node. The parent stays `active` until every child finishes, then becomes `done`, or `failed` if any child failed. With no items, the original item continues as the work item.
+- **Planner:** `success` may include `items: [{ title, body? }]`, truncated to `maxItems`. Each item becomes a child work item at the planner's next node. The parent stays `active` until every child finishes, then becomes `done`, or `failed` if any child failed. With no items, the original item continues as the work item, and a nonblank `summary` becomes its `plan` (`{ from, summary }`, at most 8,000 characters): the contract and acceptance criteria every later role receives.
 - **Any role:** `failure` from a planner or agent is an error. `blocked` goes to the node's human gate if it has one. Otherwise the item waits as `blocked` at the node until `human.decision` either retries it (`pass`, with the optional note as feedback) or fails it (`fail`).
+
+### Work-item context in role prompts
+
+Every planner, agent and review assignment gets the same work-item context, in this order, after the node's own `prompt`:
+
+| Part | When |
+| --- | --- |
+| `Work item: <title>` and the body | Always |
+| `Part of: <parent title>` | Children a planner split off |
+| `Plan from <planner role>:` and the planner's summary | Items a planner kept whole |
+| `Rubric:` | Review nodes with a `rubric` |
+| Branch, pull request and head commit | Once an agent reported them |
+| Feedback to address, or the escalation that brought the item | After a failed gate, a human note or an escalation; reviewers get escalations only |
+| Loop pass and retry notes | From the second pass or attempt |
+| What to answer | Planners: split or keep whole with the contract in the summary. Reviewers: a verdict |
+
+The executor adds the answer format and factory facts (branch, delivery) below this; see `@perpeto/t3-executor`.
 
 Every wait for a person gets a `decisionId` (`hd_` plus the run suffix and a counter), carried in `item.waiting`, `human.requested` and the in-place `workitem.blocked`. A decision that names a different `decisionId` throws `STALE_DECISION`, so a retried request or a second person answering cannot pass the item's next gate. Hosts should always send it; a decision without one still applies to whatever the item waits for now.
 
@@ -166,7 +189,7 @@ Reads: `getRun`, `listRuns({ projectId?, status? })`, `getState`, `listWorkItems
 - Each `changed` entry lists leaf `changes: [{ path, before?, after? }]`, such as `config.harness.model`. `layoutOnly` is true when only `position` moved.
 - `a` may be `null` when there is no active version.
 
-`buildArchitectPrompt({ project, docs, goals, machines, providers, existingWorkflow?, userPrompt, previousErrors? })` builds a deterministic prompt for the `workflow-architect` role. It includes the graph guide (`describeGraphSchema()`), the build template as an example, previous validation errors and the answer format: one fenced json block holding `{ rationale, graph }`.
+`buildArchitectPrompt({ project, docs, goals, machines, providers, existingWorkflow?, userPrompt, previousErrors? })` builds a deterministic prompt for the `workflow-architect` role. It includes the graph guide (`describeGraphSchema()`), defaults for unattended runs (three attempts with 30 s backoff for agent roles and two for CI, loops of 3 passes, concurrency within machine capacity, strong models for builders and escalations and cheaper ones for planning and first-pass review), the build template as an example, previous validation errors and the answer format: one fenced json block holding `{ rationale, graph }`. When the repository is a local path, it explains that delivery uses published `local:<branch>` branches and asks for prompts that never mention pull requests.
 
 - `parseArchitectResult(text)` extracts `{ graph, rationale }`. It takes the last usable fenced block, accepting either a wrapper object or a bare graph with prose as the rationale. It throws `ARCHITECT_PARSE_ERROR`.
 - `evaluateArchitectResult(text, { providers? })` parses and validates in one step for the hub's retry loop, which is capped by `ARCHITECT_MAX_ATTEMPTS`.

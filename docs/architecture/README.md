@@ -63,7 +63,8 @@ Factory services stay outside `vendor/t3code`. Patch the vendored runtime only w
 ## Entities
 
 ```ts
-Project      { id, name, repo: { url, defaultBranch, localPath? }, docs: DocRef[], goals: string[], createdAt, updatedAt }
+Project      { id, name, repo: { url, defaultBranch, localPath? }, docs: DocRef[], goals: Goal[], gitIdentity?: { name, email }, createdAt, updatedAt }   // gitIdentity is copied onto every new assignment; agents commit under it, falling back to the node's runtime.t3.gitIdentity
+Goal         { id, title, status: 'active'|'done'|'dropped', workItemIds, done, total }   // progress counts leaf work items linked by goalId; legacy string goals are read with title-derived ids
 DocRef       { id, title, path?: string, url?: string, kind: 'requirements'|'vision'|'spec'|'notes' }
 Workflow     { id, projectId, name, purpose: 'build'|'improve'|'maintain'|'custom', version, graph: WorkflowGraph, status: 'draft'|'active'|'paused' }
 Run          { id, projectId, workflowId, workflowVersion, status: 'running'|'paused'|'stopped'|'completed'|'failed', startedAt, stoppedAt? }
@@ -194,6 +195,7 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /jobs/:id/bundle?attempt=N` | Git bundle of a hub-hosted job revision for the leasing machine or the owner; jobs with `source: { kind: 'hub-bundle' }` are fetched this way so any enrolled machine can run them. `409 SOURCE_UNAVAILABLE` if the revision is gone |
 | `GET /projects/:id/merge-queue` | Merge queue |
 | `GET /usage?projectId&runId&groupBy=provider|model|machine|day` | Token and agent usage |
+| `GET /owner`, `PATCH /owner` `{ name?, initials? }` | Owner display name and initials (`ownerName` in hub config), also returned by `GET /session` and `/overview` |
 | `GET /overview` | Counts for dashboards: active agents, queued work, tokens today, machines online |
 | `GET /events?after=<seq>|latest=true|before=<seq>&runId=&limit=` | Event page, always oldest first; `after` returns `{events, nextCursor, hasMore}`, `latest`/`before` add `previousCursor`; the three are mutually exclusive. `Accept: text/event-stream` streams live, also filterable by `runId` |
 | `GET /session`, `POST /session`, `DELETE /session` | Exchange the owner bearer for an HttpOnly, SameSite=Strict `perpeto_session` cookie (`sessionTtlMs`, sliding); cookie-authenticated mutations need an `Origin` in `corsOrigins` and a JSON body, else `403 CSRF_REJECTED` |
@@ -204,6 +206,9 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | Method and path | Purpose |
 | --- | --- |
 | `POST /nodes/enroll` `{ code, name, os, arch, labels, providers, version }` | Exchange a one-time enrollment code for `{ machineId, token }` |
+
+Enrollment codes come wrapped in a paste-able join code, `pj1_` + base64url `{ url, fingerprint?, code }` (`POST /machines/enrollment-codes` accepts `{ url?, pin? }`). With hub TLS enabled (self-signed, generated on first start), nodes pin the certificate's SHA-256 fingerprint and send nothing to a server with a different one; `GET /tls`, `POST /tls/rotate` and `POST /tls/activate` manage rotation, and heartbeat responses carry `tls.fingerprints` so running nodes follow it. A non-loopback hub without TLS refuses to start (`INSECURE_BIND`) unless `allowInsecureRemote` is set. Tailscale (`perpeto hub expose --tailscale`) is the recommended path between machines.
+
 | `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers, labels }` | Every 10 s. Missing three marks the machine `offline` |
 | `POST /nodes/lease` `{ kinds: ['assignment','job'], max }` | Long-poll up to 25 s. Returns leased assignments and jobs with `leaseExpiresAt` (60 s) |
 | `POST /assignments/:id/renew`, `POST /jobs/:id/renew` | Extend a lease while working |

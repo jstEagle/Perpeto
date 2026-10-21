@@ -1,6 +1,6 @@
 # Perpeto CLI
 
-Dependency-free Node 24 command line for local hub/node lifecycle, machine enrollment/revocation, token rotation, human decisions, hub overview, diagnostics and user services. See [the install guide](../../docs/guides/install.md) for the single-machine and second-machine paths.
+Dependency-free Node 24 command line for local hub/node lifecycle, machine enrollment/revocation, token rotation, human decisions, hub overview, diagnostics and user services. See [the install guide](../../docs/guides/install.md) for the single-machine and second-machine paths, and [Join machines over a LAN or tailnet](../../docs/guides/remote-machines.md) for `hub init --tls`, `hub expose --tailscale`, `hub enroll-code` join commands, `node join <join-code>`, `hub tls status|rotate|activate` and `node repin`.
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24

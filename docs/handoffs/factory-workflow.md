@@ -2,6 +2,15 @@
 
 `packages/workflow` implements the workflow parts of the [architecture contract](../architecture/README.md), plus the lead's addendum on agent-authored workflows and observing runs. The addendum is on main's `docs/architecture/README.md`, not on this branch. The package has no dependencies and never calls a harness. The API is documented in the [package README](../../packages/workflow/README.md).
 
+## Live acceptance fixes, 21 October 2026
+
+Branch `t3/756151ef`, from [live acceptance run 1](live-acceptance-1.md#fixed-after-the-run). Not pushed or merged. `npm test -w @perpeto/workflow` passes 106.
+
+- **Planner context:** a planner that keeps the item whole hands its summary to the item as `plan` (`{ from, summary }`, at most 8,000 characters), and every later role prompt carries it. Children name their parent. The README defines the order of [work-item context in role prompts](../../packages/workflow/README.md#work-item-context-in-role-prompts).
+- **Architect:** a Defaults section (retries with backoff, loop limits, concurrency within capacity, model tiers per role) and local-repository delivery guidance.
+- **Warnings:** `NO_RETRY`, `RETRY_WITHOUT_BACKOFF` and `LOOP_LIMIT_HIGH`. They don't block a draft. Graphs without retries now warn, so the hub and web show them on old drafts too.
+- **Contract request:** `WorkItem.plan` is new. `AssignmentResult.summary` from a planner now has a meaning, so `docs/architecture/README.md` should say so.
+
 ## What exists
 
 - **Graph v1:** `validateGraph` returns errors and warnings. Each issue has a code, a message, and the node or edge it concerns.

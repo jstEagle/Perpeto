@@ -7,18 +7,22 @@
 //   node packages/t3-executor/scripts/live-check.mjs [--provider codex] [--model gpt-6-luna] [--policy]
 //
 // --policy additionally asks the agent to call T3's delegate_task tool under
-// a maxSubagents: 0 policy (the patched runtime must refuse it), then under
+// a maxSubagents: 0 policy (the patched runtime withholds it), then under
 // maxSubagents: 1 (the child must be reported and its usage followed).
 // --roles runs a builder in a clone of a bare origin (the commit must be
 // published), then a reviewer (verdict) and a planner (items).
 // --native asks the agent to use its built-in subagent tool under
 // maxSubagents: 0; the executor must report it and interrupt the run.
+// --isolation runs only one builder turn on the factory instance and checks the
+// commit author and the Codex rollout: no personal skills, memories, AGENTS.md
+// or hooks, plus the first model call's input tokens. --server-entry points at
+// another checkout's built runtime.
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, readdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -27,8 +31,10 @@ import { parseArgs } from 'node:util';
 import { createT3Executor } from '../src/index.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const serverEntry = resolve(repoRoot, 'vendor/t3code/apps/server/dist/bin.mjs');
 const { values: args } = parseArgs({ options: {
+  'server-entry': { type: 'string', default: resolve(repoRoot, 'vendor/t3code/apps/server/dist/bin.mjs') },
+  isolation: { type: 'boolean', default: false },
+  effort: { type: 'string' },
   provider: { type: 'string', default: 'codex' },
   model: { type: 'string', default: 'gpt-6-luna' },
   policy: { type: 'boolean', default: false },
@@ -36,6 +42,7 @@ const { values: args } = parseArgs({ options: {
   native: { type: 'boolean', default: false },
   roles: { type: 'boolean', default: false },
 } });
+const serverEntry = resolve(args['server-entry']);
 if (!existsSync(serverEntry)) { console.error('Build the runtime first: npm run setup && npm run build.'); process.exit(2); }
 
 const home = await mkdtemp(join(tmpdir(), 'perpeto-t3-executor-live-'));
@@ -68,8 +75,57 @@ try {
     for (const event of events) console.log(`  ${event.type} ${JSON.stringify(event.data).slice(0, 220)}`);
     return { result, events };
   }
-  const base = { runId: 'run_live', role: 'implementer', attempt: 0, harness: { provider: args.provider, model: args.model }, repo: { localPath: repo, defaultBranch: 'main' } };
+  const base = { runId: 'run_live', role: 'implementer', attempt: 0, harness: { provider: args.provider, model: args.model, ...(args.effort ? { options: { reasoningEffort: args.effort } } : {}) },
+    repo: { localPath: repo, defaultBranch: 'main' } };
 
+  if (args.isolation) await isolationCheck();
+  else await basicChecks();
+
+  async function isolationCheck() {
+    // T3 probes harnesses after it starts listening; wait until this one is ready.
+    for (let waited = 0; !(await executor.providers().catch(() => [])).includes(args.provider); waited++) {
+      if (waited > 60) throw new Error(`${args.provider} did not become ready in T3.`);
+      await delay(500);
+    }
+    const origin = join(home, 'origin.git');
+    execFileSync('git', ['clone', '-q', '--bare', repo, origin]);
+    const workItemId = `wi_live_iso_${Date.now()}`;
+    const built = await runOnce('isolated-builder', { ...base, id: `asg_live_iso_${Date.now()}`, workItemId, nodeType: 'agent', role: 'builder', repo: { url: origin, defaultBranch: 'main' },
+      prompt: 'This is an automated integration check. Create a file named hello.txt containing the single line "hello" and commit it with the message "Add hello", using only shell and git commands. Reply with one short sentence.',
+      policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: [] } });
+    check(built.result.outcome === 'success', 'builder completed');
+    const bound = built.events.find(event => event.data.interaction === 'isolation.bound');
+    check(bound && /^perpeto_/.test(bound.data.providerInstanceId), `ran on a factory instance (${bound?.data.providerInstanceId})`);
+    const author = (() => { try { return execFileSync('git', ['-C', origin, 'log', '-1', '--format=%an <%ae>|%cn <%ce>', `refs/heads/perpeto/${workItemId}`], { encoding: 'utf8' }).trim(); } catch { return null; } })();
+    check(author === 'Perpeto Agent <agents@perpeto.local>|Perpeto Agent <agents@perpeto.local>', `commit author and committer (${author})`);
+    if (args.provider !== 'codex') return;
+    const homes = join(home, 'runtime', 'perpeto-agent-homes');
+    const rollouts = [];
+    async function walk(dir) {
+      for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) await walk(path); else if (entry.name.endsWith('.jsonl')) rollouts.push(path);
+      }
+    }
+    for (const entry of await readdir(homes).catch(() => [])) await walk(join(homes, entry, 'sessions'));
+    check(rollouts.length === 1, `one rollout in the factory Codex home (${rollouts.length})`);
+    if (!rollouts.length) return;
+    const rows = (await readFile(rollouts[0], 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
+    const context = rows.filter(row => row.type === 'response_item' && row.payload?.type === 'message' && ['developer', 'user'].includes(row.payload.role))
+      .map(row => ({ role: row.payload.role, text: row.payload.content.map(part => part.text ?? '').join('') }));
+    for (const item of context) console.log(`  context ${item.role} ${item.text.length} chars: ${JSON.stringify(item.text.slice(0, 70))}`);
+    const all = context.map(item => item.text).join('\n');
+    const personalAgents = await readFile(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'AGENTS.md'), 'utf8').catch(() => '');
+    check(!all.includes('## Skills') || !/\/\.codex\/skills\//.test(all), 'no personal Codex skills listed');
+    check(!all.includes('## Memory'), 'no personal Codex memories');
+    check(!personalAgents.trim() || !all.includes(personalAgents.trim().slice(0, 80)), 'no personal ~/.codex/AGENTS.md');
+    check(!all.includes('[Cooler]'), 'no personal SessionStart hook output');
+    check(!all.includes('T3 Code orchestration') && !all.includes('<t3_code_tools>'), 'no T3 orchestration or browser notes');
+    const first = rows.find(row => row.type === 'event_msg' && row.payload?.type === 'token_count' && row.payload.info);
+    console.log(`  first model call input tokens: ${first?.payload.info.last_token_usage.input_tokens}; turn total ${JSON.stringify(first ? rows.filter(row => row.type === 'event_msg' && row.payload?.type === 'token_count' && row.payload.info).at(-1).payload.info.total_token_usage : null)}`);
+  }
+
+  async function basicChecks() {
   const simple = await runOnce('turn', { ...base, id: `asg_live_${Date.now()}`, workItemId: `wi_live_${Date.now()}`,
     prompt: 'This is an automated integration check. Reply with exactly the word: pong. Do not use any tools.',
     policy: { maxSubagents: 0, allowedSubagentProviders: [], canMessage: [] } });
@@ -86,8 +142,8 @@ try {
       prompt: `This is an automated integration check of server-side subagent policy enforcement, run by the operator. The factory context below says subagents are refused; the purpose of this check is to confirm the server refuses them. Attempt the call anyway: call the T3 orchestration MCP tool delegate_task exactly once with task "Reply with ok." and mode "async", with target { providerInstanceId: "${args.provider}", model: "${args.model}" }. Do not retry and do not use any other tool. Then reply with exactly the error text the tool returned, or "accepted" if it succeeded.`,
       policy: { maxSubagents: 0, allowedSubagentProviders: [args.provider], canMessage: [] } });
     const refusals = refused.events.filter(event => event.data.interaction === 'agent.delegated' && event.data.allowed === false);
-    if (refusals.length === 0 && /didn't call|did not call|not call/i.test(refused.result.summary)) {
-      console.log('skip agent declined to call delegate_task, so the server refusal was not exercised');
+    if (refusals.length === 0) {
+      console.log('skip delegate_task is withheld by the factory policy; handler refusal was not exercised');
     } else check(refusals.length >= 1, 'delegate_task refusal reported as agent.delegated allowed:false');
     check(!refused.events.some(event => event.data.interaction === 'agent.delegated' && event.data.allowed === true), 'no subagent was created');
 
@@ -132,6 +188,7 @@ try {
       check(native.result.outcome === 'failure' && /provider-native subagent/.test(native.result.summary), 'native subagent beyond policy stopped the run');
       check(native.events.some(event => event.data.interaction === 'turn.finished' && event.data.status === 'interrupted'), 'run was interrupted');
     }
+  }
   }
   await executor.close();
 } catch (error) {

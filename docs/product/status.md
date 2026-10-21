@@ -1,37 +1,40 @@
 # Build status
 
-Updated 20 October 2026. Phase: initial foundation implemented locally; full factory product incomplete.
+As of **21 October 2026**, through local main `0508551`. Perpeto has a working single-Mac factory, web client and native Apple client. It is an early implementation, not a verified multi-machine release. Product requests and proposals remain distinct from decisions in the [vision](vision.md); Perpeto Mono is the selected UI direction.
 
-## Delivered in this milestone
+## What exists
 
-- Brand assets and product documentation committed and pushed as `c12899d`.
-- T3 Code source imported at `89b42bfeb4f79408af72fc7bb7a4482e22bb9493`: orchestrator, all nine provider drivers, shared packages, clients, tests, lockfile, patches and licenses. Source boundaries and hashes live under `config/`.
-- Root setup/build/start commands with file-based settings and isolated Perpeto runtime data.
-- Durable SQLite messaging store with project-scoped channels, stable role addressing, idempotent writes and cursor pagination.
-- GitHub workflow configured for Perpeto tests, upstream source integrity, focused upstream tests and runtime build. Both jobs passed on Linux for implementation commit `d64c781`: [CI evidence](https://github.com/jstEagle/Perpeto/actions/runs/39400092882).
+| App or package | Implemented | Evidence and limits |
+| --- | --- | --- |
+| `apps/hub` | Authenticated control plane; projects, goals with work-item progress, owner profile, project Git identity, workflow versions, runs, leases, usage, messaging and delivery. SQLite RunStore, retention, event paging/filtering, owner session cookies, random machine credentials, rotation/revocation and pinned HTTPS. | [Hub handoff](../handoffs/factory-hub.md), [review fixes](../handoffs/review-wave3.md), [current API](../../apps/hub/README.md). Goal/profile/identity changes are in `47685ba`, `ca24c8a`, `fc1b900`; covered by local hub tests. |
+| `apps/node` | Enrollment, ready-provider discovery, capacity, fenced leases, reconnect/retry, drain/cancel, account integration and isolated revision-bound CI. Hub bundles carry local-project and merge-candidate sources. | [Node handoff](../handoffs/factory-node.md), [recovery and bundle tests](../handoffs/hub-wiring.md), [live run](../handoffs/live-acceptance-1.md). Separate filesystem roots are tested; separate physical machines are not. |
+| `apps/cli` | Installer, hub/node lifecycle, doctor, machine join, token rotation/revocation, human decisions, launchd/systemd templates, Tailscale exposure and TLS pin rotation. | [CLI handoff](../handoffs/perpeto-cli.md), [remote guide](../guides/remote-machines.md). TLS/join/rotation tested over loopback; service managers and real networks unverified. |
+| `apps/web` | React client: projects, workflow drafting/editor, live run maps, work, messages, merge queue, machines, accounts, usage and settings; cookie sessions and live refresh. | [Web handoff](../handoffs/web-app.md): 27 tests, typecheck/build, 12-step Chromium smoke and seeded real-hub screens. [Live acceptance](../handoffs/live-acceptance-1.md#web-app-against-the-live-hub) shows real harness-run data. Demo fallback can conceal an expired session. |
+| `apps/apple` | Shared SwiftUI macOS/iPhone/iPad client, Keychain credentials, live hub reads/events, proposals, decisions and maps; Mac workflow editor with undo/redo. Mono restyle implemented. | [Apple handoff](../handoffs/apple-app.md): 62 tests, Swift/Xcode builds, real local-hub decoding/decision round trip and Mac live refresh; iPhone/iPad simulator captures use demo data. Touch and editor gestures are not fully exercised. |
+| `packages/workflow` | Graph validation/compilation, build/improve templates, deterministic engine, retries/escalation/human gates, durable RunStore/outbox, architect drafts, planner context and measured metrics. | [Workflow handoff](../handoffs/factory-workflow.md): 106 tests after acceptance fixes. Engine is wired into the hub; the original unwired handoff is historical. |
+| `packages/delivery` | Revision/config-bound CI evidence, durable serial/batch queues, speculative tests, atomic local Git publication and GitHub publication adapters. | [Delivery handoff](../handoffs/factory-delivery.md), [wiring](../handoffs/hub-wiring.md). Local delivery ran live. GitHub/GraphQL tests use a fake forge and local bare origins; protected GitHub acceptance is unverified. |
+| `packages/accounts` | Private same-machine Claude/Codex account homes, selection, cooldowns, fenced expiring reservations, renewal/recovery and bounded receipts. Swapping places new assignments/retries, not running conversations. | [Accounts handoff](../handoffs/factory-accounts.md), [review fixes](../handoffs/review-wave3.md), [executor follow-up](../handoffs/factory-t3.md). Synthetic credentials only; real subscription pools/swaps unverified. |
+| `packages/t3-executor` | Authenticated T3 turns, workspaces/branch publishing, role results, usage, account leases and subagent policy. Factory provider instances isolate personal context and Git identity. | [Executor handoff](../handoffs/factory-t3.md): 45 tests, live Codex roles/delegation/publishing and earlier Claude policy checks. Codex isolation verified live; Claude isolation is unit-tested only. |
+| `packages/messaging`, `packages/sdk` | Durable project channels/role routing, retry-safe sends, bounded cursor history, authenticated HTTP, CLI and MCP tools on the hub and inherited runtime. | [Core](../handoffs/messaging-core.md), [client](../handoffs/messaging-client.md), [transport](../handoffs/messaging-transport.md), [wiring](../handoffs/hub-wiring.md). Local Codex MCP send passed; physical cross-device delivery unverified. Role labels are not private mailboxes. |
+| `packages/design-tokens` | Mono CSS/Swift tokens, assets, contrast checks, specimen and screenshots generated from `brand/tokens.css`. | [Tokens handoff](../handoffs/design-tokens.md): 11 tests, Swift typecheck, Chromium captures. Brand beyond the selected UI direction remains provisional. |
+| `vendor/t3code` | Pinned orchestrator and all nine provider drivers, runtime and inherited clients; recorded Perpeto patches. | [Foundation](../handoffs/initial-foundation.md), [executor](../handoffs/factory-t3.md), [provenance](../../config/upstream-patches.json). Importing a driver does not verify its live harness. |
 
-## Local verification
+## What has been verified
 
-- `npm test`: 9 tests passed, including on-disk SQLite restart/retry/isolation/cursor cases and launcher validation.
-- Focused upstream suite: 170 tests passed across runtime-layer hydration, provider registry, and machine/project grouping.
-- Runtime web/server build passed after including the upstream scripts workspace in setup.
-- `npm start`: real server started on localhost:4310 with separate `.perpeto/runtime` state; public environment descriptor returned protocol 2 and inherited HTML loaded. Server restarted successfully with the same data directory.
-- Source comparison: all 6,350 imported files match the pinned checkout byte-for-byte.
-- Hosted CI: both factory and upstream jobs passed, including the complete runtime build, for `d64c781`.
-- Independent foundation review found an ignored browser-opening setting. Launcher now chooses the correct upstream command and explicitly disables automatic cwd project creation.
+For this documentation refresh on `0508551`, `npm ci --ignore-scripts --no-audit --no-fund` followed by `npm test` passed **460/460**, with no failures or skips on Node 24.22.0. All relative links in the four updated docs resolve. Browser, Swift, load and live-harness checks below are recorded evidence, not reruns during this refresh:
 
-HTTP responses establish local startup only. No authenticated browser journey, real harness turn, remote pairing, cross-machine delivery, or CI runner execution is claimed.
+- **Automated integration:** the post-acceptance-fix `npm test` passed **451/451** on Node 24.22.0 ([record](../handoffs/live-acceptance-1.md#fixed-after-the-run)). Root tests cover Node apps/libraries/e2e; web Vitest and Swift tests run separately. [Crash tests](../handoffs/hub-wiring.md#recovery-fixes) SIGKILL a real hub process across publication/projection and lease-expiry boundaries, with a real node and fake executor/forge. They prove tested recovery paths, not recovery during a live harness turn.
+- **Load:** [review H3](../handoffs/review-wave3.md#long-poll-fan-out-and-full-table-scans-collapse-the-hub-well-below-the-scale-target-h3) records a 60-second loopback test: **100 simulated machines, 1,000 queued assignments**, 212 completed, 4.1 s hub CPU, heartbeat p50/p99 **1.5/6.7 ms**, lease-with-work **3.0/8.5 ms**, renew **1.6/6.1 ms**, zero connection resets/broken pipes. This is one Mac, not 100 hosts or 1,000 live agents. The earlier [short burst](../handoffs/factory-hub.md#verification) uniquely leased/renewed 100 assignments in 55.8/32.5 ms, about 2,266 requests/s, excluding enrollment.
+- **Live acceptance run 1:** [the recorded session](../handoffs/live-acceptance-1.md) used **9 real Codex turns** across an architect and two workflow runs. Run 1 failed at local PR identification; after the fix, run 2 completed in **2 min 53 s** through planner, builder, reviewer rejection, rework, passing review, node CI and serial squash merge. A fresh clone of throwaway `tiny-text` main at **`76e2a09`** passed `npm ci` and all **6 tests**. Web screens read that real local hub. This merged sample code into a local bare repository, not Perpeto or GitHub.
+- **Isolation follow-up:** [one real Codex builder turn](../handoffs/live-acceptance-1.md#fixed-after-the-run) committed as Perpeto Agent without personal skills/memories/instructions. First-call input fell from 31,347 to 15,252 tokens. Planner-context and architect-default fixes have regression tests; the whole factory run was not repeated after them.
+- **Hosted history:** the [initial foundation handoff](../handoffs/initial-foundation.md) records Linux CI passing for `d64c781`. Current hosted CI is **unverified because pushing is blocked**; that old run does not cover today's factory or Apple/web work. No push was attempted for this documentation update.
 
-## Owners and next work
+## Still open
 
-- Lead: root agent; owns import, launcher, integration, repository CI and documentation.
-- Messaging worker: initial storage implementation complete; see its handoff.
-- Review worker: initial source-boundary and foundation review complete; see its handoff.
+No real second execution machine, real LAN/tailnet join or physical iOS device has been accepted. Safari, Firefox, screen readers, touch editing, distribution signing/notarization and real service-manager installation remain unverified. Built-in HTTPS/pinning and join commands exist; their loopback tests do not close network acceptance.
 
-Next: integrate messaging with the inherited authenticated server and agent tool surface, then verify communication between two real environments. Define durable factory roles/assignments and graph execution around the existing harness adapters. Add user-owned runner registration, job lifecycle and revision-bound evidence. Build UI only against working services, preserving the proposed brand status until a direction is selected.
+The live factory used Codex only. Earlier Claude turns passed executor checks, but **Claude-side isolation**, real account swapping, provider-native subagent interruption, all other imported providers, live-turn cancellation/restart and senior-review/triage paths still need live acceptance. T3 tools/guidance remain attached to factory threads; `t3_thread_fork` and `schedule_task` are not policy-checked. CI isolation is not a general hostile-code sandbox. Messaging threads, attachments and automatic recipient wake-ups are not implemented.
 
-## Remaining prerequisites and limits
+[Acceptance findings](../handoffs/live-acceptance-1.md#open-findings) still include misleading zero counts for input/output/loop nodes, differently defined token totals and silent demo fallback after session failure. [Review wave 3](../handoffs/review-wave3.md) retains workspace/journal cleanup and other unresolved limits. Hundreds of physical machines, thousands of real agents, unattended multi-day reliability, hosted identity/relay and release distribution are not established.
 
-Local harness executables were detected; their authentication and execution were not tested. A second machine and user-owned CI runner have not been enrolled. Hosted identity, relay, app signing and release distribution are not configured. See [prerequisites](../guides/prerequisites.md) and [definition of done](definition-of-done.md).
-
-Setup was also verified to restore the host repository's Git hook configuration after upstream prepare, which otherwise installs a hook targeting the nested upstream workspace.
+Use the [definition of done](definition-of-done.md) for remaining acceptance and the [quick start](../../README.md#run-locally) to run the local system.

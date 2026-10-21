@@ -67,8 +67,30 @@ public enum Format {
         return "#\(last)"
     }
 
+    /// "lumin-products" from a repository URL.
+    public static func repoOwner(_ url: String) -> String {
+        let parts = repoName(url).split(separator: "/")
+        return parts.count >= 2 ? String(parts[parts.count - 2]) : "local"
+    }
+
     public static func repoName(_ url: String) -> String {
         url.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "github.com/", with: "")
+    }
+
+    /// Display names for model IDs: "claude-opus-5-5" → "Claude Opus 5.5".
+    public static func model(_ id: String) -> String {
+        let parts = id.split(separator: "-").map(String.init)
+        guard let first = parts.first else { return id }
+        var words: [String] = [first == "gpt" ? "GPT" : first.capitalized]
+        var numbers: [String] = []
+        for part in parts.dropFirst() {
+            if Int(part) != nil || part.contains(".") { numbers.append(part) } else {
+                if !numbers.isEmpty { words.append(numbers.joined(separator: ".")); numbers = [] }
+                words.append(part.capitalized)
+            }
+        }
+        if !numbers.isEmpty { words.append(numbers.joined(separator: ".")) }
+        return words.joined(separator: " ").replacingOccurrences(of: "GPT ", with: "GPT-")
     }
 
     public static func provider(_ id: String) -> String {

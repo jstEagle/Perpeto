@@ -1,27 +1,34 @@
 # Definition of done
 
-The user authorized beginning implementation on 20 October 2026. These criteria translate the discussed vision into a working build plan; detailed release acceptance remains subject to refinement.
+Evidence through **21 October 2026**, local main `0508551`. Checked items mean the stated scope passed, not that the full product is released. Historical handoffs retain their original branch/test counts; [build status](status.md) reconciles later fixes.
 
-## Initial foundation
+## Foundation
 
-- Brand explorations and product decisions committed and pushed. Verified: commit `c12899d` on `origin/main`.
-- T3 orchestrator and every built-in provider integration imported at a recorded revision with license and supporting dependencies retained. Verified locally; see [build status](status.md).
-- File-based Perpeto configuration starts an isolated local runtime without using the user's normal T3 state. Verified locally; see [build status](status.md).
-- Runtime build and focused orchestration/provider tests pass. Verified locally; see [build status](status.md).
-- Durable project-scoped messaging supports session-independent sender/recipient identities, retry-safe writes, cursor reads and restart recovery. Verified locally; see [build status](status.md).
-- Repository CI runs factory tests, import integrity, focused upstream checks and the runtime build. Verified on Linux for `d64c781`: [CI run](https://github.com/jstEagle/Perpeto/actions/runs/39400092882).
+- [x] Preserve T3's orchestrator, all provider integrations, dependencies, license and provenance; build/start an isolated local runtime. [Foundation](../handoffs/initial-foundation.md), [review](../handoffs/foundation-review.md).
+- [x] Durable project messaging with retry-safe sends, cursor reads, restart persistence, authenticated HTTP and CLI/MCP access. [Transport](../handoffs/messaging-transport.md), [client](../handoffs/messaging-client.md), [bounded UI](../handoffs/messaging-history-ui.md).
+- [x] Initial foundation hosted Linux CI passed for `d64c781`. [Evidence](../handoffs/initial-foundation.md).
+- [ ] Current implementation passes hosted CI. Pushing is blocked; the initial run does not cover current code.
 
-## Complete factory experience
+## Factory execution
 
-All items below remain unverified and incomplete:
+- [x] Author, validate, version and activate workflows; run durable planner/build/review/CI/merge gates with bounded retries, escalation and human decisions. Automated engine/recovery tests and a local Codex journey passed. [Workflow](../handoffs/factory-workflow.md), [integration](../handoffs/integration.md), [live acceptance](../handoffs/live-acceptance-1.md).
+- [x] Complete a real local define/build/review/rework/test/merge journey with outcome evidence. Run 2 merged `slugify` into a throwaway bare origin; fresh clone passed 6 tests. [Live acceptance](../handoffs/live-acceptance-1.md#run-2-merged).
+- [x] Run revision/config-bound CI on a user-owned local node, including hub-supplied candidate bundles. [Live acceptance](../handoffs/live-acceptance-1.md), [bundle/recovery evidence](../handoffs/hub-wiring.md).
+- [x] Recover tested hub crashes and fence stale leases without duplicate publication, using real processes and fake executors/forge. [Crash tests](../handoffs/hub-wiring.md#recovery-fixes).
+- [x] Verify Codex role output, usage, app-owned subagent policy and factory context/Git isolation live. Earlier Claude policy turns also passed. [Executor](../handoffs/factory-t3.md).
+- [ ] Verify Claude isolation live, provider-native subagent enforcement and every claimed provider integration. [Executor limits](../handoffs/factory-t3.md).
+- [ ] Replace an orchestrator during live work and continue without lost/duplicate assignments; test cancellation and restart during real harness turns. Automated recovery is partial evidence only. [Live limits](../handoffs/live-acceptance-1.md#not-verified).
+- [ ] Exercise real subscription pool enrollment, exhaustion, cooldown and retry placement. Synthetic account tests do not prove live swaps. [Accounts](../handoffs/factory-accounts.md), [executor follow-up](../handoffs/factory-t3.md).
+- [ ] Accept cross-machine user/agent messaging with defined delivery/wake-up behavior; conversation threads and automatic recipient wake-ups remain unimplemented. [Messaging limits](../guides/messaging.md#access-and-current-limits).
+- [ ] Accept protected GitHub publication/merge-queue behavior against a real forge. Tests use stubbed GitHub and local origins. [Delivery](../handoffs/factory-delivery.md).
 
-- Connect two execution machines, authenticate them, reconnect after interruption, and coordinate project work across them.
-- Run real authenticated harness sessions and preserve their approvals, questions, outputs and failures. Imported adapters alone do not establish compatibility.
-- Agents and users communicate across machines through durable project channels and threads, with clear delivery and wake-up behavior.
-- Configure a factory visually: harnesses/models/context, delegation authority, spawning limits, build, test, QA, review and merge workflows.
-- Replace an orchestrator session and continue from durable project and execution state without losing assignments or duplicating work.
-- Submit CI work to a user-owned machine; associate logs, artifacts and results with the exact revision tested; recover from runner interruption.
-- Complete a fresh-user installation and a full define/build/review/test/merge journey, with evidence linked to the requested outcome.
-- Verify supported CLI, web, desktop and mobile experiences, including failures and recovery, before claiming those platforms are supported by Perpeto.
+## Machines and clients
 
-Passing unit tests or starting the inherited UI does not satisfy the complete factory experience.
+- [x] Test capacity/fencing and load over local HTTP: 100 simulated machines, 1,000 queued assignments for 60 s. [Measured results](../handoffs/review-wave3.md#long-poll-fan-out-and-full-table-scans-collapse-the-hub-well-below-the-scale-target-h3).
+- [ ] Enroll a real second machine over a real LAN/tailnet, reconnect after interruption, exchange durable messages and execute agents/CI across it. Loopback TLS/join tests and separated filesystem roots do not satisfy this. [Remote guide](../guides/remote-machines.md), [wiring](../handoffs/hub-wiring.md).
+- [x] Web main flows in Chromium against a real local hub, including real Codex-run results. [Web checks](../handoffs/web-app.md), [acceptance screens](../handoffs/live-acceptance-1.md#web-app-against-the-live-hub).
+- [x] Native Mac app reads a real local hub, refreshes and answers a bound human decision; Apple builds/tests and iPhone/iPad simulator captures pass. [Apple evidence](../handoffs/apple-app.md#verification).
+- [ ] Verify Safari/Firefox, accessibility, touch editing, Mac editor gestures/undo in the running app, and physical iPhone/iPad behavior. [Web limits](../handoffs/web-app.md), [Apple limits](../handoffs/apple-app.md).
+- [ ] Complete a fresh-user installation, real service loading, app signing/notarization/distribution and unattended multi-machine acceptance. [CLI limits](../handoffs/perpeto-cli.md), [Apple gaps](../handoffs/apple-app.md).
+
+Passing tests, a simulated fleet or a local successful merge does not establish the complete cross-machine factory experience.

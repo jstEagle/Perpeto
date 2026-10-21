@@ -21,7 +21,7 @@ function assignment(extra = {}) {
 async function harness(t, options = {}) {
   const fake = await startFakeT3(options);
   const workspace = await mkdtemp(join(tmpdir(), 't3-executor-ws-'));
-  const executor = createT3Executor({ config: { url: fake.url, settleMs: 30, pollMs: 10, interruptGraceMs: 500, ...options.config }, createClient: settings => new T3Client({ baseUrl: settings.url, token: 'test-token', pingMs: 0 }) });
+  const executor = createT3Executor({ config: { url: fake.url, settleMs: 30, pollMs: 10, interruptGraceMs: 500, agentHomesDir: fake.homes, ...options.config }, createClient: settings => new T3Client({ baseUrl: settings.url, token: 'test-token', pingMs: 0 }) });
   const events = [];
   const controller = new AbortController();
   const ctx = { signal: controller.signal, workspace, report: async event => { events.push(event); } };
@@ -52,8 +52,9 @@ test('runs a turn: policy first, launch with model options, usage, timing and re
   assert.ok(order.indexOf('PUT /api/perpeto/agent-policies') >= 0, 'policy attached');
   const launch = fake.state.commands.find(item => item.tag === 'orchestration.launchThread').payload;
   assert.ok(fake.state.requests.findIndex(item => item.method === 'PUT') < fake.state.requests.findIndex(item => item.path === '/api/orchestration/threads/' + launch.threadId), 'policy precedes thread reads');
-  assert.deepEqual(fake.policies.getPolicy(launch.threadId), { ...fake.policies.getPolicy(launch.threadId), maxSubagents: 1, allowedSubagentProviders: ['codex'] });
-  assert.deepEqual(launch.modelSelection, { instanceId: 'codex', model: 'gpt-test', options: [{ id: 'reasoningEffort', value: 'high' }] });
+  assert.deepEqual(fake.policies.getPolicy(launch.threadId), { ...fake.policies.getPolicy(launch.threadId), maxSubagents: 1, allowedSubagentProviders: ['codex'], t3Tools: 'policy' });
+  assert.deepEqual(launch.modelSelection, { instanceId: launch.modelSelection.instanceId, model: 'gpt-test', options: [{ id: 'reasoningEffort', value: 'high' }] });
+  assert.match(launch.modelSelection.instanceId, /^perpeto_codex_/, 'factory work runs on the isolated instance');
   assert.equal(launch.runtimeMode, 'auto');
   assert.deepEqual(launch.workspaceStrategy, { type: 'root' });
   assert.equal(fake.state.projects[0].workspaceRoot, await realpath(workspace));

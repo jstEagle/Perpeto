@@ -36,7 +36,7 @@ async function fixture(t, { leaseMs = 1000 } = {}) {
   const fake = await startFakeT3(); // Includes a ready operator login named "codex".
   const client = new T3Client({ baseUrl: fake.url, token: 'test-token', pingMs: 0 });
   const executor = createT3Executor({ accountProvider: provider,
-    config: { url: fake.url, settleMs: 10, pollMs: 5, interruptGraceMs: 200, turnTimeoutMs: 5000 },
+    config: { url: fake.url, settleMs: 10, pollMs: 5, interruptGraceMs: 200, turnTimeoutMs: 5000, agentHomesDir: fake.homes },
     createClient: () => client,
   });
   const controller = new AbortController();

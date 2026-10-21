@@ -4,10 +4,14 @@ import { dirname } from 'node:path';
 import { MessagingStore, MessagingError } from '@perpeto/messaging';
 import { HubStore } from './store.js';
 import { Credentials } from './credentials.js';
+import { HubTls } from './tls.js';
+import { encodeJoinCode } from './join.js';
+import { readGoals, writeGoals, initialsOf } from './goals.js';
+import { publicOrigin } from './config.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
-import { HubError, fail, requireValue, nonblank, object, integer, strings } from './errors.js';
+import { HubError, fail, requireValue, nonblank, object, integer, strings, gitIdentity } from './errors.js';
 
 const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -62,7 +66,7 @@ export class Hub {
     this.signals = { work: [], machines: new Set(), events: false };
     // An engine that persists run state (the workflow adapter's RunStore) gets its own private database.
     const databases = [config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, ...(engine.open ? [config.workflowDatabasePath] : [])];
-    for (const path of [...databases, config.ownerTokenPath, config.credentialKeyPath]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    for (const path of [...databases, config.ownerTokenPath, config.credentialKeyPath, ...(config.tlsEnabled ? [config.tlsCertPath, config.tlsKeyPath] : [])]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     for (const path of databases) prepareDatabase(path);
     this.store = new HubStore(config.databasePath);
     this.store.onPut = (kind, value) => this.observe(kind, value);
@@ -86,6 +90,9 @@ export class Hub {
       if (owner && owner.hash !== hash(this.ownerToken)) fail(500, 'OWNER_TOKEN_MISMATCH', 'Owner token file does not match this hub.');
       this.store.db.prepare("INSERT OR IGNORE INTO tokens(hash,kind) VALUES(?,'owner')").run(hash(this.ownerToken));
       this.credentials = new Credentials(config.credentialKeyPath, this.store);
+      // Built-in HTTPS uses a self-signed certificate created on first start; machines pin its fingerprint.
+      this.tls = config.tlsEnabled ? new HubTls({ certPath: config.tlsCertPath, keyPath: config.tlsKeyPath }) : null;
+      this.listenUrl = `${this.tls ? 'https' : 'http'}://127.0.0.1:${config.port}`;
       // Tokens from before random issue were HMACs of the owner secret. Tag their generation once so rotation can retire them.
       for (const row of this.store.db.prepare("SELECT hash, machine_id FROM tokens WHERE kind='node' AND generation IS NULL").all()) {
         const top = this.store.get('machine', row.machine_id)?.tokenGeneration ?? 0;
@@ -255,12 +262,14 @@ export class Hub {
     // Replays must return the credential first issued; it is kept sealed under the credential key, never in the clear.
     if (body.token) { body._token = this.credentials.seal(body.token); delete body.token; }
     if (body.code) { body._code = this.credentials.seal(body.code); delete body.code; }
+    if (body.joinCode) { body._joinCode = this.credentials.seal(body.joinCode); delete body.joinCode; }
     return { ...result, body };
   }
   restoreResponse(result) {
     const body = { ...result.body };
     if (body._token) { body.token = this.credentials.open(body._token); delete body._token; }
     if (body._code) { body.code = this.credentials.open(body._code); delete body._code; }
+    if (body._joinCode) { body.joinCode = this.credentials.open(body._joinCode); delete body._joinCode; }
     // Records written before random credentials hold only the ids their credential was derived from.
     if (body._tokenMachineId) { body.token = this.legacyNodeToken(body._tokenMachineId, body._tokenGeneration); delete body._tokenMachineId; delete body._tokenGeneration; }
     if (body._codeId) { body.code = this.legacySecret('enrollment', body._codeId); delete body._codeId; }
@@ -411,6 +420,7 @@ export class Hub {
     const reportedMoves = new Set(result.effects.filter(effect => effect.type === 'event' && ['workitem.moved', 'workitem.escalated'].includes(effect.value?.type)).map(effect => effect.value.data?.workItemId));
     for (const effect of result.effects) {
       object(effect.value, 'effect value');
+      if (effect.type === 'work-item-created') { this.linkGoal(run, effect.value); continue; }
       if (effect.type === 'event') {
         const subject = effect.value.subject ?? { kind: 'assignment', id: effect.value.assignmentId ?? run.id };
         const context = { id: subject.id, runId: run.id, projectId: run.projectId, nodeId: effect.value.data?.nodeId };
@@ -435,7 +445,12 @@ export class Hub {
       // Merge entries also carry hub delivery fields (queue, job, merged revision) that engine snapshots do not know.
       const value = { ...(kind === 'merge-entry' ? previous : {}), ...effect.value, projectId: run.projectId, runId: run.id };
       if (kind === 'merge-entry' && value.status === 'queued' && !value.queueId) this.delivery.dirty = true;
-      if (kind === 'assignment') value.repo = previous?.repo ?? structuredClone(this.store.need('project', run.projectId).repo);
+      if (kind === 'assignment') {
+        // Repository and commit identity are fixed when the assignment is first created; the engine cannot set either.
+        const source = previous ?? this.store.need('project', run.projectId);
+        value.repo = structuredClone(source.repo);
+        if (source.gitIdentity) value.gitIdentity = structuredClone(source.gitIdentity); else delete value.gitIdentity;
+      }
       if (kind === 'assignment' || kind === 'job') {
         requireValue(!previous || previous.status === 'queued', 'Engine cannot overwrite leased or finished work.');
         value.status = 'queued'; value.attempt = previous?.attempt ?? value.attempt ?? 1; value.requirements ??= {};
@@ -517,14 +532,14 @@ export class Hub {
     const reply = (value, status = 200) => ({ status, body: value });
     if (collection === 'messaging') return reply(this.messagingRoute(method, segments.slice(1), body, query));
     if (path === '/projects') {
-      if (method === 'GET') return reply({ projects: this.store.list('project') });
+      if (method === 'GET') return reply({ projects: this.store.list('project').map(project => this.projectView(project)) });
       if (method === 'POST') {
         nonblank(body.name, 'name', 200); object(body.repo, 'repo'); nonblank(body.repo.url, 'repo.url', 4096); nonblank(body.repo.defaultBranch, 'repo.defaultBranch', 200);
         if (body.docs !== undefined) requireValue(Array.isArray(body.docs), 'docs must be an array.');
-        if (body.goals !== undefined) strings(body.goals, 'goals');
-        const value = { id: id('prj'), name: body.name, repo: body.repo, docs: body.docs ?? [], goals: body.goals ?? [], createdAt: now(), updatedAt: now() };
+        const value = { id: id('prj'), name: body.name, repo: body.repo, docs: body.docs ?? [], goals: writeGoals(body.goals ?? []),
+          ...(body.gitIdentity != null ? { gitIdentity: gitIdentity(body.gitIdentity) } : {}), createdAt: now(), updatedAt: now() };
         this.store.put('project', value); this.messaging.createProject({ id: value.id, name: value.name }); this.emit('project.created', 'project', { ...value, projectId: value.id });
-        return reply(value, 201);
+        return reply(this.projectView(value), 201);
       }
     }
     if (collection === 'projects' && entityId && action === 'workflows' && childId === 'drafts' && segments.length === 4 && method === 'POST') {
@@ -535,16 +550,17 @@ export class Hub {
     }
     if (collection === 'projects' && entityId && segments.length <= 3) {
       const project = this.store.need('project', entityId);
-      if (!action && method === 'GET') return reply(project);
+      if (!action && method === 'GET') return reply(this.projectView(project));
       if (!action && method === 'PATCH') {
         for (const key of ['name', 'repo', 'docs', 'goals']) if (Object.hasOwn(body, key)) {
           if (key === 'name') nonblank(body.name, 'name', 200);
           if (key === 'repo') { object(body.repo, 'repo'); nonblank(body.repo.url, 'repo.url', 4096); nonblank(body.repo.defaultBranch, 'repo.defaultBranch', 200); }
           if (key === 'docs') requireValue(Array.isArray(body.docs), 'docs must be an array.');
-          if (key === 'goals') strings(body.goals, 'goals');
-          project[key] = body[key];
+          project[key] = key === 'goals' ? writeGoals(body.goals) : body[key];
         }
-        project.updatedAt = now(); this.store.put('project', project); this.emit('project.updated', 'project', { ...project, projectId: project.id }); return reply(project);
+        // Applies to assignments created afterwards; null clears it, leaving each node's runtime.t3.gitIdentity.
+        if (Object.hasOwn(body, 'gitIdentity')) { if (body.gitIdentity === null) delete project.gitIdentity; else project.gitIdentity = gitIdentity(body.gitIdentity); }
+        project.updatedAt = now(); this.store.put('project', project); this.emit('project.updated', 'project', { ...project, projectId: project.id }); return reply(this.projectView(project));
       }
       if (action === 'runs' && method === 'GET') {
         const status = query.get('status');
@@ -579,6 +595,7 @@ export class Hub {
       if (action === 'runs' && method === 'POST') {
         if (!workflow.activeVersion) fail(409, 'WORKFLOW_NOT_ACTIVE', 'Activate a workflow version before starting a run.');
         const selected = this.workflows.version(workflow.id, workflow.activeVersion);
+        this.checkGoalLinks(workflow.projectId, body.input);
         const run = { id: id('run'), projectId: workflow.projectId, workflowId: workflow.id, workflowVersion: selected.version, status: 'running', startedAt: now() };
         this.store.put('run', run); this.store.put('run-workflow', { id: run.id, workflow: selected });
         const result = await this.engine.startRun({ run, workflow: selected, input: body.input ?? null, project: this.store.need('project', run.projectId) }); this.applyEffects(run, result);
@@ -605,6 +622,7 @@ export class Hub {
       }
       if (action === 'inputs' && method === 'POST') {
         if (run.status !== 'running') fail(409, 'CONFLICT', 'Run must be running to accept input.');
+        this.checkGoalLinks(run.projectId, body);
         await this.engineEvent(run, { type: 'input', data: body }); this.emit('run.input', 'run', { ...run, runId: run.id }); return reply({ accepted: true }, 202);
       }
     }
@@ -625,10 +643,18 @@ export class Hub {
     if (path === '/machines' && method === 'GET') return reply({ machines: this.store.list('machine') });
     if (path === '/machines/enrollment-codes' && method === 'POST') {
       const codeId = id('enr'); const code = this.credentials.issue();
+      // Machines join at the URL given here, the configured public URL (for example a tailnet URL), or this hub's own
+      // address. Only the hub's own HTTPS address is pinned: a proxy such as tailscale serve presents its own certificate.
+      if (body.url !== undefined) publicOrigin(body.url);
+      if (body.pin !== undefined) requireValue(typeof body.pin === 'boolean', 'pin must be a boolean.');
+      const joinUrl = body.url !== undefined ? publicOrigin(body.url) : this.config.publicUrl ?? this.listenUrl;
+      const pin = body.pin ?? (body.url === undefined && this.config.publicUrl === null);
+      const fingerprint = this.tls && pin && joinUrl.startsWith('https:') ? this.tls.current.fingerprint : undefined;
       const ttl = integer(body.ttlMs ?? this.config.enrollmentTtlMs, 'ttlMs', 1, this.config.enrollmentTtlMs);
       const expiresAt = new Date(Date.now() + ttl).toISOString();
       this.store.db.prepare('INSERT INTO enrollment_codes(hash,id,expires_at) VALUES(?,?,?)').run(hash(code), codeId, expiresAt);
-      this.store.event('enrollment.created', { kind: 'enrollment', id: codeId }); return reply({ id: codeId, code, expiresAt }, 201);
+      this.store.event('enrollment.created', { kind: 'enrollment', id: codeId });
+      return reply({ id: codeId, code, expiresAt, joinCode: encodeJoinCode({ url: joinUrl, fingerprint, code }) }, 201);
     }
     if (collection === 'machines' && entityId && action === 'drain' && segments.length === 3 && method === 'POST') {
       const machine = this.store.need('machine', entityId); machine.status = 'draining'; machine.drainRequested = true; this.store.put('machine', machine); this.emit('machine.draining', 'machine', machine); return reply(machine);
@@ -703,7 +729,9 @@ export class Hub {
       // Liveness lives in machine state; the log records only transitions (machine.offline comes from maintenance).
       if (wasOffline) this.emit('machine.online', 'machine', machine, { status: machine.status });
       const cancelled = this.store.list('cancellation', value => value.machineId === machine.id && Date.parse(value.leaseExpiresAt) > Date.now());
-      return reply({ status: machine.status, cancel: { assignments: cancelled.filter(value => value.kind === 'assignment').map(value => value.entityId), jobs: cancelled.filter(value => value.kind === 'job').map(value => value.entityId) } });
+      return reply({ status: machine.status, cancel: { assignments: cancelled.filter(value => value.kind === 'assignment').map(value => value.entityId), jobs: cancelled.filter(value => value.kind === 'job').map(value => value.entityId) },
+        // The served and next certificate fingerprints, so pinned machines follow a rotation without re-joining.
+        ...(this.tls ? { tls: { fingerprints: this.tls.fingerprints } } : {}) });
     }
     if (path === '/accounts' && method === 'GET') return reply({ accounts: this.store.list('account') });
     if (path === '/jobs' && method === 'GET') {
@@ -843,8 +871,36 @@ export class Hub {
         return reply({ accepted: true, status: value.status, ...(refused ? { reason: refused } : {}) });
       }
     }
+    if (path === '/tls') {
+      if (method === 'GET') return reply(this.tls ? { enabled: true, ...this.tls.status() } : { enabled: false });
+      if (!this.tls) fail(409, 'TLS_DISABLED', 'This hub does not serve HTTPS itself.');
+    }
+    // Rotation is two steps: announce the next certificate to pinned machines, then serve it.
+    if (path === '/tls/rotate' && method === 'POST') {
+      if (!this.tls) fail(409, 'TLS_DISABLED', 'This hub does not serve HTTPS itself.');
+      const status = this.tls.rotate(); this.emit('hub.certificate-next', 'hub', { id: 'tls' }, { next: status.next }); return reply(status);
+    }
+    if (path === '/tls/activate' && method === 'POST') {
+      if (!this.tls) fail(409, 'TLS_DISABLED', 'This hub does not serve HTTPS itself.');
+      const status = this.tls.activate(); this.onTlsChange?.(); this.emit('hub.certificate-rotated', 'hub', { id: 'tls' }, { fingerprint: status.fingerprint, previous: status.previous });
+      return reply(status);
+    }
+    if (path === '/owner') {
+      if (method === 'GET') return reply(this.ownerProfile());
+      if (method === 'PATCH') {
+        requireValue(Object.keys(body).every(key => ['name', 'initials', 'idempotencyKey'].includes(key)), 'The owner profile has name and initials.');
+        const stored = this.store.get('owner-profile', 'owner') ?? { id: 'owner' };
+        if (Object.hasOwn(body, 'name')) stored.name = body.name === null ? null : nonblank(body.name, 'name', 80).trim();
+        if (Object.hasOwn(body, 'initials')) {
+          requireValue(body.initials === null || (typeof body.initials === 'string' && /^[\p{L}\p{N}]{1,3}$/u.test(body.initials)), 'Initials are 1 to 3 letters or digits.');
+          stored.initials = body.initials === null ? null : body.initials.toUpperCase();
+        }
+        this.store.put('owner-profile', stored); this.store.event('owner.updated', { kind: 'owner', id: 'owner' }, this.ownerProfile());
+        return reply(this.ownerProfile());
+      }
+    }
     if (path === '/session') {
-      if (method === 'GET') return reply({ kind: 'owner', expiresAt: auth.session?.expiresAt ?? null });
+      if (method === 'GET') return reply({ kind: 'owner', expiresAt: auth.session?.expiresAt ?? null, owner: this.ownerProfile() });
       if (method === 'POST') {
         if (auth.via === 'cookie') fail(403, 'FORBIDDEN', 'Sessions are created with the owner token.');
         // Session tokens are random and stored as hashes; the response keeps one sealed so a retry re-sends the same cookie.
@@ -880,12 +936,46 @@ export class Hub {
     if (path === '/usage' && method === 'GET') return reply(this.usage(query));
     if (path === '/overview' && method === 'GET') {
       const projectId = query.get('projectId') ?? undefined;
-      return reply({ activeAgents: this.store.count('assignment', ['leased', 'running'], projectId),
+      const goals = projectId ? this.goalProgress(this.store.need('project', projectId))
+        : this.store.list('project').flatMap(project => this.goalProgress(project).map(goal => ({ ...goal, projectId: project.id })));
+      return reply({ owner: this.ownerProfile(), goals, activeAgents: this.store.count('assignment', ['leased', 'running'], projectId),
         queuedWork: this.store.count('assignment', ['queued'], projectId) + this.store.count('job', ['queued'], projectId),
         tokensToday: this.store.tokensSince(`${now().slice(0, 10)}T00:00:00.000Z`, projectId),
         machinesOnline: this.store.list('machine', value => value.status === 'online' && Date.now() - Date.parse(value.lastHeartbeatAt) < this.config.heartbeatIntervalMs * 3).length });
     }
     fail(404, 'NOT_FOUND', 'Route not found.');
+  }
+  /** Goal links ride on input items as `goalId`; each must name a goal of the run's project. */
+  checkGoalLinks(projectId, input) {
+    const items = Array.isArray(input) ? input : input?.items ?? input?.inputs;
+    if (!Array.isArray(items)) return;
+    const known = new Set(readGoals(this.store.need('project', projectId).goals).map(goal => goal.id));
+    for (const item of items) if (item?.goalId !== undefined && !known.has(item.goalId)) fail(400, 'INVALID_INPUT', 'goalId must name a goal of this project.');
+  }
+  /** A created work item serves its input's goal, or its parent's goal when a planner made it. */
+  linkGoal(run, { id: itemId, parentId, goalId }) {
+    const goal = goalId ?? (parentId && this.store.get('goal-link', parentId)?.goalId);
+    if (goal) this.store.put('goal-link', { id: itemId, projectId: run.projectId, runId: run.id, goalId: goal });
+  }
+  /**
+   * Goals with progress: the work items linked to each, counting leaves only, since a planned item finishes through
+   * the items it was split into. `done` counts linked items whose status is done.
+   */
+  goalProgress(project) {
+    const links = new Map();
+    for (const link of this.store.forProject('goal-link', project.id)) links.set(link.goalId, [...(links.get(link.goalId) ?? []), link.id]);
+    return readGoals(project.goals).map(goal => {
+      const items = (links.get(goal.id) ?? []).map(itemId => this.store.get('work-item', itemId) ?? this.engine.getWorkItem?.(itemId)).filter(Boolean);
+      const leaves = items.filter(item => !item.childIds?.length);
+      return { ...goal, workItemIds: leaves.map(item => item.id), done: leaves.filter(item => item.status === 'done').length, total: leaves.length };
+    });
+  }
+  projectView(project) { return { ...project, goals: this.goalProgress(project) }; }
+  /** The owner's display name and initials: edited values first, then `ownerName` from config, initials derived from the name. */
+  ownerProfile() {
+    const stored = this.store.get('owner-profile', 'owner') ?? {};
+    const name = stored.name ?? this.config.ownerName ?? null;
+    return { name, initials: stored.initials ?? (name ? initialsOf(name) : null) };
   }
   /** Work items of runs whose engine keeps run state come from the engine; other runs keep the hub's copies. */
   workItems(runId) {

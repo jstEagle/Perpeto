@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -71,3 +72,29 @@ test('release returns failed reservations and the decision log pages', () => wit
   const other = new AgentPolicyStore(filename);
   try { assert.equal(other.getPolicy('root').used, 1); } finally { other.close(); }
 }));
+
+test('factory tool settings are immutable, persistent and inherited before child linking', () => withStore((store, filename) => {
+  store.setPolicy({ threadId: 'root', maxSubagents: 1, allowedSubagentProviders: ['codex'], t3Tools: 'policy' });
+  assert.equal(store.getPolicy('root').t3Tools, 'policy');
+  assert.equal(store.getPolicy('unlinked-child', 'root').t3Tools, 'policy');
+  assert.throws(() => store.setPolicy({ threadId: 'root', maxSubagents: 1, allowedSubagentProviders: ['codex'], t3Tools: 'full' }), { code: 'CONFLICT' });
+  assert.throws(() => store.setPolicy({ threadId: 'bad', maxSubagents: 0, allowedSubagentProviders: [], t3Tools: false }), { code: 'INVALID_INPUT' });
+  store.authorize(request('delegate'));
+  store.recordCreated({ requestKey: 'delegate', callerThreadId: 'root', childThreadId: 'child' });
+  const other = new AgentPolicyStore(filename);
+  try { assert.equal(other.getPolicy('child').t3Tools, 'policy'); } finally { other.close(); }
+}));
+
+test('schema v1 policies migrate without changing their upstream tools', () => {
+  const directory = mkdtempSync(join(tmpdir(), 't3-policy-v1-'));
+  const filename = join(directory, 'policy.sqlite');
+  const old = new DatabaseSync(filename);
+  old.exec(`CREATE TABLE policies(thread_id TEXT PRIMARY KEY, max_subagents INTEGER NOT NULL, allowed_providers TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL) STRICT;
+    INSERT INTO policies VALUES ('legacy', 1, '["codex"]', 0, '2026-10-21'); PRAGMA user_version = 1;`);
+  old.close();
+  const migrated = new AgentPolicyStore(filename);
+  try {
+    assert.equal(migrated.getPolicy('legacy').t3Tools, 'full');
+    assert.equal(migrated.setPolicy({ threadId: 'legacy', maxSubagents: 1, allowedSubagentProviders: ['codex'] }).created, false);
+  } finally { migrated.close(); rmSync(directory, { recursive: true, force: true }); }
+});

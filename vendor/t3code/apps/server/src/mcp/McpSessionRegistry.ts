@@ -21,6 +21,7 @@ export interface McpCredentialRequest {
    * token is honored (#7083). Defaults to full access.
    */
   readonly browserToolsAvailable?: boolean;
+  readonly factoryTools?: boolean;
   readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
 }
 
@@ -120,10 +121,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
         },
         client: undefined,
+        ...(request.factoryTools ? { factoryTools: true } : {}),
         capabilities: new Set<McpInvocationContext.McpCapability>([
           "orchestration",
-          "worktree",
-          "pull-requests",
+          ...(request.factoryTools ? [] : (["worktree", "pull-requests"] as const)),
           ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
         ]),
         issuedAt,
@@ -139,7 +140,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           threadId: scope.thread.threadId,
           providerSessionId,
           providerInstanceId: scope.thread.providerInstanceId,
-          endpoint,
+          endpoint: request.factoryTools ? endpoint + "/perpeto" : endpoint,
           authorizationHeader: `Bearer ${rawToken}`,
           browserToolsAvailable: scope.capabilities.has("preview"),
           capabilities: scope.capabilities,

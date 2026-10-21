@@ -46,6 +46,7 @@ export const clientRuntimeModeCeiling = (client: McpClientCaller | undefined): R
  */
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;
+  readonly factoryTools?: boolean;
   readonly capabilities: ReadonlySet<McpCapability>;
   readonly issuedAt: number;
   readonly requestNamespace: string;

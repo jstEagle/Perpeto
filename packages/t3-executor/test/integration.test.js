@@ -16,7 +16,7 @@ const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@example.c
 async function setup(t, { accountProvider, fakeOptions } = {}) {
   const fake = await startFakeT3(fakeOptions);
   const root = await mkdtemp(join(tmpdir(), 't3-executor-int-'));
-  const executor = createT3Executor({ accountProvider, config: { url: fake.url, settleMs: 30, pollMs: 10, interruptGraceMs: 300, accountReadyTimeoutMs: 500 },
+  const executor = createT3Executor({ accountProvider, config: { url: fake.url, settleMs: 30, pollMs: 10, interruptGraceMs: 300, accountReadyTimeoutMs: 500, agentHomesDir: fake.homes },
     createClient: settings => new T3Client({ baseUrl: settings.url, token: 'test-token', pingMs: 0 }) });
   const events = [];
   let workspaces = 0;
@@ -101,6 +101,7 @@ test('builders clone repo.url, publish the work branch and rework from it', asyn
   assert.ok(events.some(event => event.data.interaction === 'branch.published' && event.data.published));
   const prompt = fake.state.commands.find(item => item.tag === 'orchestration.launchThread').payload.initialMessage.text;
   assert.match(prompt, /Work on branch perpeto\/wi_7 and commit your changes there/);
+  assert.match(prompt, /no pull request to open or register/, 'a local origin asks for no pull request');
 
   // A rework attempt in a fresh workspace starts from the published branch.
   reply(fake, 'Addressed feedback.', launch => {
@@ -129,7 +130,7 @@ test('providers lists the driver kinds T3 reports enabled and ready', async t =>
     { instanceId: 'claudeAgent', driver: 'claudeAgent', enabled: true, status: 'error' },
     { instanceId: 'cursor', driver: 'cursor', enabled: false, status: 'ready' },
   ] });
-  const executor = createT3Executor({ config: { url: fake.url }, createClient: settings => new T3Client({ baseUrl: settings.url, token: 'test-token', pingMs: 0 }) });
+  const executor = createT3Executor({ config: { url: fake.url, agentHomesDir: fake.homes }, createClient: settings => new T3Client({ baseUrl: settings.url, token: 'test-token', pingMs: 0 }) });
   t.after(async () => { await executor.close(); await fake.close(); });
   assert.deepEqual(await executor.providers(), ['codex']);
 });
@@ -169,7 +170,13 @@ test('runs on a reserved account instance, reports limits to the pool and releas
   const result = await executor.run(base({ attempt: 2 }), await ctx());
   assert.equal(result.outcome, 'failure');
   const update = fake.state.commands.find(item => item.tag === 'server.updateSettings').payload;
-  assert.deepEqual(update, { patch: {}, providerInstanceMutation: { operation: 'upsert', instanceId: 'factory_acct_1', instance: { driver: 'codex', displayName: 'Build', enabled: true, config: { homePath: '/x' } } } });
+  // The pooled home is kept; isolation adds the factory Git identity and turns personal Codex features off.
+  const { environment, config, ...instance } = update.providerInstanceMutation.instance;
+  assert.deepEqual({ ...update, providerInstanceMutation: { ...update.providerInstanceMutation, instance } },
+    { patch: {}, providerInstanceMutation: { operation: 'upsert', instanceId: 'factory_acct_1', instance: { driver: 'codex', displayName: 'Build', enabled: true } } });
+  assert.equal(config.homePath, '/x');
+  assert.match(config.launchArgs, /-c features\.memories=false/);
+  assert.ok(environment.some(variable => variable.name === 'GIT_AUTHOR_EMAIL' && variable.value === 'agents@perpeto.local'));
   const launch = fake.state.commands.find(item => item.tag === 'orchestration.launchThread').payload;
   assert.equal(launch.modelSelection.instanceId, 'factory_acct_1');
   assert.deepEqual(accounts.calls.map(call => call[0]), ['acquire', 'bindingFor', 'bindingFor', 'observe', 'release']);

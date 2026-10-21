@@ -66,8 +66,26 @@ function events(effects) {
  * stay in the run store. Merge entries change only through `enqueue-merge`, `cancel-merge` and results the hub itself
  * reports, so these two effects keep the hub's merge entries complete.
  */
-function translateEffects(run, effects, status) {
-  const out = [];
+/** The input items an event adds, in the order the engine creates their work items. */
+const inputsOf = event => event?.type === 'input.added' ? event.data?.items ?? [] : event?.type === 'run.started' ? event.data?.inputs ?? [] : [];
+
+/**
+ * Work items the event created, so the hub can link them to goals: a root item takes the `goalId` of the input item
+ * that produced it (the engine creates them in input order), and a planned child names its parent.
+ */
+function createdItems(effects, inputs) {
+  let root = 0; const out = [];
+  for (const effect of effects) {
+    if (effect.type !== 'create-work-item') continue;
+    const { id, parentId } = effect.workItem;
+    const goalId = parentId ? undefined : inputs[root++]?.goalId;
+    out.push({ type: 'work-item-created', value: { id, ...(parentId ? { parentId } : {}), ...(typeof goalId === 'string' ? { goalId } : {}) } });
+  }
+  return out;
+}
+
+function translateEffects(run, effects, status, inputs = []) {
+  const out = [...createdItems(effects, inputs)];
   for (const effect of effects) {
     if (effect.type === 'create-assignment') out.push({ type: 'assignment', value: { ...effect.assignment, projectId: run.projectId } });
     if (effect.type === 'create-job') out.push({ type: 'job', value: effect.job });
@@ -80,9 +98,9 @@ function translateEffects(run, effects, status) {
 }
 
 /** Runs started before state moved to the run store keep their whole state in the hub. Steps share untouched entities. */
-function translate(run, before, result) {
+function translate(run, before, result, inputs = []) {
   const { state, effects } = result;
-  const out = [];
+  const out = [...createdItems(effects, inputs)];
   for (const effect of effects) {
     if (effect.type === 'create-assignment') out.push({ type: 'assignment', value: { ...effect.assignment, projectId: run.projectId } });
     if (effect.type === 'create-job') out.push({ type: 'job', value: effect.job });
@@ -101,7 +119,7 @@ const stamped = event => ({ id: event.id ?? randomUUID(), at: event.at ?? new Da
 function apply(run, state, event) {
   const result = engine(() => step(state, stamped(event)));
   if (result.ignored) return { state, effects: [], ignored: result.ignored };
-  return { state: result.state, effects: translate(run, state, result) };
+  return { state: result.state, effects: translate(run, state, result, inputsOf(event)) };
 }
 
 /**
@@ -232,7 +250,7 @@ export function createWorkflowAdapter() {
   function applyStored(run, event) {
     const result = engine(() => runs().apply(run.id, stamped(event)));
     const status = runs().getRun(run.id)?.status;
-    return { seq: result.seq, ...(result.duplicate ? { duplicate: true } : {}), ...(result.ignored ? { ignored: result.ignored } : {}), effects: translateEffects(run, result.effects, status) };
+    return { seq: result.seq, ...(result.duplicate ? { duplicate: true } : {}), ...(result.ignored ? { ignored: result.ignored } : {}), effects: translateEffects(run, result.effects, status, inputsOf(event)) };
   }
   return {
     /** The engine owns retries: the hub reports expired leases instead of requeueing run work itself. */
@@ -254,12 +272,12 @@ export function createWorkflowAdapter() {
         const page = engine(() => runs().listEvents(run.id, { after: seq, limit: OUTBOX_PAGE }));
         for (const row of page) {
           seq = row.seq;
-          if (!row.ignored) groups.push({ seq: row.seq, raw: engine(() => runs().apply(run.id, row.event)).effects });
+          if (!row.ignored) groups.push({ seq: row.seq, raw: engine(() => runs().apply(run.id, row.event)).effects, inputs: inputsOf(row.event) });
         }
         if (page.length < OUTBOX_PAGE) break;
       }
       const status = runs().getRun(run.id)?.status;
-      return { seq, groups: groups.map((group, index) => ({ seq: group.seq, effects: translateEffects(run, group.raw, index === groups.length - 1 ? status : null) })) };
+      return { seq, groups: groups.map((group, index) => ({ seq: group.seq, effects: translateEffects(run, group.raw, index === groups.length - 1 ? status : null, group.inputs) })) };
     },
     pendingRuns() { return [...new Set(runs().pendingEffects({ limit: OUTBOX_PAGE }).map(row => row.runId))]; },
     /** Acknowledge outbox effects the hub has committed: those at or below `applied(runId)`. */
@@ -300,7 +318,7 @@ export function createWorkflowAdapter() {
     },
     diffGraphs(from, to) { return diff(from ?? null, to); },
     buildArchitectPrompt({ prompt, project, machines = [], providers = [], baseGraph, validationErrors = [] }) {
-      return engine(() => architectPrompt({ project, docs: project.docs ?? [], goals: project.goals ?? [],
+      return engine(() => architectPrompt({ project, docs: project.docs ?? [], goals: (project.goals ?? []).map(goal => typeof goal === 'string' ? goal : goal.title),
         machines: machines.map(machine => ({ name: machine.name, id: machine.id, os: machine.os, arch: machine.arch, labels: machine.labels, providers: machine.providers, capacity: machine.capacity, status: machine.status })),
         providers, ...(baseGraph ? { existingWorkflow: { graph: baseGraph } } : {}), userPrompt: prompt, previousErrors: architectErrors(validationErrors) }));
     },

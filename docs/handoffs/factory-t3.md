@@ -1,5 +1,44 @@
 # factory-t3 handoff
 
+## Factory orchestration context filtering, 21 October 2026
+
+Implemented in this worktree from `main` at `61855d5`. No push or merge.
+
+The executor attaches immutable `t3Tools: "policy"` alongside the existing per-thread AgentPolicy before launch. The recorded server-only vendor patch reads it during provider-session preparation. Zero-subagent roles (or an empty provider allowlist) receive no T3 MCP session. Delegation-enabled roles receive an isolated `/mcp/perpeto` catalog with only `orchestrator_capabilities`, `delegate_task`, `task_status` and `task_cancel`; the existing atomic budget/provider checks still apply. Factory credentials cannot switch to the full MCP endpoint. Policies migrate from SQLite v1 to v2 with `"full"` as the legacy default; children inherit via the policy link or lineage root before linking.
+
+Codex and Claude suppress T3 orchestration notes with the reduced catalog attached. **Known gap, deliberately kept outside the vendor patch:** delegation-enabled Cursor, OpenCode and ACP providers still receive T3 notes from `vendor/t3code/packages/provider-*`. Zero-subagent roles omit MCP centrally and avoid those notes. Provider-native tools remain a separate boundary. Claude prompt construction is covered by tests, not a new live Claude run.
+
+### Measurement
+
+Two tiny real Codex builder turns, one before and one after, used `gpt-6.1-sol`, low effort, existing login, separate temporary T3 state and bare repositories. Each created and committed `hello.txt`; both succeeded with the factory Git identity. No login was created or switched.
+
+| First model call | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Codex rollout input tokens | 15,256 | 13,562 | -1,694 (-11.1%) |
+| T3 orchestration/runtime/browser notes | 7,559 chars | 0 | Removed |
+| App-owned tool catalog for builder | Full | None | Removed |
+
+These are provider-reported first-call counts, not synthetic fake-server usage or an estimate of schema token cost. Harness instructions and 2,671 characters of model-catalog multi-agent notes remain. Prompt assembly tests compare the upstream and factory paths; MCP HTTP tests verify the actual catalog and call boundary. Reproduce the live builder with `node packages/t3-executor/scripts/live-check.mjs --isolation --provider codex --model gpt-6.1-sol --effort low`; the baseline used the pre-patch runtime and executor. The two-turn allowance is spent; no live delegation/Claude turn was added.
+
+### Validation
+
+Node v24.22.0. Repository `npm test`: 461 passed. Related upstream suites: 649 passed across 15 files (policy HTTP/service, factory MCP HTTP catalog/calls, MCP services/toolkits/access, provider-session preparation/inheritance, Codex and Claude prompt assembly). Vendor server typecheck and runtime build passed. `npm run verify:upstream` verifies the pinned import and recorded patches.
+
+## Live acceptance fixes, 21 October 2026
+
+Branch `t3/756151ef`, from the findings in [live acceptance run 1](live-acceptance-1.md#fixed-after-the-run). Not pushed or merged.
+
+- **Agent isolation** ([isolation.js](../../packages/t3-executor/src/isolation.js), [README](../../packages/t3-executor/README.md#agent-isolation)): each assignment runs on a factory provider instance derived from the operator's or the pooled account's, through T3's existing instance `environment`, `homePath` and `launchArgs`; no vendor patch. New settings: `agentIsolation` (`factory`, or `inherit` for debugging), `gitIdentity`, `agentHomesDir`, `codexHome`, `personalSkillDirs`.
+- **Prompts:** only work roles get the closing branch and pull request request; a local origin says there is no pull request. Planner `summary` comes from the json block.
+- **Live:** `live-check.mjs --isolation`, two Codex `gpt-6.1-sol` low turns. The second, after disabling `~/.agents/skills`: commit by `Perpeto Agent <agents@perpeto.local>`, no personal context, 15,252 first-call input tokens against 31,347 in run 1. Tests: 45 of 45.
+
+Not done or not verified:
+
+- **Claude isolation live**, and whether `--setting-sources` also hides user-scope MCP servers in `~/.claude.json`.
+- **T3 context** (finding 3): addressed by the per-thread filtering patch above. The reduced catalog preserves policy-allowed app-owned delegation. The remaining external-provider prompt gap is recorded above.
+- **Auth link:** the factory Codex home links `auth.json` to the operator's file. If a Codex release starts replacing it atomically, the executor refuses that home (`ISOLATION_AUTH_DIVERGED`) instead of using a forked copy.
+- **Hub change requested** (apps/hub is another worker's): to set the identity per project, accept `gitIdentity: { name, email }` on `POST/PATCH /projects` and copy it onto each assignment as `assignment.gitIdentity`. The executor already reads it. Per-node identity works today through `node.json` `runtime.t3.gitIdentity`.
+
 ## Account lease follow-up, 21 October 2026
 
 Implemented on `t3/executor-reservation-renewal` after merging `t3/account-reservation-retention`. Only executor files and this handoff changed beyond that dependency merge; `apps/node` remains owned by the node worker.
@@ -53,7 +92,7 @@ The live checks used existing harness logins on this machine, temporary T3 base 
 - **Provider-native subagent interrupt, live:** Claude declined to start its built-in subagent when told the policy forbids it, so `--native` was skipped. The path has unit tests only. A hard pre-start block needs an adapter patch; see the README.
 - **Real subscription accounts:** not exercised live, because that needs enrolled account homes. Covered with the real pool and synthetic fixtures.
 - **Package resolution:** **`@perpeto/t3-executor` does not resolve from `factory-node`**, because the repository has no workspace links. The node silently skips the executor. Configure `executorPackages` with the absolute `src/index.js` path (verified), or add npm workspaces at the root.
-- **Not enforced:** `t3_thread_fork` and `schedule_task` are not policy-checked. Native subagent token usage is not reported, because T3 counts only the main agent.
+- **Not enforced in upstream full sessions:** `t3_thread_fork` and `schedule_task` are not policy-checked. Factory sessions now hide them entirely. Native subagent token usage is not reported, because T3 counts only the main agent.
 - **One T3 project per clone:** clone-mode workspaces each register a T3 project, because T3 keys projects by root.
 
 ## Contract requests (architecture.md not edited)

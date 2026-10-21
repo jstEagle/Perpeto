@@ -196,7 +196,9 @@ test('automatic escalations stop after the unattended limit', () => {
     edges: [flow('a', 'in', 'loop'), flow('b', 'loop', 'dev'), flow('c', 'dev', 'rev'), flow('d', 'rev', 'out', 'pass'),
       flow('e', 'rev', 'loop', 'fail'), flow('f', 'fixer', 'loop')],
   };
-  assert.deepEqual(validateGraph(graph), { ok: true, errors: [], warnings: [] });
+  const result = validateGraph(graph);
+  assert.deepEqual([result.ok, result.errors], [true, []]);
+  assert.deepEqual(result.warnings.map(warning => `${warning.code}:${warning.nodeId}`), ['NO_RETRY:dev', 'NO_RETRY:rev', 'NO_RETRY:fixer']);
   const run = new Driver();
   run.start({ graph, repo: undefined });
   for (let round = 1; round <= MAX_UNATTENDED_ESCALATIONS; round += 1) {

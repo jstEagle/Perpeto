@@ -1,3 +1,5 @@
+import { AgentPolicyStore } from "../../../../../../packages/t3-executor/src/policy-store.js";
+import * as PerpetoAgentPolicy from "../perpeto/AgentPolicy.ts";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -226,6 +228,7 @@ function makeThreadCreatedEvent(input: {
   readonly threadId: ThreadId;
   readonly now: DateTime.Utc;
   readonly projectId?: ProjectId;
+  readonly rootThreadId?: ThreadId;
 }) {
   return Effect.gen(function* () {
     const projectId =
@@ -253,7 +256,7 @@ function makeThreadCreatedEvent(input: {
       lineage: {
         parentThreadId: null,
         relationshipToParent: null,
-        rootThreadId: input.threadId,
+        rootThreadId: input.rootThreadId ?? input.threadId,
       },
       forkedFrom: null,
       createdAt: input.now,
@@ -636,6 +639,7 @@ function runBrowserAccessScenario(input: {
   readonly deviceOverride?: boolean;
   readonly createThread?: boolean;
   readonly projectExists?: boolean;
+  readonly rootThreadId?: ThreadId;
 }) {
   return Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
@@ -664,7 +668,15 @@ function runBrowserAccessScenario(input: {
       });
       if (input.createThread !== false) {
         yield* eventSink.write({
-          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now, projectId })],
+          events: [
+            yield* makeThreadCreatedEvent({
+              idAllocator,
+              threadId,
+              now,
+              projectId,
+              ...(input.rootThreadId === undefined ? {} : { rootThreadId: input.rootThreadId }),
+            }),
+          ],
         });
       }
       yield* manager
@@ -4908,3 +4920,51 @@ it.effect(
       assert.isFalse(denied?.capabilities?.has("device"));
     }),
 );
+
+for (const [maxSubagents, providers, inherited] of [
+  [0, ["codex"], false],
+  [1, ["codex"], false],
+  [1, [], false],
+  [0, ["codex"], true],
+  [1, ["codex"], true],
+] as const) {
+  it.effect(
+    `factory MCP before provider open: max=${maxSubagents}, providers=${providers.length}, inherited=${inherited}`,
+    () =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const store = new AgentPolicyStore(":memory:");
+          store.setPolicy({
+            threadId: inherited ? "factory-root" : "thread-provider-session-manager-browser-access",
+            maxSubagents,
+            allowedSubagentProviders: providers,
+            t3Tools: "policy",
+          });
+          PerpetoAgentPolicy.setStoreForTesting(store);
+          return store;
+        }),
+        () =>
+          runBrowserAccessScenario({
+            enableAgentBrowserAccess: true,
+            projectOverride: true,
+            ...(inherited ? { rootThreadId: ThreadId.make("factory-root") } : {}),
+          }).pipe(
+            Effect.tap((config) =>
+              Effect.sync(() => {
+                if (maxSubagents === 0 || providers.length === 0) assert.isUndefined(config);
+                else {
+                  assert.equal(config?.endpoint, "http://127.0.0.1:43123/mcp/perpeto");
+                  assert.deepEqual(config?.capabilities, new Set(["orchestration"]));
+                  assert.isFalse(config?.browserToolsAvailable);
+                }
+              }),
+            ),
+          ),
+        (store) =>
+          Effect.sync(() => {
+            PerpetoAgentPolicy.setStoreForTesting(undefined);
+            store.close();
+          }),
+      ),
+  );
+}
