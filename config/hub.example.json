@@ -18,6 +18,11 @@
   "deliveryLeaseDurationMs": 60000,
   "ownerTokenPath": "../.perpeto/hub/owner.secret",
   "credentialKeyPath": "../.perpeto/hub/credentials.key",
+  "tlsEnabled": false,
+  "tlsCertPath": "../.perpeto/hub/tls/cert.pem",
+  "tlsKeyPath": "../.perpeto/hub/tls/key.pem",
+  "allowInsecureRemote": false,
+  "publicUrl": null,
   "corsOrigins": [
     "http://127.0.0.1:4321"
   ],
