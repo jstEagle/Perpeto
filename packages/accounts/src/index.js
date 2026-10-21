@@ -294,6 +294,20 @@ export class AccountPool {
     });
   }
 
+  /** Explicit local re-enrollment only. Open with the old identity before rebinding. */
+  rebindMachine({ machineId, idempotencyKey }) {
+    const result = this.#mutate('rebind', { machineId }, idempotencyKey, state => {
+      identifier(machineId);
+      if (Object.keys(state.reservations).length) fail('ACTIVE_RESERVATIONS');
+      state.machineId = machineId;
+      // Old snapshots and selection receipts belong to the previous enrollment.
+      state.receipts = {};
+      return { machineId };
+    });
+    this.#machineId = result.machineId;
+    return result;
+  }
+
   disable(input) { return this.#update('disable', input, record => { record.disabled = true; }); }
   enable(input) { return this.#update('enable', input, record => { record.disabled = false; }); }
   /** Call only after account-specific reauthentication has been confirmed externally. */

@@ -451,3 +451,24 @@ test('an entirely unhealthy pool persists quarantine and throws exhaustion, incl
   assert.equal(reopened.snapshot()[0].status, 'invalid');
   assert.deepEqual(reopened.reservations(), []);
 });
+
+test('explicit machine rebind preserves homes, rejects active work and fences old handles', t => {
+  const f = fixture(t);
+  f.add('acct_a');
+  const home = f.pool.bindingFor('acct_a').instance.config.homePath;
+  const oldHandle = new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now });
+  f.select('asg_running');
+  const input = { machineId: 'mch_reenrolled', idempotencyKey: 'rebind-once' };
+  assert.throws(() => f.pool.rebindMachine(input), code('ACTIVE_RESERVATIONS'));
+  f.pool.reconcileReservations({ activeReservationIds: [], idempotencyKey: f.next() });
+  assert.deepEqual(f.pool.rebindMachine(input), { machineId: 'mch_reenrolled' });
+  assert.deepEqual(f.pool.rebindMachine(input), { machineId: 'mch_reenrolled' });
+  assert.throws(() => oldHandle.snapshot(), code('INVALID_REGISTRY'));
+  assert.throws(() => new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', clock: f.now }), code('INVALID_REGISTRY'));
+  const reopened = new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_reenrolled', clock: f.now });
+  assert.equal(reopened.snapshot()[0].machineId, 'mch_reenrolled');
+  assert.equal(reopened.bindingFor('acct_a').instance.config.homePath, home);
+  assert.deepEqual(reopened.rebindMachine(input), { machineId: 'mch_reenrolled' });
+  assert.equal(reopened.select({ provider: 'codex', assignmentId: 'asg_new', idempotencyKey: 'new-machine' }).account.machineId, 'mch_reenrolled');
+});
+
