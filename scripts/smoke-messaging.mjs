@@ -73,7 +73,7 @@ try {
   const credentialFile = join(home, 'writer.secret');
   const clientConfig = join(home, 'client.json');
   await writeFile(credentialFile, writer+'\n', {mode:0o600});
-  await writeFile(clientConfig, JSON.stringify({baseUrl:origin,projectId:'smoke-project',roleId:'implementation',channelId:'build',credentialFile}));
+  await writeFile(clientConfig, JSON.stringify({baseUrl:origin,messagingPrefix:'/api/perpeto',projectId:'smoke-project',roleId:'implementation',channelId:'build',credentialFile}));
   function cli(args, input) {
     const result = spawnSync(process.execPath, [resolve(root, 'packages/sdk/src/cli.js'), '--config', clientConfig, ...args], {cwd:root, input, encoding:'utf8', timeout:15000});
     if (result.status !== 0) throw new Error('Factory client subprocess failed.');
