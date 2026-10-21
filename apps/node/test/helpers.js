@@ -85,7 +85,7 @@ export async function fakeHub(t, options = {}) {
       } else if (req.url.endsWith('/renew')) {
         renewals.push({ path: req.url, body });
         if (lost) return send(409, { error: { code: 'lease_lost' } });
-        result = { leaseExpiresAt: new Date(Date.now() + ttl).toISOString() };
+        result = { leaseExpiresAt: new Date(Date.now() + ttl).toISOString(), ...(await options.renew?.({ path: req.url, body })) };
       } else if (req.url.endsWith('/events')) {
         if (lost) return send(409, { error: { code: 'lease_lost' } });
         events.push({ path: req.url, ...body });

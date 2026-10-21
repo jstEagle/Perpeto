@@ -9,6 +9,7 @@ import { outputInstructions, outputKind, parseRoleResult } from './results.js';
 import { ThreadTracker, TERMINAL_RUN_STATUSES } from './thread-state.js';
 import { keepAccountReservation } from './account-lease.js';
 import { factoryInstance, gitIdentity, resolveIsolation } from './isolation.js';
+import { prepareMessaging, waitingSection, liveText } from './inbox.js';
 import { branchName, isDirty, localPullRequestUrl, prepareWorkspace, publishBranch, pullRequestUrl, revisionOf } from './workspace.js';
 
 /** Harness option keys the executor consumes instead of forwarding as model options. */
@@ -238,6 +239,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       await Promise.resolve(accounts.observe({ accountId, reservationId, ...attemptKey, message, idempotencyKey: stableId('observe', assignment.id, String(attemptKey.attempt), key) })).catch(() => {});
     };
     let result;
+    let messagingSetup = null;
     try {
       result = await execute();
       callerSignal.throwIfAborted();
@@ -249,6 +251,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       result = { outcome: 'failure', summary: lease.signal.reason.message };
       return result;
     } finally {
+      await messagingSetup?.remove().catch(() => {});
       lease?.stop();
       if (selection && typeof accounts?.release === 'function') await Promise.resolve(accounts.release(selection, { ...attemptKey, reservationId, result })).catch(() => {});
     }
@@ -311,6 +314,12 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       if (kind === 'work' && workspace.mode !== 'workspace') {
         extra.push(`Work on branch ${branch} and commit your changes there. ${settings.publishBranch ? 'The factory pushes the branch to origin when you finish; do not push other branches.' : ''}`.trim());
       }
+      // Messaging: the agent's run-scoped commands, and messages that waited in its role's inbox for this assignment.
+      messagingSetup = await prepareMessaging(assignment, { workspace: ctx.workspace, messaging: ctx.messaging }).catch(() => null);
+      if (messagingSetup) extra.push(messagingSetup.prompt);
+      const waiting = (Array.isArray(assignment.inbox) ? assignment.inbox : []).filter(item => typeof item?.id === 'string' && typeof item.body === 'string');
+      const waitingText = waitingSection(waiting);
+      if (waitingText) extra.push(waitingText);
       const delivery = settings.publishBranch && localPullRequestUrl(assignment.repo, branch) ? 'local' : 'forge';
       const runtimeMode = RUNTIME_MODES.has(target.overrides.runtimeMode) ? target.overrides.runtimeMode : settings.runtimeMode;
       const interactionMode = target.overrides.interactionMode === 'plan' ? 'plan' : settings.interactionMode;
@@ -336,12 +345,14 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         provider: instance.driver ?? target.provider, providerInstanceId: instance.instanceId, model: target.model,
         resumed: launch?.resumed === true, workspaceMode: workspace.mode, at: new Date().toISOString(),
       } });
+      if (waiting.length) await report({ type: 'delivered', data: { messageIds: waiting.map(item => item.id), via: 'prompt', threadRef: threadRef(threadId) } });
 
-      return follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch });
+      return follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch,
+        inbox: ctx.inbox, delivered: new Set(waiting.map(item => item.id)) });
     }
   }
 
-  async function follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch }) {
+  async function follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch, inbox, delivered }) {
     // Keep observing while cancellation interrupts and drains active runs.
     const observation = new AbortController();
     const trackers = new Map();
@@ -361,6 +372,34 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     const providerName = instance.driver ?? target.provider;
 
     const requestStop = (outcome, summary) => { if (!stop) { stop = { outcome, summary }; wake(); } };
+    let steered = 0;
+    let pendingRun = null;
+
+    /**
+     * Messages the node relays from lease renewals while this assignment runs. Each batch goes into the root thread
+     * once, with T3's `auto` delivery: it steers the active run when the provider supports steering, otherwise queues
+     * it as the next turn, or starts a turn when the thread is idle. Failed dispatches stay pending for the next renewal.
+     */
+    async function deliverInbox() {
+      if (!inbox || stop || signal.aborted) return false;
+      const fresh = [...new Map(inbox.take().filter(item => typeof item?.id === 'string' && typeof item.body === 'string' && !delivered.has(item.id))
+        .map(item => [item.id, item])).values()];
+      if (!fresh.length) return false;
+      const ids = fresh.map(item => item.id);
+      const key = stableId('inbox', threadId, ...ids);
+      // Into an idle thread T3 starts a new turn; until it appears the thread is not settled.
+      const expectRun = root.isIdle() ? { after: root.runs.size, until: Date.now() + Math.max(10000, settings.settleMs * 5) } : null;
+      try {
+        await t3.dispatch({ type: 'message.dispatch', commandId: `perpeto-cmd-${key}`, threadId, messageId: `perpeto-msg-${key}`,
+          text: liveText(fresh, assignment.role ?? 'this role'), attachments: [], deliveryIntent: 'auto', dispatchMode: { type: 'queue_after_active' } }, { signal });
+      } catch { return false; }
+      for (const id of ids) delivered.add(id);
+      steered++;
+      if (expectRun) pendingRun = expectRun;
+      await report({ type: 'delivered', data: { messageIds: ids, via: 'steer', threadRef: threadRef(threadId) } });
+      return true;
+    }
+    const unsubscribeInbox = inbox?.subscribe?.(() => wake());
 
     function watch(childThreadId, meta) {
       if (trackers.has(childThreadId)) return;
@@ -520,7 +559,11 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       }
     }
 
-    const allIdle = () => [...trackers.values()].every(tracker => tracker.isIdle());
+    const allIdle = () => {
+      if (pendingRun && root.runs.size <= pendingRun.after && Date.now() < pendingRun.until) return false;
+      pendingRun = null;
+      return [...trackers.values()].every(tracker => tracker.isIdle());
+    };
     /** Resolve true once every followed thread has stayed idle for `settleMs`. */
     async function waitIdle(timeoutMs, { signal: waitSignal, honorStop = true } = {}) {
       const until = Date.now() + timeoutMs;
@@ -528,6 +571,8 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       while (Date.now() < until) {
         if (fatal && !signal.aborted) throw fatal;
         await pollDecisions();
+        // A delivered message makes a turn: the thread is not settled until T3 reports it.
+        if (honorStop) await deliverInbox();
         if (!honorStop) await interruptAll('cancel');
         if (waitSignal?.aborted || (honorStop && stop)) return false;
         if (allIdle()) { idleSince ??= Date.now(); if (Date.now() - idleSince >= settings.settleMs) return true; }
@@ -564,6 +609,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       await pollDecisions();
       return await finish();
     } finally {
+      unsubscribeInbox?.();
       for (const tracker of trackers.values()) tracker.closed = true;
       observation.abort();
       for (const handle of subscriptions) handle.cancel();
@@ -591,7 +637,13 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         const reason = failure?.message ? `${failure.class ?? 'error'}: ${failure.message}` : `Turn ended with status ${latest?.status ?? 'unknown'}.`;
         return { outcome: 'failure', summary: clip(text ? `${reason}\n\n${text}` : reason), ...evidence };
       }
-      const parsed = parseRoleResult(kind, text);
+      let parsed = parseRoleResult(kind, text);
+      // A message can add a turn after a structured answer; the answer stands unless a later turn gives a new one.
+      if (steered && kind !== 'work' && (parsed.error || (kind === 'review' && !parsed.fields.verdict))) {
+        const earlier = root.orderedRuns().filter(run => run.status === 'completed').map(run => root.assistantText(run.id)).join('\n\n');
+        const fallback = parseRoleResult(kind, earlier);
+        if (!fallback.error && (kind !== 'review' || fallback.fields.verdict)) parsed = fallback;
+      }
       if (parsed.error) return { outcome: 'failure', summary: clip(`${parsed.error}\n\n${text}`), ...evidence };
       const summary = parsed.summary ?? (text || 'The agent finished without a written summary.');
       signal.throwIfAborted();
