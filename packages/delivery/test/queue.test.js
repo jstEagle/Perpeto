@@ -11,6 +11,8 @@ test('Two local PRs: test exact merged results, merge passing PR and reject fail
   const state = await f.drain();
   assert.deepEqual(state.entries.map(entry => entry.status), ['merged', 'rejected']);
   assert.match(state.entries[1].reason, /CI failed/);
+  assert.equal(state.entries[1].rejectionKind, 'ci');
+  f.restart(); assert.equal(f.queue.state.entries[1].rejectionKind, 'ci');
   assert.equal(state.jobs.length, 2);
   assert.notEqual(state.jobs[0].revision, good.headSha);
   assert.equal(await git(f.repository, 'show', 'main:good.txt'), 'ready');
@@ -25,6 +27,8 @@ test('Conflict rejects the conflicting PR, preserving earlier batch work', async
   const state = await f.drain();
   assert.deepEqual(state.entries.map(entry => entry.status), ['merged', 'rejected']);
   assert.match(state.entries[1].reason, /conflict/);
+  assert.equal(state.entries[1].rejectionKind, 'conflict');
+  f.restart(); assert.equal(f.queue.state.entries[1].rejectionKind, 'conflict');
   assert.equal(state.jobs.length, 1);
   assert.equal(await git(f.repository, 'show', 'main:shared.txt'), 'first');
 });

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   WorkflowError, RunStore, step, validateGraph, diffGraphs as diff, buildArchitectPrompt as architectPrompt,
-  parseArchitectResult as parseArchitect, computeRunMetrics as runMetrics,
+  parseArchitectResult as parseArchitect, computeRunMetrics as runMetrics, listTemplates, getTemplate,
 } from '@perpeto/workflow';
 import { HubError } from '../errors.js';
 
@@ -84,24 +84,27 @@ function createdItems(effects, inputs) {
   return out;
 }
 
-function translateEffects(run, effects, status, inputs = []) {
+function translateEffects(run, effects, status, inputs = [], event, stoppedAt) {
   const out = [...createdItems(effects, inputs)];
   for (const effect of effects) {
+    if (effect.type === 'request-input') out.push({ type: 'request-input', value: effect });
     if (effect.type === 'create-assignment') out.push({ type: 'assignment', value: { ...effect.assignment, projectId: run.projectId } });
     if (effect.type === 'create-job') out.push({ type: 'job', value: effect.job });
     if (effect.type === 'enqueue-merge') out.push({ type: 'merge-entry', value: { ...effect.mergeEntry, projectId: run.projectId } });
     if (effect.type === 'cancel-merge') out.push({ type: 'merge-entry', value: { id: effect.mergeId, status: 'rejected', reason: effect.reason } });
   }
+  if (event?.data?.hubIntake && (effects.some(effect => effect.type === 'create-work-item') || !event.data.items.length)) out.push({ type: 'input-delivered', value: event.data.hubIntake });
   out.push(...events(effects));
-  if (status && status !== run.status && RUN_STATUSES.has(status)) out.push({ type: 'run', value: { status } });
+  if (status && status !== run.status && RUN_STATUSES.has(status)) out.push({ type: 'run', value: { status, ...(stoppedAt ? { stoppedAt } : {}) } });
   return out;
 }
 
 /** Runs started before state moved to the run store keep their whole state in the hub. Steps share untouched entities. */
-function translate(run, before, result, inputs = []) {
+function translate(run, before, result, inputs = [], event) {
   const { state, effects } = result;
   const out = [...createdItems(effects, inputs)];
   for (const effect of effects) {
+    if (effect.type === 'request-input') out.push({ type: 'request-input', value: effect });
     if (effect.type === 'create-assignment') out.push({ type: 'assignment', value: { ...effect.assignment, projectId: run.projectId } });
     if (effect.type === 'create-job') out.push({ type: 'job', value: effect.job });
   }
@@ -109,8 +112,9 @@ function translate(run, before, result, inputs = []) {
     if (state[key] === before?.[key]) continue;
     for (const [id, value] of Object.entries(state[key] ?? {})) if (before?.[key]?.[id] !== value) out.push({ type, value: { ...value, projectId: run.projectId } });
   }
+  if (event?.data?.hubIntake && (effects.some(effect => effect.type === 'create-work-item') || !event.data.items.length)) out.push({ type: 'input-delivered', value: event.data.hubIntake });
   out.push(...events(effects));
-  if (state.status !== run.status && RUN_STATUSES.has(state.status)) out.push({ type: 'run', value: { status: state.status } });
+  if (state.status !== run.status && RUN_STATUSES.has(state.status)) out.push({ type: 'run', value: { status: state.status, ...(state.stoppedAt ? { stoppedAt: state.stoppedAt } : {}) } });
   return out;
 }
 
@@ -119,7 +123,7 @@ const stamped = event => ({ id: event.id ?? randomUUID(), at: event.at ?? new Da
 function apply(run, state, event) {
   const result = engine(() => step(state, stamped(event)));
   if (result.ignored) return { state, effects: [], ignored: result.ignored };
-  return { state: result.state, effects: translate(run, state, result, inputsOf(event)) };
+  return { state: result.state, effects: translate(run, state, result, inputsOf(event), event) };
 }
 
 /**
@@ -131,7 +135,8 @@ function engineResult(data, node) {
   const result = { outcome: data.outcome, summary };
   for (const key of ['branch', 'prUrl', 'threadRef']) if (typeof data[key] === 'string') result[key] = data[key];
   if (typeof data.headSha === 'string') result.headSha = data.headSha.toLowerCase();
-  if (Array.isArray(data.items)) result.items = data.items.map(item => ({ title: item?.title, ...(item?.body !== undefined ? { body: item.body } : {}) }));
+  if (Array.isArray(data.items)) result.items = data.items.map(item => ({ title: item?.title, ...(item?.body !== undefined ? { body: item.body } : {}), ...(item?.touches !== undefined ? { touches: item.touches } : {}) }));
+  if (data.rebaseTouchedBeyondConflicts !== undefined) result.rebaseTouchedBeyondConflicts = data.rebaseTouchedBeyondConflicts;
   if (node?.type !== 'review') return result;
   if (data.verdict === 'pass' || data.verdict === 'fail') return { ...result, verdict: data.verdict };
   if (data.outcome !== 'success') return result;
@@ -147,10 +152,11 @@ function jobSummary(data, status) {
 
 function hubEvent(event, nodeOf) {
   const { type, data = {} } = event;
+  if (['input.tick', 'usage.recorded'].includes(type)) return { id: event.id, at: event.at, type, data };
   if (type === 'input') {
     const items = Array.isArray(data.items) ? data.items : Array.isArray(data.inputs) ? data.inputs : null;
     if (!items) throw new HubError(400, 'INVALID_INPUT', 'Run input needs an items array of { title, body?, nodeId? }.');
-    return { id: `input:${data.idempotencyKey ?? randomUUID()}`, type: 'input.added', data: { items } };
+    return { id: event.id ?? `input:${data.idempotencyKey ?? randomUUID()}`, at: event.at, type: 'input.added', data: { items, ...(data.requestId ? { requestId: data.requestId } : {}), ...(data.hubIntake ? { hubIntake: data.hubIntake } : {}) } };
   }
   if (type === 'assignment.finished') {
     const node = nodeOf(event.value?.nodeId);
@@ -166,7 +172,7 @@ function hubEvent(event, nodeOf) {
   if (type === 'merge.finished') {
     return data.status === 'merged'
       ? { id: `merge:${event.mergeEntryId}`, type: 'merge.completed', data: { mergeId: event.mergeEntryId, ...(data.mergedRevision ? { mergedSha: data.mergedRevision } : {}) } }
-      : { id: `merge:${event.mergeEntryId}`, type: 'merge.rejected', data: { mergeId: event.mergeEntryId, reason: data.reason || 'Merge queue rejected the entry.' } };
+      : { id: `merge:${event.mergeEntryId}`, type: 'merge.rejected', data: { mergeId: event.mergeEntryId, reason: data.reason || 'Merge queue rejected the entry.', kind: data.rejectionKind ?? 'other' } };
   }
   if (type === 'lease.expired') {
     // The machine stopped renewing (crash, network loss). Report it as a failed attempt so the engine's retry policy decides.
@@ -213,7 +219,7 @@ function aggregate(results) {
       waitSec: stat(parts, part => part.waitSec, part => finished(part) + part.active), serviceSec: stat(parts, part => part.serviceSec, finished),
       throughputPerHour: Math.round(sum(parts, 'throughputPerHour') * 100) / 100,
       failureRate: done + failed + sum(parts, 'errors') ? Math.round((failed + sum(parts, 'errors')) / (done + failed + sum(parts, 'errors')) * 100) / 100 : null,
-      tokens: sum(parts, 'tokens'), errors: sum(parts, 'errors'), retries: sum(parts, 'retries'), escalations: sum(parts, 'escalations') };
+      tokens: sum(parts, 'tokens'), errors: sum(parts, 'errors'), retries: sum(parts, 'retries'), escalations: sum(parts, 'escalations'), conflictRejections: sum(parts, 'conflictRejections'), rebases: sum(parts, 'rebases') };
   });
   const edges = new Map();
   for (const { edges: list } of results) for (const edge of list) {
@@ -233,7 +239,7 @@ function aggregate(results) {
       cycleTimeSec: stat(runs, run => run.cycleTimeSec, run => run.velocity.trend.reduce((a, b) => a + b, 0)),
       wip: sum(runs, 'wip'), tokensPerItem: totalDone ? Math.round(tokens / totalDone) : null,
       activeAgents: sum(runs, 'activeAgents'), machines: [],
-      retries: sum(runs, 'retries'), escalations: sum(runs, 'escalations'), waitingOnHuman: sum(runs, 'waitingOnHuman'),
+      retries: sum(runs, 'retries'), escalations: sum(runs, 'escalations'), waitingOnHuman: sum(runs, 'waitingOnHuman'), conflictRejections: sum(runs, 'conflictRejections'), rebases: sum(runs, 'rebases'),
     },
     bottlenecks: results.flatMap(result => result.bottlenecks.map(bottleneck => ({ ...bottleneck, runId: result.runId }))),
     runs: results.map(result => result.runId),
@@ -249,8 +255,8 @@ export function createWorkflowAdapter() {
   const runs = () => store ?? (() => { throw new Error('The workflow adapter is not open.'); })();
   function applyStored(run, event) {
     const result = engine(() => runs().apply(run.id, stamped(event)));
-    const status = runs().getRun(run.id)?.status;
-    return { seq: result.seq, ...(result.duplicate ? { duplicate: true } : {}), ...(result.ignored ? { ignored: result.ignored } : {}), effects: translateEffects(run, result.effects, status, inputsOf(event)) };
+    const { status, stoppedAt } = runs().getRun(run.id) ?? {};
+    return { seq: result.seq, ...(result.duplicate ? { duplicate: true } : {}), ...(result.ignored ? { ignored: result.ignored } : {}), effects: translateEffects(run, result.effects, status, inputsOf(event), event, stoppedAt) };
   }
   return {
     /** The engine owns retries: the hub reports expired leases instead of requeueing run work itself. */
@@ -272,12 +278,12 @@ export function createWorkflowAdapter() {
         const page = engine(() => runs().listEvents(run.id, { after: seq, limit: OUTBOX_PAGE }));
         for (const row of page) {
           seq = row.seq;
-          if (!row.ignored) groups.push({ seq: row.seq, raw: engine(() => runs().apply(run.id, row.event)).effects, inputs: inputsOf(row.event) });
+          if (!row.ignored) groups.push({ seq: row.seq, raw: engine(() => runs().apply(run.id, row.event)).effects, inputs: inputsOf(row.event), event: row.event });
         }
         if (page.length < OUTBOX_PAGE) break;
       }
-      const status = runs().getRun(run.id)?.status;
-      return { seq, groups: groups.map((group, index) => ({ seq: group.seq, effects: translateEffects(run, group.raw, index === groups.length - 1 ? status : null, group.inputs) })) };
+      const { status, stoppedAt } = runs().getRun(run.id) ?? {};
+      return { seq, groups: groups.map((group, index) => ({ seq: group.seq, effects: translateEffects(run, group.raw, index === groups.length - 1 ? status : null, group.inputs, group.event, stoppedAt) })) };
     },
     pendingRuns() { return [...new Set(runs().pendingEffects({ limit: OUTBOX_PAGE }).map(row => row.runId))]; },
     /** Acknowledge outbox effects the hub has committed: those at or below `applied(runId)`. */
@@ -309,22 +315,38 @@ export function createWorkflowAdapter() {
       const items = Array.isArray(input) ? input : input?.items ?? input?.inputs;
       const data = { runId: run.id, projectId: run.projectId, workflowId: workflow.id, workflowVersion: workflow.version, graph: workflow.graph,
         ...(repo ? { repo: { ...(repo.url ? { url: repo.url } : {}), defaultBranch: repo.defaultBranch, ...(repo.localPath ? { localPath: repo.localPath } : {}) } } : {}),
-        ...(items !== undefined && items !== null ? { inputs: items } : {}), ...(typeof input?.keepOpen === 'boolean' ? { keepOpen: input.keepOpen } : {}) };
-      return applyStored(run, { id: `run:${run.id}`, type: 'run.started', data });
+        ...(items !== undefined && items !== null ? { inputs: items } : {}), ...Object.fromEntries(['keepOpen', 'budget', 'source', 'schedule'].filter(key => input?.[key] !== undefined).map(key => [key, input[key]])) };
+      return applyStored(run, { id: `run:${run.id}`, at: run.startedAt, type: 'run.started', data });
     },
+    validateInput(state, data) { return engine(() => step({ ...state, budget: undefined }, stamped(hubEvent({ type: 'input', data })))); },
     applyEvent({ run, workflow, state, event }) {
+      if (event.type === 'run.configured') {
+        const before = state ?? runs().getState(run.id);
+        const configured = { ...before, ...event.data };
+        // Validate settings with the engine's run-start contract, without creating another durable run.
+        engine(() => step(null, stamped({ type: 'run.started', at: event.at, data: {
+          runId: run.id, projectId: run.projectId, workflowId: workflow.id, workflowVersion: workflow.version,
+          graph: workflow.graph, repo: before.repo, keepOpen: configured.keepOpen, source: configured.source,
+          schedule: configured.schedule, budget: configured.budget,
+        } })));
+        if (event.data.source !== undefined || event.data.schedule !== undefined) configured.intake = { ...before.intake, requests: {} };
+        const result = apply(run, configured, { type: 'input.tick', at: event.at, data: {} });
+        if (!state) result.effects.unshift(...Object.values(before.workItems).map(value => ({ type: 'work-item', value })));
+        return result;
+      }
       const translated = hubEvent(event, nodeId => workflow.graph.nodes.find(node => node.id === nodeId));
       return state ? apply(run, state, translated) : applyStored(run, translated);
     },
     diffGraphs(from, to) { return diff(from ?? null, to); },
-    buildArchitectPrompt({ prompt, project, machines = [], providers = [], baseGraph, validationErrors = [] }) {
+    listTemplates() { return listTemplates().map(template => ({ ...template, graph: getTemplate(template.id) })); },
+    buildArchitectPrompt({ prompt, project, machines = [], providers = [], workflows = [], baseGraph, validationErrors = [] }) {
       return engine(() => architectPrompt({ project, docs: project.docs ?? [], goals: (project.goals ?? []).map(goal => typeof goal === 'string' ? goal : goal.title),
         machines: machines.map(machine => ({ name: machine.name, id: machine.id, os: machine.os, arch: machine.arch, labels: machine.labels, providers: machine.providers, capacity: machine.capacity, status: machine.status })),
-        providers, ...(baseGraph ? { existingWorkflow: { graph: baseGraph } } : {}), userPrompt: prompt, previousErrors: architectErrors(validationErrors) }));
+        providers, existingWorkflows: workflows, ...(baseGraph ? { existingWorkflow: { graph: baseGraph } } : {}), userPrompt: prompt, previousErrors: architectErrors(validationErrors) }));
     },
     /** Accepts `{ graph, rationale }` on the result, or the architect's reply text (one fenced json block) in `summary`. */
     parseArchitectResult(result) {
-      return engine(() => parseArchitect(result?.graph && typeof result.graph === 'object' ? { graph: result.graph, rationale: result.rationale } : result?.summary));
+      return engine(() => parseArchitect(result?.graph && typeof result.graph === 'object' ? result : result?.summary));
     },
     computeRunMetrics({ runId, runs, states = {}, events, machines, usage, window, at }) {
       const results = [];

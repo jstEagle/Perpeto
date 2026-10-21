@@ -1,5 +1,37 @@
 # Factory hub handoff
 
+## Conflict recovery integration, 21 October 2026
+
+Merged main `8f8f903` in `b4bd436`, retaining the continuous-intake implementation below. The minimal additive delivery change persists `rejectionKind: 'conflict'|'ci'|'other'` on queue entries: typed `MERGE_CONFLICT` preparation failures activate recovery, failed checks/missing evidence are `ci`, and infrastructure/publication/withdrawal failures are `other`. Types survive SQLite reopen. Historical/untyped causes are conservatively `other`, with no reason-text inference. The hub copies the field to its entry and maps it to `merge.rejected.data.kind`.
+
+Hub assignment results preserve planner `items[].touches` and builder `rebaseTouchedBeyondConflicts`, including explicit false, for engine validation. Leases retain engine assignment `step: 'rebase'` and `rebaseOf`. Engine recovery movements retain `edgeId: null`, `step: 'rebase'` and `unplanned: false`; authored-edge metrics exclude them. Project node/run metrics sum `conflictRejections` and `rebases`; engine `conflict-churn` findings keep their run ids.
+
+Tests were first observed failing for delivery kinds, planner scopes, engine kind mapping and conflict metrics. A real local Git/HTTP test merges the first of two reviewed edits, observes the second conflict, leases its rebase, reports explicit false, then verifies fresh speculative CI and merge without another review. Other tests cover typed cause persistence across restart, overlapping child serialization, true/false review evidence, multi-run metrics and churn. This is local integration with test-driven node results, not live harness acceptance. Node `v24.22.0`: root `npm test` passes **545 tests, 0 failures** (44.6 s), including the merged main tests and actual Git conflict recovery. Changed Markdown file links resolve and `git diff --check` passes. No new config key, dependency change or executor edit was needed.
+
+### Executor handoff
+
+No changes were made to `packages/t3-executor` in this integration. The parser in `src/results.js` currently drops the new fields, so the executor worker must add:
+
+- Planner output instructions and parsing: `AssignmentResult.items[].touches?: string[]`, at most 100 distinct normalized repository-relative file/directory paths per item, each nonblank and at most 4096 characters. Match workflow validation: no absolute/drive paths, parent traversal, backslashes, control characters or glob syntax; empty/omitted declarations retain legacy concurrency.
+- Rebase output instructions and parsing: `AssignmentResult.rebaseTouchedBeyondConflicts?: boolean` from the final fenced JSON. Request it on `assignment.step === 'rebase'`; preserve both true and false, validate present values, and leave a missing report absent so the engine conservatively repeats review. Preserve `assignment.rebaseOf` (the rejected merge id). Branch identity already derives from the work item; verify publishing the new head on that same branch. `publishBranch` currently pushes without force, so a history-rewriting rebase needs an explicit safe publication strategy or a merge-based update that fast-forwards.
+- Existing architect integration also needs `templateId?: string` and `additionalWorkflows?: Array<{name: string, graph: object, rationale: string, templateId?: string}>` (up to three). Its current successful structured parse keeps only graph/rationale and replaces summary with rationale, so the hub cannot recover the discarded fields from the original fenced block. The hub already accepts these fields directly or from intact fenced JSON.
+
+
+## Continuous intake integration, 21 October 2026
+
+This section supersedes the original unwired-engine limits below. Based on main `81e629c`; changes stay in the owned hub paths and the architecture/handoff docs. No new hub config keys were needed, so CLI-generated config and `config/hub.example.json` keep their existing contract.
+
+Implemented and covered by regression tests added before the relevant fixes:
+
+- Run start forwards `keepOpen`, `source`, UTC cron `schedule` and per-run `budget`. `PATCH /runs/:id` updates live/paused runs without replacing their pinned graph or existing work. Maintenance sends durable minute ticks with stable ids; missed minutes do not catch up. Goal and schedule requests use the durable engine outbox, persisted prepared batches and stable fulfilment ids. Goals omit completed/dropped/already active or reserved project goals, include context/evidence and expose `goalId` links.
+- Usage records and delivery intents commit together, then input/output deltas reach the engine exactly once. Cache subtotals are excluded. Previous-day records remain in the ledger without consuming today's allowance. Intake pauses/resumes through engine budget events; deferred manual batches survive restart and split to capacity. Finite runs wait for their deferred input before completing. Run detail and overview expose settings, `intake` and `budgetUsage`.
+- Independent workflows stay concurrently active with separate runs and shared machine/delivery capacity. The template endpoint returns the public workflow library, and architect prompts retain existing workflows. Direct and fenced replies preserve templates/additional proposals; all graphs validate before the drafts save together, errors carry `workflowIndex`, and assignment `drafts` lists every workflow id/version for separate activation.
+- Role usage grouping persists assignment role/node attribution through rollup and assignment deletion. Successful runs record `completedAt`, and terminal runs retain the engine's `stoppedAt`. The initial additive merge rejection field is superseded by the typed conflict-recovery integration above.
+
+Durability tests inject a failure after engine commit but before the hub projection commits, including scheduled ticks and manual intake. Tests also cover close/reopen, daily rollover, active/item/token limits, finite batch completion, concurrent goal deduplication, all-or-nothing architect validation and usage retention. Node `v24.22.0`: root `npm test` passes **514 tests, 0 failures** (34.5 s), including CLI/example config parity, actual hub HTTP/SQLite tests and repository end-to-end crash recovery. `git diff --check` passes. No dependency manifest or lockfile changed.
+
+Limits: no live harness/browser/device acceptance was run. Budgets guard intake, not in-flight spend. Since `packages/workflow` has no configuration update event, changed runs and finite runs held for deferred input use the hub's existing whole-state snapshot execution path. This preserves durability and atomic effects, but writes the full state per event; later steps are outside RunStore replay verification. Ordinary runs retain the incremental store. A native workflow configuration event should replace this compatibility path in future work.
+
 Implemented in `apps/hub/**` and `config/hub.example.json`; no architecture, other package, upstream runtime, or root configuration changes. Branch: `t3/build-factory-hub`. Based on `e02784f`, with the later agent-authored workflow, run observation and fixed node wire-format contracts read directly from `main` in `/Users/justuswork/Documents/Perpeto`.
 
 ## What exists

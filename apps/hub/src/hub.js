@@ -8,6 +8,7 @@ import { HubTls } from './tls.js';
 import { encodeJoinCode } from './join.js';
 import { readGoals, writeGoals, initialsOf } from './goals.js';
 import { publicOrigin } from './config.js';
+import { Intake } from './intake.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
 import { HubMessaging } from './messaging.js';
@@ -74,7 +75,7 @@ export class Hub {
     this.store.onEvent = () => { this.signals.events = true; };
     this.store.onCommit = () => this.flush();
     this.store.onRollback = () => { this.signals = { work: [], machines: new Set(), events: false }; };
-    this.workflows = new Workflows(this); this.observation = new Observation(this); this.agentMessaging = new HubMessaging(this);
+    this.intake = new Intake(this); this.workflows = new Workflows(this); this.observation = new Observation(this); this.agentMessaging = new HubMessaging(this);
     try {
       try {
         const stat = lstatSync(config.ownerTokenPath);
@@ -246,6 +247,7 @@ export class Hub {
       };
       try {
         let result = mutation ? await this.store.transaction(perform) : await perform();
+        if (mutation) await this.intake.settle();
         if (!mutation) this.flush();
         // The session cookie to set: a new session (re-derived on an idempotent replay), a logout, or a slid expiry.
         const session = result.session ? { value: result.session.sealed ? this.credentials.open(result.session.sealed) : this.legacySecret('session', result.session.id), expiresAt: result.session.expiresAt }
@@ -285,11 +287,12 @@ export class Hub {
       ...(value.projectId ? { projectId: value.projectId } : {}), ...(value.runId ? { runId: value.runId } : {}),
     });
   }
-  async maintenance() {
+  async maintenance(at = now()) {
     await this.serialize(async () => {
       let changed = false;
       await this.store.transaction(async () => {
         const time = Date.now();
+        await this.intake.tick(at);
         for (const cancellation of this.store.list('cancellation', value => Date.parse(value.leaseExpiresAt) <= time)) this.store.remove('cancellation', cancellation.id);
         for (const machine of this.store.list('machine')) {
           if (machine.status !== 'offline' && time - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) {
@@ -326,6 +329,7 @@ export class Hub {
       if (time - this.lastSweep >= this.config.retentionSweepIntervalMs) { this.lastSweep = time; await this.store.transaction(() => this.sweep(time)); }
     });
     await this.reconcileEngine();
+    await this.serialize(() => this.intake.settle(at));
     // Merge queue progress (Git preparation and publication) runs outside the request serializer between its two syncs.
     this.delivery.schedule();
   }
@@ -349,7 +353,7 @@ export class Hub {
       await this.store.transaction(async () => {
         for (const runId of runs) { const run = this.store.get('run', runId); if (run) changed = this.catchUp(run) || changed; }
       });
-      this.engine.acknowledge(runId => this.store.get('engine-state', runId)?.seq ?? (this.store.get('run', runId) ? 0 : Infinity));
+      this.engine.acknowledge(runId => { const snapshot = this.store.get('engine-state', runId); return snapshot?.seq ?? snapshot?.detachedSeq ?? (this.store.get('run', runId) ? 0 : Infinity); });
       if (changed) this.notify();
     });
   }
@@ -419,24 +423,31 @@ export class Hub {
       requireValue(Number.isSafeInteger(result.seq) && result.seq > 0, 'Invalid engine sequence.');
       if (result.seq <= (this.store.get('engine-state', run.id)?.seq ?? 0)) return;
       this.store.put('engine-state', { id: run.id, seq: result.seq });
-    } else this.store.put('engine-state', { id: run.id, state: result.state ?? null });
+    } else {
+      const previous = this.store.get('engine-state', run.id);
+      this.store.put('engine-state', { id: run.id, state: result.state ?? null,
+        ...((previous?.seq ?? previous?.detachedSeq) !== undefined ? { detachedSeq: previous.seq ?? previous.detachedSeq } : {}) });
+    }
     // When the engine reports each flow-edge crossing itself, the hub does not derive a coarser move from nodeId changes.
     // Escalations are reported as workitem.escalated: they follow an escalation link, not a flow edge.
     const reportedMoves = new Set(result.effects.filter(effect => effect.type === 'event' && ['workitem.moved', 'workitem.escalated'].includes(effect.value?.type)).map(effect => effect.value.data?.workItemId));
     for (const effect of result.effects) {
       object(effect.value, 'effect value');
+      if (effect.type === 'input-delivered') { this.intake.delivered(effect.value); continue; }
+      if (effect.type === 'request-input') { this.intake.request(run, effect.value); continue; }
       if (effect.type === 'work-item-created') { this.linkGoal(run, effect.value); continue; }
       if (effect.type === 'event') {
         const subject = effect.value.subject ?? { kind: 'assignment', id: effect.value.assignmentId ?? run.id };
         const context = { id: subject.id, runId: run.id, projectId: run.projectId, nodeId: effect.value.data?.nodeId };
-        if (this.observation.isInteraction(effect.value.type)) this.observation.interaction(effect.value.type, context, effect.value.data ?? {}, subject.kind);
+        if (this.observation.isInteraction(effect.value.type)) this.observation.interaction(effect.value.type, context, effect.value.data ?? {}, subject.kind, true);
         else this.emit(nonblank(effect.value.type, 'engine event type', 200), subject.kind, context, object(effect.value.data ?? {}, 'engine event data'));
         continue;
       }
       if (effect.type === 'run') {
         requireValue(['running', 'paused', 'stopped', 'completed', 'failed'].includes(effect.value.status), 'Invalid engine run status.');
         run.status = effect.value.status;
-        if (['stopped', 'completed', 'failed'].includes(run.status)) run.stoppedAt = now();
+        if (['stopped', 'completed', 'failed'].includes(run.status)) run.stoppedAt = effect.value.stoppedAt ?? now();
+        if (run.status === 'completed') run.completedAt = run.stoppedAt;
         this.store.put('run', run); this.emit('run.updated', 'run', { ...run, runId: run.id }, { status: run.status });
         continue;
       }
@@ -603,17 +614,34 @@ export class Hub {
       if (action === 'runs' && method === 'POST') {
         if (!workflow.activeVersion) fail(409, 'WORKFLOW_NOT_ACTIVE', 'Activate a workflow version before starting a run.');
         const selected = this.workflows.version(workflow.id, workflow.activeVersion);
-        this.checkGoalLinks(workflow.projectId, body.input);
-        const run = { id: id('run'), projectId: workflow.projectId, workflowId: workflow.id, workflowVersion: selected.version, status: 'running', startedAt: now() };
+        const supplied = Array.isArray(body.input) ? { items: body.input } : body.input ?? {};
+        const input = { ...supplied, ...this.intake.settings(body), ...this.intake.settings(supplied) };
+        this.checkGoalLinks(workflow.projectId, input);
+        const run = { id: id('run'), projectId: workflow.projectId, workflowId: workflow.id, workflowVersion: selected.version, status: 'running', startedAt: now(), keepOpen: false, ...this.intake.settings(input) };
         this.store.put('run', run); this.store.put('run-workflow', { id: run.id, workflow: selected });
-        const result = await this.engine.startRun({ run, workflow: selected, input: body.input ?? null, project: this.store.need('project', run.projectId) }); this.applyEffects(run, result);
+        const result = await this.engine.startRun({ run, workflow: selected, input, project: this.store.need('project', run.projectId) }); this.applyEffects(run, result);
+        const initialItems = input.items ?? input.inputs;
+        if (initialItems?.length && !this.workItems(run.id).length) {
+          this.intake.request(run, { id: `initial:${run.id}`, items: initialItems });
+          await this.intake.hold(run);
+        }
         this.messaging.createChannel({ projectId: run.projectId, id: `run-${run.id}`, name: `Run ${run.id}` });
-        this.emit('run.started', 'run', { ...run, runId: run.id }); return reply(run, 201);
+        this.emit('run.started', 'run', { ...run, runId: run.id }); return reply(this.intake.view(run), 201);
       }
     }
     if (collection === 'runs' && entityId && segments.length <= 3) {
       const run = this.store.need('run', entityId);
-      if (!action && method === 'GET') return reply(run);
+      if (!action && method === 'GET') return reply(this.intake.view(run));
+      if (!action && method === 'PATCH') {
+        requireValue(['running', 'paused'].includes(run.status), 'Run is already terminal.');
+        requireValue(Object.keys(body).every(key => ['keepOpen', 'source', 'schedule', 'budget', 'idempotencyKey'].includes(key)), 'Unknown run setting.');
+        const settings = this.intake.settings(body);
+        await this.engineEvent(run, { type: 'run.configured', at: now(), data: run.intakeHeld ? { ...settings, keepOpen: true } : settings });
+        if (settings.keepOpen === true) delete run.intakeHeld;
+        Object.assign(run, settings); this.store.put('run', run);
+        this.emit('run.configured', 'run', { ...run, runId: run.id }, settings);
+        return reply(this.intake.view(run));
+      }
       if (action === 'metrics' && method === 'GET') return reply(await this.observation.metrics({ runId: run.id, window: query.get('window') ?? '24h' }));
       if (action === 'work-items' && method === 'GET') return reply({ workItems: this.workItems(run.id) });
       if (action === 'assignments' && method === 'GET') return reply({ assignments: this.store.forRun('assignment', run.id) });
@@ -631,7 +659,16 @@ export class Hub {
       if (action === 'inputs' && method === 'POST') {
         if (run.status !== 'running') fail(409, 'CONFLICT', 'Run must be running to accept input.');
         this.checkGoalLinks(run.projectId, body);
-        await this.engineEvent(run, { type: 'input', data: body }); this.emit('run.input', 'run', { ...run, runId: run.id }); return reply({ accepted: true }, 202);
+        if (!this.intake.state(run)?.plan || body.requestId) {
+          await this.engineEvent(run, { type: 'input', data: body });
+          return reply({ accepted: true }, 202);
+        }
+        // Validate the complete batch before persisting it, even when intake is budget-paused.
+        const snapshot = this.intake.state(run);
+        if (snapshot?.plan) this.engine.validateInput?.(snapshot, body);
+        this.intake.request(run, { id: id('in'), items: body.items ?? body.inputs });
+        await this.intake.hold(run);
+        this.emit('run.input', 'run', { ...run, runId: run.id }); return reply({ accepted: true }, 202);
       }
     }
     if (collection === 'work-items' && entityId && action === 'decision' && segments.length === 3 && method === 'POST') {
@@ -834,9 +871,10 @@ export class Hub {
             value.result = { outcome: data.outcome, summary: data.summary };
             for (const key of ['branch', 'prUrl', 'headSha', 'threadRef']) if (data[key] !== undefined) value.result[key] = nonblank(data[key], key, 4096);
             if (data.verdict !== undefined) { requireValue(['pass', 'fail'].includes(data.verdict), 'verdict must be pass or fail.'); value.result.verdict = data.verdict; }
+            if (data.rebaseTouchedBeyondConflicts !== undefined) value.result.rebaseTouchedBeyondConflicts = data.rebaseTouchedBeyondConflicts;
             if (data.items !== undefined) { requireValue(Array.isArray(data.items) && data.items.length <= 1000, 'items must be an array.'); value.result.items = data.items; }
             value.status = data.outcome === 'success' ? 'succeeded' : 'failed';
-            if (value.architectRequestId) { value.result.graph = data.graph; value.result.rationale = data.rationale; }
+            if (value.architectRequestId) { value.result.graph = data.graph; value.result.rationale = data.rationale; value.result.templateId = data.templateId; value.result.additionalWorkflows = data.additionalWorkflows; }
           } else {
             requireValue(data.revision === value.revision, 'Job result must match the leased revision.');
             requireValue(['passed', 'failed', 'error', 'cancelled'].includes(data.status), 'Invalid final job status.');
@@ -942,6 +980,7 @@ export class Hub {
       const { events, hasMore } = this.store.eventPage({ after, ...filters, limit });
       return reply({ events, nextCursor: events.at(-1)?.seq ?? after, hasMore });
     }
+    if (path === '/workflow-templates' && method === 'GET') return reply({ templates: this.engine.listTemplates?.() ?? [] });
     if (path === '/usage' && method === 'GET') return reply(this.usage(query));
     if (path === '/overview' && method === 'GET') {
       const projectId = query.get('projectId') ?? undefined;
@@ -950,6 +989,7 @@ export class Hub {
       return reply({ owner: this.ownerProfile(), goals, activeAgents: this.store.count('assignment', ['leased', 'running'], projectId),
         queuedWork: this.store.count('assignment', ['queued'], projectId) + this.store.count('job', ['queued'], projectId),
         tokensToday: this.store.tokensSince(`${now().slice(0, 10)}T00:00:00.000Z`, projectId),
+        runs: this.store.list('run', value => (!projectId || value.projectId === projectId) && ['running', 'paused'].includes(value.status)).map(run => this.intake.view(run)),
         machinesOnline: this.store.list('machine', value => value.status === 'online' && Date.now() - Date.parse(value.lastHeartbeatAt) < this.config.heartbeatIntervalMs * 3).length });
     }
     fail(404, 'NOT_FOUND', 'Route not found.');
@@ -999,11 +1039,12 @@ export class Hub {
   /** Clients answer a waiting item's human gate with its `decisionId`. */
   workItemView(item) {
     const run = this.store.get('run', item.runId);
-    return { ...item, ...(run ? { projectId: run.projectId } : {}), ...(item.waiting?.decisionId ? { decisionId: item.waiting.decisionId } : {}) };
+    const goalId = this.store.get('goal-link', item.id)?.goalId;
+    return { ...item, ...(goalId ? { goalId } : {}), ...(run ? { projectId: run.projectId } : {}), ...(item.waiting?.decisionId ? { decisionId: item.waiting.decisionId } : {}) };
   }
   workflowFields(value) {
     nonblank(value.name, 'workflow name', 200); object(value.graph, 'graph'); HubMessaging.fields(value);
-    requireValue(['build', 'improve', 'maintain', 'custom'].includes(value.purpose ?? 'custom'), 'Invalid workflow purpose.');
+    requireValue(['build', 'improve', 'maintain', 'custom', 'bugfix', 'docs', 'security-audit', 'dependency-upgrade'].includes(value.purpose ?? 'custom'), 'Invalid workflow purpose.');
     requireValue(['draft', 'active', 'paused'].includes(value.status ?? 'draft'), 'Invalid workflow status.');
   }
   recordUsage(assignment, data) {
@@ -1017,9 +1058,12 @@ export class Hub {
     if (data.costUsd !== undefined) { requireValue(Number.isFinite(data.costUsd) && data.costUsd >= 0, 'Invalid costUsd.'); usage.costUsd = data.costUsd; }
     if (data.at !== undefined) { requireValue(typeof data.at === 'string' && Number.isFinite(Date.parse(data.at)), 'Invalid usage timestamp.'); usage.at = new Date(data.at).toISOString(); }
     this.store.usage(usage);
+    this.store.usageRole(assignment.id, assignment.role ?? assignment.nodeId);
+    if (assignment.runId) this.store.put('usage-intent', { id: usage.id, runId: assignment.runId, at: usage.at,
+      data: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } });
   }
   usage(query) {
-    const groupBy = query.get('groupBy') ?? 'provider'; requireValue(['provider', 'model', 'machine', 'day'].includes(groupBy), 'Invalid usage groupBy.');
+    const groupBy = query.get('groupBy') ?? 'provider'; requireValue(['provider', 'model', 'machine', 'day', 'role'].includes(groupBy), 'Invalid usage groupBy.');
     for (const field of ['from', 'to']) if (query.has(field)) requireValue(Number.isFinite(Date.parse(query.get(field))), `Invalid ${field} timestamp.`);
     const time = field => query.has(field) ? new Date(query.get(field)).toISOString() : undefined;
     const filters = Object.fromEntries(['projectId', 'runId', 'machineId', 'provider', 'model', 'accountId'].map(key => [key, query.get(key) || undefined]));

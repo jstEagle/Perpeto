@@ -65,8 +65,8 @@ async function deliveryHub(t, config = {}) {
   return {
     root, request, url, token: machine.token,
     async project(repoUrl) { return request('POST', '/projects', { name: 'Delivery', repo: { url: repoUrl, defaultBranch: 'main' } }); },
-    async start(project, strategy = 'serial') {
-      const workflow = await request('POST', `/projects/${project.id}/workflows`, { name: 'Merge', graph: mergeGraph(strategy) });
+    async start(project, strategy = 'serial', graph = mergeGraph(strategy)) {
+      const workflow = await request('POST', `/projects/${project.id}/workflows`, { name: 'Merge', graph });
       await request('POST', `/workflows/${workflow.id}/activate`, { version: 1 });
       return { workflow, run: await request('POST', `/workflows/${workflow.id}/runs`, { input: { items: [{ title: 'Change' }] } }) };
     },
@@ -232,4 +232,54 @@ test('the hub serves a job its source as a bundle of exactly its revision, only 
   assert.equal(await git(clone, 'rev-parse', '--verify', `${job.revision}^{commit}`), job.revision);
   assert.equal(await git(repo.bare, 'for-each-ref', 'refs/perpeto/bundles'), '', 'the temporary ref is gone');
   assert.equal((await fetch(`${h.url}/api/v1/jobs/job_missing/bundle?attempt=1`, { headers: { Authorization: `Bearer ${h.token}` } })).status, 404);
+});
+
+test('delivery rejection projection trusts typed causes and leaves historical reasons untyped', async () => {
+  const { rejectionKind } = await import('../src/delivery/index.js');
+  for (const kind of ['conflict', 'ci', 'other']) assert.equal(rejectionKind({ rejectionKind: kind }), kind);
+  assert.equal(rejectionKind({ reason: 'Merge conflict with the speculative base.' }), 'other');
+  assert.equal(rejectionKind({ reason: 'Conflict mentioned by failing CI.', jobId: 'job_ci' }, [{ id: 'job_ci', status: 'failed' }]), 'other');
+});
+
+test('a real Git conflict schedules a rebase, preserves its evidence and merges after fresh CI without repeating review', async t => {
+  const h = await deliveryHub(t); const repo = await repository(h.root);
+  const first = await repo.branch('first', 'README.md'); const second = await repo.branch('second', 'README.md');
+  const project = await h.project(repo.bare);
+  const graph = mergeGraph('serial');
+  graph.nodes.push(node('reviewer', 'review', { harness: { provider: 'codex', model: 'test' }, prompt: 'Review.' }));
+  graph.edges.find(edge => edge.from.node === 'builder').to.node = 'reviewer';
+  graph.edges.push(flow('reviewer', 'merge', 'pass'), flow('reviewer', 'done', 'fail'));
+  const { workflow, run: winner } = await h.start(project, 'serial', graph);
+  const review = async () => {
+    const assignment = await eventually(() => h.lease('assignment'));
+    assert.equal(assignment.nodeId, 'reviewer');
+    await h.request('POST', `/assignments/${assignment.id}/events`, { attempt: assignment.attempt, type: 'completed', data: { outcome: 'success', verdict: 'pass', summary: 'Approved.' } }, h.token);
+  };
+  await h.build(first); await review();
+  const loser = await h.again(workflow);
+  await h.build(second); await review(); await h.pass();
+  await eventually(async () => (await h.entry(project, winner.id))?.status === 'merged');
+  const rebase = await eventually(() => h.lease('assignment'));
+  assert.equal(rebase.runId, loser.id); assert.equal(rebase.step, 'rebase'); assert.ok(rebase.rebaseOf);
+  const rejected = await h.entry(project, loser.id);
+  assert.equal(rejected.status, 'rejected'); assert.equal(rejected.rejectionKind, 'conflict');
+  assert.equal(rebase.rebaseOf, rejected.id);
+  const rebased = await repo.branch('second', 'README.md');
+  assert.notEqual(rebased.headSha, second.headSha);
+  await h.request('POST', `/assignments/${rebase.id}/events`, { attempt: rebase.attempt, type: 'completed', data: {
+    outcome: 'success', summary: 'Resolved only the shared conflict.', ...rebased, rebaseTouchedBeyondConflicts: false,
+  } }, h.token);
+  assert.equal((await h.request('GET', `/assignments/${rebase.id}`)).result.rebaseTouchedBeyondConflicts, false);
+  assert.equal((await h.request('GET', `/runs/${loser.id}/assignments`)).assignments.filter(value => value.nodeId === 'reviewer').length, 1);
+  await h.pass();
+  await eventually(async () => (await h.request('GET', `/runs/${loser.id}`)).status === 'completed');
+  const events = (await h.request('GET', `/events?runId=${loser.id}&limit=1000`)).events;
+  const movements = events.filter(event => event.type === 'workitem.moved' && event.data.step === 'rebase');
+  assert.equal(movements.length, 2);
+  assert.ok(movements.every(event => event.data.edgeId === null && event.data.unplanned === false));
+  const metrics = await h.request('GET', `/runs/${loser.id}/metrics?window=1h`);
+  assert.equal(metrics.run.conflictRejections, 1); assert.equal(metrics.run.rebases, 1);
+  assert.equal(metrics.edges.filter(edge => edge.unplanned).length, 0);
+  const aggregated = await h.request('GET', `/projects/${project.id}/metrics?window=1h`);
+  assert.equal(aggregated.run.conflictRejections, 1); assert.equal(aggregated.run.rebases, 1);
 });
