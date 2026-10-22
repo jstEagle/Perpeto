@@ -63,15 +63,22 @@ export function decodeJoinCode(text) {
     (value.fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(value.fingerprint))) throw new Error('Invalid join code. Copy the whole command from perpeto hub enroll-code.');
   return { url: hubUrl(value.url), code: value.code, ...(value.fingerprint ? { fingerprint: value.fingerprint } : {}) };
 }
-export function nodeConfig(dir, url, { labels = [], name = hostname(), fingerprint } = {}) {
+/**
+ * Observe-only: no agent or CI slots, no managed runtime and no executor; the node only watches the operator's own
+ * running T3 Code, read-only, and reports sessions, usage and subscription windows to the hub.
+ */
+export function observeSettings({ t3Dir, titles = true } = {}) {
+  return { enabled: true, t3BaseDir: t3Dir ? resolve(t3Dir) : resolve(homedir(), '.t3/userdata'), pollMs: 5000, includeTitles: titles };
+}
+export function nodeConfig(dir, url, { labels = [], name = hostname(), fingerprint, observe } = {}) {
   if (!Array.isArray(labels) || labels.some(label => typeof label !== 'string' || !label.trim())) throw new Error('Labels must be non-empty strings.');
   if (typeof name !== 'string' || !name.trim() || name.length > 200) throw new Error('Invalid machine name.');
   const runtime = readConfiguration();
   const host = ['0.0.0.0', '::'].includes(runtime.host) ? '127.0.0.1' : runtime.host;
   if (fingerprint !== undefined && (!/^[a-f0-9]{64}$/.test(fingerprint) || !url.startsWith('https:'))) throw new Error('A pinned fingerprint needs an https hub URL.');
   return { hubUrl: hubUrl(url), ...(fingerprint ? { hubFingerprint: fingerprint } : {}), name, labels, dataDir: './node', credentialFile: './node/machine.json',
-    capacity: { maxAgents: 1, maxJobs: 1 }, allowInsecureHttp: false,
-    executorPackages: ['@perpeto/t3-executor'],
+    capacity: observe ? { maxAgents: 0, maxJobs: 0 } : { maxAgents: 1, maxJobs: 1 }, allowInsecureHttp: false,
+    executorPackages: observe ? [] : ['@perpeto/t3-executor'], ...(observe ? { observe } : {}),
     timing: { heartbeatMs: 10000, renewMs: 20000, requestMs: 30000, pollIdleMs: 200, backoffMinMs: 250, backoffMaxMs: 10000 },
     jobs: { defaultTimeoutSec: 600, checkoutTimeoutSec: 120, maxLogChunkBytes: 8192, redactPatterns: [], protectedPaths: [] }, runtime: { enabled: false, repoRoot,
       url: `http://${host.includes(':') ? `[${host}]` : host}:${runtime.port}` } };

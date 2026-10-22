@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@perpeto/hub": "*",
-    "@perpeto/node": "*"
+    "@perpeto/node": "*",
+    "@perpeto/t3-observer": "*"
   }
 }

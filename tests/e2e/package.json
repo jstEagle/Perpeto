@@ -15,6 +15,7 @@
     "@perpeto/hub": "*",
     "@perpeto/node": "*",
     "@perpeto/sdk": "*",
+    "@perpeto/t3-observer": "*",
     "@perpeto/workflow": "*"
   }
 }

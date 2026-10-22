@@ -6,6 +6,7 @@ import type {
   PacingAccount,
   PacingAccountState,
   PacingLimit,
+  PacingMode,
   PacingProvider,
   PacingSegment,
   PacingStrategy,
@@ -69,9 +70,14 @@ export function decodeAccountUsage(v: unknown): AccountUsage | undefined {
 /** Keeps the account as sent; only `plan` and `usage` are checked, since they are new. */
 export function decodeAccount(v: unknown): Account {
   const o = (obj(v) ?? {}) as Obj & Account;
-  const { plan, usage, ...rest } = o;
+  const { plan, usage, source, ...rest } = o;
   const decodedUsage = decodeAccountUsage(usage);
-  return { ...rest, ...(str(plan) ? { plan: str(plan) } : {}), ...(decodedUsage ? { usage: decodedUsage } : {}) } as Account;
+  return {
+    ...rest,
+    ...(str(plan) ? { plan: str(plan) } : {}),
+    ...(decodedUsage ? { usage: decodedUsage } : {}),
+    ...(str(source) ? { source: str(source) } : {}),
+  } as Account;
 }
 
 function decodePacingWindow(v: unknown): PacingWindow | null {
@@ -120,6 +126,7 @@ function decodePacingAccount(v: unknown): PacingAccount | null {
     ...(num(o.burnPerAgentHour) !== undefined ? { burnPerAgentHour: num(o.burnPerAgentHour) } : {}),
     windows: arr(o.windows).map(decodePacingWindow).filter((w): w is PacingWindow => w !== null),
     idleForecastMins: Math.max(0, num(o.idleForecastMins) ?? 0),
+    ...(num(o.headroomAgents) !== undefined ? { headroomAgents: count(o.headroomAgents) } : {}),
   };
 }
 
@@ -138,7 +145,10 @@ export function decodePacing(body: unknown): Pacing {
   const root = obj(body) ?? {};
   const o = obj(root.pacing) ?? root;
   const target = num(o.targetUsePercent);
+  // No field: an older hub that enforces. Anything but `enforce` is advice.
+  const mode: PacingMode = o.mode === undefined || o.mode === null || o.mode === 'enforce' ? 'enforce' : 'advise';
   return {
+    mode,
     enabled: o.enabled === true,
     strategy: oneOf<PacingStrategy>(o.strategy, STRATEGIES, 'unknown'),
     targetUsePercent: target !== undefined ? Math.min(100, Math.max(1, Math.round(target))) : 95,

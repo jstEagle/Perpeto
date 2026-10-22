@@ -43,6 +43,7 @@ Deployable surfaces live in `apps/`; libraries they compose live in `packages/` 
 | `packages/accounts` | `@perpeto/accounts` | Per-machine subscription pool and hot swapping, in the spirit of CCswap. |
 | `packages/pacer` | `@perpeto/pacer` | Pure subscription pacer: plans agents per provider and account from usage windows, learned burn rates, slots and ready work. No I/O. |
 | `packages/t3-executor` | `@perpeto/t3-executor` | Executor that drives a local T3 environment: threads, turns, events, token usage, subagent policy. |
+| `packages/t3-observer` | `@perpeto/t3-observer` | Read-only observer of an operator's own running T3 Code: sessions, per-turn usage and subscription windows. No hub coupling. |
 | `packages/messaging` | `@perpeto/messaging` | Existing durable messaging store. Shared by the hub and the T3 environment server. |
 | `packages/sdk` | `@perpeto/sdk` | Messaging HTTP client, `perpeto-messages` CLI and MCP stdio server for agents. |
 | `packages/design-tokens` | `@perpeto/design-tokens` | Brand tokens generated from `brand/tokens.css` for CSS and Swift, plus logo assets. |
@@ -91,7 +92,11 @@ MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queu
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
                running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
 Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt?, plan?: string,
-               usage?: { checkedAt, windows: UsageWindow[] } }   // percentages and reset times only: never credentials, emails, fingerprints or paths
+               usage?: { checkedAt, windows: UsageWindow[] },   // percentages and reset times only: never credentials, emails, fingerprints or paths
+               source?: 'observed', providerInstanceId? }      // observed: a provider instance of an operator's own T3, reported by an observe-only node
+Session      { id, machineId, machineName, threadId, title?, project?: { name, path? /* folder name */ }, branch?, worktree? /* folder name */, provider, providerInstanceId, model?,
+               status: 'running'|'waiting'|'idle'|'error', parentThreadId?, childCount, createdAt, lastActivityAt, turns,
+               tokens: { input /* uncached */, output, cacheRead, cacheWrite, reasoning } }   // a thread observed in an operator's own T3
 UsageWindow  { id /* provider's stable id: five_hour, seven_day, primary… */, kind: 'session'|'weekly'|'monthly'|'other', label, usedPercent /* 0..100 */, resetsAt?, windowMins? }
 UsageRecord  { id, projectId, runId?, assignmentId?, machineId, accountId?, provider, model,
                inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd?, at }
@@ -202,7 +207,9 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
 | `GET /jobs/:id/bundle?attempt=N` | Git bundle of a hub-hosted job revision for the leasing machine or the owner; jobs with `source: { kind: 'hub-bundle' }` are fetched this way so any enrolled machine can run them. `409 SOURCE_UNAVAILABLE` if the revision is gone |
 | `GET /projects/:id/merge-queue` | Merge queue |
-| `GET /usage?projectId&runId&groupBy=provider|model|machine|day|role` | Token and agent usage |
+| `GET /usage?projectId&runId&source=observed|factory&groupBy=provider|model|machine|day|role|source` | Token and agent usage; `source=observed` is usage from operators' own T3 sessions, which has no project |
+| `GET /sessions?machineId&status&provider&since&limit&cursor` | Observed sessions, newest activity first: `{ sessions: Session[], nextCursor? }`; see [observe-only mode](#observe-only-mode) |
+| `GET /sessions/summary?window=1h|24h|7d` | Machines observing, session totals and observed tokens by provider, model, machine and hour |
 | `GET /owner`, `PATCH /owner` `{ name?, initials? }` | Owner display name and initials (`ownerName` in hub config), also returned by `GET /session` and `/overview` |
 | `GET /overview` | Counts for dashboards plus active/paused `runs` with settings, `intake` and `budgetUsage` |
 | `GET /events?after=<seq>|latest=true|before=<seq>&runId=&limit=` | Event page, always oldest first; `after` returns `{events, nextCursor, hasMore}`, `latest`/`before` add `previousCursor`; the three are mutually exclusive. `Accept: text/event-stream` streams live, also filterable by `runId` |
@@ -236,6 +243,7 @@ Planner `items[].touches?: string[]` survive hub result transport and remain eng
 Enrollment codes come wrapped in a paste-able join code, `pj1_` + base64url `{ url, fingerprint?, code }` (`POST /machines/enrollment-codes` accepts `{ url?, pin? }`). With hub TLS enabled (self-signed, generated on first start), nodes pin the certificate's SHA-256 fingerprint and send nothing to a server with a different one; `GET /tls`, `POST /tls/rotate` and `POST /tls/activate` manage rotation, and heartbeat responses carry `tls.fingerprints` so running nodes follow it. A non-loopback hub without TLS refuses to start (`INSECURE_BIND`) unless `allowInsecureRemote` is set. Tailscale (`perpeto hub expose --tailscale`) is the recommended path between machines.
 
 | `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers, labels }` | Every 10 s. Missing three marks the machine `offline`. Accounts may carry `plan` and `usage` |
+| `POST /nodes/observations` `{ batchId, source, sessions, removedThreadIds?, usage?, providers?, resync? }` | Observe-only report from the machine's own T3; see [observe-only mode](#observe-only-mode). `batchId` is the idempotency key |
 | `POST /nodes/lease` `{ kinds: ['assignment','job'], max }` | Long-poll up to 25 s. Returns leased assignments and jobs with `leaseExpiresAt` (60 s) |
 | `POST /assignments/:id/renew`, `POST /jobs/:id/renew` | Extend a lease while working |
 | `POST /assignments/:id/release`, `POST /jobs/:id/release` `{ attempt, idempotencyKey?, reason? }` | Hand back unstarted work without consuming an attempt; the same machine is not offered it again for one lease duration |
@@ -263,7 +271,7 @@ An expired lease on run work is reported to the engine as a failed attempt, and 
 The pacer keeps every subscription working and spends each usage window by its reset. Inputs are the heartbeat usage windows, burn rates learned per account and window, running agents per account, machine slots and ready work. The algorithm, worked examples and limits are in the [pacer handoff](../handoffs/pacer.md). Real subscriptions have not been paced live.
 
 ```ts
-Pacing         { enabled, strategy: 'rotation'|'parallel', targetUsePercent, minAgents, maxAgents: number|null, updatedAt,
+Pacing         { enabled, mode: 'enforce'|'advise', strategy: 'rotation'|'parallel', targetUsePercent, minAgents, maxAgents: number|null, updatedAt,
                  providers: PacingProvider[], accounts: PacingAccount[], timeline: { accountId, from, to, phase: 'burn'|'rest' }[] }   // timeline covers the next 10 h
 PacingProvider { provider, targetAgents, runningAgents, slots, readyWork, limitedBy: 'weekly'|'session'|'slots'|'work'|'none', starved, sustainableAgents }
 PacingAccount  { accountId, machineId, provider, label, plan?, status, state: 'burning'|'next'|'resting'|'cooling'|'exhausted'|'unknown',
@@ -276,6 +284,28 @@ PacingAccount  { accountId, machineId, provider, label, plan?, status, state: 'b
 - `PUT /pacing/settings` `{ enabled?, strategy?, targetUsePercent? (50..100), minAgents?, maxAgents? (null clears) }` takes `idempotencyKey` like other mutations, persists in the hub database, and returns the `Pacing` view. Defaults come from the hub config key `pacing` (`enabled: true`, `strategy: 'rotation'`, `targetUsePercent: 95`, burn-rate priors per provider and window kind).
 - While enabled, leases cap each machine's agents per paced provider at the sum of its accounts' `targetAgents`; caps never raise workflow or machine limits. The hub emits `pacing.updated` (provider targets, limits, account states and targets) when the plan changes materially, `pacing.settings-updated`, `account.updated` after `PATCH /accounts/:id`, and `pacing.nudged` when a starved fleet gives an idle keep-open scheduled run one improvement pass ahead of its schedule (at most once per `pacing.nudgeIntervalMs`).
 - Usage samples are stored per account when a fresh reading arrives (its `checkedAt` moves) and expire with `usageRetentionMs`.
+
+### Observe-only mode
+
+Justus asked on 22 October 2026 to hook Perpeto into his own T3 Code sessions and subscriptions on each Mac, for observability only. A node with `observe.enabled` (and usually `capacity: { maxAgents: 0, maxJobs: 0 }`, no executor, no runtime) runs `@perpeto/t3-observer` against the operator's running T3 desktop server. It reads only: `server.getConfig`, `orchestration.subscribeShell` and bounded `orchestration.subscribeThread` snapshots, with a session minted once by T3's own CLI with scope `orchestration:read`. It never sends a command, settings change or provider refresh. The [observe guide](../guides/observe.md) covers auth, what leaves the machine, install and limits.
+
+```ts
+ObservationBatch { batchId, observedAt?, source: { connected, serverVersion?, error? },
+                   sessions: ObservedSession[] /* ≤ 500, changed since the last acknowledged batch */, removedThreadIds?: string[] /* ≤ 1000 */,
+                   usage?: ObservedUsage[] /* ≤ 2000 */, providers?: ObservedProvider[] /* ≤ 50, the full list when it changed */,
+                   resync?: { id, final } /* after a node start: every live session, chunked; the final chunk prunes sessions it did not list */ }
+ObservedSession  { threadId, title?, project?: { name, path? }, branch?, worktree?, provider /* driver */, providerInstanceId, model?, status, parentThreadId?, createdAt, lastActivityAt, turns }
+ObservedUsage    { providerTurnId, threadId, providerInstanceId, provider, model, inputTokens /* uncached */, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, usageStatus?, at }
+ObservedProvider { instanceId, driver, displayName?, plan? /* T3's subscription label, never an email */, status?, usage?: { checkedAt, windows: UsageWindow[] } }
+```
+
+- Status: a pending runtime request is `waiting`; an active run is `running`; a failed last run is `error`; else `idle`. Thread ids may be up to 1,024 characters (T3 derives child ids from parents).
+- Usage is one ledger row per machine and provider turn (`INSERT OR IGNORE`), so replays and resends after a restart add nothing; it is stored without a project (`project_id ''`), tagged by machine and observed account, and feeds `GET /usage`, overview tokens and session totals. Records older than `usageRetentionMs`, and sessions idle longer than it, are not stored.
+- Each provider instance becomes an `Account` with `source: 'observed'`, replacing that machine's previous observed accounts; heartbeats never remove them. Owner `PATCH /accounts/:id` edits of observed accounts stay on the hub and are not relayed, since the operator's T3 is never written to.
+- Pacing learns burn rates for observed accounts from running-session counts per provider instance and each fresh usage reading, but never plans or caps them. `GET /pacing` reports `mode: 'advise'` when no online machine has agent slots. Observed accounts appear in `accounts` with `source: 'observed'`, `advisory: true`, `targetAgents: 0`, `runningAgents`, `state`, `idleForecastMins`, `sustainableAgents?`, `headroomAgents?` (agents that could still run and land on target), `burnPerAgentHour?` and windows with `projectedPercentAtReset` at the current measured burn, `onTrack`, `burnPerAgentHour`, `learned` and `exhaustsAt?`. They never enter lease caps or node allowances.
+- Events: `session.updated` `{ machineId, threadId, status, previous? }` when a session appears or changes status (at most 50 per batch), and `sessions.changed` `{ machineId, running, waiting, idle, error }` per machine, at once after a status change and otherwise at most every 15 s. Token changes alone never emit per-session events.
+- `Machine` gains `observe?: { connected, lastObservedAt, serverVersion?, error? }`; the summary counts a machine as observing while it reported a connected T3 within 90 s.
+- `GET /sessions/summary` returns `{ window, machines: [{ machineId, name, online, observing, lastObservedAt?, observeError?, running, waiting, idle, error }], totals: { running, waiting, sessionsActive }, tokens: { byProvider: [{ provider, input, output, cacheRead, cacheWrite }], byModel: [{ model, … }], byMachine: [{ machineId, name, … }], series: [{ at, input, output }] } }`. `idle`, `error` and `sessionsActive` count sessions with activity in the window; `running` and `waiting` count all; `series` has one bucket per hour of the window.
 
 ## Node executors
 

@@ -1,0 +1,19 @@
+{
+  "name": "@perpeto/t3-observer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only observer of an operator's own running T3 Code: sessions, token usage and subscription windows. Never starts, steers or configures anything.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=24.13.1 <25"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@perpeto/t3-executor": "*"
+  }
+}

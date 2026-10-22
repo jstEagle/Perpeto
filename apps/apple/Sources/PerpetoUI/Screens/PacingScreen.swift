@@ -11,8 +11,14 @@ struct PacingScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: PerpetoGap.cards) {
-                ScreenHeader("Pacing", subtitle: "Perpeto scales the agents it runs so every subscription’s limit is used up by the time it resets, without downtime or unused tokens.")
-                if let pacing = store.factory.pacing {
+                let advisory = store.factory.pacing?.isAdvisory == true
+                ScreenHeader("Pacing", subtitle: advisory
+                             ? "How each subscription is tracking toward its reset at the current pace, and about how many more agents it could take."
+                             : "Perpeto scales the agents it runs so every subscription’s limit is used up by the time it resets, without downtime or unused tokens.")
+                if let pacing = store.factory.pacing, pacing.isAdvisory {
+                    adviceHero(pacing).card()
+                    projections(pacing).card()
+                } else if let pacing = store.factory.pacing {
                     hero(pacing).card()
                     AdaptiveColumns(sideWidth: 340) {
                         projections(pacing).card()
@@ -26,6 +32,43 @@ struct PacingScreen: View {
             }
             .screenPadding()
         }
+    }
+
+    /// Observe-only: the advice sentence, one line saying nothing is enforced,
+    /// and the room each subscription has, in place of the rotation and settings.
+    private func adviceHero(_ pacing: Pacing) -> some View {
+        let advice = PacingText.advice(pacing, sessionsRunning: store.factory.sessions?.running)
+        let size = compact ? PerpetoType.text20 : PerpetoType.text24
+        var text = AttributedString(advice.lead)
+        text.foregroundColor = PerpetoColor.ink
+        text.font = PerpetoType.title(size)
+        if !advice.clauses.isEmpty {
+            var rest = AttributedString(" · " + advice.clauses.joined(separator: " · "))
+            rest.foregroundColor = PerpetoColor.muted
+            rest.font = PerpetoType.text(size)
+            text += rest
+        }
+        let rooms = pacing.accounts.filter { $0.headroomAgents != nil }.prefix(3)
+        return VStack(alignment: .leading, spacing: PerpetoSpacing.x(7)) {
+            VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
+                Text(text)
+                    .tracking(PerpetoType.tracking(forHeading: size))
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 760, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
+                Text("Perpeto is only observing, so nothing is enforced. Numbers are advice.")
+                    .font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
+            }
+            if !rooms.isEmpty {
+                FigureStrip(rooms.map { account in
+                    let room = account.headroomAgents ?? 0
+                    return Figure("\(account.label) · room for more agents", value: "\(room)", unit: room == 1 ? "agent" : "agents")
+                })
+                .frame(maxWidth: 760, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func hero(_ pacing: Pacing) -> some View {
@@ -76,24 +119,31 @@ struct PacingScreen: View {
 
     private func projections(_ pacing: Pacing) -> some View {
         VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
-            SectionTitle("Projected at reset", detail: "Session · weekly")
+            SectionTitle("Projected at reset", detail: pacing.isAdvisory ? "Session · weekly · room" : "Session · weekly")
                 .padding(.bottom, PerpetoSpacing.x(2))
             if pacing.accounts.isEmpty {
                 Text("No subscriptions reported yet.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted).padding(.top, PerpetoSpacing.x(3))
             }
             RowList(pacing.accounts) { account in
                 let track = PacingText.track(account)
-                let meta = [account.plan, track == .under ? "under target" : track == .over ? "runs out early" : nil,
+                let meta = pacing.isAdvisory ? [account.plan, store.machine(account.machineId)?.name, track == .over ? "runs out early" : nil].compactMap { $0 }.joined(separator: " · ") : [account.plan, track == .under ? "under target" : track == .over ? "runs out early" : nil,
                             account.idleForecastMins > 0 ? "\(Int(account.idleForecastMins)) min idle forecast" : nil].compactMap { $0 }.joined(separator: " · ")
                 HStack(spacing: PerpetoSpacing.x(4)) {
                     RowText(account.label, meta: meta.isEmpty ? Format.provider(account.provider) : meta)
                     Spacer(minLength: PerpetoSpacing.x(2))
-                    if !compact {
+                    if !compact && !pacing.isAdvisory {
                         StatusLabel(PacingText.stateLabel(account.state), tone: account.state.tone).frame(width: 110, alignment: .leading)
                     }
                     HStack(spacing: PerpetoSpacing.x(4)) {
                         percent(account.windows.first { $0.kind == .session })
                         percent(account.windows.first { $0.kind == .weekly })
+                        if pacing.isAdvisory {
+                            Text(account.headroomAgents.map { "+\($0)" } ?? "—")
+                                .font(PerpetoType.text(PerpetoType.text14, weight: .medium).monospacedDigit())
+                                .foregroundStyle(account.headroomAgents == nil ? PerpetoColor.muted : PerpetoColor.ink)
+                                .frame(width: 44, alignment: .trailing)
+                                .accessibilityLabel(PacingText.headroom(account.headroomAgents) ?? "Room not reported")
+                        }
                     }
                 }
             }

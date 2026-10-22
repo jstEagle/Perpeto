@@ -10,8 +10,12 @@ public struct FactoryState: Sendable, Hashable {
     public var usage: UsageBundle
     /// Subscription pacing; nil when the hub has no pacing route yet.
     public var pacing: Pacing?
+    /// Observed T3 Code sessions; nil when the hub doesn't observe sessions yet.
+    public var sessions: ObservedSessions?
 
-    public init(projects: [Project], machines: [Machine], accounts: [Account], jobs: [Job], overview: FactoryOverview, usage: UsageBundle, pacing: Pacing? = nil) {
+    public init(projects: [Project], machines: [Machine], accounts: [Account], jobs: [Job], overview: FactoryOverview, usage: UsageBundle, pacing: Pacing? = nil,
+                sessions: ObservedSessions? = nil) {
+        self.sessions = sessions
         self.projects = projects
         self.machines = machines
         self.accounts = accounts

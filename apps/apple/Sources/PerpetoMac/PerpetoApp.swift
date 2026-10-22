@@ -118,6 +118,7 @@ struct PerpetoCommands: Commands {
                 ForEach(ProjectSection.allCases) { section in
                     Button(section.title) { navigator.show(section, fallbackProject: store.factory.projects.first?.id) }
                         .keyboardShortcut(section.shortcut, modifiers: .command)
+                        .disabled(store.factory.projects.isEmpty)
                 }
             }
             Section("Factory") {

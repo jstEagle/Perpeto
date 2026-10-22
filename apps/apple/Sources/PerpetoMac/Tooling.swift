@@ -14,6 +14,9 @@ import SwiftUI
 //     with -perpeto.appearance light|dark to force the appearance
 //     --pacing <prefix>   capture only Accounts and Pacing, named
 //     <prefix>accounts.png and <prefix>pacing.png
+//     --observe <prefix>  capture the observe-only screens (Home, Sessions,
+//     Accounts, Pacing, Usage, Machines);
+//     combine with -perpeto.demo observe for the demo without projects
 //   --render-icon <dir> write the app icon PNGs, then quit
 
 enum LaunchArgument {
@@ -51,6 +54,16 @@ struct Snapshotter {
     func run() async {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         await store.refresh()
+        if let prefix = LaunchArgument.string(after: "--observe") {
+            try? await Task.sleep(for: .seconds(1.5))
+            for (name, show) in observeShots(prefix: prefix) {
+                show()
+                try? await Task.sleep(for: .seconds(1.4))
+                capture(name)
+            }
+            NSApp.terminate(nil)
+            return
+        }
         guard let project = store.factory.projects.first?.id else { return }
         let shots = LaunchArgument.string(after: "--pacing").map { pacingShots(prefix: $0) }
             ?? LaunchArgument.string(after: "--themes").map { themeShots(project, prefix: $0) }
@@ -108,6 +121,18 @@ struct Snapshotter {
         [
             ("\(prefix)accounts", { tall(); navigator.route = .factory(.accounts) }),
             ("\(prefix)pacing", { navigator.route = .factory(.pacing) }),
+        ]
+    }
+
+    /// The observe-only factory, for reviewing it in each appearance.
+    private func observeShots(prefix: String) -> [(String, () -> Void)] {
+        [
+            ("\(prefix)home", { tall(height: 1240); navigator.route = .factory(.home) }),
+            ("\(prefix)sessions", { tall(height: 1900); navigator.route = .factory(.sessions) }),
+            ("\(prefix)accounts", { tall(height: 960); navigator.route = .factory(.accounts) }),
+            ("\(prefix)pacing", { navigator.route = .factory(.pacing) }),
+            ("\(prefix)usage", { tall(height: 1160); navigator.route = .factory(.usage) }),
+            ("\(prefix)machines", { tall(height: 960); navigator.route = .factory(.machines) }),
         ]
     }
 

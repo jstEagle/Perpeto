@@ -12,14 +12,24 @@ struct AccountsScreen: View {
     var body: some View {
         let accounts = store.factory.accounts
         let pacing = store.factory.pacing
+        let observing = store.isObserveOnly
+        let advisory = observing || pacing?.isAdvisory == true
         ScrollView {
             VStack(alignment: .leading, spacing: PerpetoGap.cards) {
-                ScreenHeader("Accounts", subtitle: "The Claude and Codex subscriptions signed in on your machines, and how much of each limit is used. Credentials stay on the machine that owns them.") {
-                    Button("Add subscription") { adding = true }
-                        .buttonStyle(.perpetoSecondary)
-                        .fullWidthButtons(compact)
+                ScreenHeader("Accounts", subtitle: observing
+                             ? "The Claude and ChatGPT subscriptions T3 Code uses on your machines, and how much of each limit is used. Perpeto only reads them."
+                             : "The Claude and Codex subscriptions signed in on your machines, and how much of each limit is used. Credentials stay on the machine that owns them.") {
+                    // Observed subscriptions come from T3 Code on each machine; there is nothing to add here.
+                    if !observing {
+                        Button("Add subscription") { adding = true }
+                            .buttonStyle(.perpetoSecondary)
+                            .fullWidthButtons(compact)
+                    }
                 }
-                if accounts.isEmpty {
+                if accounts.isEmpty && observing {
+                    EmptyState("No subscriptions seen yet", message: "They appear once a machine’s node reads the Claude and ChatGPT logins in T3 Code.", systemImage: "person.2")
+                        .card()
+                } else if accounts.isEmpty {
                     EmptyState("No subscriptions yet", message: "Machines report the Claude and Codex logins in their account pool with each heartbeat.", systemImage: "person.2") {
                         Button("How to add one") { adding = true }.buttonStyle(.perpetoPrimary)
                     }
@@ -30,14 +40,16 @@ struct AccountsScreen: View {
                             SectionTitle(Format.provider(group.provider), detail: Format.plural(group.accounts.count, "subscription"))
                             .padding(.bottom, PerpetoSpacing.x(2))
                             RowList(group.accounts) { account in
-                                SubscriptionRow(account: account, machine: store.machine(account.machineId)?.name ?? account.machineId, pacing: pacing) {
+                                SubscriptionRow(account: account, machine: store.machine(account.machineId)?.name ?? account.machineId, pacing: pacing, advisory: advisory) {
                                     editing = account
                                 }
                             }
                         }
                         .card()
                     }
-                    Text("Credentials stay on the machine that owns them. Perpeto never copies them between machines.")
+                    Text(advisory
+                         ? "Perpeto reads these from T3 Code and enforces nothing. Room is about how many more agents could run and still land near \(pacing?.targetUsePercent ?? 95)% by the reset."
+                         : "Credentials stay on the machine that owns them. Perpeto never copies them between machines.")
                         .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
                 }
             }
@@ -71,6 +83,8 @@ struct SubscriptionRow: View {
     var account: Account
     var machine: String
     var pacing: Pacing?
+    /// Observe-only: the state column reads as advice, not a rotation.
+    var advisory = false
     var edit: () -> Void
     @Environment(\.compactLayout) private var compact
 
@@ -92,17 +106,17 @@ struct SubscriptionRow: View {
                 HStack(alignment: .top) {
                     identity
                     Spacer(minLength: PerpetoSpacing.x(2))
-                    editButton
+                    if !account.isObserved { editButton }
                 }
                 state(paced)
                 meters
             }
         } else {
             HStack(alignment: .center, spacing: PerpetoSpacing.x(6)) {
-                identity.frame(width: 190, alignment: .leading)
+                identity.frame(width: advisory ? 220 : 190, alignment: .leading)
                 meters.frame(maxWidth: .infinity)
-                state(paced).frame(width: 130, alignment: .leading)
-                editButton
+                state(paced).frame(width: advisory ? 190 : 130, alignment: .leading)
+                if !account.isObserved { editButton }
             }
         }
     }
@@ -141,7 +155,14 @@ struct SubscriptionRow: View {
                 StatusLabel("Cooling down", tone: .waiting)
                 if let until = account.cooldownUntil { Text("Ready \(Format.relative(until))").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted) }
             default:
-                if let paced {
+                if advisory || account.isObserved {
+                    StatusLabel("Observed", tone: .neutral)
+                    if let room = PacingText.headroom(paced?.headroomAgents) {
+                        Text(room).font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.inkSoft).fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text(account.lastUsedAt.map { "Used \(Format.relative($0))" } ?? "Not used yet").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                    }
+                } else if let paced {
                     StatusLabel(PacingText.stateLabel(paced.state), tone: paced.state.tone)
                     if let detail = detail(paced) { Text(detail).font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.muted) }
                 } else {

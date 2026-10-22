@@ -11,6 +11,7 @@
 import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { seedObserved } from './seed-observed.mjs';
 
 const [hubUrl, secretPath, ...flags] = process.argv.slice(2);
 if (!hubUrl || !secretPath) {
@@ -285,10 +286,14 @@ const metrics = await hub('GET', `/runs/${run.id}/metrics?window=24h`);
 console.log(`metrics: ${metrics.nodes.length} nodes, ${metrics.edges.filter((e) => e.count).length} edges with traffic, ${metrics.bottlenecks.length} bottlenecks`);
 console.log(`open work: ${machines.map((m) => `${m.name} ${m.held.length}`).join(', ')}`);
 
+// Two observe-only machines reporting their operators' own T3 sessions, usage and subscriptions.
+const observed = await seedObserved({ hubUrl, owner });
+
 if (flags.includes('--hold')) {
   console.log('holding leases; Ctrl-C to stop');
   for (let tick = 0; ; tick++) {
     for (const m of machines) await heartbeat(m).catch(() => undefined);
+    if (tick % 4 === 0) await observed.ping();
     if (tick % 4 === 0)
       for (const w of machines.flatMap((m) => m.held))
         await w.machine.api('POST', `/${w.kind === 'job' ? 'jobs' : 'assignments'}/${w.value.id}/renew`, { attempt: w.value.attempt }).catch(() => release(w));

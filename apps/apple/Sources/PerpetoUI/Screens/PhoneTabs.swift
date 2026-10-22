@@ -3,39 +3,61 @@ import PerpetoKit
 import SwiftUI
 
 /// iPhone: Overview, Runs, Work, Messages and More, each in its own stack.
+/// Observe-only (no projects): Home, Sessions, Accounts, Usage and More.
 /// The navigator's route picks the tab, so links between screens still work.
 struct PhoneTabs: View {
     var store: FactoryStore
     @Bindable var navigator: Navigator
     var openSettings: () -> Void
 
-    enum Tab: Hashable { case overview, runs, work, messages, more }
+    enum Tab: Hashable { case overview, runs, work, messages, home, sessions, accounts, usage, more }
 
     @State private var tab: Tab = .overview
     @State private var morePath: [Route] = []
 
     private var projectId: String? { navigator.projectId ?? store.factory.projects.first?.id }
+    private var observing: Bool { store.isObserveOnly }
 
     var body: some View {
         TabView(selection: $tab) {
-            stack(.overview).tabItem { Label("Overview", systemImage: ProjectSection.overview.systemImage) }.tag(Tab.overview)
-            stack(.runs).tabItem { Label("Runs", systemImage: ProjectSection.runs.systemImage) }.tag(Tab.runs)
-            stack(.work).tabItem { Label("Work", systemImage: ProjectSection.work.systemImage) }.tag(Tab.work)
-            stack(.messages).tabItem { Label("Messages", systemImage: ProjectSection.messages.systemImage) }.tag(Tab.messages)
+            if observing {
+                factoryStack(.home).tabItem { Label("Home", systemImage: FactorySection.home.systemImage) }.tag(Tab.home)
+                factoryStack(.sessions).tabItem { Label("Sessions", systemImage: FactorySection.sessions.systemImage) }.tag(Tab.sessions)
+                    .badge(store.factory.sessions?.waiting ?? 0)
+                factoryStack(.accounts).tabItem { Label("Accounts", systemImage: FactorySection.accounts.systemImage) }.tag(Tab.accounts)
+                factoryStack(.usage).tabItem { Label("Usage", systemImage: FactorySection.usage.systemImage) }.tag(Tab.usage)
+            } else {
+                stack(.overview).tabItem { Label("Overview", systemImage: ProjectSection.overview.systemImage) }.tag(Tab.overview)
+                stack(.runs).tabItem { Label("Runs", systemImage: ProjectSection.runs.systemImage) }.tag(Tab.runs)
+                stack(.work).tabItem { Label("Work", systemImage: ProjectSection.work.systemImage) }.tag(Tab.work)
+                stack(.messages).tabItem { Label("Messages", systemImage: ProjectSection.messages.systemImage) }.tag(Tab.messages)
+            }
             more.tabItem { Label("More", systemImage: "ellipsis") }.tag(Tab.more)
         }
         .environment(\.compactLayout, true)
         .environment(\.readOnlySettings, true)
         .environment(\.symbolVariants, .none)
         .onChange(of: tab) { _, tab in
-            guard let projectId else { return }
             switch tab {
-            case .overview: navigator.route = .project(projectId, .overview)
-            case .runs: navigator.route = .project(projectId, .runs)
-            case .work: navigator.route = .project(projectId, .work)
-            case .messages: navigator.route = .project(projectId, .messages)
+            case .home: navigator.route = .factory(.home)
+            case .sessions: navigator.route = .factory(.sessions)
+            case .accounts: navigator.route = .factory(.accounts)
+            case .usage: navigator.route = .factory(.usage)
             case .more: break
+            default:
+                guard let projectId else { return }
+                switch tab {
+                case .overview: navigator.route = .project(projectId, .overview)
+                case .runs: navigator.route = .project(projectId, .runs)
+                case .work: navigator.route = .project(projectId, .work)
+                case .messages: navigator.route = .project(projectId, .messages)
+                default: break
+                }
             }
+        }
+        .onChange(of: observing, initial: true) { _, observing in
+            if observing, [.overview, .runs, .work, .messages].contains(tab) { tab = .home }
+            if !observing, [.home, .sessions, .accounts, .usage].contains(tab) { tab = .overview }
         }
         .onChange(of: navigator.route, initial: true) { _, route in follow(route) }
     }
@@ -47,10 +69,29 @@ struct PhoneTabs: View {
         case .project(_, .runs): tab = .runs
         case .project(_, .work): tab = .work
         case .project(_, .messages): tab = .messages
+        case .factory(.home) where observing: tab = .home
+        case .factory(.sessions) where observing: tab = .sessions
+        case .factory(.accounts) where observing: tab = .accounts
+        case .factory(.usage) where observing: tab = .usage
         case .some(let other):
             tab = .more
             if morePath.last != other { morePath = [other] }
         case nil: break
+        }
+    }
+
+    private func factoryStack(_ section: FactorySection) -> some View {
+        NavigationStack {
+            FactoryScreen(store: store, navigator: navigator, section: section)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .canvasBackground()
+                .overlay(alignment: .top) {
+                    if let error = store.lastError {
+                        ErrorBanner(error) { store.lastError = nil }.padding(PerpetoSpacing.x(4))
+                    }
+                }
+                .toolbar { bar }
+                .toolbarBackground(.hidden, for: .navigationBar)
         }
     }
 
@@ -102,19 +143,27 @@ struct PhoneTabs: View {
                 VStack(alignment: .leading, spacing: PerpetoGap.cards) {
                     ScreenHeader("More")
                     VStack(alignment: .leading, spacing: 0) {
-                        if let projectId {
-                            link("Workflows", ProjectSection.workflows.systemImage, .project(projectId, .workflows))
+                        if observing {
+                            link("Machines", FactorySection.machines.systemImage, .factory(.machines))
                             Rule()
-                            link("Merge queue", ProjectSection.mergeQueue.systemImage, .project(projectId, .mergeQueue))
+                            link("Pacing", FactorySection.pacing.systemImage, .factory(.pacing))
+                        } else {
+                            if let projectId {
+                                link("Workflows", ProjectSection.workflows.systemImage, .project(projectId, .workflows))
+                                Rule()
+                                link("Merge queue", ProjectSection.mergeQueue.systemImage, .project(projectId, .mergeQueue))
+                                Rule()
+                            }
+                            link("Sessions", FactorySection.sessions.systemImage, .factory(.sessions))
                             Rule()
+                            link("Machines", FactorySection.machines.systemImage, .factory(.machines))
+                            Rule()
+                            link("Accounts", FactorySection.accounts.systemImage, .factory(.accounts))
+                            Rule()
+                            link("Pacing", FactorySection.pacing.systemImage, .factory(.pacing))
+                            Rule()
+                            link("Usage", FactorySection.usage.systemImage, .factory(.usage))
                         }
-                        link("Machines", FactorySection.machines.systemImage, .factory(.machines))
-                        Rule()
-                        link("Accounts", FactorySection.accounts.systemImage, .factory(.accounts))
-                        Rule()
-                        link("Pacing", FactorySection.pacing.systemImage, .factory(.pacing))
-                        Rule()
-                        link("Usage", FactorySection.usage.systemImage, .factory(.usage))
                     }
                     .card()
                     Button(action: openSettings) {
@@ -139,10 +188,7 @@ struct PhoneTabs: View {
                     switch route {
                     case .project(let id, let section):
                         if let project = store.project(id) { ProjectScreen(store: store, navigator: navigator, project: project, section: section) }
-                    case .factory(.machines): MachinesScreen(store: store)
-                    case .factory(.accounts): AccountsScreen(store: store)
-                    case .factory(.pacing): PacingScreen(store: store)
-                    case .factory(.usage): UsageScreen(store: store)
+                    case .factory(let section): FactoryScreen(store: store, navigator: navigator, section: section)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

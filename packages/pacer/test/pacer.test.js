@@ -280,3 +280,28 @@ test('burn-rate learning: accumulates sparse samples, ignores resets and outside
   state = learnBurnRates(state, { at: 6, agentMinutes: 120, windows: [{ id: 's', usedPercent: 8.5, resetsAt: at(600) }] });
   assert.equal(state.rates.s.samples, 3); assert.ok(state.rates.s.perAgentHour < 26);
 });
+
+test('advise: observed accounts get projections at the measured burn, headroom and idle forecasts, never a target', async () => {
+  const { advise } = await import('../src/index.js');
+  const now = Date.parse('2026-10-22T08:00:00.000Z');
+  const account = { provider: 'claudeAgent', usage: { windows: [
+    { id: 'five_hour', kind: 'session', label: 'Session', usedPercent: 40, resetsAt: '2026-10-22T10:00:00.000Z', windowMins: 300 },
+    { id: 'seven_day', kind: 'weekly', label: 'Weekly', usedPercent: 50, resetsAt: '2026-10-24T08:00:00.000Z', windowMins: 10080 }] } };
+  // One agent at a learned 10 %/agent-hour session rate: 40 + 10 × 2 h = 60 at the session reset; weekly at the 2.5 prior: 50 + 2.5 × 48 → 100.
+  const burning = advise({ now, account, running: 1, rates: { five_hour: 10 } });
+  assert.equal(burning.state, 'burning');
+  assert.deepEqual(burning.windows.map(window => [window.id, window.projectedPercentAtReset, window.onTrack, window.learned]), [['five_hour', 60, 'under', true], ['seven_day', 100, 'over', false]]);
+  assert.equal(burning.windows[1].exhaustsAt, '2026-10-23T04:00:00.000Z');
+  assert.equal(burning.burnPerAgentHour, 10);
+  // Weekly binds: (95 − 50) / (2.5 × 48) = 0.375 agents, already exceeded by the one running.
+  assert.deepEqual([burning.sustainableAgents, burning.headroomAgents, burning.idleForecastMins], [0.4, 0, 0]);
+  // Nobody running and plenty of room: idle for the whole horizon, with headroom for more agents.
+  const fresh = advise({ now, account: { provider: 'codex', usage: { windows: [{ id: 'primary', kind: 'weekly', label: 'Weekly', usedPercent: 10, resetsAt: '2026-10-23T08:00:00.000Z', windowMins: 10080 }] } } });
+  assert.deepEqual([fresh.state, fresh.idleForecastMins, fresh.headroomAgents, fresh.windows[0].onTrack], ['resting', 600, 1, 'under']);
+  // A window at target blocks until its reset; a passed reset counts the window as fresh.
+  const blocked = advise({ now, account: { provider: 'claudeAgent', usage: { windows: [{ id: 'five_hour', kind: 'session', usedPercent: 97, resetsAt: '2026-10-22T09:00:00.000Z', windowMins: 300 }] } } });
+  assert.deepEqual([blocked.state, blocked.idleForecastMins, blocked.headroomAgents], ['exhausted', 540, 0]);
+  const reset = advise({ now, account: { provider: 'claudeAgent', usage: { windows: [{ id: 'five_hour', kind: 'session', usedPercent: 97, resetsAt: '2026-10-22T07:00:00.000Z', windowMins: 300 }] } } });
+  assert.deepEqual([reset.windows[0].usedPercent, reset.windows[0].resetsAt], [0, '2026-10-22T12:00:00.000Z']);
+  assert.equal(advise({ now, account: { provider: 'codex' } }).state, 'unknown');
+});

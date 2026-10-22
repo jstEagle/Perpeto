@@ -5,7 +5,9 @@ import { Loading } from '../components/ui';
 
 // Each screen loads on first visit, so the graph library and the editor stay
 // out of the first download. NotFound stays in the main chunk.
+const HomePage = lazyRouteComponent(() => import('../routes/home'), 'HomePage');
 const ProjectsPage = lazyRouteComponent(() => import('../routes/projects'), 'ProjectsPage');
+const SessionsPage = lazyRouteComponent(() => import('../routes/sessions'), 'SessionsPage');
 const ProjectLayout = lazyRouteComponent(() => import('../routes/project-layout'), 'ProjectLayout');
 const OverviewPage = lazyRouteComponent(() => import('../routes/overview'), 'OverviewPage');
 const WorkflowsPage = lazyRouteComponent(() => import('../routes/workflows'), 'WorkflowsPage');
@@ -24,7 +26,9 @@ const SettingsPage = lazyRouteComponent(() => import('../routes/settings'), 'Set
 
 const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
 
-const projects = createRoute({ getParentRoute: () => root, path: '/', component: ProjectsPage });
+// Home: the factory in observe-only mode (no projects), else the project list.
+const home = createRoute({ getParentRoute: () => root, path: '/', component: HomePage });
+const projects = createRoute({ getParentRoute: () => root, path: '/projects', component: ProjectsPage });
 const project = createRoute({ getParentRoute: () => root, path: '/projects/$projectId', component: ProjectLayout });
 const overview = createRoute({ getParentRoute: () => project, path: '/', component: OverviewPage });
 const workflows = createRoute({ getParentRoute: () => project, path: '/workflows', component: WorkflowsPage });
@@ -54,6 +58,7 @@ const messages = createRoute({
   validateSearch: (search: Record<string, unknown>): { channel?: string } => ({ channel: typeof search.channel === 'string' ? search.channel : undefined }),
 });
 const mergeQueue = createRoute({ getParentRoute: () => project, path: '/merge-queue', component: MergeQueuePage });
+const sessions = createRoute({ getParentRoute: () => root, path: '/sessions', component: SessionsPage });
 const machines = createRoute({ getParentRoute: () => root, path: '/machines', component: MachinesPage });
 const accounts = createRoute({ getParentRoute: () => root, path: '/accounts', component: AccountsPage });
 const pacing = createRoute({ getParentRoute: () => root, path: '/pacing', component: PacingPage });
@@ -61,8 +66,10 @@ const usage = createRoute({ getParentRoute: () => root, path: '/usage', componen
 const settings = createRoute({ getParentRoute: () => root, path: '/settings', component: SettingsPage });
 
 const tree = root.addChildren([
+  home,
   projects,
   project.addChildren([overview, workflows, workflow, editor, runs, run, work, messages, mergeQueue]),
+  sessions,
   machines,
   accounts,
   pacing,

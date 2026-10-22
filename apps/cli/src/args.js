@@ -4,11 +4,11 @@ import { defaultDir } from './config.js';
 const commands = {
   hub: { init: ['host', 'port', 'tls', 'show-owner-token'], start: [], run: [], stop: [], status: [], 'enroll-code': ['labels', 'show-code', 'url'], decide: ['note'],
     tls: [], expose: ['tailscale', 'https-port', 'off'] },
-  node: { join: ['code', 'code-file', 'labels', 'name'], start: [], run: [], stop: [], status: [], drain: [], 'rotate-token': [], repin: [] },
+  node: { join: ['code', 'code-file', 'labels', 'name', 'observe', 't3-dir', 'no-titles'], start: [], run: [], stop: [], status: [], drain: [], 'rotate-token': [], repin: [] },
   machines: { revoke: [] },
   service: { install: ['dry-run'], uninstall: ['dry-run'] },
 };
-const booleans = new Set(['show-owner-token', 'show-code', 'dry-run', 'help', 'tls', 'tailscale', 'off']);
+const booleans = new Set(['show-owner-token', 'show-code', 'dry-run', 'help', 'tls', 'tailscale', 'off', 'observe', 'no-titles']);
 export function parseArgs(args) {
   const words = []; const flags = {};
   for (let i = 0; i < args.length; i++) {
@@ -27,11 +27,12 @@ export function parseArgs(args) {
   }
   if (flags.help || words.length === 0) return { help: true };
   const [group, action, ...positionals] = words;
-  const simple = ['doctor', 'status'].includes(group) || group === 'machines' && action === undefined;
+  const simple = ['doctor', 'status', 'sessions'].includes(group) || group === 'machines' && action === undefined;
   const allowed = simple ? [] : commands[group]?.[action];
   if (!allowed || Object.keys(flags).some(key => !['dir', ...allowed].includes(key))) throw new Error('Unknown command or option. Use perpeto --help.');
   if (simple && words.length !== 1) throw new Error('Unexpected argument.');
   if (!simple) {
+    if (group === 'node' && action === 'join' && (flags['t3-dir'] || flags['no-titles']) && !flags.observe) throw new Error('--t3-dir and --no-titles need --observe.');
     if (group === 'node' && action === 'join') {
       // Either a join code from perpeto hub enroll-code, or a hub URL with --code or --code-file.
       const joinCode = positionals.length === 1 && positionals[0].startsWith('pj1_');

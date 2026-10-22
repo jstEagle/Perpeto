@@ -44,13 +44,14 @@ struct PerpetoiOSApp: App {
 }
 
 /// Developer launch arguments, used to capture simulator screenshots:
-///   --route <overview|workflows|runs|runs-list|work|messages|merge-queue|machines|accounts|usage>
+///   --route <overview|workflows|runs|runs-list|work|messages|merge-queue|home|sessions|machines|accounts|pacing|usage>
 ///     (`runs` opens the running run's map; `runs-list` the list of runs)
 ///   --node <node id>     select a node on the run map
 ///   --run <run id>       open this run instead of the running one
 ///   --detail-only        hide the sidebar (iPad)
 ///   --settings           open the settings sheet
 ///   -perpeto.appearance <system|light|dark>   override the appearance for this launch
+///   -perpeto.demo <full|observe>   pick the demo factory (observe: no projects, T3 sessions only)
 ///   --hub-url <url> --hub-token-file <path>   read a live hub; the token
 ///     comes from an owner-only file, never an argument
 enum LaunchOptions {
@@ -72,11 +73,13 @@ enum LaunchOptions {
     static func apply(to navigator: Navigator, store: FactoryStore) async {
         guard let route = value("--route") else { return }
         if store.factory.projects.isEmpty { await store.refresh() }
+        if let section = FactorySection.allCases.first(where: { $0.rawValue == route }) {
+            navigator.route = .factory(section)
+            if CommandLine.arguments.contains("--detail-only") { navigator.columnVisibility = .detailOnly }
+            return
+        }
         guard let project = store.factory.projects.first?.id else { return }
         switch route {
-        case "machines": navigator.route = .factory(.machines)
-        case "accounts": navigator.route = .factory(.accounts)
-        case "usage": navigator.route = .factory(.usage)
         case "runs-list": navigator.route = .project(project, .runs)
         default:
             let section = ProjectSection.allCases.first { $0.rawValue == route || $0.title.lowercased().replacingOccurrences(of: " ", with: "-") == route } ?? .overview

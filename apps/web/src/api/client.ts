@@ -2,6 +2,7 @@ import { HubError, newIdempotencyKey, OWNER_ROLE_ID } from './hub';
 import { decodeProject } from './goals';
 import { decodeMessage } from './messages';
 import { decodeAccount, decodePacing, looksLikePacing } from './pacing';
+import { decodeSessionPage, decodeSessionsSummary } from './sessions';
 import type { EventPageResult, EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import type {
   Account,
@@ -38,6 +39,10 @@ import type {
   Workflow,
   WorkflowGraph,
   WorkflowTemplate,
+  SessionPage,
+  SessionQuery,
+  SessionsSummary,
+  SessionsWindow,
 } from './types';
 import { localTemplates } from '../workflow/templates';
 
@@ -333,6 +338,23 @@ export class HttpHub implements HubApi {
     const body = await this.#request<unknown>('PUT', '/pacing/settings', { body: settings });
     if (looksLikePacing(body)) return decodePacing(body);
     return decodePacing(await this.#request<unknown>('GET', '/pacing'));
+  }
+
+  async listSessions(query: SessionQuery = {}): Promise<SessionPage | null> {
+    try {
+      return decodeSessionPage(await this.#request<unknown>('GET', '/sessions', { query: { ...query } }));
+    } catch (error) {
+      if (error instanceof HubError && (error.status === 404 || error.status === 405)) return null;
+      throw error;
+    }
+  }
+  async sessionsSummary(window: SessionsWindow): Promise<SessionsSummary | null> {
+    try {
+      return decodeSessionsSummary(await this.#request<unknown>('GET', '/sessions/summary', { query: { window } }), window);
+    } catch (error) {
+      if (error instanceof HubError && (error.status === 404 || error.status === 405)) return null;
+      throw error;
+    }
   }
 
   async listJobs(query: { projectId?: string; runId?: string } = {}) {

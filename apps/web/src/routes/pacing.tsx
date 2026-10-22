@@ -8,15 +8,25 @@ import { StatusLabel } from '../components/status';
 import { PacingStateLabel, PacingTimeline } from '../components/pacing';
 import { providerLabel } from '../workflow/registry';
 import { plural } from '../lib/format';
-import { accountTrack, limitedByText, orderedWindows, pacingHeadline } from '../lib/pacing';
+import { accountTrack, limitedByText, orderedWindows, pacingHeadline, resetsIn } from '../lib/pacing';
+import { adviceHeadline, headroomText, isAdvice } from '../lib/sessions';
+import { LiveDot } from '../components/status';
 
 const TARGETS = [90, 95, 100];
 
 export function PacingPage() {
   const pacing = useResource((api) => api.pacing(), [], (e) => e.type.startsWith('pacing.') || e.subject.kind === 'account');
+  const advice = isAdvice(pacing.data);
   return (
     <div className="page">
-      <PageHeader title="Pacing" description="Perpeto scales the agents it runs so every subscription’s limit is used up by the time it resets, without downtime or unused tokens." />
+      <PageHeader
+        title="Pacing"
+        description={
+          advice
+            ? 'How each subscription is tracking toward its reset at the current pace, and how much more it could take. Perpeto only observes, so this is advice.'
+            : 'Perpeto scales the agents it runs so every subscription’s limit is used up by the time it resets, without downtime or unused tokens.'
+        }
+      />
       <Async resource={pacing} what="pacing">
         {(p) =>
           p === null ? (
@@ -25,6 +35,8 @@ export function PacingPage() {
                 Update the hub to a version with pacing. Until then, each machine runs agents up to its own slots.
               </Empty>
             </section>
+          ) : isAdvice(p) ? (
+            <AdviceView pacing={p} />
           ) : (
             <PacingView pacing={p} onChanged={pacing.reload} />
           )
@@ -156,6 +168,111 @@ function PacingView({ pacing: served, onChanged }: { pacing: Pacing; onChanged()
       </div>
     </>
   );
+}
+
+/**
+ * Advise mode: nothing is enforced, so there is no rotation and no settings.
+ * The headline reads as advice; each subscription shows where it lands at
+ * reset and about how many more agents it could take.
+ */
+function AdviceView({ pacing: p }: { pacing: Pacing }) {
+  const summary = useResource((api) => api.sessionsSummary('1h').catch(() => null), [], (e) => e.type.startsWith('session'), { debounceMs: 1000, maxWaitMs: 5000 });
+  const running = summary.data?.totals.running;
+  const [lead, ...rest] = adviceHeadline(p, running);
+  const now = Date.now();
+  return (
+    <>
+      <section className="card pace-hero" aria-labelledby="pace-headline">
+        <h2 className="pace-headline" id="pace-headline">
+          {(running ?? p.providers.reduce((s, x) => s + x.runningAgents, 0)) > 0 && <LiveDot className="headline-dot" label="Live" />}
+          <span>{lead}</span>
+          {rest.length > 0 && <span className="muted"> · {rest.join(' · ')}</span>}
+        </h2>
+        {p.accounts.length > 0 && (
+          <ul className="advice-list">
+            {p.accounts.map((a) => {
+              const room = headroomText(a.headroomAgents);
+              const binding = [...a.windows].sort((x, y) => y.projectedPercentAtReset - x.projectedPercentAtReset)[0];
+              return (
+                <li key={a.accountId}>
+                  <span className="cell-title">{a.label}</span>
+                  <span className="advice-room">{room ? room.charAt(0).toUpperCase() + room.slice(1) : 'Room not reported'}</span>
+                  <span className="muted tabular">
+                    {binding
+                      ? binding.onTrack === 'over'
+                        ? `${binding.label} runs out before reset`
+                        : `${binding.label} ${Math.round(binding.projectedPercentAtReset)}% at reset, ${resetsIn(binding.resetsAt, now) ?? 'no reset reported'}`
+                      : 'No limits reported yet'}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <Panel
+        title="Projected at reset"
+        actions={
+          <Link to="/accounts" className="card-link">
+            Accounts
+            <IconChevronRight />
+          </Link>
+        }
+      >
+        {p.accounts.length === 0 ? (
+          <p className="muted">No subscriptions reported yet.</p>
+        ) : (
+          <div className="table-wrap">
+            <table className="table">
+              <caption className="visually-hidden">Projected use of each subscription at its reset, and room for more agents</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Subscription</th>
+                  <th scope="col" className="num">
+                    Running
+                  </th>
+                  <th scope="col" className="num">
+                    Session
+                  </th>
+                  <th scope="col" className="num">
+                    Weekly
+                  </th>
+                  <th scope="col" className="num">
+                    Room
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {p.accounts.map((a) => {
+                  const [session, weekly] = ['session', 'weekly'].map((k) => orderedWindows(a.windows).find((w) => w.kind === k));
+                  return (
+                    <tr key={a.accountId}>
+                      <td>
+                        <span className="cell-title">{a.label}</span>
+                        <span className="cell-sub">{[a.plan, providerLabel(a.provider)].filter(Boolean).join(' · ')}</span>
+                      </td>
+                      <td className="num">{a.runningAgents || <span className="muted">0</span>}</td>
+                      <td className="num">{advised(session)}</td>
+                      <td className="num">{advised(weekly)}</td>
+                      <td className="num cell-title">{a.headroomAgents !== undefined ? `about ${a.headroomAgents}` : <span className="muted">—</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="advice-note muted">Perpeto is only observing, so nothing is enforced. Numbers are advice, aimed at {p.targetUsePercent}% of each limit by its reset.</p>
+      </Panel>
+    </>
+  );
+}
+
+/** In advice, landing under the target is normal; only an overrun stands out. */
+function advised(w: { projectedPercentAtReset: number; onTrack: string } | undefined) {
+  if (!w) return <span className="muted">—</span>;
+  return w.onTrack === 'over' ? <span className="cell-title">runs out</span> : `${Math.round(w.projectedPercentAtReset)}%`;
 }
 
 function stripUndefined<T extends object>(o: T): Partial<T> {

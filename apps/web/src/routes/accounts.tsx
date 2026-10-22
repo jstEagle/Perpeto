@@ -9,6 +9,8 @@ import { PacingStateLabel, UsageMeter } from '../components/pacing';
 import { planSuggestions, providerLabel } from '../workflow/registry';
 import { clock, plural, relative } from '../lib/format';
 import { meterWindows, span } from '../lib/pacing';
+import { headroomText, isAdvice, isObserved } from '../lib/sessions';
+import { useAppMode } from '../app/mode';
 
 const refreshOn = (e: { type: string; subject: { kind: string } }) => e.subject.kind === 'account' || e.subject.kind === 'machine' || e.type.startsWith('pacing.');
 
@@ -19,16 +21,26 @@ export function AccountsPage() {
   const [editing, setEditing] = useState<Account | null>(null);
   const [adding, setAdding] = useState(false);
   const name = (id: string) => machines.data?.find((m) => m.id === id)?.name ?? id;
+  const { observe } = useAppMode();
+  const advice = isAdvice(pacing.data);
+  // Observed subscriptions come from T3 Code itself, so there is nothing to add here.
+  const allObserved = !!accounts.data?.length && accounts.data.every(isObserved);
 
   return (
     <div className="page">
       <PageHeader
         title="Accounts"
-        description="The Claude and Codex subscriptions signed in on your machines, and how much of each limit is used. Credentials stay on the machine that owns them."
+        description={
+          observe || allObserved
+            ? 'The Claude and ChatGPT subscriptions T3 Code is signed in to on your machines, and how much of each limit is used. Perpeto reads them; it never signs in or changes them.'
+            : 'The Claude and Codex subscriptions signed in on your machines, and how much of each limit is used. Credentials stay on the machine that owns them.'
+        }
         actions={
-          <Button variant="secondary" onClick={() => setAdding(true)}>
-            Add subscription
-          </Button>
+          observe || allObserved ? undefined : (
+            <Button variant="secondary" onClick={() => setAdding(true)}>
+              Add subscription
+            </Button>
+          )
         }
       />
       <Async resource={accounts} what="subscriptions">
@@ -56,7 +68,7 @@ export function AccountsPage() {
                   actions={
                     pacing.data && index === 0 ? (
                       <Link to="/pacing" className="card-link">
-                        {pacing.data.enabled ? `Paced in ${pacing.data.strategy === 'parallel' ? 'parallel' : 'rotation'}` : 'Pacing is off'}
+                        {advice ? 'Pacing advice' : pacing.data.enabled ? `Paced in ${pacing.data.strategy === 'parallel' ? 'parallel' : 'rotation'}` : 'Pacing is off'}
                         <IconChevronRight />
                       </Link>
                     ) : (
@@ -71,6 +83,18 @@ export function AccountsPage() {
                   </ul>
                 </Panel>
               ))}
+              {advice ? (
+                <Disclosure summary="What the numbers mean">
+                  <dl className="kv">
+                    <dt>Used</dt>
+                    <dd>How much of each limit T3 Code has reported as used, and when the window resets.</dd>
+                    <dt>At reset</dt>
+                    <dd>Where the window lands if sessions keep their current pace. The small mark on each meter shows it.</dd>
+                    <dt>Room</dt>
+                    <dd>About how many more agents this subscription could run and still land at {pacing.data?.targetUsePercent ?? 95}% by its reset. Perpeto only advises; it starts nothing.</dd>
+                  </dl>
+                </Disclosure>
+              ) : (
               <Disclosure summary="What the states mean">
                 <dl className="kv">
                   <dt>Burning</dt>
@@ -85,6 +109,7 @@ export function AccountsPage() {
                   <dd>Nothing left until the reset. Pacing aims to reach this exactly as the window ends.</dd>
                 </dl>
               </Disclosure>
+              )}
             </>
           )
         }
@@ -129,6 +154,8 @@ function SubscriptionRow({ account: a, machine, pacing, onEdit }: { account: Acc
   const paced = pacing?.accounts.find((p) => p.accountId === a.id);
   const windows = meterWindows(a, paced).slice(0, 2);
   const detail = stateDetail(paced, pacing, now);
+  const advice = isAdvice(pacing);
+  const room = headroomText(paced?.headroomAgents);
   return (
     <li className="sub">
       <div className="sub-id">
@@ -153,6 +180,11 @@ function SubscriptionRow({ account: a, machine, pacing, onEdit }: { account: Acc
             <StatusLabel tone="waiting">Cooling down</StatusLabel>
             {a.cooldownUntil && <span className="cell-sub">Until {clock(a.cooldownUntil)}</span>}
           </>
+        ) : advice || isObserved(a) ? (
+          <>
+            <StatusLabel tone={a.status === 'cooling' ? 'waiting' : 'quiet'}>{a.status === 'cooling' ? 'Rate limited' : 'Observed'}</StatusLabel>
+            <span className="cell-sub">{room ? room.charAt(0).toUpperCase() + room.slice(1) : `Used ${relative(a.lastUsedAt)}`}</span>
+          </>
         ) : paced ? (
           <>
             <PacingStateLabel state={paced.state} />
@@ -165,9 +197,14 @@ function SubscriptionRow({ account: a, machine, pacing, onEdit }: { account: Acc
           </>
         )}
       </div>
-      <Button variant="ghost" size="sm" icon onClick={onEdit} aria-label={`Edit ${a.label}`} title="Edit label and plan">
-        <IconEdit size={16} />
-      </Button>
+      {isObserved(a) ? (
+        // Seen in T3 Code, read-only: there is nothing here to edit.
+        <span className="sub-edit-spacer" aria-hidden="true" />
+      ) : (
+        <Button variant="ghost" size="sm" icon onClick={onEdit} aria-label={`Edit ${a.label}`} title="Edit label and plan">
+          <IconEdit size={16} />
+        </Button>
+      )}
     </li>
   );
 }

@@ -11,7 +11,9 @@ struct MachinesScreen: View {
         let machines = store.factory.machines
         ScrollView {
             VStack(alignment: .leading, spacing: PerpetoGap.cards) {
-                ScreenHeader("Machines", subtitle: "Machines you own that run agents and CI jobs.") {
+                let observing = store.isObserveOnly
+                let observed = store.factory.sessions?.machines ?? []
+                ScreenHeader("Machines", subtitle: observing ? "Machines you own whose node watches T3 Code and reports its sessions." : "Machines you own that run agents and CI jobs.") {
                     Button("Enroll machine") { Task { enrollment = await store.enrollmentCode() } }
                         .buttonStyle(.perpetoPrimary)
                         .fullWidthButtons(compact)
@@ -22,14 +24,23 @@ struct MachinesScreen: View {
                     }
                     .card()
                 } else {
+                    if observing {
+                        FigureStrip([
+                            Figure("Online", value: "\(machines.filter { $0.status == .online }.count)", unit: "of \(machines.count)"),
+                            Figure("Observing T3 Code", value: "\(observed.filter { $0.online && $0.observing }.count)", unit: "of \(machines.count)"),
+                            Figure("Sessions running", value: "\(store.factory.sessions?.running ?? 0)"),
+                        ])
+                        .card()
+                    } else {
                     FigureStrip([
                         Figure("Online", value: "\(machines.filter { $0.status == .online }.count) of \(machines.count)"),
                         Figure("Agents running", value: "\(machines.reduce(0) { $0 + $1.running.agents })", unit: "of \(machines.reduce(0) { $0 + $1.capacity.maxAgents })"),
                         Figure("CI jobs running", value: "\(machines.reduce(0) { $0 + $1.running.jobs })", unit: "of \(machines.reduce(0) { $0 + $1.capacity.maxJobs })"),
                     ])
                     .card()
+                    }
                     RowList(machines) { machine in
-                        MachineRow(machine: machine) { confirmDrain = machine }
+                        MachineRow(machine: machine, observed: observed.first { $0.machineId == machine.id }) { confirmDrain = machine }
                     }
                     .card()
                 }
@@ -50,19 +61,32 @@ struct MachinesScreen: View {
 /// One machine: name, platform and providers, status, and slot meters.
 struct MachineRow: View {
     var machine: Machine
+    /// What its node reports about T3 Code, when the hub observes sessions.
+    var observed: ObservedMachine?
     var drain: () -> Void
     @Environment(\.compactLayout) private var compact
 
     var body: some View {
         let meters = VStack(alignment: .leading, spacing: PerpetoSpacing.x(3)) {
-            slots("agent", used: machine.running.agents, capacity: machine.capacity.maxAgents)
+            if machine.capacity.maxAgents > 0 { slots("agent", used: machine.running.agents, capacity: machine.capacity.maxAgents) }
             if machine.capacity.maxJobs > 0 { slots("CI", used: machine.running.jobs, capacity: machine.capacity.maxJobs) }
+            if let observed {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(observed.observing ? "Watching T3 Code" : "T3 Code not found").font(PerpetoFont.captionMedium)
+                        .foregroundStyle(observed.observing ? PerpetoColor.inkSoft : PerpetoColor.ink)
+                    Text("\(observed.running) running · \(observed.waiting) waiting · \(observed.idle) idle")
+                        .font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.muted)
+                }
+            }
         }
         VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
             HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
                 IconTile("desktopcomputer")
                 VStack(alignment: .leading, spacing: 3) {
-                    Mono(machine.name, color: PerpetoColor.ink, size: PerpetoType.text14)
+                    HStack(spacing: PerpetoSpacing.x(2)) {
+                        Mono(machine.name, color: PerpetoColor.ink, size: PerpetoType.text14)
+                        if ThisMachine.matches(name: machine.name, labels: machine.labels) { Tag("This Mac") }
+                    }
                     Text([platform, "v\(machine.version)", machine.providers.map(Format.provider).joined(separator: ", ")].filter { !$0.isEmpty }.joined(separator: " · "))
                         .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).lineLimit(2)
                     Text("Heartbeat \(Format.relative(machine.lastHeartbeatAt))").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)

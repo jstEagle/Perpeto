@@ -1,4 +1,4 @@
-import { plan as computePlan, learnBurnRates } from '@perpeto/pacer';
+import { plan as computePlan, learnBurnRates, advise } from '@perpeto/pacer';
 import { pacingFields } from './config.js';
 import { nonblank, object, requireValue } from './errors.js';
 
@@ -92,8 +92,8 @@ export class Pacing {
    * reading as a sample, and learn burn rates from it. A reading is fresh when its checkedAt moves; repeated stale
    * values never count as "no usage".
    */
-  observe(machine, accounts) {
-    const time = this.hub.clock(); const running = this.running(machine.id);
+  observe(machine, accounts, running = this.running(machine.id)) {
+    const time = this.hub.clock();
     for (const account of accounts) {
       const previous = this.store.get('account', account.id);
       const value = this.integrate(account.id, running.get(account.id) ?? 0, time);
@@ -130,9 +130,32 @@ export class Pacing {
     return work;
   }
 
+  /** Observed subscriptions (an operator's own T3) and agents running on each, from the sessions machines report. */
+  observedRunning() {
+    const counts = new Map();
+    for (const account of this.store.list('account', value => value.source === 'observed')) {
+      const running = new Map(this.store.observedRunning(account.machineId));
+      counts.set(account.id, running.get(account.providerInstanceId) ?? 0);
+    }
+    return counts;
+  }
+  /**
+   * Advisory entries for observed accounts: Perpeto does not control them, so they get no allowance; instead each
+   * shows where its windows land at the measured burn, how many more agents would still land on target, and idle time.
+   */
+  advice(accounts, settings, time) {
+    const rates = this.rates(); const running = this.observedRunning();
+    return accounts.map(account => {
+      const advice = advise({ now: time, settings, account, running: running.get(account.id) ?? 0, rates: rates[account.id] ?? {} });
+      return { accountId: account.id, machineId: account.machineId, provider: account.provider, label: account.label, ...(account.plan ? { plan: account.plan } : {}),
+        status: account.status, source: 'observed', advisory: true, targetAgents: 0, ...advice };
+    });
+  }
   compute() {
     const time = this.hub.clock(); const settings = this.settings();
-    const accounts = this.store.list('account').map(account => ({ accountId: account.id, machineId: account.machineId, provider: account.provider,
+    const all = this.store.list('account');
+    const observed = all.filter(account => account.source === 'observed');
+    const accounts = all.filter(account => account.source !== 'observed').map(account => ({ accountId: account.id, machineId: account.machineId, provider: account.provider,
       label: account.label, ...(account.plan ? { plan: account.plan } : {}), status: account.status,
       ...(account.cooldownUntil ? { cooldownUntil: account.cooldownUntil } : {}), ...(account.lastUsedAt ? { lastUsedAt: account.lastUsedAt } : {}),
       ...(account.usage ? { usage: account.usage } : {}) }));
@@ -141,9 +164,11 @@ export class Pacing {
       online: machine.status === 'online' && !machine.revokedAt && time - Date.parse(machine.lastHeartbeatAt) < heartbeatWindow }));
     const running = Object.fromEntries(this.running());
     const result = computePlan({ now: time, settings, accounts, rates: this.rates(), running, machines, readyWork: this.readyWork() });
-    return { enabled: settings.enabled, strategy: result.strategy, targetUsePercent: result.targetUsePercent,
+    // Without factory agent slots anywhere, nothing can be enforced: the plan only advises.
+    const mode = machines.some(machine => machine.online && machine.slots > 0) ? 'enforce' : 'advise';
+    return { enabled: settings.enabled, mode, strategy: result.strategy, targetUsePercent: result.targetUsePercent,
       minAgents: settings.minAgents, maxAgents: settings.maxAgents, updatedAt: result.at,
-      providers: result.providers, accounts: result.accounts, timeline: result.timeline };
+      providers: result.providers, accounts: [...result.accounts, ...this.advice(observed, settings, time)], timeline: result.timeline };
   }
 
   /**
@@ -155,7 +180,8 @@ export class Pacing {
     const due = force || !this.current || time - this.computedAt >= settings.recomputeMs || (this.dirty && time - this.computedAt >= 1000);
     if (!due) return false;
     const next = this.compute(); this.dirty = false; this.computedAt = time;
-    const digest = JSON.stringify([next.enabled, next.strategy, next.targetUsePercent,
+    // The mode follows machine slots; it is news only when there are accounts to pace or advise on.
+    const digest = JSON.stringify([next.enabled, next.accounts.length ? next.mode : null, next.strategy, next.targetUsePercent,
       next.providers.map(item => [item.provider, item.targetAgents, item.limitedBy, item.starved]),
       next.accounts.map(item => [item.accountId, item.state, item.targetAgents])]);
     const stored = this.store.get('pacing-state', 'fleet');
@@ -164,7 +190,7 @@ export class Pacing {
     const announce = stored || next.providers.length || next.accounts.length;
     if (stored?.digest !== digest) this.store.put('pacing-state', { id: 'fleet', digest, at: next.updatedAt });
     if (stored?.digest !== digest && announce) {
-      this.hub.emit('pacing.updated', 'pacing', { id: 'fleet' }, { enabled: next.enabled, strategy: next.strategy,
+      this.hub.emit('pacing.updated', 'pacing', { id: 'fleet' }, { enabled: next.enabled, mode: next.mode, strategy: next.strategy,
         providers: next.providers.map(({ provider, targetAgents, runningAgents, limitedBy, starved }) => ({ provider, targetAgents, runningAgents, limitedBy, starved })),
         accounts: next.accounts.map(({ accountId, state, targetAgents }) => ({ accountId, state, targetAgents })) });
     }
@@ -183,7 +209,7 @@ export class Pacing {
     if (!this.current?.enabled) return caps;
     const paced = new Set(this.current.providers.map(item => item.provider));
     for (const account of this.current.accounts) {
-      if (!paced.has(account.provider)) continue;
+      if (account.advisory || !paced.has(account.provider)) continue;
       const machine = caps.get(account.machineId) ?? {};
       machine[account.provider] = (machine[account.provider] ?? 0) + account.targetAgents;
       caps.set(account.machineId, machine);
@@ -207,7 +233,7 @@ export class Pacing {
   allowances(machineId) {
     if (!this.current?.enabled) return null;
     const paced = new Set(this.current.providers.map(item => item.provider));
-    const accounts = this.current.accounts.filter(account => account.machineId === machineId && paced.has(account.provider));
+    const accounts = this.current.accounts.filter(account => !account.advisory && account.machineId === machineId && paced.has(account.provider));
     return accounts.length ? { accounts: Object.fromEntries(accounts.map(account => [account.accountId, { targetAgents: account.targetAgents }])) } : null;
   }
   starved() {

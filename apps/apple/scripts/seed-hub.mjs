@@ -14,6 +14,7 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { seedObserved } from '../../web/scripts/seed-observed.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) =>
   value.startsWith('--') ? [...pairs, [value.slice(2), all[index + 1]]] : pairs, []));
@@ -225,6 +226,11 @@ const pacing = await call('GET', '/pacing');
 console.log(JSON.stringify({ projectId: project.id, workflowId: workflow.id, runId: run.id, held: held.size,
   pacing: pacing.providers.map(p => ({ provider: p.provider, targetAgents: p.targetAgents, limitedBy: p.limitedBy, starved: p.starved })) }));
 
+// Two observe-only machines with sessions, usage and advisory subscriptions from their operators' own T3.
+const observed = await seedObserved({ hubUrl: base, owner });
+const observing = setInterval(() => { observed.ping().catch(() => undefined); }, 20000);
+
 // Stay alive for the requested time, then let leases lapse.
 await sleep(minutes * 60000);
+clearInterval(observing);
 clearInterval(keepAlive);

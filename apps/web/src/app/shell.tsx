@@ -4,10 +4,13 @@ import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { Lockup, Spindle } from '../brand/logo';
 import { useHub, useResource } from './hub-context';
 import { LiveDot } from '../components/status';
-import { activeNav, FACTORY_NAV_ENTRIES, projectNavEntries } from './nav';
+import { activeNav, FACTORY_NAV_ENTRIES, HOME_NAV_ENTRY, projectNavEntries } from './nav';
+import { AppModeProvider, useAppMode } from './mode';
 import type { NavEntry, NavKey } from './nav';
 import {
   IconAccounts,
+  IconHome,
+  IconSessions,
   IconClose,
   IconMachines,
   IconMenu,
@@ -28,6 +31,8 @@ import {
 type NavItem = NavEntry & { icon: ComponentType<{ size?: number }> };
 
 const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
+  home: IconHome,
+  sessions: IconSessions,
   overview: IconOverview,
   workflows: IconWorkflow,
   runs: IconRuns,
@@ -42,6 +47,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
 const withIcon = (e: NavEntry): NavItem => ({ ...e, icon: ICONS[e.key] });
 const projectNav = (projectId: string): NavItem[] => projectNavEntries(projectId).map(withIcon);
 const FACTORY_NAV: NavItem[] = FACTORY_NAV_ENTRIES.map(withIcon);
+const HOME_NAV: NavItem = withIcon(HOME_NAV_ENTRY);
 
 const LAST_PROJECT = 'perpeto.lastProject';
 
@@ -117,12 +123,40 @@ function useProjectSignals(projectId: string | null) {
   };
 }
 
+/** Waiting sessions (a person must act) beside Sessions, else the live dot while any runs. */
+function useSessionSignals() {
+  const summary = useResource(
+    (api) => api.sessionsSummary('1h').catch(() => null),
+    [],
+    (e) => e.type.startsWith('session'),
+    { debounceMs: 1000, maxWaitMs: 5000 },
+  );
+  return { running: summary.data?.totals.running ?? 0, waiting: summary.data?.totals.waiting ?? 0 };
+}
+
+function SessionsSignal() {
+  const { running, waiting } = useSessionSignals();
+  if (waiting > 0)
+    return (
+      <span className="count count-strong" aria-label={`${waiting} waiting for you`}>
+        {waiting}
+      </span>
+    );
+  return running > 0 ? <LiveDot label={`${running} running`} /> : null;
+}
+
 function Navigation({ pathname, projectId, onNavigate }: { pathname: string; projectId: string | null; onNavigate?: () => void }) {
   const signals = useProjectSignals(projectId);
+  const { observe } = useAppMode();
   return (
     <>
-      <ProjectSwitcher projectId={projectId} onNavigate={onNavigate} />
-      {projectId && (
+      {observe === false && <ProjectSwitcher projectId={projectId} onNavigate={onNavigate} />}
+      {observe && (
+        <nav className="nav" aria-label="Home">
+          <NavLink item={HOME_NAV} pathname={pathname} onNavigate={onNavigate} />
+        </nav>
+      )}
+      {observe === false && projectId && (
         <nav className="nav" aria-label="Project">
           {projectNav(projectId).map((item) => (
             <NavLink
@@ -138,7 +172,7 @@ function Navigation({ pathname, projectId, onNavigate }: { pathname: string; pro
       <nav className="nav" aria-label="Factory">
         <h2 className="nav-title">Factory</h2>
         {FACTORY_NAV.map((item) => (
-          <NavLink key={item.key} item={item} pathname={pathname} onNavigate={onNavigate} />
+          <NavLink key={item.key} item={item} pathname={pathname} onNavigate={onNavigate} end={item.key === 'sessions' ? <SessionsSignal /> : undefined} />
         ))}
       </nav>
     </>
@@ -180,7 +214,12 @@ function AccountRow({ onNavigate }: { onNavigate?: () => void }) {
 
 /** The floating tab bar on narrow screens mirrors the iOS tabs. */
 function TabBar({ pathname, projectId, onMore }: { pathname: string; projectId: string | null; onMore(): void }) {
-  const items = projectId ? projectNav(projectId).filter((i) => ['overview', 'runs', 'work', 'messages'].includes(i.key)) : FACTORY_NAV;
+  const { observe } = useAppMode();
+  const items = observe
+    ? [HOME_NAV, ...FACTORY_NAV.filter((i) => ['sessions', 'accounts', 'usage'].includes(i.key))]
+    : projectId
+      ? projectNav(projectId).filter((i) => ['overview', 'runs', 'work', 'messages'].includes(i.key))
+      : FACTORY_NAV.slice(0, 4);
   return (
     <nav className="tabbar" aria-label="Sections">
       {items.map((item) => {
@@ -201,8 +240,18 @@ function TabBar({ pathname, projectId, onMore }: { pathname: string; projectId: 
 }
 
 export function Shell() {
+  return (
+    <AppModeProvider>
+      <ShellFrame />
+    </AppModeProvider>
+  );
+}
+
+function ShellFrame() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const projectId = useCurrentProject(pathname);
+  const remembered = useCurrentProject(pathname);
+  // In observe-only mode a project remembered from an earlier hub doesn't apply.
+  const projectId = useAppMode().observe ? null : remembered;
   const [menu, setMenu] = useState(false);
   useEffect(() => setMenu(false), [pathname]);
 
@@ -212,14 +261,14 @@ export function Shell() {
         Skip to content
       </a>
       <aside className="sidebar" aria-label="Navigation">
-        <Link to="/" className="brand" aria-label="perpeto, all projects">
+        <Link to="/" className="brand" aria-label="perpeto, home">
           <Lockup height={34} />
         </Link>
         <Navigation pathname={pathname} projectId={projectId} />
         <AccountRow />
       </aside>
       <div className="topbar">
-        <Link to="/" className="topbar-mark" aria-label="perpeto, all projects">
+        <Link to="/" className="topbar-mark" aria-label="perpeto, home">
           <Spindle size={24} />
         </Link>
         <button type="button" className="btn btn-secondary btn-sm btn-icon" aria-label="Menu" aria-expanded={menu} onClick={() => setMenu(true)}>

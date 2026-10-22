@@ -1,4 +1,5 @@
 import { access, readdir, readFile, readlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { resolve, relative, isAbsolute, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -13,9 +14,13 @@ export function supportedNode(version) {
 }
 export async function doctor(dir, { version = process.version, run = spawnSync, fetchImpl = fetch, root = repoRoot, home = homedir(), binPath } = {}) {
   const checks = [{ name: 'Node', status: supportedNode(version) ? 'ok' : 'fail', detail: `${version}; requires >=24.13.1 <25` }];
+  // An observe-only node runs no agents, so harness CLIs and the T3 runtime build are optional there.
+  const nodeSettings = await readJson(configPath(dir, 'node')).catch(() => null);
+  const observeOnly = Boolean(nodeSettings?.observe?.enabled && !nodeSettings?.capacity?.maxAgents && !nodeSettings?.capacity?.maxJobs);
+  const missing = observeOnly ? 'warn' : 'fail';
   for (const command of ['git', 'claude', 'codex']) {
     const result = run(command, ['--version'], { stdio: 'ignore', timeout: 5000 });
-    checks.push({ name: command, status: result.status === 0 && !result.error ? 'ok' : 'fail', detail: 'Executable check only; authentication is separate.' });
+    checks.push({ name: command, status: result.status === 0 && !result.error ? 'ok' : command === 'git' ? 'fail' : missing, detail: 'Executable check only; authentication is separate.' });
   }
   let runtime;
   try {
@@ -23,7 +28,7 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
     runtime = resolve(root, config.runtime.directory, 'apps/server/dist/bin.mjs');
     await access(runtime);
     checks.push({ name: 'T3 build', status: 'ok', detail: runtime });
-  } catch { checks.push({ name: 'T3 build', status: 'fail', detail: 'Run npm run setup and npm run build in the installation directory.' }); }
+  } catch { checks.push({ name: 'T3 build', status: missing, detail: observeOnly ? 'Not needed to observe; run npm run setup and npm run build before running agents.' : 'Run npm run setup and npm run build in the installation directory.' }); }
   const secrets = new Set(); let url; let pins;
   for (const role of ['hub', 'node']) {
     try {
@@ -32,6 +37,7 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
       checks.push(...await configurationChecks(dir, role, config));
       warnLegacy(checks, JSON.stringify(config), `${role}.json`);
       if (role === 'node') {
+        if (config.observe?.enabled) checks.push(...await observeChecks(dir, config, { fetchImpl }));
         if (!url) { url = config.hubUrl; pins = await nodePins(dir, config); }
         secrets.add(resolve(dir, config.credentialFile ?? `${config.dataDir ?? './node'}/machine.json`));
         if (config.enrollmentCodeFile) secrets.add(resolve(dir, config.enrollmentCodeFile));
@@ -74,6 +80,31 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
   }))).find(Boolean);
   if (bin) warnLegacy(checks, await readlink(bin).catch(() => ''), 'perpeto bin', 'Rerun install/install.sh with the original --dir and --bin-dir to reinstall the apps/cli link.');
   warnLegacy(checks, await readFile(resolve(root, 'config/perpeto.json'), 'utf8').catch(() => ''), 'runtime config');
+  return checks;
+}
+
+/**
+ * Observe-only prerequisites, checked without minting a session or calling T3's API: the desktop server's runtime file,
+ * a reachable loopback origin, and T3's own CLI (which mints the read-only session on first start).
+ */
+async function observeChecks(dir, config, { fetchImpl }) {
+  const checks = [];
+  let settings;
+  try { settings = (await loadNodeConfig(configPath(dir, 'node'))).observe; } catch { return [{ name: 'T3 observe', status: 'fail', detail: 'Invalid observe settings in node.json.' }]; }
+  const { readRuntime, defaultCli } = await import('@perpeto/t3-observer');
+  try {
+    const runtime = settings.url ? { url: settings.url } : await readRuntime(settings.t3BaseDir);
+    const response = await fetchImpl(`${runtime.url}/`, { redirect: 'manual', signal: AbortSignal.timeout(3000) });
+    await response.body?.cancel?.();
+    checks.push({ name: 'T3 Code', status: 'ok', detail: `Running at ${runtime.url}${runtime.serverVersion ? ` (${runtime.serverVersion})` : ''}.` });
+  } catch {
+    checks.push({ name: 'T3 Code', status: 'warn', detail: `Not running or unreachable from ${settings.t3BaseDir}. The node keeps retrying; open T3 Code.` });
+  }
+  if (!settings.credentialFile) {
+    const cli = settings.cli ?? defaultCli(settings.t3BaseDir);
+    try { await access(cli, constants.X_OK); checks.push({ name: 'T3 CLI', status: 'ok', detail: `${cli} mints the read-only (orchestration:read) observer session.` }); }
+    catch { checks.push({ name: 'T3 CLI', status: 'fail', detail: `${cli} is missing. Open T3 Code once so it installs its CLI, or set observe.credentialFile.` }); }
+  }
   return checks;
 }
 

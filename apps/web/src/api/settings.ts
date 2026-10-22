@@ -94,3 +94,29 @@ export function checkBaseUrl(value: string): string | null {
   if (url.protocol === 'http:' && !local) return 'Use HTTPS for a hub that is not on this machine. Plain HTTP would expose the token.';
   return null;
 }
+
+/** Which demo factory to show without a hub: the full one or observe only. */
+const DEMO_KEY = 'perpeto.demo';
+export type StoredDemoScenario = 'full' | 'observe';
+
+/** `?demo=observe` or `?demo=full` in the address switches and remembers it. */
+export function loadDemoScenario(search = typeof location === 'undefined' ? '' : location.search): StoredDemoScenario {
+  const fromUrl = new URLSearchParams(search).get('demo');
+  if (fromUrl === 'observe' || fromUrl === 'full') {
+    saveDemoScenario(fromUrl);
+    return fromUrl;
+  }
+  try {
+    return localStorage.getItem(DEMO_KEY) === 'observe' ? 'observe' : 'full';
+  } catch {
+    return 'full';
+  }
+}
+
+export function saveDemoScenario(scenario: StoredDemoScenario) {
+  try {
+    localStorage.setItem(DEMO_KEY, scenario);
+  } catch {
+    /* storage unavailable */
+  }
+}

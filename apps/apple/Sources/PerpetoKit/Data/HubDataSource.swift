@@ -28,7 +28,25 @@ public struct HubDataSource: FactoryDataSource {
         async let usage = usageBundle(projectId: nil)
         // Hubs without pacing, or a failing pacing route, leave the rest of the factory readable.
         async let pacing = (try? client.pacing()) ?? nil
-        return try await FactoryState(projects: projects, machines: machines, accounts: accounts, jobs: jobs, overview: overview, usage: usage, pacing: pacing)
+        async let sessions = loadSessions()
+        return try await FactoryState(projects: projects, machines: machines, accounts: accounts, jobs: jobs, overview: overview, usage: usage, pacing: pacing,
+                                      sessions: sessions)
+    }
+
+    /// Observed T3 sessions and a summary per window. Nil when the hub has no
+    /// sessions route; a failing call leaves the rest of the factory readable.
+    func loadSessions() async -> ObservedSessions? {
+        async let list = try? client.allSessions()
+        async let hour = try? client.sessionSummary(window: .hour)
+        async let day = try? client.sessionSummary(window: .day)
+        async let week = try? client.sessionSummary(window: .week)
+        let (sessions, h, d, w) = await (list, hour, day, week)
+        var summaries: [SessionWindow: SessionSummary] = [:]
+        summaries[.hour] = h ?? nil
+        summaries[.day] = d ?? nil
+        summaries[.week] = w ?? nil
+        guard let found = sessions ?? nil else { return summaries.isEmpty ? nil : ObservedSessions(sessions: [], summaries: summaries) }
+        return ObservedSessions(sessions: found, summaries: summaries)
     }
 
     public func loadProject(_ projectId: String, window: MetricsWindow) async throws -> ProjectState {

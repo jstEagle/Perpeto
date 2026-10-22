@@ -8,7 +8,7 @@ import { StatusLabel } from '../components/status';
 import { IconAlert } from '../components/icons';
 
 export function SettingsPage() {
-  const { api, settings, reconnect, connect } = useHub();
+  const { api, settings, reconnect, connect, demo, setDemo } = useHub();
   const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? reconnect ?? defaultHubUrl());
   const [token, setToken] = useState('');
   const [show, setShow] = useState(false);
@@ -138,10 +138,23 @@ export function SettingsPage() {
           <p className="field-help">System follows this device’s light or dark setting. Saved in this browser.</p>
         </div>
       </Panel>
-      <Panel title="About demo data">
-        <p className="muted reading">
-          Without a hub, Perpeto shows a built-in example factory: three projects, two machines and a running build whose reviewer is the bottleneck. Changes you make in demo mode stay in this tab and reset on reload. Nothing is sent anywhere.
-        </p>
+      <Panel title="Demo data">
+        <div className="appearance">
+          <Segmented<'full' | 'observe'>
+            label="Demo data"
+            value={demo}
+            onChange={setDemo}
+            options={[
+              { value: 'full', label: 'Full factory' },
+              { value: 'observe', label: 'Observe only' },
+            ]}
+          />
+          <p className="muted reading">
+            {demo === 'observe'
+              ? 'Without a hub, Perpeto shows two Macs watching their T3 Code sessions and subscriptions, with no projects. Nothing is sent anywhere.'
+              : 'Without a hub, Perpeto shows a built-in example factory: three projects, two machines and a running build whose reviewer is the bottleneck. Changes you make in demo mode stay in this tab and reset on reload. Nothing is sent anywhere.'}
+          </p>
+        </div>
       </Panel>
     </div>
   );

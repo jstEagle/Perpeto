@@ -28,6 +28,8 @@ CLI configuration/data default to `~/.perpeto` (mode `700`); CLI `--dir /absolut
 
 `hub status`/`node status` show local state. `node drain` finishes current work without accepting more. `node stop`/`hub stop` stop daemons, reporting ongoing drain after ten seconds. Factory-wide `status`, `machines`, `machines revoke <id>` and `hub decide <workItemId> pass|fail --note "Reviewed"` require the hub owner's directory. Decisions fetch the current `decisionId` through project/run work-item lists and send it back; a concurrent answer returns HTTP 409 rather than applying to the next gate. Only `hub init --show-owner-token` explicitly displays the owner token.
 
+To only watch the T3 Code sessions and subscriptions you already run on each Mac, without workflows or agents, follow [Observe your own T3 Code sessions](observe.md).
+
 ## Add a second machine
 
 Install the same revision there. The hub binds loopback by default; reach it through your tailnet (recommended) or the hub's built-in HTTPS, as described in [Join machines over a LAN or tailnet](remote-machines.md). Either way, `perpeto hub enroll-code` prints one command to paste on the new machine:

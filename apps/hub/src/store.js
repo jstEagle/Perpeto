@@ -41,6 +41,11 @@ export class HubStore {
       CREATE TABLE IF NOT EXISTS account_usage (seq INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, machine_id TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL) STRICT;
       CREATE INDEX IF NOT EXISTS account_usage_account ON account_usage(account_id, seq);
       CREATE INDEX IF NOT EXISTS account_usage_at ON account_usage(at);
+      CREATE TABLE IF NOT EXISTS observed_sessions (id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, thread_id TEXT NOT NULL, parent_thread_id TEXT,
+        status TEXT NOT NULL, provider TEXT NOT NULL, last_activity_at TEXT NOT NULL, resync TEXT, data TEXT NOT NULL) STRICT;
+      CREATE UNIQUE INDEX IF NOT EXISTS observed_sessions_thread ON observed_sessions(machine_id, thread_id);
+      CREATE INDEX IF NOT EXISTS observed_sessions_activity ON observed_sessions(last_activity_at, id);
+      CREATE INDEX IF NOT EXISTS observed_sessions_parent ON observed_sessions(machine_id, parent_thread_id);
     `);
     if (version < 2) this.#migrate();
     if (version < 3) {
@@ -226,6 +231,51 @@ export class HubStore {
       record.machineId ?? null, record.accountId ?? null, record.provider, record.model, record.inputTokens, record.outputTokens,
       record.cacheReadTokens, record.cacheWriteTokens, record.costUsd ?? null, record.at);
   }
+  /** A usage record unless one with its id exists (observed usage is keyed by its provider turn). Returns whether it was new. */
+  usageOnce(record) {
+    return this.#sql(`INSERT OR IGNORE INTO usage VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(record.id, record.projectId, null, null,
+      record.machineId ?? null, record.accountId ?? null, record.provider, record.model, record.inputTokens, record.outputTokens,
+      record.cacheReadTokens, record.cacheWriteTokens, record.costUsd ?? null, record.at).changes === 1;
+  }
+  /** Sessions observed in an operator's own T3, one row per machine and thread. */
+  observedSession(machineId, threadId) {
+    const row = this.#sql('SELECT data FROM observed_sessions WHERE machine_id=? AND thread_id=?').get(machineId, threadId);
+    return row ? JSON.parse(row.data) : null;
+  }
+  putObservedSession(value, resync = null) {
+    this.#sql(`INSERT INTO observed_sessions VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent_thread_id=excluded.parent_thread_id, status=excluded.status,
+      provider=excluded.provider, last_activity_at=excluded.last_activity_at, resync=COALESCE(excluded.resync, observed_sessions.resync), data=excluded.data`)
+      .run(value.id, value.machineId, value.threadId, value.parentThreadId ?? null, value.status, value.provider, value.lastActivityAt, resync, JSON.stringify(value));
+  }
+  removeObservedSession(machineId, threadId) { return this.#sql('DELETE FROM observed_sessions WHERE machine_id=? AND thread_id=?').run(machineId, threadId).changes; }
+  /** After a complete resync, a machine's sessions the resync did not include are gone from its T3. */
+  pruneObservedSessions(machineId, resync) {
+    return this.#sql('DELETE FROM observed_sessions WHERE machine_id=? AND (resync IS NULL OR resync<>?)').run(machineId, resync).changes;
+  }
+  /** One page of sessions, newest activity first, after an optional `(lastActivityAt, id)` cursor. */
+  observedSessionPage({ machineId, status, provider, since, cursor, limit }) {
+    const where = []; const args = [];
+    for (const [column, value] of [['machine_id', machineId], ['status', status], ['provider', provider]]) if (value) { where.push(`${column}=?`); args.push(value); }
+    if (since) { where.push('last_activity_at>=?'); args.push(since); }
+    if (cursor) { where.push('(last_activity_at<? OR (last_activity_at=? AND id<?))'); args.push(cursor.at, cursor.at, cursor.id); }
+    return this.db.prepare(`SELECT data FROM observed_sessions ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY last_activity_at DESC, id DESC LIMIT ?`)
+      .all(...args, limit).map(row => JSON.parse(row.data));
+  }
+  /** Child (subagent) sessions per parent thread of one machine. */
+  observedChildCounts(machineId, threadIds) {
+    if (!threadIds.length) return new Map();
+    return new Map(this.#sql(`SELECT parent_thread_id AS id, COUNT(*) AS count FROM observed_sessions WHERE machine_id=? AND parent_thread_id IN (SELECT value FROM json_each(?)) GROUP BY parent_thread_id`)
+      .all(machineId, JSON.stringify(threadIds)).map(row => [row.id, row.count]));
+  }
+  /** Session counts by machine and status; idle sessions count only with activity since `since`. */
+  observedStatusCounts(since) {
+    return this.#sql(`SELECT machine_id, status, COUNT(*) AS count, SUM(last_activity_at>=?) AS recent FROM observed_sessions GROUP BY machine_id, status`).all(since)
+      .map(row => ({ machineId: row.machine_id, status: row.status, count: row.count, recent: row.recent }));
+  }
+  observedRunning(machineId) {
+    return this.#sql("SELECT json_extract(data,'$.providerInstanceId') AS instance, COUNT(*) AS count FROM observed_sessions WHERE machine_id=? AND status='running' GROUP BY instance").all(machineId)
+      .map(row => [row.instance, row.count]);
+  }
   /**
    * Usage rows, raw and rolled up, matching `filters` (project, run, machine, account, provider, model) between `from`
    * and `to`. Rollups carry an hour instead of an exact time; one counts if its hour starts within [floor(from), to].
@@ -236,6 +286,9 @@ export class HubStore {
       const value = filters[camel[key]];
       if (value !== undefined && value !== null) { where.push(`${key}=?`); args.push(value); }
     }
+    // Observed usage (an operator's own T3 sessions) has no project; `source` separates it from factory usage.
+    if (filters.source === 'observed') { where.push("project_id=''"); }
+    else if (filters.source === 'factory') { where.push("project_id<>''"); }
     const raw = [...where]; const rawArgs = [...args]; const rolled = [...where]; const rolledArgs = [...args];
     if (from) { raw.push('at>=?'); rawArgs.push(from); rolled.push('hour>=?'); rolledArgs.push(hour(from)); }
     if (to) { raw.push('at<=?'); rawArgs.push(to); rolled.push('hour<=?'); rolledArgs.push(to); }
@@ -249,7 +302,7 @@ export class HubStore {
   /** Grouped usage totals over raw and rolled-up usage. `group` is provider, model, machine or day. */
   usageGroups(filters, { from, to, group }) {
     const { sql, args } = this.#usageSql(filters, from, to);
-    const key = { provider: 'provider', model: 'model', machine: 'machine_id', day: 'substr(at,1,10)', role: `COALESCE(
+    const key = { provider: 'provider', model: 'model', machine: 'machine_id', day: 'substr(at,1,10)', hour: "substr(at,1,13)||':00:00.000Z'", source: "CASE WHEN project_id='' THEN 'observed' ELSE 'factory' END", role: `COALESCE(
       (SELECT role FROM usage_roles r WHERE r.assignment_id=u.assignment_id),
       (SELECT COALESCE(json_extract(e.data,'$.role'),json_extract(e.data,'$.nodeId')) FROM entities e WHERE e.kind='assignment' AND e.id=u.assignment_id),
       (SELECT COALESCE(json_extract(e.data,'$.role'),json_extract(e.data,'$.nodeId')) FROM archived_entities e WHERE e.kind='assignment' AND e.id=u.assignment_id), 'unknown')` }[group];
@@ -262,7 +315,7 @@ export class HubStore {
   usageRecords(filters, from, to) {
     const { sql, args } = this.#usageSql(filters, from, to);
     return this.db.prepare(sql).all(...args).map((row, index) => ({ ...(row.rolled ? { id: `rollup_${index}` } : {}),
-      ...Object.fromEntries(['project_id', ...USAGE_KEYS, ...TOKENS].filter(name => row[name] !== null).map(name => [camel[name], row[name]])),
+      ...Object.fromEntries(['project_id', ...USAGE_KEYS, ...TOKENS].filter(name => row[name] !== null && row[name] !== '').map(name => [camel[name], row[name]])),
       ...(row.cost_usd ? { costUsd: row.cost_usd } : {}), at: row.at, ...(row.rolled ? { records: row.records } : {}) }));
   }
   tokensSince(from, projectId) {
@@ -298,6 +351,7 @@ export class HubStore {
       ON CONFLICT(hour, project_id, run_id, assignment_id, machine_id, account_id, provider, model) DO UPDATE SET ${[...TOKENS, 'cost_usd', 'records'].map(name => `${name}=${name}+excluded.${name}`).join(', ')}`).run(usageBefore);
     counts.usage = Number(this.#sql('DELETE FROM usage WHERE at<?').run(usageBefore).changes);
     counts.accountUsage = Number(this.#sql('DELETE FROM account_usage WHERE at<?').run(usageBefore).changes);
+    counts.observedSessions = Number(this.#sql('DELETE FROM observed_sessions WHERE last_activity_at<?').run(usageBefore).changes);
     counts.idempotency = Number(this.#sql('DELETE FROM idempotency WHERE created_at<?').run(idempotencyBefore).changes);
     this.#sql('DELETE FROM message_interactions WHERE at<?').run(idempotencyBefore);
     if (sessionsBefore) this.#sql('DELETE FROM sessions WHERE expires_at<?').run(sessionsBefore);

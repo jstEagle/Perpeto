@@ -9,12 +9,22 @@ public actor DemoDataSource: FactoryDataSource {
     /// Delay between architect stages; zero in tests.
     private let stageDelay: Duration
 
-    public init(now: @escaping @Sendable () -> Date = Date.init, stageDelay: Duration = .milliseconds(900)) {
+    public let scenario: DemoScenario
+
+    public init(scenario: DemoScenario = .current, now: @escaping @Sendable () -> Date = Date.init, stageDelay: Duration = .milliseconds(900)) {
         self.now = now
         self.stageDelay = stageDelay
+        self.scenario = scenario
         let start = now()
         self.createdAt = start
-        self.factory = DemoFixtures.factory(now: start)
+        switch scenario {
+        case .full:
+            var factory = DemoFixtures.factory(now: start)
+            factory.sessions = DemoObserve.observed(now: start, machines: factory.machines)
+            self.factory = factory
+        case .observe:
+            self.factory = DemoObserve.factory(now: start)
+        }
     }
 
     private let createdAt: Date
@@ -347,6 +357,7 @@ public actor DemoDataSource: FactoryDataSource {
 
     /// The demo plan keeps the fixture clock so it stays consistent with the accounts' reset times.
     private func refreshPacing() {
+        guard scenario == .full else { return }
         let labels = Dictionary(factory.accounts.map { ($0.id, (label: $0.label, plan: $0.plan)) }, uniquingKeysWith: { a, _ in a })
         factory.pacing = DemoPacing.pacing(now: createdAt, settings: pacingSettings, labels: labels)
     }

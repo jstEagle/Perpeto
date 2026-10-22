@@ -33,6 +33,11 @@ public final class FactoryStore {
 
     public var isDemo: Bool { source.isDemo }
 
+    /// Observe-only: the hub has loaded and reports no projects, so the app
+    /// is about the factory (sessions, machines, subscriptions, usage) and
+    /// hides the project-only sections.
+    public var isObserveOnly: Bool { lastUpdated != nil && factory.projects.isEmpty }
+
     /// Picks the hub when settings are complete, otherwise demo data.
     public static func makeSource(settings: HubSettings = HubSettings()) -> (FactoryDataSource, String?) {
         do {
@@ -112,7 +117,8 @@ public final class FactoryStore {
     /// so a burst of interactions costs one round of requests.
     private func scheduleRefresh(for event: HubEvent) {
         let type = event.type
-        if type.hasPrefix("machine.") || type.hasPrefix("enrollment.") || type.hasSuffix(".usage") || type.hasPrefix("pacing.") || type.hasPrefix("account.") {
+        if type.hasPrefix("machine.") || type.hasPrefix("enrollment.") || type.hasSuffix(".usage") || type.hasPrefix("pacing.") || type.hasPrefix("account.")
+            || type.hasPrefix("session.") || type.hasPrefix("sessions.") {
             pendingFactory = true
         }
         if let runId = event.runId, projectStates[event.projectId ?? ""]?.runs.contains(where: { $0.id == runId }) == true {

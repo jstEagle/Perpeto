@@ -280,6 +280,63 @@ public final class HubClient: Sendable {
         return pacing
     }
 
+    // MARK: Observed sessions
+
+    public struct SessionQuery: Sendable, Hashable {
+        public var machineId: String?
+        public var status: ObservedSession.Status?
+        public var provider: String?
+        public var since: Date?
+        public var limit: Int?
+        public var cursor: String?
+        public init(machineId: String? = nil, status: ObservedSession.Status? = nil, provider: String? = nil, since: Date? = nil, limit: Int? = nil, cursor: String? = nil) {
+            self.machineId = machineId
+            self.status = status
+            self.provider = provider
+            self.since = since
+            self.limit = limit
+            self.cursor = cursor
+        }
+    }
+
+    /// One page of observed T3 sessions, or nil when the hub has no sessions route yet.
+    public func sessions(_ query: SessionQuery = SessionQuery()) async throws -> SessionPage? {
+        var q: [String: String] = [:]
+        q["machineId"] = query.machineId
+        q["status"] = query.status.flatMap { $0 == .unknown ? nil : $0.rawValue }
+        q["provider"] = query.provider
+        q["since"] = query.since?.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
+        q["limit"] = query.limit.map(String.init)
+        q["cursor"] = query.cursor
+        do {
+            return try await get("/sessions", query: q)
+        } catch HubError.http(let status, _, _) where status == 404 || status == 405 {
+            return nil
+        }
+    }
+
+    /// Every observed session, following cursors up to `maxPages`.
+    public func allSessions(pageSize: Int = 200, maxPages: Int = 10) async throws -> [ObservedSession]? {
+        var query = SessionQuery(limit: pageSize)
+        var all: [ObservedSession] = []
+        for _ in 0..<maxPages {
+            guard let page = try await sessions(query) else { return all.isEmpty ? nil : all }
+            all += page.sessions
+            guard let next = page.nextCursor, !page.sessions.isEmpty else { break }
+            query.cursor = next
+        }
+        return all
+    }
+
+    /// Running and waiting counts per machine and tokens over `window`; nil when the route is missing.
+    public func sessionSummary(window: SessionWindow) async throws -> SessionSummary? {
+        do {
+            return try await get("/sessions/summary", query: ["window": window.rawValue])
+        } catch HubError.http(let status, _, _) where status == 404 || status == 405 {
+            return nil
+        }
+    }
+
     static func looksLikePacing(_ data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
         let body = (object["pacing"] as? [String: Any]) ?? object

@@ -36,12 +36,18 @@ public enum ProjectSection: String, CaseIterable, Hashable, Sendable, Identifiab
 }
 
 public enum FactorySection: String, CaseIterable, Hashable, Sendable, Identifiable {
-    case machines, accounts, pacing, usage
+    /// The observe-only home: sessions, machines, subscriptions and usage at a glance.
+    case home, sessions, machines, accounts, pacing, usage
 
     public var id: String { rawValue }
 
+    /// The Factory group in the sidebar. Home leads the observe-only sidebar on its own.
+    public static let grouped: [FactorySection] = [.sessions, .machines, .accounts, .pacing, .usage]
+
     public var title: String {
         switch self {
+        case .home: "Home"
+        case .sessions: "Sessions"
         case .machines: "Machines"
         case .accounts: "Accounts"
         case .pacing: "Pacing"
@@ -51,6 +57,8 @@ public enum FactorySection: String, CaseIterable, Hashable, Sendable, Identifiab
 
     public var systemImage: String {
         switch self {
+        case .home: "house"
+        case .sessions: "rectangle.stack"
         case .machines: "desktopcomputer"
         case .accounts: "person.2"
         case .pacing: "gauge.with.dots.needle.67percent"
@@ -58,8 +66,9 @@ public enum FactorySection: String, CaseIterable, Hashable, Sendable, Identifiab
         }
     }
 
+    /// ⌥⌘0 Home, ⌥⌘1 Sessions, then Machines, Accounts, Pacing and Usage.
     public var shortcut: KeyEquivalent {
-        KeyEquivalent(Character(String(FactorySection.allCases.firstIndex(of: self)! + 1)))
+        KeyEquivalent(Character(String(FactorySection.allCases.firstIndex(of: self)!)))
     }
 }
 

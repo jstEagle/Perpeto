@@ -247,11 +247,13 @@ public struct TrendBars: View {
     var values: [Double]
     var start: String
     var end: String
+    var unit: String
 
-    public init(_ values: [Double], start: String, end: String = "Now") {
+    public init(_ values: [Double], start: String, end: String = "Now", unit: String = "items") {
         self.values = values
         self.start = start
         self.end = end
+        self.unit = unit
     }
 
     public var body: some View {
@@ -284,6 +286,6 @@ public struct TrendBars: View {
             .foregroundStyle(PerpetoColor.muted)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(Int(values.reduce(0, +))) items over \(values.count) periods")
+        .accessibilityLabel("\(Format.tokens(values.reduce(0, +))) \(unit) over \(values.count) periods, from \(start) to \(end)")
     }
 }

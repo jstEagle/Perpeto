@@ -80,9 +80,33 @@ public struct SettingsView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: PerpetoGap.cards) {
             AppearanceSettings()
+            if store.isDemo { DemoSettings(store: store) }
             HubConnectionView(store: store, embedded: true)
         }
         .padding(PerpetoSpacing.x(6))
         .background(PerpetoColor.canvas)
+    }
+}
+
+/// Without a hub: which demo factory to show. Observe only has no projects
+/// and shows T3 Code sessions and subscriptions on two Macs.
+struct DemoSettings: View {
+    var store: FactoryStore
+    @AppStorage(DemoScenario.defaultsKey) private var scenario: DemoScenario = .full
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(4)) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Demo data").font(PerpetoFont.heading).foregroundStyle(PerpetoColor.ink)
+                Text("Shown until a hub is connected. Observe only is the factory with no projects: sessions, machines and subscriptions.")
+                    .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            PillPicker(DemoScenario.allCases.map { ($0, $0.title) }, selection: $scenario)
+        }
+        .card()
+        .onChange(of: scenario) { _, next in
+            Task { await store.use(DemoDataSource(scenario: next)) }
+        }
     }
 }

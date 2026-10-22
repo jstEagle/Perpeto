@@ -13,6 +13,7 @@ import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
 import { HubMessaging } from './messaging.js';
 import { Pacing, accountUsage, displayText } from './pacing.js';
+import { Sessions, sessionsRoute } from './sessions.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings, gitIdentity } from './errors.js';
 
@@ -42,7 +43,7 @@ function canonicalUrl(path) {
 /** Node tokens reach only machine routes, judged on the same decoded segments route() dispatches on. */
 function nodeRoute(method, segments) {
   const [collection, entityId, action] = segments;
-  if (collection === 'nodes') return method === 'POST' && segments.length === 2 && ['heartbeat', 'lease', 'token'].includes(entityId);
+  if (collection === 'nodes') return method === 'POST' && segments.length === 2 && ['heartbeat', 'lease', 'token', 'observations'].includes(entityId);
   if (!['assignments', 'jobs'].includes(collection) || !entityId || segments.length > 3) return false;
   if (action === undefined) return method === 'GET';
   if (method === 'POST') return ['renew', 'events', 'release'].includes(action);
@@ -77,7 +78,7 @@ export class Hub {
     this.store.onCommit = () => this.flush();
     this.store.onRollback = () => { this.signals = { work: [], machines: new Set(), events: false }; };
     this.intake = new Intake(this); this.workflows = new Workflows(this); this.observation = new Observation(this); this.agentMessaging = new HubMessaging(this);
-    this.pacing = new Pacing(this);
+    this.pacing = new Pacing(this); this.sessions = new Sessions(this);
     try {
       try {
         const stat = lstatSync(config.ownerTokenPath);
@@ -301,6 +302,8 @@ export class Hub {
         // Subscription pacing: replan when inputs changed or the plan is stale, then nudge intake for starved fleets.
         if (this.pacing.refresh()) changed = true;
         this.pacing.nudge();
+        // Coalesced sessions.changed events still due after the last observation batch.
+        this.sessions.flushEvents();
         for (const cancellation of this.store.list('cancellation', value => Date.parse(value.leaseExpiresAt) <= time)) this.store.remove('cancellation', cancellation.id);
         for (const machine of this.store.list('machine')) {
           if (machine.status !== 'offline' && time - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) {
@@ -793,7 +796,8 @@ export class Hub {
           if (update.plan === null) delete account.plan; else if (update.plan !== undefined) account.plan = update.plan;
         }
         this.pacing.observe(machine, accounts);
-        for (const account of this.store.list('account', value => value.machineId === machine.id)) this.store.remove('account', account.id);
+        // Observed accounts (the operator's own T3) come from observation batches, not heartbeats.
+        for (const account of this.store.list('account', value => value.machineId === machine.id && value.source !== 'observed')) this.store.remove('account', account.id);
         for (const account of accounts) this.store.put('account', account);
       }
       // Heartbeats write no event (they would dominate the global log) and wake only this machine's polls, when its
@@ -826,12 +830,16 @@ export class Hub {
       else if (body.plan !== undefined) { update.plan = changes.plan = displayText(body.plan, 'plan', 80); account.plan = update.plan; }
       // Relayed to the owning node on its next heartbeat; the hub shows the edit meanwhile.
       // Each edit gets a fresh id, so a node that applied an earlier edit never mistakes this one for it.
-      update.updateId = id('aup'); update.requestedAt = this.now(); delete update.deliveredAt;
-      this.store.put('account-update', update); this.store.put('account', account);
+      // An observed account belongs to the operator's own T3, which Perpeto never writes to: the edit stays on the hub.
+      if (account.source === 'observed') this.sessions.override(account, changes);
+      else { update.updateId = id('aup'); update.requestedAt = this.now(); delete update.deliveredAt; this.store.put('account-update', update); }
+      this.store.put('account', account);
       this.emit('account.updated', 'account', account, changes); this.pacing.dirty = true;
       return reply(account);
     }
     if (path === '/pacing' && method === 'GET') return reply(this.pacing.view());
+    const observed = sessionsRoute(this, method, segments, query, body, auth);
+    if (observed) return reply(observed);
     if (path === '/pacing/settings' && method === 'PUT') return reply(this.pacing.updateSettings(body));
     if (path === '/jobs' && method === 'GET') {
       const runId = query.get('runId'); const projectId = query.get('projectId');
@@ -1122,10 +1130,12 @@ export class Hub {
       data: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } });
   }
   usage(query) {
-    const groupBy = query.get('groupBy') ?? 'provider'; requireValue(['provider', 'model', 'machine', 'day', 'role'].includes(groupBy), 'Invalid usage groupBy.');
+    const groupBy = query.get('groupBy') ?? 'provider'; requireValue(['provider', 'model', 'machine', 'day', 'role', 'source'].includes(groupBy), 'Invalid usage groupBy.');
     for (const field of ['from', 'to']) if (query.has(field)) requireValue(Number.isFinite(Date.parse(query.get(field))), `Invalid ${field} timestamp.`);
     const time = field => query.has(field) ? new Date(query.get(field)).toISOString() : undefined;
     const filters = Object.fromEntries(['projectId', 'runId', 'machineId', 'provider', 'model', 'accountId'].map(key => [key, query.get(key) || undefined]));
+    // `source=observed` is usage from operators' own T3 sessions (no project); `source=factory` is everything else.
+    if (query.has('source')) { requireValue(['observed', 'factory'].includes(query.get('source')), 'source must be observed or factory.'); filters.source = query.get('source'); }
     // Raw usage and the hourly rollups of usage past its retention, grouped in SQL.
     const groups = this.store.usageGroups(filters, { from: time('from'), to: time('to'), group: groupBy });
     const totals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, records: 0 };

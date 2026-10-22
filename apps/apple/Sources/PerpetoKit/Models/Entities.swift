@@ -825,9 +825,14 @@ public struct Account: Codable, Hashable, Identifiable, Sendable {
     public var plan: String?
     /// Limit windows the harness last reported for this login.
     public var usage: AccountUsage?
+    /// Where the hub learned of it: "observed" for a subscription seen in the
+    /// owner's T3 Code app (read-only), else the machine's account pool.
+    public var source: String?
+    public var isObserved: Bool { source == "observed" }
 
     public init(id: String, machineId: String, provider: String, label: String, status: Status, cooldownUntil: Date? = nil, lastUsedAt: Date? = nil,
-                plan: String? = nil, usage: AccountUsage? = nil) {
+                plan: String? = nil, usage: AccountUsage? = nil, source: String? = nil) {
+        self.source = source
         self.id = id
         self.machineId = machineId
         self.provider = provider
@@ -839,21 +844,23 @@ public struct Account: Codable, Hashable, Identifiable, Sendable {
         self.usage = usage
     }
 
-    enum CodingKeys: String, CodingKey { case id, machineId, provider, label, status, cooldownUntil, lastUsedAt, plan, usage }
+    enum CodingKeys: String, CodingKey { case id, machineId, provider, label, status, cooldownUntil, lastUsedAt, plan, usage, source }
 
     /// `plan` and `usage` are new in the contract: a malformed value is
     /// dropped instead of failing the whole account list.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
-        machineId = try c.decode(String.self, forKey: .machineId)
+        // Observed subscriptions may arrive without a pool status or label.
+        machineId = c.lenientString(.machineId) ?? ""
         provider = try c.decode(String.self, forKey: .provider)
-        label = try c.decode(String.self, forKey: .label)
-        status = try c.decode(Status.self, forKey: .status)
+        label = c.lenientString(.label) ?? id
+        status = ((try? c.decodeIfPresent(Status.self, forKey: .status)) ?? nil) ?? .active
         cooldownUntil = try c.decodeIfPresent(Date.self, forKey: .cooldownUntil)
         lastUsedAt = try c.decodeIfPresent(Date.self, forKey: .lastUsedAt)
         plan = (try? c.decodeIfPresent(String.self, forKey: .plan)).flatMap { $0?.isEmpty == false ? $0 : nil }
         usage = (try? c.decodeIfPresent(AccountUsage.self, forKey: .usage)) ?? nil
+        source = c.lenientString(.source)
     }
 }
 

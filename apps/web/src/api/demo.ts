@@ -3,6 +3,7 @@ import type { EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQu
 import { createDemoState, DEMO_IDS } from './fixtures';
 import { applyPacingSettings, demoPacing, demoSubscriptions } from './pacing-fixtures';
 import type { DemoState } from './fixtures';
+import { observeAccounts, observeMachines, observePacing, observeSessions, observeSummary } from './observe-fixtures';
 import type {
   Account,
   AccountPatch,
@@ -24,6 +25,9 @@ import type {
   Run,
   RunInput,
   RunSettings,
+  Session,
+  SessionQuery,
+  SessionsWindow,
   UsageRow,
   WorkItem,
   Workflow,
@@ -68,15 +72,37 @@ function toGoals(input: GoalInput[], existing: Goal[]): Goal[] {
   });
 }
 
+/**
+ * Which demo factory to show without a hub. `full` has projects, workflows
+ * and runs; `observe` has no projects and only watches T3 Code sessions and
+ * subscriptions on two Macs, as a hub in observe-only mode reports them.
+ */
+export type DemoScenario = 'full' | 'observe';
+
 export class DemoHub implements HubApi {
   readonly mode = 'demo' as const;
+  readonly scenario: DemoScenario;
   #state: DemoState;
+  #sessions: Session[];
   #listeners = new Set<(event: HubEvent) => void>();
   #ticker: ReturnType<typeof setInterval> | null = null;
   #tick = 0;
 
-  constructor(now = Date.now()) {
+  constructor(now = Date.now(), scenario: DemoScenario = 'full') {
+    this.scenario = scenario;
     this.#state = createDemoState(now);
+    if (scenario === 'observe') {
+      // Observe only: nothing but machines, subscriptions and the sessions they watch.
+      Object.assign(this.#state, { projects: [], versions: [], runs: [], workItems: [], assignments: [], jobs: [], jobLogs: {}, mergeQueue: [], usage: [], events: [], channels: {}, messages: [], metrics: {} });
+      this.#state.machines = observeMachines(now);
+      this.#state.accounts = observeAccounts(now);
+      this.#sessions = observeSessions(now);
+    } else {
+      this.#sessions = observeSessions(
+        now,
+        this.#state.machines.map((m) => ({ id: m.id, name: m.name })),
+      );
+    }
   }
 
   #emit(type: string, subject: HubEvent['subject'], data: Record<string, unknown>, scope: { projectId?: string; runId?: string } = {}) {
@@ -440,6 +466,7 @@ export class DemoHub implements HubApi {
   }
   async pacing(): Promise<Pacing> {
     await latency();
+    if (this.scenario === 'observe') return observePacing(this.#state.createdAt);
     const s = this.#state;
     const plan = demoPacing(demoSubscriptions({ studio: DEMO_IDS.studio, linux: DEMO_IDS.linux }), s.pacing, s.createdAt, s.pacingUpdatedAt);
     // Labels and plans follow edits made on the Accounts screen.
@@ -451,12 +478,34 @@ export class DemoHub implements HubApi {
   }
   async updatePacing(settings: PacingSettings): Promise<Pacing> {
     await latency();
+    if (this.scenario === 'observe') throw new HubError(409, 'ADVISE_ONLY', 'This hub only observes, so pacing has no settings to change.');
     if (settings.targetUsePercent !== undefined && !(settings.targetUsePercent >= 50 && settings.targetUsePercent <= 100))
       throw new HubError(400, 'INVALID_INPUT', 'Target use must be between 50% and 100%.');
     this.#state.pacing = applyPacingSettings(this.#state.pacing, settings);
     this.#state.pacingUpdatedAt = Date.now();
     this.#emit('pacing.updated', { kind: 'pacing', id: 'pacing' }, {});
     return this.pacing();
+  }
+
+  async listSessions(query: SessionQuery = {}) {
+    await latency();
+    const since = query.since ? Date.parse(query.since) : Number.NEGATIVE_INFINITY;
+    const list = this.#sessions.filter(
+      (x) =>
+        (!query.machineId || x.machineId === query.machineId) &&
+        (!query.status || x.status === query.status) &&
+        (!query.provider || x.provider === query.provider) &&
+        Date.parse(x.lastActivityAt) >= since,
+    );
+    const sorted = [...list].sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+    const start = query.cursor ? Number(query.cursor) : 0;
+    const limit = query.limit ?? 100;
+    const page = sorted.slice(start, start + limit);
+    return { sessions: clone(page), ...(start + limit < sorted.length ? { nextCursor: String(start + limit) } : {}) };
+  }
+  async sessionsSummary(window: SessionsWindow) {
+    await latency();
+    return observeSummary(this.#state.createdAt, window, this.#sessions, this.#state.machines);
   }
 
   async listJobs(query: { projectId?: string; runId?: string } = {}) {
@@ -554,7 +603,18 @@ export class DemoHub implements HubApi {
   #startTicker() {
     if (this.#ticker) return;
     this.#ticker = setInterval(() => {
+      // Running sessions take a turn now and then.
+      const running = this.#sessions.filter((x) => x.status === 'running');
+      const busy = running[this.#tick % Math.max(1, running.length)];
+      if (busy) {
+        busy.turns += 1;
+        busy.tokens.input += 2_400;
+        busy.tokens.output += 600;
+        busy.lastActivityAt = new Date().toISOString();
+        this.#emit('session.updated', { kind: 'session', id: busy.id }, { status: busy.status });
+      }
       const run = this.#state.runs.find((r) => r.id === DEMO_IDS.run);
+      if (!run) this.#tick++;
       if (!run || run.status !== 'running') return;
       const next = LIVE_SCRIPT[this.#tick++ % LIVE_SCRIPT.length];
       const { type, ...data } = next;

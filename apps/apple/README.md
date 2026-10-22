@@ -2,7 +2,7 @@
 
 Native SwiftUI client for the Perpeto hub: macOS 15 or later, and iPhone and iPad on iOS 18 or later. Status: early implementation. It reads a live local hub and falls back to demo fixtures. It follows the Perpeto Mono design system ([docs/architecture/design-system.md](../../docs/architecture/design-system.md)).
 
-Screenshots: `screenshots/` (macOS, demo data, including settings, an empty state and an error), `screenshots/hub/` (macOS against a seeded local hub) and `screenshots/ios/` (iPhone 17 Pro and iPad Pro 13-inch simulators, demo data).
+Screenshots: `screenshots/` (macOS, demo data, including settings, an empty state and an error), `screenshots/observe/` (the observe-only demo, light and dark), `screenshots/hub/` (macOS against a seeded local hub) and `screenshots/ios/` (iPhone 17 Pro and iPad Pro 13-inch simulators, demo data).
 
 ## Build and run
 
@@ -17,6 +17,7 @@ open build/Perpeto.app
 scripts/snapshots.sh         # rebuild screenshots/ from demo data
 scripts/snapshots.sh --themes # screenshots/themes/: main screens in light and dark
 scripts/snapshots.sh --pacing # screenshots/pacing/: Accounts and Pacing in light and dark
+scripts/snapshots.sh --observe # screenshots/observe/: the observe-only demo in light and dark
 ```
 
 iPhone and iPad:
@@ -64,6 +65,17 @@ Accounts lists each Claude and Codex subscription by provider, in rotation order
 
 Pacing is its own Factory section: the headline sentence, what limits each provider, the rotation for the next ten hours (burn turns in ink, rest in grey, a line at now and the live dot on the subscription burning), the projection per subscription, and the settings (on or off, Rotation or Parallel, target use, and agent limits when the hub reports them; `PUT /pacing/settings`). It refreshes on `pacing.*` and `account.*` events. A hub without `GET /pacing` shows an explanation instead. The contract is new, so decoding is tolerant: optional fields, lenient numbers, and unknown enum values decode to a neutral case (`Models/Pacing.swift`). Demo data has five Claude subscriptions mid-rotation and two Codex ones (`Data/DemoPacing.swift`).
 
+## Observe-only mode
+
+When the hub reports no projects, the app is about the factory alone: each machine's node watches the owner's T3 Code app read-only and the hub aggregates. The sidebar shows Home and the Factory group (Sessions, Machines, Accounts, Pacing, Usage) and hides the project sections; iPhone tabs become Home, Sessions, Accounts, Usage and More. With projects, Sessions is the first Factory item and nothing else changes.
+
+- **Sessions** (`GET /sessions`, `GET /sessions/summary`): running, waiting and tokens in the last hour, each machine (online, watching T3 Code, last seen), a status filter (All, Running, Waiting, Idle, and Errors when there are some) and a machine picker, then one card per machine. Rows are ordered waiting, running, failed, idle; waiting reads "Waiting for you" with the filled triangle in medium weight, and only running sessions carry the orange dot. Subagents nest under their parent behind a disclosure, open while one is working.
+- **Home**: the advice line ("4 sessions running · Claude on track for 82% by reset, Codex for 61% · room for about 5 more agents"), what is running now, tokens over 24 hours, machines and subscriptions with their meters and resets.
+- **Accounts and Pacing** read `source: "observed"` and `mode: "advise"`: no edit, add or settings controls, "Observed" with the room each subscription has (`headroomAgents`), and one line saying nothing is enforced. A pacing `mode` the app doesn't know is treated as advice too.
+- **Usage** without projects shows tokens from the session summary per window (1 h, 24 h, 7 d) by provider, model and machine.
+
+Decoding is tolerant (`Models/Sessions.swift`): only ids are required, numbers may be strings, unknown statuses decode to `unknown`, and a hub without the routes shows "This hub doesn't observe sessions yet". `session.*` and `sessions.*` events refresh the factory after the usual debounce. Without a hub, Settings › Demo data switches between the full factory and **Observe only** (also `-perpeto.demo observe` at launch; `Data/DemoObserve.swift`: this Mac and a Mac mini, 13 sessions, Claude Max and ChatGPT Pro).
+
 ## Hub connection
 
 Open Settings (⌘,) on the Mac, or Settings in the sidebar footer or the More tab on iPhone and iPad, and enter the hub address and owner token. The address is stored in UserDefaults under `perpeto.hubURL`. The token is stored only in the Keychain (service `app.perpeto.hub`) and is sent only in the `Authorization` header. HTTPS is required except for localhost. Without both values the app shows demo data, marked in the sidebar footer and window subtitle.
@@ -73,7 +85,8 @@ Open Settings (⌘,) on the Mac, or Settings in the sidebar footer or the More t
 | Keys | Action |
 | --- | --- |
 | ⌘1 to ⌘6 | Overview, Workflows, Runs, Work, Messages, Merge queue |
-| ⌥⌘1 to ⌥⌘4 | Machines, Accounts, Pacing, Usage |
+| ⌥⌘0 | Home (the observe-only factory home) |
+| ⌥⌘1 to ⌥⌘5 | Sessions, Machines, Accounts, Pacing, Usage |
 | ⌘N | New workflow draft |
 | ⌘R | Refresh |
 | ⌘↩ | Draft workflow from the prompt; send a message |

@@ -115,7 +115,7 @@ test('retention archives finished work and events, rolls usage up hourly and kee
   assert.equal((await f.request('POST', '/nodes/heartbeat', { ...heartbeat, labels: ['ci'], idempotencyKey: 'beat-1' }, node.token)).status, 200);
   // Sweep as if 40 days had passed: past every default retention.
   const counts = await f.hub.store.transaction(() => f.hub.sweep(Date.now() + 40 * day));
-  assert.deepEqual({ ...counts, events: counts.events > 0 }, { assignments: 2, jobs: 0, events: true, usage: 4, idempotency: counts.idempotency, accountUsage: 0 });
+  assert.deepEqual({ ...counts, events: counts.events > 0 }, { assignments: 2, jobs: 0, events: true, usage: 4, idempotency: counts.idempotency, accountUsage: 0, observedSessions: 0 });
   assert.ok(counts.idempotency > 0, 'idempotency records expire');
   const db = new DatabaseSync(join(f.directory, 'hub.sqlite'), { readOnly: true }); t.after(() => db.close());
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM entities WHERE kind='assignment'").get().count, 1, 'only open work stays hot');
@@ -138,7 +138,7 @@ test('without archiving, finished work past retention is deleted; recent work an
   await f.seed(run.id, ['asg_old']);
   const work = (await f.request('POST', '/nodes/lease', { kinds: ['assignment'] }, node.token)).body.assignments[0];
   await f.request('POST', `/assignments/${work.id}/events`, { attempt: work.attempt, type: 'completed', data: { outcome: 'success', summary: 'Done' } }, node.token);
-  assert.deepEqual(await f.hub.store.transaction(() => f.hub.sweep(Date.now())), { assignments: 0, jobs: 0, events: 0, usage: 0, idempotency: 0, accountUsage: 0 });
+  assert.deepEqual(await f.hub.store.transaction(() => f.hub.sweep(Date.now())), { assignments: 0, jobs: 0, events: 0, usage: 0, idempotency: 0, accountUsage: 0, observedSessions: 0 });
   await f.hub.store.transaction(() => f.hub.sweep(Date.now() + 8 * day));
   assert.equal((await f.request('GET', '/assignments/asg_old')).status, 404);
   const db = new DatabaseSync(join(f.directory, 'hub.sqlite'), { readOnly: true }); t.after(() => db.close());

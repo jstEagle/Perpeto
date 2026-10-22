@@ -155,6 +155,7 @@ export function demoPacing(subs: SubSpec[], settings: DemoPacingSettings, now: n
   const running = (provider: string) => accounts.filter((a) => a.provider === provider).reduce((n, a) => n + a.runningAgents, 0);
   const target = (provider: string) => accounts.filter((a) => a.provider === provider).reduce((n, a) => n + a.targetAgents, 0);
   return {
+    mode: 'enforce',
     enabled: settings.enabled,
     strategy: settings.strategy,
     targetUsePercent: settings.targetUsePercent,

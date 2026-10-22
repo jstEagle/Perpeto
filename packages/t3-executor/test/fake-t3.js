@@ -14,6 +14,9 @@ const Schema = await import(requireContracts.resolve('effect/Schema'));
 // Use the same schemas and JSON codec as T3's real WebSocket transport.
 const decodeRequests = new Map([...WsRpcGroup.requests].map(([tag, rpc]) =>
   [tag, Schema.decodeUnknownSync(Schema.toCodecJson(rpc.payloadSchema))]));
+// Shell stream items the fake sends are checked against T3's real wire schema, so observer fixtures stay honest.
+const { OrchestrationV2ShellStreamItem } = await import('../../../vendor/t3code/packages/contracts/src/orchestrationV2.ts');
+export const checkShellItem = Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ShellStreamItem));
 import { AgentPolicyStore, AgentPolicyError } from '../src/policy-store.js';
 
 /** Minimal server-side WebSocket (RFC 6455): unfragmented text frames only. */
@@ -89,17 +92,21 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
     onLaunch: () => {},
     onCommand: () => {},
     tickets: 0,
+    // Every RPC tag a client sent, in order, so tests can assert an observer never sends a mutating one.
+    rpcs: [],
+    shell: { projects: [], threads: new Map(), sequence: 0 },
+    shellSubscribers: new Set(),
   };
 
   function thread(threadId) {
     let value = state.threads.get(threadId);
     if (!value) {
-      value = { id: threadId, thread: { id: threadId }, runs: new Map(), providerTurns: new Map(), turnItems: new Map(), subagents: new Map(), runtimeRequests: new Map(), providerThreads: new Map(), sequence: 0, log: [] };
+      value = { id: threadId, thread: { id: threadId }, runs: new Map(), attempts: new Map(), providerTurns: new Map(), turnItems: new Map(), subagents: new Map(), runtimeRequests: new Map(), providerThreads: new Map(), sequence: 0, log: [] };
       state.threads.set(threadId, value);
     }
     return value;
   }
-  const collections = { 'run.created': 'runs', 'run.updated': 'runs', 'provider-turn.updated': 'providerTurns', 'turn-item.updated': 'turnItems', 'subagent.updated': 'subagents', 'runtime-request.updated': 'runtimeRequests', 'provider-thread.updated': 'providerThreads' };
+  const collections = { 'run.created': 'runs', 'run.updated': 'runs', 'run-attempt.created': 'attempts', 'run-attempt.updated': 'attempts', 'provider-turn.updated': 'providerTurns', 'turn-item.updated': 'turnItems', 'subagent.updated': 'subagents', 'runtime-request.updated': 'runtimeRequests', 'provider-thread.updated': 'providerThreads' };
   function projection(value) {
     return { thread: value.thread, ...Object.fromEntries(Object.values(collections).map(name => [name, [...value[name].values()]])) };
   }
@@ -161,6 +168,7 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
       if (message._tag === 'Ack') { streams.get(message.requestId)?.ack(); return; }
       if (message._tag === 'Interrupt') { streams.get(message.requestId)?.stop(); return; }
       if (message._tag !== 'Request') return;
+      state.rpcs.push(message.tag);
       const reply = value => ws.send({ _tag: 'Exit', requestId: message.id, exit: { _tag: 'Success', value } });
       const fail = (tag, text) => ws.send({ _tag: 'Exit', requestId: message.id, exit: { _tag: 'Failure', cause: [{ _tag: 'Fail', error: { _tag: tag, message: text } }] } });
       const payload = message.payload;
@@ -226,6 +234,24 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
           }
           return;
         }
+        case 'orchestration.subscribeShell': {
+          const queue = [];
+          let waiting = 0;
+          const subscriber = { push(values) { queue.push(values); flush(); } };
+          function flush() {
+            while (waiting === 0 && queue.length) { waiting++; ws.send({ _tag: 'Chunk', requestId: message.id, values: queue.shift() }); }
+          }
+          streams.set(message.id, {
+            ack() { waiting = Math.max(0, waiting - 1); flush(); },
+            stop() { state.shellSubscribers.delete(subscriber); streams.delete(message.id); },
+          });
+          state.shellSubscribers.add(subscriber);
+          const snapshot = { kind: 'snapshot', snapshot: { schemaVersion: 2, snapshotSequence: state.shell.sequence, projects: state.shell.projects,
+            threads: [...state.shell.threads.values()], archivedThreads: [] } };
+          checkShellItem(snapshot);
+          subscriber.push([snapshot, ...(payload.requestCompletionMarker ? [{ kind: 'synchronized' }] : [])]);
+          return;
+        }
         default: return fail('UnknownRpc', `Unknown ${message.tag}`);
       }
     };
@@ -239,7 +265,18 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
     /** Pass as the executor's `agentHomesDir` so factory homes stay inside the fake's directory. */
     homes: join(directory, 'agent-homes'),
     /** Drop every live WebSocket to exercise reconnection. */
-    dropSockets() { for (const ws of state.sockets) ws.destroy(); state.sockets.clear(); state.subscribers.clear(); },
+    dropSockets() { for (const ws of state.sockets) ws.destroy(); state.sockets.clear(); state.subscribers.clear(); state.shellSubscribers.clear(); },
+    /** Send one shell stream item (checked against T3's schema) to every shell subscriber. */
+    shellEmit(item) { checkShellItem(item); for (const subscriber of state.shellSubscribers) subscriber.push([item]); },
+    /** Add or replace a thread in the shell and announce it as `thread.updated`. */
+    setShellThread(value) {
+      state.shell.threads.set(value.id, value);
+      api.shellEmit({ kind: 'thread.updated', sequence: ++state.shell.sequence, location: 'active', thread: value });
+    },
+    removeShellThread(threadId) {
+      state.shell.threads.delete(threadId);
+      api.shellEmit({ kind: 'thread.removed', sequence: ++state.shell.sequence, location: 'active', threadId });
+    },
     commandsOf(type) { return state.commands.filter(item => item.payload?.type === type); },
     async close() {
       for (const ws of state.sockets) ws.destroy();
@@ -255,5 +292,15 @@ export async function startFakeT3({ token = 'test-token', policyRoutes = true, p
 export const build = {
   run: (threadId, ordinal, status, extra = {}) => ({ id: `run:${threadId}:${ordinal}`, threadId, ordinal, status, startedAt: status === 'queued' ? null : '2026-10-21T00:00:00.000Z', completedAt: ['completed', 'failed', 'interrupted', 'cancelled'].includes(status) ? '2026-10-21T00:00:05.000Z' : null, ...extra }),
   assistant: (threadId, ordinal, text, id = `item:${threadId}:${ordinal}:assistant`) => ({ id, threadId, runId: `run:${threadId}:${ordinal}`, type: 'assistant_message', status: 'completed', text, streaming: false }),
+  /** A project shell as T3's subscribeShell sends it. */
+  project: (id, extra = {}) => ({ id, title: `Project ${id}`, workspaceRoot: `/Users/operator/code/${id}`, defaultModelSelection: null, scripts: [],
+    createdAt: '2026-10-20T00:00:00.000Z', updatedAt: '2026-10-20T00:00:00.000Z', ...extra }),
+  /** A thread shell (OrchestrationV2ThreadShell) with every required field; `extra` overrides. */
+  shellThread: (id, extra = {}) => ({ createdBy: 'user', creationSource: 'web', id, projectId: 'p1', title: `Thread ${id}`,
+    providerInstanceId: 'claudeAgent', modelSelection: { instanceId: 'claudeAgent', model: 'claude-test' }, runtimeMode: 'full-access', interactionMode: 'default',
+    branch: null, worktreePath: null, lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id }, forkedFrom: null,
+    activeProviderThreadId: null, latestRunId: null, activeRunId: null, status: 'idle', pendingRuntimeRequest: null,
+    latestVisibleMessage: null, latestUserMessageAt: null, hasActionableProposedPlan: false, itemCount: 0, visibleItemCount: 0,
+    createdAt: '2026-10-22T08:00:00.000Z', updatedAt: '2026-10-22T08:00:00.000Z', archivedAt: null, settledOverride: null, settledAt: null, deletedAt: null, ...extra }),
   usage: (threadId, ordinal, usage) => ({ id: `turn:${threadId}:${ordinal}`, status: 'completed', completedAt: '2026-10-21T00:00:05.000Z', turnTokenUsage: { usageScope: 'main_agent', usageStatus: 'complete', hasSubagents: false, ...usage } }),
 };

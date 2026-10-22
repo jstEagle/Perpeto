@@ -42,10 +42,23 @@ public struct RootView: View {
             #endif
         }
         .tint(PerpetoColor.ink)
+        // Switching between a hub with projects and one without (or between
+        // demo factories) moves off screens that no longer exist.
+        .onChange(of: store.isObserveOnly) { _, observing in
+            if observing, navigator.route?.projectId != nil || navigator.route == nil {
+                navigator.route = .factory(.home)
+            } else if !observing, navigator.route == .factory(.home) || navigator.route == nil, let first = store.factory.projects.first {
+                navigator.route = .project(first.id, .overview)
+            }
+        }
         .task {
             if store.factory.projects.isEmpty { await store.refresh() }
-            if navigator.route == nil, let first = store.factory.projects.first {
-                navigator.route = .project(first.id, .overview)
+            if navigator.route == nil {
+                if let first = store.factory.projects.first {
+                    navigator.route = .project(first.id, .overview)
+                } else if store.isObserveOnly {
+                    navigator.route = .factory(.home)
+                }
             }
         }
     }
@@ -96,10 +109,7 @@ struct DetailView: View {
             } else {
                 EmptyState("Project not found", message: "It may have been removed from the hub. Choose another project.", systemImage: "folder")
             }
-        case .factory(.machines): MachinesScreen(store: store)
-        case .factory(.accounts): AccountsScreen(store: store)
-        case .factory(.pacing): PacingScreen(store: store)
-        case .factory(.usage): UsageScreen(store: store)
+        case .factory(let section): FactoryScreen(store: store, navigator: navigator, section: section)
         case nil:
             if store.isLoading {
                 VStack(spacing: PerpetoSpacing.x(4)) {
@@ -133,7 +143,12 @@ struct Sidebar: View {
                 .accessibilityLabel("perpeto")
             ScrollView {
                 VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
-                    if let projectId, let project = store.project(projectId) {
+                    if store.isObserveOnly {
+                        NavItem(title: FactorySection.home.title, systemImage: FactorySection.home.systemImage,
+                                selected: navigator.route == .factory(.home), trailing: nil) {
+                            navigator.route = .factory(.home)
+                        }
+                    } else if let projectId, let project = store.project(projectId) {
                         ProjectSwitcher(store: store, navigator: navigator, current: project)
                             .padding(.bottom, PerpetoSpacing.x(6))
                         ForEach(ProjectSection.allCases) { section in
@@ -149,8 +164,9 @@ struct Sidebar: View {
                         .padding(.horizontal, PerpetoSpacing.x(3))
                         .padding(.top, PerpetoSpacing.x(6))
                         .padding(.bottom, PerpetoSpacing.x(2))
-                    ForEach(FactorySection.allCases) { section in
-                        NavItem(title: section.title, systemImage: section.systemImage, selected: navigator.route == .factory(section), trailing: nil) {
+                    ForEach(FactorySection.grouped) { section in
+                        NavItem(title: section.title, systemImage: section.systemImage, selected: navigator.route == .factory(section),
+                                trailing: section == .sessions ? sessionsTrailing : nil) {
                             navigator.route = .factory(section)
                         }
                     }
@@ -169,6 +185,13 @@ struct Sidebar: View {
         #else
         .toolbar(.hidden, for: .navigationBar)
         #endif
+    }
+
+    /// Sessions waiting for the owner are counted; otherwise the live dot shows while any run.
+    private var sessionsTrailing: NavItem.Trailing? {
+        guard let observed = store.factory.sessions else { return nil }
+        if observed.waiting > 0 { return .count(observed.waiting) }
+        return observed.running > 0 ? .live : nil
     }
 
     private func trailing(_ section: ProjectSection, project: String) -> NavItem.Trailing? {
@@ -320,6 +343,24 @@ struct AccountRow: View {
             IconButton("slider.horizontal.3", label: "Settings", action: openSettings)
         }
         .padding(.horizontal, PerpetoSpacing.x(1))
+    }
+}
+
+/// Routes a factory section to its screen.
+struct FactoryScreen: View {
+    var store: FactoryStore
+    var navigator: Navigator
+    var section: FactorySection
+
+    var body: some View {
+        switch section {
+        case .home: ObserveHomeScreen(store: store, navigator: navigator)
+        case .sessions: SessionsScreen(store: store)
+        case .machines: MachinesScreen(store: store)
+        case .accounts: AccountsScreen(store: store)
+        case .pacing: PacingScreen(store: store)
+        case .usage: UsageScreen(store: store)
+        }
     }
 }
 

@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.js",
-    "./policy-store": "./src/policy-store.js"
+    "./policy-store": "./src/policy-store.js",
+    "./rpc": "./src/rpc.js"
   },
   "engines": {
     "node": ">=24.0.0"

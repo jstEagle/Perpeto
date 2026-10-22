@@ -1,5 +1,6 @@
 import { readFile, lstat, open, mkdir, rename, unlink } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 export async function readSecret(path) {
@@ -31,7 +32,7 @@ export async function loadConfig(configPath) {
   const root = dirname(resolve(configPath));
   const raw = JSON.parse(await readFile(configPath, 'utf8'));
   const allowed = ['hubUrl', 'name', 'dataDir', 'credentialFile', 'enrollmentCodeFile', 'labels', 'capacity', 'providers',
-    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs', 'hubFingerprint'];
+    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs', 'hubFingerprint', 'observe'];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !allowed.includes(key))) {
     throw new Error('Invalid node configuration; credentials belong in owner-only files.');
   }
@@ -58,7 +59,9 @@ export async function loadConfig(configPath) {
   for (const key of ['maxAgents', 'maxJobs']) {
     if (!Number.isSafeInteger(capacity[key]) || capacity[key] < 0) throw new Error(`Invalid capacity.${key}.`);
   }
-  if (!capacity.maxAgents && !capacity.maxJobs) throw new Error('Node capacity must allow some work.');
+  const observe = observeConfig(raw.observe, root);
+  // An observe-only node runs no agents and no CI: it only watches the operator's own T3.
+  if (!capacity.maxAgents && !capacity.maxJobs && !observe?.enabled) throw new Error('Node capacity must allow some work.');
   for (const key of ['labels', 'providers', 'executorPackages']) {
     if (raw[key] !== undefined && (!Array.isArray(raw[key]) || raw[key].some(value => typeof value !== 'string' || !value.trim()))) throw new Error(`Invalid ${key}.`);
   }
@@ -70,8 +73,43 @@ export async function loadConfig(configPath) {
     if (!['heartbeatMs', 'renewMs', 'requestMs', 'pollIdleMs', 'backoffMinMs', 'backoffMaxMs'].includes(key) || !Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new Error('Invalid timing configuration.');
   }
   if (timing.backoffMaxMs < timing.backoffMinMs) throw new Error('Invalid backoff bounds.');
-  return { ...raw, hubUrl: url.href.replace(/\/+$/, ''), dataDir, capacity, timing, tokenRotationMs,
+  return { ...raw, hubUrl: url.href.replace(/\/+$/, ''), dataDir, capacity, timing, tokenRotationMs, ...(observe ? { observe } : {}),
     credentialFile: raw.credentialFile ? path(raw.credentialFile) : resolve(dataDir, 'machine.json'),
     enrollmentCodeFile: raw.enrollmentCodeFile ? path(raw.enrollmentCodeFile) : undefined,
     labels: raw.labels ?? [], configRoot: root };
+}
+
+const OBSERVE_KEYS = ['enabled', 't3BaseDir', 'url', 'pollMs', 'includeTitles', 'cli', 'credentialFile', 'tokenTtl', 'backfillHours', 'fetchesPerPoll'];
+/**
+ * `observe`: watch the operator's own running T3 Code, read-only, and report sessions, usage and subscription windows.
+ * Paths may start with `~/`. Secrets never live here: the T3 session is minted into the node data directory (0600).
+ */
+export function observeConfig(value, root = process.cwd()) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !OBSERVE_KEYS.includes(key))) throw new Error('Invalid observe configuration.');
+  const path = item => item.startsWith('~/') ? resolve(homedir(), item.slice(2)) : isAbsolute(item) ? item : resolve(root, item);
+  const result = { enabled: value.enabled === true, t3BaseDir: resolve(homedir(), '.t3/userdata'), pollMs: 5000, includeTitles: true };
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') throw new Error('observe.enabled must be a boolean.');
+  for (const key of ['t3BaseDir', 'cli', 'credentialFile']) {
+    if (value[key] === undefined) continue;
+    if (typeof value[key] !== 'string' || !value[key].trim() || value[key].includes('\0')) throw new Error(`Invalid observe.${key}.`);
+    result[key] = path(value[key]);
+  }
+  if (value.url !== undefined) {
+    let url; try { url = new URL(value.url); } catch { throw new Error('Invalid observe.url.'); }
+    if (!['http:', 'https:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error('observe.url must be a loopback T3 origin.');
+    result.url = url.origin;
+  }
+  if (value.pollMs !== undefined && (!Number.isSafeInteger(value.pollMs) || value.pollMs < 500 || value.pollMs > 600000)) throw new Error('observe.pollMs must be 500 to 600000.');
+  if (value.pollMs !== undefined) result.pollMs = value.pollMs;
+  if (value.includeTitles !== undefined && typeof value.includeTitles !== 'boolean') throw new Error('observe.includeTitles must be a boolean.');
+  if (value.includeTitles !== undefined) result.includeTitles = value.includeTitles;
+  if (value.tokenTtl !== undefined && (typeof value.tokenTtl !== 'string' || !/^\d{1,4}[mhd]$/.test(value.tokenTtl))) throw new Error('observe.tokenTtl must look like 30d, 12h or 90m.');
+  if (value.tokenTtl !== undefined) result.tokenTtl = value.tokenTtl;
+  for (const [key, max] of [['backfillHours', 24 * 90], ['fetchesPerPoll', 50]]) {
+    if (value[key] === undefined) continue;
+    if (!Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > max) throw new Error(`Invalid observe.${key}.`);
+    result[key] = value[key];
+  }
+  return result;
 }

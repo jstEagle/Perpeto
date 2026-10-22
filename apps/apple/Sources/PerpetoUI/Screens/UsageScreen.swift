@@ -112,6 +112,14 @@ struct UsageScreen: View {
     @State private var more = false
 
     var body: some View {
+        if store.isObserveOnly {
+            ObservedUsageView(store: store)
+        } else {
+            projectUsage
+        }
+    }
+
+    @ViewBuilder private var projectUsage: some View {
         let usage = store.factory.usage
         let totals = UsageGroup(
             key: "total",
@@ -189,6 +197,108 @@ struct UsageScreen: View {
                         Text(Format.tokens(state.usage.today) + " today").font(PerpetoFont.bodyMedium.monospacedDigit()).foregroundStyle(PerpetoColor.ink)
                         Text(Format.tokens(state.usage.total) + " in total").font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.muted)
                     }
+                }
+            }
+        }
+        .card()
+    }
+}
+
+/// Usage without projects: tokens from observed T3 Code sessions over a
+/// window, the series, and the split by provider, model and machine.
+struct ObservedUsageView: View {
+    var store: FactoryStore
+    @State private var window: SessionWindow = .day
+    @State private var cache = false
+    @Environment(\.compactLayout) private var compact
+
+    var body: some View {
+        let summary = store.factory.sessions?.summary(window)
+        ScrollView {
+            VStack(alignment: .leading, spacing: PerpetoGap.cards) {
+                ScreenHeader("Usage", subtitle: "Tokens from T3 Code sessions on your machines. Input and output are counted; cache reads are shown separately.")
+                PillPicker(SessionWindow.allCases.map { ($0, $0.title) }, selection: $window)
+                if let summary {
+                    let tokens = summary.tokens
+                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(6)) {
+                        FigureStrip([
+                            Figure("Tokens in \(window.phrase)", value: Format.tokens(tokens.total)),
+                            Figure("Input", value: Format.tokens(tokens.input)),
+                            Figure("Output", value: Format.tokens(tokens.output)),
+                        ])
+                        Disclosure("Cache", isExpanded: $cache) {
+                            FigureStrip([
+                                Figure("Cache reads", value: Format.tokens(tokens.cacheRead), size: PerpetoType.text20),
+                                Figure("Cache reads, share of input", value: Format.percent(Double(tokens.cacheRead) / Double(max(tokens.cacheRead + tokens.input, 1))), size: PerpetoType.text20),
+                            ])
+                        }
+                    }
+                    .card()
+                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(5)) {
+                        SectionTitle("Tokens over \(window.phrase)", detail: "Input and output")
+                        if tokens.series.isEmpty {
+                            Text("No tokens reported in this window.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted)
+                        } else {
+                            TrendBars(tokens.series.map { Double($0.total) }, start: startLabel, unit: "tokens").frame(height: 180)
+                        }
+                    }
+                    .card()
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: PerpetoGap.cards, alignment: .top), count: compact ? 1 : 3),
+                              alignment: .leading, spacing: PerpetoGap.cards) {
+                        TokenBreakdown(title: "By provider", groups: tokens.byProvider, name: Format.provider)
+                        TokenBreakdown(title: "By model", groups: tokens.byModel, name: Format.model)
+                        TokenBreakdown(title: "By machine", groups: tokens.byMachine, mono: true) { id in
+                            store.factory.sessions?.machines.first { $0.machineId == id }?.name ?? store.machine(id)?.name ?? id
+                        }
+                    }
+                } else {
+                    EmptyState(store.factory.sessions == nil ? "This hub doesn’t observe sessions yet" : "No usage reported",
+                               message: "Tokens appear once a machine’s node reports T3 Code sessions.", systemImage: FactorySection.usage.systemImage)
+                        .card()
+                }
+            }
+            .screenPadding()
+        }
+    }
+
+    private var startLabel: String {
+        switch window {
+        case .hour: "1 h ago"
+        case .day: "24 h ago"
+        case .week: "7 d ago"
+        }
+    }
+}
+
+/// Input plus output per key, with its share and a quiet meter.
+struct TokenBreakdown: View {
+    var title: String
+    var groups: [TokenGroup]
+    var mono = false
+    var name: (String) -> String
+
+    var body: some View {
+        let total = max(groups.reduce(0) { $0 + $1.total }, 1)
+        VStack(alignment: .leading, spacing: PerpetoSpacing.x(1)) {
+            SectionTitle(title)
+            if groups.isEmpty {
+                Text("Nothing reported.").font(PerpetoFont.body).foregroundStyle(PerpetoColor.muted).padding(.top, PerpetoSpacing.x(3))
+            }
+            RowList(groups.sorted { $0.total > $1.total }) { group in
+                VStack(alignment: .leading, spacing: PerpetoSpacing.x(2)) {
+                    HStack(spacing: PerpetoSpacing.x(2)) {
+                        if mono {
+                            Mono(name(group.key), color: PerpetoColor.ink, size: PerpetoType.text13)
+                        } else {
+                            Text(name(group.key)).font(PerpetoFont.body).foregroundStyle(PerpetoColor.ink).lineLimit(1)
+                        }
+                        Spacer(minLength: PerpetoSpacing.x(2))
+                        Text(Format.tokens(group.total)).font(PerpetoFont.bodyMedium.monospacedDigit()).foregroundStyle(PerpetoColor.ink)
+                        Text(Format.percent(Double(group.total) / Double(total)))
+                            .font(PerpetoFont.caption.monospacedDigit()).foregroundStyle(PerpetoColor.muted)
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                    Meter(Double(group.total) / Double(total))
                 }
             }
         }

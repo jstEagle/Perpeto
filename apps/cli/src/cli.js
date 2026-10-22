@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from './args.js';
-import { initHub } from './config.js';
+import { initHub, observeSettings } from './config.js';
 import { daemon, start, stop, control } from './process.js';
 import { enrollCode, join, owner, request, decide, rotateToken, repin, hubTls } from './api.js';
 import { exposeTailscale } from './tailscale.js';
@@ -15,20 +15,22 @@ hub expose --tailscale [--https-port <port>] [--off]
 hub enroll-code [--url <https-origin>] [--labels <comma-separated>] [--show-code]
 hub tls status|rotate|activate
 hub decide <workItemId> pass|fail [--note <text>]
-node join <join-code> [--name <name>] [--labels <comma-separated>]
-node join <hubUrl> (--code <code> | --code-file <path>) [--name <name>] [--labels <comma-separated>]
+node join <join-code> [--name <name>] [--labels <comma-separated>] [--observe [--t3-dir <dir>] [--no-titles]]
+node join <hubUrl> (--code <code> | --code-file <path>) [--name <name>] [--labels <comma-separated>] [--observe]
 node start|stop|status|drain
 node rotate-token
 node repin <fingerprint | join-code>
 machines
 machines revoke <id>
 service install|uninstall [hub|node] [--dry-run]
+sessions
 doctor
 status
 
 Default directory: ~/.perpeto. Secrets are saved in owner-only files.
 A hub stays on loopback unless --tls gives it HTTPS; hub expose --tailscale is the recommended way to reach it.
 The join command printed by hub enroll-code is a one-time secret that expires; it pins the hub's certificate.
+--observe joins an observe-only node: it watches this Mac's running T3 Code read-only (default ~/.t3/userdata) and runs no agents or CI.
 Service --dry-run prints generated files without writing or loading them.
 The service manager uses hub/node run internally for foreground execution.`;
 export async function main(args, { print = console.log, fetchImpl = fetch } = {}) {
@@ -54,8 +56,9 @@ export async function main(args, { print = console.log, fetchImpl = fetch } = {}
     print(JSON.stringify(await hubTls(dir, positionals[0])));
   } else if (group === 'node' && action === 'join') {
     const joinCode = positionals[0].startsWith('pj1_') ? positionals[0] : undefined;
-    const result = await join(dir, joinCode ? undefined : positionals[0], { joinCode, code: flags.code, codeFile: flags['code-file'], labels, name: flags.name });
-    print(`Joined ${result.hubUrl} as ${result.machineId}${result.fingerprint ? `, pinned to certificate ${result.fingerprint}` : ''}. Run perpeto node start with the same --dir.`);
+    const observe = flags.observe ? observeSettings({ t3Dir: flags['t3-dir'], titles: !flags['no-titles'] }) : undefined;
+    const result = await join(dir, joinCode ? undefined : positionals[0], { joinCode, code: flags.code, codeFile: flags['code-file'], labels, name: flags.name, observe });
+    print(`Joined ${result.hubUrl} as ${result.machineId}${result.fingerprint ? `, pinned to certificate ${result.fingerprint}` : ''}${observe ? ' (observe-only)' : ''}. Run perpeto node start with the same --dir.`);
   } else if (group === 'node' && action === 'repin') {
     const result = await repin(dir, positionals[0]);
     print(`Pinned hub certificate ${result.fingerprint}. Run perpeto node start with the same --dir.`);
@@ -87,6 +90,12 @@ export async function main(args, { print = console.log, fetchImpl = fetch } = {}
     const checks = await doctor(dir);
     for (const check of checks) print(`${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
     return checks.some(check => check.status === 'fail') ? 1 : 0;
+  } else if (group === 'sessions') {
+    const { url, token, pins } = await owner(dir);
+    const summary = await request(url, '/sessions/summary?window=24h', { token, pins, fetchImpl });
+    for (const machine of summary.machines) print(`${machine.name}: ${machine.observing ? 'observing' : machine.online ? 'online, not observing' : 'offline'}; ${machine.running} running, ${machine.waiting} waiting`);
+    const tokens = summary.tokens.byProvider.map(item => `${item.provider} ${item.input + item.output} in+out`).join(', ');
+    print(`Active sessions (24 h): ${summary.totals.sessionsActive}. Tokens (24 h): ${tokens || 'none'}`);
   } else if (group === 'status') {
     const { url, token, pins } = await owner(dir);
     const result = await request(url, '/overview', { token, pins });

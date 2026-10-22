@@ -11,8 +11,24 @@
 #   appearance for a normal run.
 #        scripts/snapshots.sh --pacing [output-dir]
 #   captures Accounts and Pacing in light and dark (default: screenshots/pacing).
+#        scripts/snapshots.sh --observe [output-dir]
+#   captures the observe-only demo (no projects: Home, Sessions, Accounts,
+#   Pacing, Usage, Machines) in light and dark (default: screenshots/observe).
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "${1:-}" = "--observe" ]; then
+  OUT="${2:-$ROOT/screenshots/observe}"
+  "$ROOT/scripts/build-app.sh" debug >/dev/null
+  mkdir -p "$OUT"
+  for MODE in light dark; do
+    "$ROOT/build/Perpeto.app/Contents/MacOS/Perpeto" --snapshots "$OUT" --observe "$MODE-" -perpeto.appearance "$MODE" -perpeto.demo observe &
+    PID=$!
+    ( sleep 90; kill "$PID" 2>/dev/null ) &
+    wait "$PID" || true
+  done
+  ls "$OUT"
+  exit 0
+fi
 if [ "${1:-}" = "--themes" ] || [ "${1:-}" = "--pacing" ]; then
   MODE_FLAG="$1"
   OUT="${2:-$ROOT/screenshots/${MODE_FLAG#--}}"

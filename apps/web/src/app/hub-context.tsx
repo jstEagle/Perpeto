@@ -3,9 +3,10 @@ import type { ReactNode } from 'react';
 import { HttpHub } from '../api/client';
 import type { HubSettings } from '../api/client';
 import { DemoHub } from '../api/demo';
+import type { DemoScenario } from '../api/demo';
 import type { HubApi, StreamState } from '../api/hub';
 import type { HubEvent } from '../api/types';
-import { loadSettings, saveSettings } from '../api/settings';
+import { loadDemoScenario, loadSettings, saveDemoScenario, saveSettings } from '../api/settings';
 
 type Listener = (event: HubEvent) => void;
 
@@ -16,6 +17,9 @@ interface HubContextValue {
   reconnect?: string;
   stream: StreamState;
   connect(settings: HubSettings | null): void;
+  /** Which demo factory shows while no hub is connected. */
+  demo: DemoScenario;
+  setDemo(scenario: DemoScenario): void;
   /** Subscribe to live events. Returns an unsubscribe function. */
   onEvent(listener: Listener): () => void;
 }
@@ -26,7 +30,12 @@ export function HubProvider({ children, initial }: { children: ReactNode; initia
   const [loaded] = useState(() => (initial ? { settings: null } : loadSettings()));
   const [settings, setSettings] = useState<HubSettings | null>(loaded.settings);
   const [reconnect, setReconnect] = useState<string | undefined>(loaded.reconnect);
-  const api = useMemo<HubApi>(() => initial ?? (settings ? new HttpHub(settings) : new DemoHub()), [settings, initial]);
+  const [demo, setDemoState] = useState<DemoScenario>(() => loadDemoScenario());
+  const api = useMemo<HubApi>(() => initial ?? (settings ? new HttpHub(settings) : new DemoHub(Date.now(), demo)), [settings, initial, demo]);
+  const setDemo = useCallback((scenario: DemoScenario) => {
+    saveDemoScenario(scenario);
+    setDemoState(scenario);
+  }, []);
 
   // A cookie session can expire while nothing is stored here; check it once.
   useEffect(() => {
@@ -82,7 +91,7 @@ export function HubProvider({ children, initial }: { children: ReactNode; initia
     };
   }, []);
 
-  const value = useMemo(() => ({ api, settings, reconnect, stream, connect, onEvent }), [api, settings, reconnect, stream, connect, onEvent]);
+  const value = useMemo(() => ({ api, settings, reconnect, stream, connect, onEvent, demo, setDemo }), [api, settings, reconnect, stream, connect, onEvent, demo, setDemo]);
   return <HubContext.Provider value={value}>{children}</HubContext.Provider>;
 }
 

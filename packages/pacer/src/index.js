@@ -477,3 +477,54 @@ export function learnBurnRates(previous, sample, { alpha = 0.3, minAgentHours = 
   }
   return { anchors, rates };
 }
+
+/**
+ * Advice for an account the factory does not control, such as an operator's own T3 subscription observed read-only.
+ * Assuming the agents running now keep burning at the measured rate (learned per window, else the provider prior), it
+ * projects where each window lands at its reset, how many more agents would still land on target, and how long the
+ * account is forecast to sit idle with headroom over the planning horizon. Nothing here is enforced.
+ *
+ * @param {{ now: string|number, settings?: object, account: { provider: string, usage?: { windows: Array<{ id: string, kind: string, label?: string,
+ *   usedPercent: number, resetsAt?: string, windowMins?: number }> } }, running?: number, rates?: Record<string, number> }} input
+ */
+export function advise({ now, settings: overrides = {}, account, running = 0, rates = {} }) {
+  const settings = pacingSettings(overrides); const time = timeOf(now); const target = limit(settings.targetUsePercent);
+  const agents = Number.isSafeInteger(running) && running > 0 ? running : 0;
+  const windows = (Array.isArray(account?.usage?.windows) ? account.usage.windows : [])
+    .filter(window => window && typeof window.id === 'string' && finite(window.usedPercent))
+    .map(window => {
+      const kind = WINDOW_KINDS.includes(window.kind) ? window.kind : 'other';
+      const len = (Number.isSafeInteger(window.windowMins) && window.windowMins > 0 ? window.windowMins : DEFAULT_WINDOW_MINS[kind]) * MINUTE;
+      const reset = window.resetsAt ? Date.parse(window.resetsAt) : NaN;
+      let used = clamp(window.usedPercent, 0, 100); let resetMs = null;
+      if (finite(reset) && reset > time) resetMs = reset;
+      // The window reset since T3 last measured it: it starts again from zero, and its next reset is a whole window on.
+      else if (finite(reset)) { used = 0; resetMs = reset + Math.ceil((time - reset + 1) / len) * len; }
+      const learned = positive(rates[window.id]);
+      const rate = learned ?? prior(settings, account.provider, kind);
+      const hours = resetMs === null ? null : (resetMs - time) / HOUR;
+      const burn = agents * rate;
+      const projected = hours === null ? used : clamp(used + burn * hours, 0, 100);
+      const capacity = used >= target ? 0 : hours ? (target - used) / (rate * hours) : Infinity;
+      const exhaustsAt = burn > 0 && hours !== null && used + burn * hours > 100 ? iso(time + (100 - used) / burn * HOUR) : undefined;
+      return { id: window.id, kind, label: typeof window.label === 'string' && window.label ? window.label : window.id, usedPercent: round1(used),
+        ...(resetMs !== null ? { resetsAt: iso(resetMs) } : {}), projectedPercentAtReset: round1(projected), onTrack: onTrack(projected, target),
+        burnPerAgentHour: round1(rate), learned: learned !== undefined, ...(exhaustsAt ? { exhaustsAt } : {}), capacity, resetMs, used };
+    });
+  const blocking = windows.filter(window => window.used >= target);
+  const sustainable = windows.length ? Math.min(...windows.map(window => window.capacity)) : Infinity;
+  let idleForecastMins = 0;
+  if (!agents) {
+    const horizon = settings.horizonMins;
+    if (!blocking.length) idleForecastMins = horizon;
+    else if (blocking.every(window => window.resetMs !== null)) idleForecastMins = Math.max(0, Math.round(horizon - (Math.max(...blocking.map(window => window.resetMs)) - time) / MINUTE));
+  }
+  const session = windows.find(window => window.kind === 'session' && window.learned);
+  return {
+    state: !windows.length ? 'unknown' : agents ? 'burning' : blocking.length ? 'exhausted' : 'resting',
+    runningAgents: agents, idleForecastMins,
+    ...(finite(sustainable) ? { sustainableAgents: round1(sustainable), headroomAgents: Math.max(0, Math.floor(sustainable + EPS) - agents) } : {}),
+    ...(session ? { burnPerAgentHour: session.burnPerAgentHour } : {}),
+    windows: windows.map(({ capacity, resetMs, used, ...window }) => window),
+  };
+}

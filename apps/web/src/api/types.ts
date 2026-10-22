@@ -359,6 +359,11 @@ export interface Account {
   plan?: string;
   /** Limit windows the harness last reported for this login. */
   usage?: AccountUsage;
+  /**
+   * Where the hub learned of it: `observed` for a subscription seen in the
+   * operator's own T3 Code app (read-only), else the machine's account pool.
+   */
+  source?: string;
 }
 
 /** Kinds of subscription limit. Anything else a hub sends decodes as `other`. */
@@ -429,6 +434,8 @@ export interface PacingAccount {
   windows: PacingWindow[];
   /** Minutes this subscription is forecast to sit unused before its reset. */
   idleForecastMins: number;
+  /** Advise mode: about how many more agents it could run and still land at the target by its reset. */
+  headroomAgents?: number;
 }
 
 export interface PacingSegment {
@@ -438,7 +445,15 @@ export interface PacingSegment {
   phase: 'burn' | 'rest';
 }
 
+/**
+ * `enforce`: the hub scales the agents it runs. `advise`: it only observes
+ * and suggests; nothing is enforced. A hub without the field enforces; any
+ * other value is treated as advice, so no control claims an effect it lacks.
+ */
+export type PacingMode = 'enforce' | 'advise';
+
 export interface Pacing {
+  mode: PacingMode;
   enabled: boolean;
   strategy: PacingStrategy;
   targetUsePercent: number;
@@ -726,4 +741,86 @@ export interface InteractionData {
   result?: string;
   unplanned?: boolean;
   summary?: string;
+}
+
+/*
+ * Observed T3 Code sessions: GET /sessions and GET /sessions/summary. Each
+ * machine's node watches the operator's own T3 Code app read-only and the
+ * hub aggregates. Unknown statuses decode as `unknown`.
+ */
+export type SessionStatus = 'running' | 'waiting' | 'idle' | 'error' | 'unknown';
+
+export interface SessionTokens {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+}
+
+export interface Session {
+  id: Id;
+  machineId: Id;
+  machineName: string;
+  threadId: string;
+  title?: string;
+  project?: { name: string; path?: string };
+  branch?: string;
+  provider: string;
+  providerInstanceId?: string;
+  model?: string;
+  status: SessionStatus;
+  parentThreadId?: string;
+  childCount: number;
+  createdAt: IsoTime;
+  lastActivityAt: IsoTime;
+  turns: number;
+  tokens: SessionTokens;
+}
+
+export interface SessionQuery {
+  machineId?: string;
+  status?: Exclude<SessionStatus, 'unknown'>;
+  provider?: string;
+  since?: IsoTime;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface SessionPage {
+  sessions: Session[];
+  nextCursor?: string;
+}
+
+export type SessionsWindow = '1h' | '24h' | '7d';
+
+export interface ObservedMachine {
+  machineId: Id;
+  name: string;
+  online: boolean;
+  observing: boolean;
+  lastObservedAt?: IsoTime;
+  running: number;
+  waiting: number;
+  idle: number;
+}
+
+export interface TokenGroup {
+  key: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface SessionsSummary {
+  window: SessionsWindow;
+  machines: ObservedMachine[];
+  totals: { running: number; waiting: number; sessionsActive: number };
+  tokens: {
+    byProvider: TokenGroup[];
+    byModel: TokenGroup[];
+    byMachine: TokenGroup[];
+    series: { at: IsoTime; input: number; output: number }[];
+  };
 }

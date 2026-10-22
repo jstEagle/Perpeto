@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activeNav, FACTORY_NAV_ENTRIES, projectNavEntries } from './nav';
+import { activeNav, FACTORY_NAV_ENTRIES, HOME_NAV_ENTRY, projectNavEntries } from './nav';
 
 const entries = [...projectNavEntries('prj_1'), ...FACTORY_NAV_ENTRIES];
 /** Items that would show as current for a path: must be one for every page in a section. */
@@ -17,12 +17,23 @@ describe('sidebar', () => {
     ['/projects/prj_1/work', 'work'],
     ['/projects/prj_1/messages', 'messages'],
     ['/projects/prj_1/merge-queue', 'merge'],
+    ['/sessions', 'sessions'],
     ['/machines', 'machines'],
     ['/accounts', 'accounts'],
     ['/pacing', 'pacing'],
     ['/usage', 'usage'],
   ])('marks exactly one item current on %s', (path, key) => {
     expect(current(path)).toEqual([key]);
+  });
+
+  it('marks Home current on / in observe-only mode', () => {
+    const observe = [HOME_NAV_ENTRY, ...FACTORY_NAV_ENTRIES];
+    expect(observe.filter((e) => e.key === activeNav('/')).map((e) => e.key)).toEqual(['home']);
+    expect(observe.filter((e) => e.key === activeNav('/sessions')).map((e) => e.key)).toEqual(['sessions']);
+  });
+
+  it('puts Sessions first under Factory', () => {
+    expect(FACTORY_NAV_ENTRIES[0].key).toBe('sessions');
   });
 
   it.each(['/', '/settings', '/nowhere', '/projects/prj_1/unknown'])('marks nothing current on %s', (path) => {

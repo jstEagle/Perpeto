@@ -72,10 +72,12 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   let cleanupTask;
   let runtimeAttempted = false;
   let integrationsReady = false;
+  let observer;
+  let observationTask;
   const runtime = runtimeSupervisor ?? createRuntimeSupervisor(config.runtime, { configRoot: config.configRoot });
   const status = () => ({ machineId, state: stopped ? 'stopped' : fatalError ? 'error' : draining ? 'draining' : started ? 'running' : 'idle',
     running: { agents: [...active.values()].filter(item => item.kind === 'assignment').length,
-      jobs: [...active.values()].filter(item => item.kind === 'job').length } });
+      jobs: [...active.values()].filter(item => item.kind === 'job').length }, ...(observer ? { observe: observer.status } : {}) });
   const notify = () => { try { onStatus(status()); } catch { /* Observers cannot affect lease ownership. */ } };
   const fatal = error => {
     fatalError = new Error(error instanceof HubError ? error.message : 'Node background service failed.');
@@ -490,6 +492,42 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       }
     }
   }
+  /**
+   * Observe-only reporting: the read-only T3 observer's batches go to the hub, and each is acknowledged only after the
+   * hub accepted it, so nothing is lost while the hub is unreachable. The batch id is the idempotency key.
+   */
+  async function startObserver() {
+    const { createT3Observer } = await import('@perpeto/t3-observer');
+    let last = '';
+    observer = createT3Observer({ ...config.observe, dataDir: config.dataDir, log(event) {
+      // Connection changes only, never payloads or credentials; the daemon launcher captures stderr in node.log.
+      const line = JSON.stringify(event);
+      if (line !== last) { last = line; try { console.error(line); } catch { /* Logging cannot stop observation. */ } }
+    } }).start();
+    observationTask = observationLoop();
+  }
+  async function observationLoop() {
+    while (!service.signal.aborted) {
+      try {
+        await sleep(config.observe.pollMs, service.signal);
+        for (let round = 0; round < 10; round++) {
+          const batch = observer.collect();
+          if (!batch) break;
+          try { await hub.retry('/nodes/observations', batch, { signal: service.signal, key: batch.batchId }); }
+          catch (error) {
+            // A batch the hub refuses as invalid is dropped rather than resent forever; the next change resends its sessions.
+            if (!(error instanceof HubError) || error.retryable || error.status === 401) throw error;
+            try { console.error(JSON.stringify({ event: 'observer.batch-refused', status: error.status, code: error.code })); } catch { /* Continue. */ }
+          }
+          observer.acknowledge(batch);
+        }
+      } catch (error) {
+        if (service.signal.aborted) return;
+        if (error instanceof HubError && error.status === 401) return;
+        await sleep(jitter(config.timing.backoffMaxMs), service.signal).catch(() => {});
+      }
+    }
+  }
   function drain() {
     if (draining) return;
     draining = true; polling.abort(); notify();
@@ -498,7 +536,8 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   function cleanup() {
     cleanupTask ??= (async () => {
       service.abort(); polling.abort();
-      await Promise.allSettled([heartbeatTask, rotationLoopTask, rotationTask, ...pollTasks]);
+      await Promise.allSettled([heartbeatTask, rotationLoopTask, rotationTask, observationTask, ...pollTasks]);
+      await observer?.stop().catch(() => {});
       try { if (integrationsReady) { await registry?.close?.(); await accountProvider?.close?.(); } }
       finally {
         try { if (runtimeAttempted) await runtime.stop(); }
@@ -559,6 +598,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         if (config.tokenRotationMs) rotationLoopTask = rotationLoop();
         pollTasks = ['assignment', 'job'].filter(kind => kind === 'job' ? config.capacity.maxJobs : config.capacity.maxAgents)
           .map(kind => pollLoop(kind));
+        if (config.observe?.enabled) await startObserver();
         notify();
         return this;
       } catch (error) { await cleanup(); throw error; }

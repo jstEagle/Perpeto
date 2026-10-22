@@ -34,6 +34,10 @@ import type {
   Workflow,
   WorkflowGraph,
   WorkflowStatus,
+  SessionPage,
+  SessionQuery,
+  SessionsSummary,
+  SessionsWindow,
 } from './types';
 
 export interface EventQuery {
@@ -134,6 +138,11 @@ export interface HubApi {
   /** Subscription pacing; `null` when the hub has no pacing route yet. */
   pacing(): Promise<Pacing | null>;
   updatePacing(settings: PacingSettings): Promise<Pacing>;
+
+  /** Observed T3 Code sessions across machines; `null` when the hub doesn't observe sessions. */
+  listSessions(query?: SessionQuery): Promise<SessionPage | null>;
+  /** Machines, totals and tokens for observed sessions over a window; `null` without the route. */
+  sessionsSummary(window: SessionsWindow): Promise<SessionsSummary | null>;
 
   listJobs(query?: { projectId?: string; runId?: string }): Promise<Job[]>;
   getJob(id: string): Promise<Job>;

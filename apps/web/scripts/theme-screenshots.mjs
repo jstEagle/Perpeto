@@ -3,15 +3,25 @@
 // Usage: node scripts/theme-screenshots.mjs [baseUrl]
 // Writes apps/web/screenshots/themes/{light,dark}-<screen>.png, or to OUT
 // (relative to apps/web). ONLY=accounts,pacing limits the screens.
+// DEMO=observe uses the observe-only demo (no projects) and captures Home,
+// Sessions, Accounts, Pacing and Usage into screenshots/observe/.
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 
 const base = process.argv[2] ?? 'http://localhost:5180';
-const out = new URL(process.env.OUT ? `../${process.env.OUT.replace(/\/?$/, '/')}` : '../screenshots/themes/', import.meta.url).pathname;
+const observe = process.env.DEMO === 'observe';
+const out = new URL(process.env.OUT ? `../${process.env.OUT.replace(/\/?$/, '/')}` : observe ? '../screenshots/observe/' : '../screenshots/themes/', import.meta.url).pathname;
 await mkdir(out, { recursive: true });
 
 const P = '/projects/prj_perpeto';
-const screens = [
+const observeScreens = [
+  ['home', '/'],
+  ['sessions', '/sessions'],
+  ['accounts', '/accounts'],
+  ['pacing', '/pacing'],
+  ['usage', '/usage'],
+];
+const fullScreens = [
   ['overview', P],
   ['workflows', `${P}/workflows`],
   ['workflow', `${P}/workflows/wf_k3build?version=3`],
@@ -25,6 +35,7 @@ const screens = [
   ['usage', '/usage'],
   ['settings', '/settings'],
 ];
+const screens = observe ? observeScreens : fullScreens;
 const only = process.env.ONLY?.split(',');
 
 const browser = await chromium.launch();
@@ -37,7 +48,13 @@ for (const theme of ['light', 'dark']) {
     reducedMotion: 'reduce',
     colorScheme: theme === 'dark' ? 'light' : 'dark',
   });
-  await context.addInitScript((t) => localStorage.setItem('perpeto.appearance', t), theme);
+  await context.addInitScript(
+    ([t, demo]) => {
+      localStorage.setItem('perpeto.appearance', t);
+      localStorage.setItem('perpeto.demo', demo);
+    },
+    [theme, observe ? 'observe' : 'full'],
+  );
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(`${theme} ${page.url()}: ${e.message}`));
   for (const [name, path] of screens) {

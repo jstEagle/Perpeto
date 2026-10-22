@@ -61,11 +61,12 @@ Errors are `{ "error": { "code": "INVALID_INPUT", "message": "..." } }`. Lease r
 | Pacing | `GET /pacing`, `PUT /pacing/settings` `{ enabled?, strategy?, targetUsePercent?, minAgents?, maxAgents? }` |
 | Jobs | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` |
 | Delivery | `GET /projects/:id/merge-queue` |
-| Usage | `GET /usage?groupBy=provider|model|machine|day` |
+| Usage | `GET /usage?groupBy=provider|model|machine|day|role|source`, optionally `&source=observed|factory` |
+| Sessions | `GET /sessions?machineId&status&provider&since&limit&cursor`, `GET /sessions/summary?window=1h|24h|7d` (observe-only, [guide](../../docs/guides/observe.md)) |
 | Overview | `GET /overview`, optionally `?projectId=...` |
 | Events | `GET /events?after=0&limit=100`, `?latest=true` or `?before=<seq>`, each optionally `&runId=`; or SSE with `Accept: text/event-stream` (also `runId`) |
 | Session | `GET`, `POST`, `DELETE /session` (owner session cookie, below) |
-| Nodes | `POST /nodes/enroll`, `/nodes/heartbeat`, `/nodes/lease`, `/nodes/token` |
+| Nodes | `POST /nodes/enroll`, `/nodes/heartbeat`, `/nodes/lease`, `/nodes/token`, `/nodes/observations` |
 | Lease reports | `POST /assignments/:id/renew`, `/events`, `/release`, and the corresponding `/jobs/:id/...` |
 
 List responses use `{projects}`, `{workflows}`, `{runs}`, `{versions}`, `{machines}`, `{accounts}`, `{jobs}`, `{workItems}`, `{assignments}` or `{entries}`. Single entities are returned directly. Draft requests return the architect Assignment with HTTP 202. Follow it using `GET /assignments/:id`; invalid attempts expose `retryAssignmentId` and `architectErrors`, and a valid result exposes `draftWorkflowId` and `draftVersion`. There are at most three architect validation attempts, independent of lease requeue attempts. Architect assignments belong to a project before there is a run, so they omit `runId`/`workItemId`.

@@ -205,3 +205,25 @@ export const IconCopy = icon(
 );
 export const IconExternal = icon(<path d="M13.5 5h5.5v5.5M19 5l-8 8M17 13.5V18a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h4.5" />);
 export const IconSparkPrompt = icon(<path d="M5 18.5v-12A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6a2.5 2.5 0 0 1-2.5 2.5H9.2L5 18.5zM9 8.5h6M9 11.5h4" />);
+/** A terminal window with a prompt: an agent session. */
+export const IconSessions = icon(
+  <>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+    <path d="M7.5 10l2.5 2.2-2.5 2.2M12.5 15h4" />
+  </>,
+);
+export const IconHome = icon(
+  <>
+    <path d="M4.5 10.6L12 4.5l7.5 6.1V18a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 18z" />
+    <path d="M9.8 19.5v-5h4.4v5" />
+  </>,
+);
+/** A branch from a parent: subagents. */
+export const IconSubagents = icon(
+  <>
+    <circle cx="7" cy="6" r="2" />
+    <circle cx="17" cy="12" r="2" />
+    <circle cx="17" cy="18.5" r="2" />
+    <path d="M7 8v6.5a4 4 0 0 0 4 4h4M7 10a2 2 0 0 0 2 2h6" />
+  </>,
+);

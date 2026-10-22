@@ -59,7 +59,7 @@ export async function enrollCode(dir, labels = [], { url: joinUrl } = {}) {
   await writeNew(path, JSON.stringify({ code: result.code, labels, expiresAt: result.expiresAt }));
   return { ...result, path };
 }
-export async function join(dir, url, { code, codeFile, joinCode, labels, name, platformName = platform(), fetchImpl = fetch } = {}) {
+export async function join(dir, url, { code, codeFile, joinCode, labels, name, observe, platformName = platform(), fetchImpl = fetch } = {}) {
   let fingerprint;
   if (joinCode) ({ url, code, fingerprint } = decodeJoinCode(joinCode));
   await privateDir(dir); url = hubUrl(url);
@@ -76,7 +76,7 @@ export async function join(dir, url, { code, codeFile, joinCode, labels, name, p
   try {
     let pending;
     try { pending = JSON.parse(await readSecret(pendingPath)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const config = pending?.config ?? nodeConfig(dir, url, { labels, name, fingerprint });
+    const config = pending?.config ?? nodeConfig(dir, url, { labels, name, fingerprint, observe });
     if (pending && (pending.body.code !== code || config.hubUrl !== url ||
       (name !== undefined && name !== config.name) || (labels !== undefined && JSON.stringify(labels) !== JSON.stringify(config.labels)))) throw new Error('A different enrollment is pending. Retry its original command.');
     if (!pending) {

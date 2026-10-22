@@ -128,6 +128,18 @@ public struct Pacing: Codable, Hashable, Sendable {
         public static var unknownCase: Self { .unknown }
     }
 
+    /// `enforce`: the hub scales agents. `advise`: Perpeto only observes and
+    /// the numbers are suggestions. Absent means enforce (hubs before
+    /// observe-only mode); an unknown value is treated as advice, so no
+    /// controls are offered for something the hub may not do.
+    public enum Mode: String, LenientEnum {
+        case enforce, advise, unknown
+        public static var unknownCase: Self { .unknown }
+    }
+
+    public var mode: Mode = .enforce
+    /// True when nothing is enforced: show advice, hide the settings.
+    public var isAdvisory: Bool { mode != .enforce }
     public var enabled: Bool
     public var strategy: Strategy
     public var targetUsePercent: Int
@@ -139,8 +151,9 @@ public struct Pacing: Codable, Hashable, Sendable {
     public var accounts: [PacingAccount]
     public var timeline: [PacingSegment]
 
-    public init(enabled: Bool, strategy: Strategy, targetUsePercent: Int, minAgents: Int? = nil, maxAgents: Int? = nil, updatedAt: Date? = nil,
+    public init(mode: Mode = .enforce, enabled: Bool, strategy: Strategy, targetUsePercent: Int, minAgents: Int? = nil, maxAgents: Int? = nil, updatedAt: Date? = nil,
                 providers: [PacingProvider], accounts: [PacingAccount], timeline: [PacingSegment]) {
+        self.mode = mode
         self.enabled = enabled
         self.strategy = strategy
         self.targetUsePercent = targetUsePercent
@@ -152,12 +165,13 @@ public struct Pacing: Codable, Hashable, Sendable {
         self.timeline = timeline
     }
 
-    enum CodingKeys: String, CodingKey { case enabled, strategy, targetUsePercent, minAgents, maxAgents, updatedAt, providers, accounts, timeline, pacing }
+    enum CodingKeys: String, CodingKey { case mode, enabled, strategy, targetUsePercent, minAgents, maxAgents, updatedAt, providers, accounts, timeline, pacing }
 
     /// Accepts the bare object or a `{ "pacing": … }` envelope.
     public init(from decoder: Decoder) throws {
         let outer = try decoder.container(keyedBy: CodingKeys.self)
         let c = outer.contains(.pacing) ? try outer.nestedContainer(keyedBy: CodingKeys.self, forKey: .pacing) : outer
+        mode = c.lenientString(.mode).map { Mode(rawValue: $0) ?? .unknown } ?? .enforce
         enabled = ((try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? nil) ?? false
         strategy = ((try? c.decodeIfPresent(Strategy.self, forKey: .strategy)) ?? nil) ?? .unknown
         targetUsePercent = c.lenientNumber(.targetUsePercent).map { min(100, max(1, Int($0.rounded()))) } ?? 95
@@ -171,6 +185,7 @@ public struct Pacing: Codable, Hashable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(mode, forKey: .mode)
         try c.encode(enabled, forKey: .enabled)
         try c.encode(strategy, forKey: .strategy)
         try c.encode(targetUsePercent, forKey: .targetUsePercent)
@@ -287,10 +302,14 @@ public struct PacingAccount: Codable, Hashable, Sendable, Identifiable {
     public var windows: [PacingWindow]
     /// Minutes this subscription is forecast to sit unused before its reset.
     public var idleForecastMins: Double
+    /// Advice mode: about how many more agents could run and still land at
+    /// the target by the reset. Nil when the hub does not say.
+    public var headroomAgents: Int?
     public var id: String { accountId }
 
     public init(accountId: String, machineId: String, provider: String, label: String, plan: String? = nil, state: State, targetAgents: Int, runningAgents: Int,
-                burnPerAgentHour: Double? = nil, windows: [PacingWindow], idleForecastMins: Double = 0) {
+                burnPerAgentHour: Double? = nil, windows: [PacingWindow], idleForecastMins: Double = 0, headroomAgents: Int? = nil) {
+        self.headroomAgents = headroomAgents
         self.accountId = accountId
         self.machineId = machineId
         self.provider = provider
@@ -304,7 +323,7 @@ public struct PacingAccount: Codable, Hashable, Sendable, Identifiable {
         self.idleForecastMins = idleForecastMins
     }
 
-    enum CodingKeys: String, CodingKey { case accountId, id, machineId, provider, label, plan, state, targetAgents, runningAgents, burnPerAgentHour, windows, idleForecastMins }
+    enum CodingKeys: String, CodingKey { case accountId, id, machineId, provider, label, plan, state, targetAgents, runningAgents, burnPerAgentHour, windows, idleForecastMins, headroomAgents }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -322,6 +341,7 @@ public struct PacingAccount: Codable, Hashable, Sendable, Identifiable {
         burnPerAgentHour = c.lenientNumber(.burnPerAgentHour)
         windows = c.lossy(PacingWindow.self, .windows)
         idleForecastMins = max(0, c.lenientNumber(.idleForecastMins) ?? 0)
+        headroomAgents = c.lenientNumber(.headroomAgents).map { _ in c.lenientCount(.headroomAgents) }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -337,6 +357,7 @@ public struct PacingAccount: Codable, Hashable, Sendable, Identifiable {
         try c.encodeIfPresent(burnPerAgentHour, forKey: .burnPerAgentHour)
         try c.encode(windows, forKey: .windows)
         try c.encode(idleForecastMins, forKey: .idleForecastMins)
+        try c.encodeIfPresent(headroomAgents, forKey: .headroomAgents)
     }
 }
 
