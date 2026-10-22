@@ -15,6 +15,7 @@ public struct HubConnectionView: View {
     }
 
     @State private var url = ""
+    @State private var fingerprint = ""
     @State private var token = ""
     @State private var hasToken = false
     @State private var status: (String, StatusTone)?
@@ -63,6 +64,22 @@ public struct HubConnectionView: View {
                 Text("HTTPS is required except for localhost.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
             }
             VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
+                Text("Certificate fingerprint").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.ink)
+                TextField("Certificate fingerprint", text: $fingerprint, prompt: Text("Optional. SHA-256 of the hub's certificate").foregroundStyle(PerpetoColor.muted))
+                    .font(PerpetoFont.mono(PerpetoType.text14)).perpetoField()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    #endif
+                Group {
+                    if showsFingerprintHint {
+                        Text("Self-signed hub? Run \(Text(verbatim: "perpeto hub tls status").font(PerpetoFont.mono(PerpetoType.text12))) on the hub and paste its fingerprint.")
+                    } else {
+                        Text("With a fingerprint, the app trusts only that certificate. Without one, the system checks it.")
+                    }
+                }
+                .font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: PerpetoSpacing.x(1.5)) {
                 Text("Owner token").font(PerpetoFont.captionMedium).foregroundStyle(PerpetoColor.ink)
                 SecureField(hasToken ? "Saved in Keychain. Enter a new token to replace it." : "Paste the owner token", text: $token).perpetoField()
                 Text("Stored in \(keychain). It is never written to preferences or logs.").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
@@ -88,6 +105,7 @@ public struct HubConnectionView: View {
         .card()
         .onAppear {
             url = settings.hubURLString
+            fingerprint = settings.fingerprint
             hasToken = settings.tokens.read() != nil
         }
     }
@@ -118,10 +136,14 @@ public struct HubConnectionView: View {
             .disabled(url.isEmpty || (!hasToken && token.isEmpty) || working)
     }
 
+    private var showsFingerprintHint: Bool {
+        url.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("https://") && fingerprint.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     private func client() throws -> HubClient {
         guard let parsed = URL(string: url.trimmingCharacters(in: .whitespaces)) else { throw HubError.invalidURL }
         let secret = token.isEmpty ? (settings.tokens.read() ?? "") : token
-        return try HubClient(baseURL: parsed, token: secret)
+        return try settings.client(url: parsed, token: secret, fingerprint: fingerprint)
     }
 
     private func test() async {
@@ -143,6 +165,8 @@ public struct HubConnectionView: View {
         do {
             let client = try client()
             settings.setHubURL(url)
+            try settings.setFingerprint(fingerprint)
+            fingerprint = settings.fingerprint
             if !token.isEmpty {
                 guard settings.tokens.write(token) else {
                     status = ("Saving the token to Keychain failed. Nothing was changed.", .error)

@@ -80,6 +80,17 @@ Decoding is tolerant (`Models/Sessions.swift`): only ids are required, numbers m
 
 Open Settings (⌘,) on the Mac, or Settings in the sidebar footer or the More tab on iPhone and iPad, and enter the hub address and owner token. The address is stored in UserDefaults under `perpeto.hubURL`. The token is stored only in the Keychain (service `app.perpeto.hub`) and is sent only in the `Authorization` header. HTTPS is required except for localhost. Without both values the app shows demo data, marked in the sidebar footer and window subtitle.
 
+A hub that serves HTTPS with its own self-signed certificate (`tlsEnabled`, see [apps/hub/README.md](../hub/README.md)) needs its **certificate fingerprint**: the SHA-256 that `perpeto hub init --tls` and `perpeto hub tls status` print (64 hex characters; colons, spaces, upper case and openssl's `sha256 Fingerprint=` form are accepted and normalised). Settings shows that command when the address is https and the field is empty. The fingerprint is not secret and is stored in UserDefaults under `perpeto.hubFingerprint`. Join codes (`pj1_`) are not accepted, because they carry an enrollment secret.
+
+With a fingerprint, REST requests and the event stream run on their own ephemeral URLSession and trust exactly the certificate whose DER hashes to the pin, the same rule as a machine's node (`Hub/CertificatePinning.swift`); anything else fails with "The hub's certificate doesn't match the pinned fingerprint". Without one, the system validates the certificate as usual, and a self-signed hub fails with a hint to add the fingerprint. During a rotation (`perpeto hub tls rotate`), the app reads `GET /tls` over the pinned connection on each factory refresh, accepts the announced `next` certificate (stored under `perpeto.hubFingerprintNext`) and moves the pin to it once the hub serves it; a served certificate it doesn't already trust never changes the pin. Changing the fingerprint by hand drops a learned `next`.
+
+To check pinning against a throwaway TLS hub (`tlsEnabled: true`):
+
+```sh
+PERPETO_TLS_HUB_URL=https://127.0.0.1:4399 PERPETO_TLS_HUB_FINGERPRINT=<fingerprint> PERPETO_TLS_HUB_TOKEN_FILE=<dir>/owner.secret \
+  swift test --package-path apps/apple --filter LivePinnedHubTests   # add PERPETO_TLS_HUB_ALLOW_ROTATE=1 to also rotate the certificate
+```
+
 ## Keyboard shortcuts
 
 | Keys | Action |

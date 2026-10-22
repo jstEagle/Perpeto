@@ -29,6 +29,9 @@ public struct HubDataSource: FactoryDataSource {
         // Hubs without pacing, or a failing pacing route, leave the rest of the factory readable.
         async let pacing = (try? client.pacing()) ?? nil
         async let sessions = loadSessions()
+        // A pinned client follows a certificate rotation the hub announces; a no-op otherwise.
+        async let rotation: Void = client.followCertificateRotation()
+        _ = await rotation
         return try await FactoryState(projects: projects, machines: machines, accounts: accounts, jobs: jobs, overview: overview, usage: usage, pacing: pacing,
                                       sessions: sessions)
     }

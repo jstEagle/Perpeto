@@ -53,6 +53,10 @@ public struct KeychainTokenStore: Sendable {
 /// Non-secret connection settings in UserDefaults.
 public struct HubSettings: Sendable {
     public static let hubURLKey = "perpeto.hubURL"
+    /// SHA-256 fingerprint of a self-signed hub certificate, normalised. Not secret.
+    public static let fingerprintKey = "perpeto.hubFingerprint"
+    /// The next certificate the pinned hub announced during a rotation.
+    public static let nextFingerprintKey = "perpeto.hubFingerprintNext"
 
     private let defaultsSuite: String?
     public let tokens: KeychainTokenStore
@@ -76,10 +80,46 @@ public struct HubSettings: Sendable {
         if trimmed.isEmpty { defaults.removeObject(forKey: Self.hubURLKey) } else { defaults.set(trimmed, forKey: Self.hubURLKey) }
     }
 
+    /// The pinned certificate fingerprint, or "" for system validation.
+    public var fingerprint: String { defaults.string(forKey: Self.fingerprintKey) ?? "" }
+    public var nextFingerprint: String? { defaults.string(forKey: Self.nextFingerprintKey) }
+
+    /// Stores the fingerprint normalised (empty removes the pin). A changed
+    /// pin drops any learned rotation. Throws for anything that isn't a
+    /// SHA-256 fingerprint, leaving the stored value unchanged.
+    public func setFingerprint(_ value: String) throws {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            defaults.removeObject(forKey: Self.fingerprintKey)
+            defaults.removeObject(forKey: Self.nextFingerprintKey)
+            return
+        }
+        guard let pin = CertificateFingerprint.normalize(trimmed) else { throw HubError.invalidFingerprint }
+        if pin != fingerprint { defaults.removeObject(forKey: Self.nextFingerprintKey) }
+        defaults.set(pin, forKey: Self.fingerprintKey)
+    }
+
+    /// Persists a rotation learned over the pinned connection.
+    public func storePins(pin: String, next: String?) {
+        defaults.set(pin, forKey: Self.fingerprintKey)
+        if let next { defaults.set(next, forKey: Self.nextFingerprintKey) } else { defaults.removeObject(forKey: Self.nextFingerprintKey) }
+    }
+
+    /// A client for `url` and `token`, pinned to `fingerprint` when one is
+    /// given. The learned next fingerprint applies only to the stored pin.
+    public func client(url: URL, token: String, fingerprint: String) throws -> HubClient {
+        let normalized = CertificateFingerprint.normalize(fingerprint)
+        let next = normalized != nil && normalized == CertificateFingerprint.normalize(self.fingerprint) ? nextFingerprint : nil
+        let suite = defaultsSuite
+        return try HubClient(baseURL: url, token: token, fingerprint: fingerprint, next: next) { pin, next in
+            HubSettings(defaultsSuite: suite).storePins(pin: pin, next: next)
+        }
+    }
+
     /// A client when both a URL and a token are present; otherwise nil (demo data).
     public func makeClient() throws -> HubClient? {
         guard let url = hubURL else { return nil }
         guard let token = tokens.read(), !token.isEmpty else { return nil }
-        return try HubClient(baseURL: url, token: token)
+        return try client(url: url, token: token, fingerprint: fingerprint)
     }
 }

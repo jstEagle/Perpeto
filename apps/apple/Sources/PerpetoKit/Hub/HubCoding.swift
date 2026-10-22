@@ -40,6 +40,10 @@ public enum HubError: Error, Equatable, Sendable, LocalizedError {
     case conflict(code: String?, message: String?)
     case transport(String)
     case decoding(String)
+    case invalidFingerprint
+    case fingerprintNeedsHTTPS
+    case certificateMismatch
+    case untrustedCertificate
 
     public var errorDescription: String? {
         switch self {
@@ -51,6 +55,10 @@ public enum HubError: Error, Equatable, Sendable, LocalizedError {
         case .conflict(_, let message): message ?? "The hub reported a conflict with newer state."
         case .transport: "The hub could not be reached. Check the address and that the hub is running."
         case .decoding: "The hub returned a response this app cannot read."
+        case .invalidFingerprint: "The certificate fingerprint should be 64 hex characters (SHA-256)."
+        case .fingerprintNeedsHTTPS: "A certificate fingerprint needs an https hub address."
+        case .certificateMismatch: "The hub's certificate doesn't match the pinned fingerprint. Check the fingerprint with perpeto hub tls status before changing it."
+        case .untrustedCertificate: "The hub's certificate isn't trusted. For a self-signed hub, enter its certificate fingerprint in Settings."
         }
     }
 }

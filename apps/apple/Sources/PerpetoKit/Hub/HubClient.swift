@@ -8,13 +8,45 @@ public protocol HTTPTransport: Sendable {
 
 public struct URLSessionTransport: HTTPTransport {
     let session: URLSession
+    /// With pins, every request trusts exactly these certificates instead of
+    /// the system's validation; without, default validation applies.
+    public let pins: HubPins?
 
     public init(session: URLSession = .shared) {
         self.session = session
+        self.pins = nil
     }
 
+    /// Pinned transport on its own ephemeral session, so no connection or TLS
+    /// session validated under another pin, or by the system, is reused.
+    public init(pins: HubPins) {
+        self.session = URLSession(configuration: .ephemeral)
+        self.pins = pins
+    }
+
+    private func delegate(for request: URLRequest) -> PinningTaskDelegate? {
+        pins.map { PinningTaskDelegate(pins: $0, host: request.url?.host) }
+    }
+
+    /// Turns a refused pin, or a certificate the system rejects, into a clear error.
+    private func mapped(_ error: Error, _ delegate: PinningTaskDelegate?) -> Error {
+        if delegate?.rejected == true { return HubError.certificateMismatch }
+        if let url = error as? URLError, Self.certificateErrors.contains(url.code) { return HubError.untrustedCertificate }
+        return error
+    }
+
+    private static let certificateErrors: Set<URLError.Code> = [
+        .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
+    ]
+
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await session.data(for: request)
+        let delegate = delegate(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request, delegate: delegate)
+        } catch {
+            throw mapped(error, delegate)
+        }
         guard let http = response as? HTTPURLResponse else { throw HubError.transport("Not an HTTP response") }
         return (data, http)
     }
@@ -22,7 +54,13 @@ public struct URLSessionTransport: HTTPTransport {
     /// Yields lines including empty ones; `AsyncBytes.lines` drops blank
     /// lines, which delimit server-sent events.
     public func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<String, Error>, HTTPURLResponse) {
-        let (bytes, response) = try await session.bytes(for: request)
+        let delegate = delegate(for: request)
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (bytes, response) = try await session.bytes(for: request, delegate: delegate)
+        } catch {
+            throw mapped(error, delegate)
+        }
         guard let http = response as? HTTPURLResponse else { throw HubError.transport("Not an HTTP response") }
         let lines = AsyncThrowingStream<String, Error> { continuation in
             let task = Task {
@@ -66,9 +104,41 @@ public final class HubClient: Sendable {
         if scheme == "http", !["localhost", "127.0.0.1", "::1", "[::1]"].contains(baseURL.host ?? "") {
             throw HubError.insecureRemote
         }
+        if (transport as? URLSessionTransport)?.pins != nil, scheme != "https" { throw HubError.fingerprintNeedsHTTPS }
         self.baseURL = baseURL
         self.token = token
         self.transport = transport
+    }
+
+    /// A client that trusts exactly the hub certificate with `fingerprint`
+    /// (any format `CertificateFingerprint.normalize` accepts), or the
+    /// system's validation when it is nil or empty.
+    public convenience init(baseURL: URL, token: String, fingerprint: String?, next: String? = nil,
+                            onPinsChange: @escaping @Sendable (_ pin: String, _ next: String?) -> Void = { _, _ in }) throws {
+        let trimmed = fingerprint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else {
+            try self.init(baseURL: baseURL, token: token)
+            return
+        }
+        guard let pin = CertificateFingerprint.normalize(trimmed) else { throw HubError.invalidFingerprint }
+        guard baseURL.scheme?.lowercased() == "https" else { throw HubError.fingerprintNeedsHTTPS }
+        let pins = HubPins(pin: pin, next: next.flatMap(CertificateFingerprint.normalize), onChange: onPinsChange)
+        try self.init(baseURL: baseURL, token: token, transport: URLSessionTransport(pins: pins))
+    }
+
+    /// The pins this client trusts, or nil when it uses system validation.
+    public var pins: HubPins? { (transport as? URLSessionTransport)?.pins }
+
+    /// `GET /tls`: whether the hub serves HTTPS itself, its certificate
+    /// fingerprint and, during a rotation, the next one.
+    public func tlsStatus() async throws -> HubTLSStatus { try await get("/tls") }
+
+    /// On a pinned client, learns a certificate rotation the hub announces
+    /// over this already pinned connection, so the app keeps connecting after
+    /// `perpeto hub tls activate`. Failures are ignored; the pin stays.
+    public func followCertificateRotation() async {
+        guard let pins, let status = try? await tlsStatus() else { return }
+        pins.adopt(status)
     }
 
     // MARK: Projects
@@ -422,8 +492,8 @@ public final class HubClient: Sendable {
                             cursor = event.seq
                             continuation.yield(event)
                         }
-                    } catch HubError.unauthorized {
-                        continuation.finish(throwing: HubError.unauthorized)
+                    } catch let error as HubError where [.unauthorized, .certificateMismatch, .untrustedCertificate].contains(error) {
+                        continuation.finish(throwing: error)
                         return
                     } catch {
                         if Task.isCancelled { break }
