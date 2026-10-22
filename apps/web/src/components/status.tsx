@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import type { AccountStatus, AssignmentStatus, JobStatus, MachineStatus, MergeStatus, RunStatus, WorkItemStatus, WorkflowStatus } from '../api/types';
-import { IconAlert, IconApproval, IconBlocked, IconCheckCircle, IconCircle, IconClock, IconPause, IconStop, IconXCircle } from './icons';
+import { IconAlert, IconApproval, IconBlocked, IconCheckCircle, IconCircle, IconClock, IconNext, IconPause, IconStop, IconXCircle } from './icons';
 
 /**
  * Perpeto Mono status: an icon plus a word, told by shape and weight, not
@@ -14,9 +14,10 @@ import { IconAlert, IconApproval, IconBlocked, IconCheckCircle, IconCircle, Icon
  * - paused / stopped: stopped by a person
  * - done: checks passed, completed, merged
  * - waiting: leased or cooling, will move on its own
+ * - next: starts on its own shortly (the subscription pacing picks next)
  * - failed: name the operation and the recovery
  */
-export type Tone = 'live' | 'attention' | 'approval' | 'blocked' | 'quiet' | 'paused' | 'stopped' | 'done' | 'waiting' | 'failed';
+export type Tone = 'live' | 'attention' | 'approval' | 'blocked' | 'quiet' | 'paused' | 'stopped' | 'done' | 'waiting' | 'next' | 'failed';
 
 /** The orange live dot. Static; it never pulses. */
 export function LiveDot({ label = 'Live', className }: { label?: string; className?: string }) {
@@ -41,6 +42,8 @@ export function StatusIcon({ tone }: { tone: Tone }) {
       return <IconCheckCircle size={16} />;
     case 'waiting':
       return <IconClock size={16} />;
+    case 'next':
+      return <IconNext size={16} />;
     case 'failed':
       return <IconXCircle size={16} />;
     default:

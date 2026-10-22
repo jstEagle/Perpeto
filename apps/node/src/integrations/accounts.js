@@ -13,11 +13,13 @@ const UNAVAILABLE = new Set(['NO_ELIGIBLE_ACCOUNT', 'UNSUPPORTED_PROVIDER']);
  * Reservations are attempt-qualified (`<assignmentId>-<attempt>`): a re-leased attempt never reuses or releases the
  * reservation of an older one. Only `snapshot()` metadata leaves this module; bindings stay on the machine.
  *
- * @param {{ config?: { nodeDataDir?: string, selection?: 'lru'|'headroom', defaultCooldownMs?: number, maxConcurrentPerAccount?: number, busyRetries?: number },
+ * @param {{ config?: { nodeDataDir?: string, selection?: 'lru'|'headroom'|'paced', defaultCooldownMs?: number, maxConcurrentPerAccount?: number, busyRetries?: number },
  *   configRoot?: string, dataDir?: string }} options
  */
 export function createAccountProvider({ config = {}, configRoot = process.cwd(), dataDir } = {}) {
-  const { nodeDataDir, busyRetries = 5, ...options } = config;
+  // Paced by default: the hub's plan picks accounts; without a plan selection falls back to headroom, then LRU.
+  const { nodeDataDir, busyRetries = 5, selection = 'paced', ...rest } = config;
+  const options = { ...rest, selection };
   const root = nodeDataDir ? resolve(configRoot, nodeDataDir) : dataDir;
   if (!root || !isAbsolute(root)) throw new Error('Account pool needs the node data directory.');
   let pool; let machineId;
@@ -110,8 +112,14 @@ export function createAccountProvider({ config = {}, configRoot = process.cwd(),
       return released;
     },
     /** Feed a provider error or usage update so limits cool the account and auth failures mark it invalid. */
-    async observe({ accountId, message, reservationId, idempotencyKey }) {
-      return locked(value => value.observe({ accountId, message, ...(reservationId ? { reservationId } : {}), idempotencyKey }));
+    async observe({ accountId, message, plan, reservationId, idempotencyKey }) {
+      return locked(value => value.observe({ accountId, message, ...(plan !== undefined ? { plan } : {}), ...(reservationId ? { reservationId } : {}), idempotencyKey }));
+    },
+    /** Hub pacing allowances, `{ [localAccountId]: targetAgents }`, or null when the hub publishes no plan. */
+    setPacing(allowances) { pool?.setPacing(allowances); },
+    /** Operator label/plan changes the hub relays; the key makes a repeated relay a no-op. */
+    async updateAccount({ accountId, label, plan, idempotencyKey }) {
+      return locked(value => value.update({ accountId, ...(label !== undefined ? { label } : {}), ...(plan !== undefined ? { plan } : {}), idempotencyKey }));
     },
     /** Recheck eligibility immediately before launching a thread with this account. Local only. */
     async bindingFor(accountId, options) { return locked(value => value.bindingFor(accountId, options)); },

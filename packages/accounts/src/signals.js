@@ -13,37 +13,59 @@ function payload(message) {
   return object(root.params ?? root.data ?? root);
 }
 
-/** Native notifications and T3 ProviderUsageLimitsUpdate windows (sparse). */
+const KINDS = ['session', 'weekly', 'monthly', 'other'];
+/** Window length in minutes when known, from T3 (`windowDurationMins`) or a native field. */
+const minutes = value => Number.isSafeInteger(value) && value > 0 && value <= 527040 ? value : undefined;
+/** T3's kind, else inferred from the length, else from the provider's stable id (five_hour, seven_day…, primary/secondary). */
+export function kindOf(id, kind, windowMins) {
+  if (KINDS.includes(kind)) return kind;
+  if (windowMins) return windowMins <= 1440 ? 'session' : windowMins <= 11520 ? 'weekly' : 'monthly';
+  if (/^(?:five_hour|primary|session)/.test(id)) return 'session';
+  if (/^(?:seven_day|secondary|week)/.test(id)) return 'weekly';
+  return 'other';
+}
+/** Display text only; never a credential. Control characters are dropped and the length bounded. */
+const label = (value, fallback) => {
+  const text = typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) : '';
+  return text || fallback;
+};
+/** Kind and label appear only when the update states or implies them, so a sparse update keeps earlier ones. */
+function window(id, usedPercent, { kind, label: name, resetsAt, windowMins, ...extra } = {}) {
+  const length = minutes(windowMins);
+  const reset = iso(resetsAt);
+  const text = label(name, '');
+  return { id, ...(KINDS.includes(kind) || length ? { kind: kindOf(id, kind, length) } : {}), ...(text ? { label: text } : {}),
+    usedPercent: Math.min(100, Math.max(0, usedPercent)), ...(reset ? { resetsAt: reset } : {}), ...(length ? { windowMins: length } : {}), ...extra };
+}
+
+/**
+ * Native notifications and T3 ProviderUsageLimitsUpdate windows (sparse). Each window keeps only its id, kind, label,
+ * used percentage, reset time and length.
+ */
 export function usageWindows(provider, message) {
   const data = payload(message);
   if (Array.isArray(data.windows)) {
-    return data.windows.flatMap(window => {
-      if (!window || typeof window.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(window.id)
-          || !finite(window.usedPercent)) return [];
-      const resetsAt = iso(window.resetsAt);
-      return [{ id: window.id, usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
-        ...(resetsAt ? { resetsAt } : {}) }];
+    return data.windows.flatMap(item => {
+      if (!item || typeof item.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(item.id)
+          || !finite(item.usedPercent)) return [];
+      return [window(item.id, item.usedPercent, { kind: item.kind, label: item.label, resetsAt: item.resetsAt,
+        windowMins: item.windowDurationMins ?? item.windowMins })];
     });
   }
   if (provider === 'codex') {
     const limits = object(data.rateLimits ?? data);
     if (limits.limitId && limits.limitId !== 'codex') return [];
     return ['primary', 'secondary'].flatMap(id => {
-      const window = object(limits[id]);
-      if (!finite(window.usedPercent)) return [];
-      const resetsAt = iso(window.resetsAt);
-      return [{ id, usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
-        ...(resetsAt ? { resetsAt } : {}) }];
+      const item = object(limits[id]);
+      if (!finite(item.usedPercent)) return [];
+      return [window(id, item.usedPercent, { resetsAt: item.resetsAt, windowMins: item.windowDurationMins ?? item.windowMinutes })];
     });
   }
   if (provider === 'claudeAgent') {
     const info = object(data.rate_limit_info);
     if (typeof info.rateLimitType !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(info.rateLimitType)
         || !finite(info.utilization)) return [];
-    const resetsAt = iso(info.resetsAt);
-    return [{ id: info.rateLimitType, usedPercent: Math.min(100, Math.max(0, info.utilization * 100)),
-      overageAllowed: permittedOverage(info),
-      ...(resetsAt ? { resetsAt } : {}) }];
+    return [window(info.rateLimitType, info.utilization * 100, { resetsAt: info.resetsAt, overageAllowed: permittedOverage(info) })];
   }
   return [];
 }

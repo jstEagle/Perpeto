@@ -37,6 +37,37 @@ describe('HttpHub', () => {
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer secret-token');
     expect(init.credentials).toBeUndefined();
     expect(JSON.parse(String(init.body)).idempotencyKey).toMatch(/[0-9a-f-]{36}/);
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe(JSON.parse(String(init.body)).idempotencyKey);
+  });
+
+  it('reads and changes subscription pacing', async () => {
+    const pacing = { enabled: true, strategy: 'rotation', targetUsePercent: 95, providers: [], accounts: [], timeline: [] };
+    const fetch = vi.fn(async (_url: URL, init?: RequestInit) => (init?.method === 'PUT' ? json({ ok: true }) : json({ ...pacing, targetUsePercent: 90 })));
+    vi.stubGlobal('fetch', fetch);
+    const updated = await hub.updatePacing({ targetUsePercent: 90 });
+    const [url, init] = fetch.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toBe('http://localhost:4320/api/v1/pacing/settings');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toMatchObject({ targetUsePercent: 90 });
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toMatch(/[0-9a-f-]{36}/);
+    // A bare acknowledgement is followed by a read of the new state.
+    expect(String(fetch.mock.calls[1][0])).toBe('http://localhost:4320/api/v1/pacing');
+    expect(updated.targetUsePercent).toBe(90);
+  });
+
+  it('treats a hub without pacing as not paced', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: { code: 'NOT_FOUND', message: 'No route.' } }, 404)));
+    expect(await hub.pacing()).toBeNull();
+  });
+
+  it('patches an account label and plan', async () => {
+    const fetch = vi.fn(async () => json({ account: { id: 'acct_1', machineId: 'mch_1', provider: 'codex', label: 'ChatGPT · build', status: 'active', plan: 'Pro' } }));
+    vi.stubGlobal('fetch', fetch);
+    const account = await hub.updateAccount('acct 1', { label: 'ChatGPT · build', plan: 'Pro' });
+    const [url, init] = fetch.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toBe('http://localhost:4320/api/v1/accounts/acct%201');
+    expect(init.method).toBe('PATCH');
+    expect(account).toMatchObject({ label: 'ChatGPT · build', plan: 'Pro' });
   });
 
   it('starts runs with settings and patches them later', async () => {

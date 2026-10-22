@@ -247,6 +247,24 @@ export function Segmented<T extends string>({
   );
 }
 
+/** A 40 by 24 pill switch: grey off, ink on, the thumb slides with ease-out. */
+export function Toggle({ checked, onChange, label, disabled, describedBy }: { checked: boolean; onChange(next: boolean): void; label: string; disabled?: boolean; describedBy?: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      className="toggle"
+      aria-checked={checked}
+      aria-label={label}
+      aria-describedby={describedBy}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="toggle-thumb" aria-hidden="true" />
+    </button>
+  );
+}
+
 /** 4 px pill meter in ink; the number sits beside it. */
 export function Meter({ value, max, label, tone = 'ink' }: { value: number; max: number; label: string; tone?: 'ink' | 'error' }) {
   const ratio = max > 0 ? Math.min(1, value / max) : 0;

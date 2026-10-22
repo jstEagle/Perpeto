@@ -34,6 +34,8 @@ const DEFAULTS = Object.freeze({
   requestTimeoutMs: 30000,
   accountReadyTimeoutMs: 60000,
   publishBranch: true,
+  // How often a running assignment re-reads its account's T3 usage-limit snapshot (0 disables the timer; turn ends still read it).
+  usagePollMs: 120000,
 });
 
 const sleep = (ms, signal) => new Promise(resolve => {
@@ -41,6 +43,12 @@ const sleep = (ms, signal) => new Promise(resolve => {
   function done() { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); }
   signal?.addEventListener('abort', done, { once: true });
 });
+/** A subscription plan name from T3's provider auth, never an API-key or cloud login, and never an email. */
+export function planOf(auth) {
+  if (!auth || typeof auth.label !== 'string' || !auth.label.trim() || ['apiKey', 'bedrock', 'vertex'].includes(auth.type)) return undefined;
+  const label = auth.label.trim();
+  return label.length <= 80 && !label.includes('@') && !/[\u0000-\u001f\u007f]/.test(label) ? label : undefined;
+}
 const stableId = (prefix, ...parts) => `${prefix}-${createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 24)}`;
 export const threadRef = threadId => `t3-thread://v1/${threadId}`;
 
@@ -240,9 +248,23 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     const signal = lease ? AbortSignal.any([callerSignal, lease.signal]) : callerSignal;
     const reservationId = selection?.reservation?.id;
     const accountId = selection?.account?.id ?? selection?.binding?.accountId ?? null;
-    const observe = async (message, key) => {
+    const observe = async (message, key, extra = {}) => {
       if (!accountId || typeof accounts?.observe !== 'function') return;
-      await Promise.resolve(accounts.observe({ accountId, reservationId, ...attemptKey, message, idempotencyKey: stableId('observe', assignment.id, String(attemptKey.attempt), key) })).catch(() => {});
+      await Promise.resolve(accounts.observe({ accountId, reservationId, ...attemptKey, message, ...extra, idempotencyKey: stableId('observe', assignment.id, String(attemptKey.attempt), key) })).catch(() => {});
+    };
+    // T3 merges probes, rate-limit notifications and turn updates into the provider instance's usage-limit snapshot.
+    // Reading it feeds the pool's windows (and so the heartbeat and hub pacer); a window at 100 % cools the account.
+    let usageReads = 0;
+    const observeUsage = async (t3, instanceId) => {
+      if (!accountId || typeof accounts?.observe !== 'function' || !instanceId) return;
+      try {
+        const found = ((await t3.getConfig())?.providers ?? []).find(item => item.instanceId === instanceId);
+        const limits = found?.usageLimits;
+        const windows = Array.isArray(limits?.windows) && !limits.unavailable ? limits.windows : [];
+        const plan = planOf(found?.auth);
+        if (!windows.length && !plan) return;
+        await observe({ windows }, `usage:${usageReads++}`, plan ? { plan } : {});
+      } catch { /* Usage is advisory; a failed read never affects the assignment. */ }
     };
     let result;
     let messagingSetup = null;
@@ -277,6 +299,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         }
         instance = registered.instance;
         await report({ type: 'progress', data: { interaction: 'account.bound', accountId, provider: target.provider, providerInstanceId: instance.instanceId } });
+        await observeUsage(t3, instance.instanceId);
       } else {
         const serverConfig = await t3.getConfig({ signal });
         // Factory instances are derived from operator instances, never from each other or from pooled accounts.
@@ -364,7 +387,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       } });
       if (waiting.length) await report({ type: 'delivered', data: { messageIds: waiting.map(item => item.id), via: 'prompt', threadRef: threadRef(threadId) } });
 
-      return follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch, rebase,
+      return follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, observeUsage, kind, branch, workspace, launch, rebase,
         inbox: ctx.inbox, delivered: new Set(waiting.map(item => item.id)) });
     }
   }
@@ -383,7 +406,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
     return { baseRef: workspace.baseRef, baseHead, previousHead };
   }
 
-  async function follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, kind, branch, workspace, launch, rebase, inbox, delivered }) {
+  async function follow({ t3, assignment, signal, report, policy, policyEnforced, threadId, instance, target, accountId, observe, observeUsage = async () => {}, kind, branch, workspace, launch, rebase, inbox, delivered }) {
     // Keep observing while cancellation interrupts and drains active runs.
     const observation = new AbortController();
     const trackers = new Map();
@@ -494,6 +517,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
         const finishedAt = run.completedAt ?? new Date().toISOString();
         const durationMs = run.startedAt ? Math.max(0, Date.parse(finishedAt) - Date.parse(run.startedAt)) : undefined;
         await report({ type: 'progress', data: { interaction: 'turn.finished', threadRef: threadRef(tracker.threadId), runId: run.id, ordinal: run.ordinal, status: run.status, startedAt: run.startedAt ?? null, finishedAt, ...(durationMs === undefined ? {} : { durationMs }) } });
+        await observeUsage(t3, instance.instanceId);
       }
     }
 
@@ -624,6 +648,8 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       return false;
     }
 
+    const usageTimer = accountId && settings.usagePollMs > 0 ? setInterval(() => { void observeUsage(t3, instance.instanceId); }, settings.usagePollMs) : null;
+    usageTimer?.unref?.();
     const root = new ThreadTracker(threadId);
     root.meta = { provider: providerName, model: target.model };
     trackers.set(threadId, root);
@@ -646,6 +672,7 @@ export function createT3Executor({ config = {}, runtimeUrl, accountProvider, cre
       await pollDecisions();
       return await finish();
     } finally {
+      if (usageTimer) clearInterval(usageTimer);
       unsubscribeInbox?.();
       for (const tracker of trackers.values()) tracker.closed = true;
       observation.abort();

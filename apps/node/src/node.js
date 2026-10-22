@@ -13,13 +13,25 @@ import { sanitizeFailure } from './failure.js';
 import { processIdentity } from './lock.js';
 
 const VERSION = '0.1.0';
-const accountFields = ['id', 'machineId', 'provider', 'label', 'status', 'cooldownUntil', 'lastUsedAt'];
+const accountFields = ['id', 'machineId', 'provider', 'label', 'status', 'cooldownUntil', 'lastUsedAt', 'plan'];
+const WINDOW_KINDS = ['session', 'weekly', 'monthly', 'other'];
+/** Usage percentages and reset times only; anything else an account provider returns stays on this machine. */
+function publicUsage(usage) {
+  if (!usage || typeof usage !== 'object' || !Array.isArray(usage.windows) || !usage.windows.length) return undefined;
+  const windows = usage.windows.slice(0, 16).flatMap(window => window && typeof window.id === 'string' && Number.isFinite(window.usedPercent)
+    && WINDOW_KINDS.includes(window.kind) && typeof window.label === 'string' ? [{
+      id: window.id, kind: window.kind, label: window.label, usedPercent: window.usedPercent,
+      ...(typeof window.resetsAt === 'string' ? { resetsAt: window.resetsAt } : {}),
+      ...(Number.isSafeInteger(window.windowMins) ? { windowMins: window.windowMins } : {}) }] : []);
+  return windows.length ? { checkedAt: typeof usage.checkedAt === 'string' ? usage.checkedAt : new Date().toISOString(), windows } : undefined;
+}
 
 /**
  * Build a daemon without starting it. Optional injected integrations support embedders/tests.
- * @param {{configPath: string, registry?: object, accountProvider?: object, runtimeSupervisor?: object, onStatus?: (status: object) => void}} options
+ * @param {{configPath: string, registry?: object, accountProvider?: object, runtimeSupervisor?: object, onStatus?: (status: object) => void, clock?: () => number}} options
+ * `clock` (epoch ms) judges hub lease expiry; it must agree with the hub's clock, so tests that inject one into the hub pass the same one here.
  */
-export async function createNode({ configPath, registry, accountProvider, runtimeSupervisor, onStatus = () => {} }) {
+export async function createNode({ configPath, registry, accountProvider, runtimeSupervisor, onStatus = () => {}, clock = Date.now }) {
   const config = await loadConfig(configPath);
   // Pinned hub certificates: the fingerprint from joining, then the set the hub announces over the pinned channel.
   const pinsFile = resolve(config.dataDir, 'hub-pins.json');
@@ -36,6 +48,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   let journalWrites = Promise.resolve();
   let lastAccounts;
   let namespaceAllAccounts = false;
+  // Public (hub) account ids to the local ids the account provider uses, from the latest snapshot.
+  let localAccountIds = new Map();
+  const appliedAccountUpdates = new Set();
   let token;
   let tokenGeneration = 0;
   let tokenRotatedAt = Date.now();
@@ -194,11 +209,16 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     try {
       // Namespace public IDs without changing executor-local account IDs/bindings.
       localAccounts = await accountProvider.list();
-      accounts = localAccounts.map(account => ({
-        ...Object.fromEntries(accountFields.filter(key => typeof account[key] === 'string').map(key => [key, account[key]])),
-        ...(typeof account.id === 'string' ? { id: publicAccountId(account.id) } : {}),
-        machineId,
-      }));
+      accounts = localAccounts.map(account => {
+        const usage = publicUsage(account.usage);
+        return {
+          ...Object.fromEntries(accountFields.filter(key => typeof account[key] === 'string').map(key => [key, account[key]])),
+          ...(typeof account.id === 'string' ? { id: publicAccountId(account.id) } : {}),
+          ...(usage ? { usage } : {}),
+          machineId,
+        };
+      });
+      localAccountIds = new Map(localAccounts.filter(account => typeof account.id === 'string').map(account => [publicAccountId(account.id), account.id]));
     } catch { /* A local account snapshot failure must not interrupt leased work. */ }
     const body = { capacity: config.capacity, running: status().running, labels: machine.labels,
       ...(accounts ? { accounts } : {}), providers: machine.providers, status: draining ? 'draining' : 'online' };
@@ -212,6 +232,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       if (error.status === 409 && localAccounts && !namespaceAllAccounts) {
         namespaceAllAccounts = true;
         body.accounts = accounts.map((account, index) => ({ ...account, id: scopedAccountId(localAccounts[index].id) }));
+        localAccountIds = new Map(localAccounts.map(account => [scopedAccountId(account.id), account.id]));
         try {
           result = await hub[retry ? 'retry' : 'post']('/nodes/heartbeat', body, { signal: service.signal });
           lastAccounts = body.accounts;
@@ -239,6 +260,33 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     }
     if (result.status === 'draining' || result.machine?.status === 'draining') drain();
     adoptPins(result.tls?.fingerprints);
+    applyPacing(result.pacing);
+    void applyAccountUpdates(result.accountUpdates);
+  }
+  /** Hub allowances for `paced` account selection; no plan in the response means no pacing. */
+  function applyPacing(pacing) {
+    if (typeof accountProvider?.setPacing !== 'function') return;
+    const accounts = pacing && typeof pacing.accounts === 'object' && !Array.isArray(pacing.accounts) ? pacing.accounts : null;
+    if (!accounts) { try { accountProvider.setPacing(null); } catch { /* Selection keeps its own policy. */ } return; }
+    const local = {};
+    for (const [publicId, value] of Object.entries(accounts)) {
+      const id = localAccountIds.get(publicId);
+      if (id && Number.isSafeInteger(value?.targetAgents) && value.targetAgents >= 0) local[id] = value.targetAgents;
+    }
+    try { accountProvider.setPacing(local); } catch { /* A malformed plan leaves selection on its own policy. */ }
+  }
+  /** Operator label/plan edits relayed by the hub; each update id is applied once per process and is idempotent. */
+  async function applyAccountUpdates(updates) {
+    if (!Array.isArray(updates) || typeof accountProvider?.updateAccount !== 'function') return;
+    for (const update of updates.slice(0, 100)) {
+      const id = localAccountIds.get(update?.accountId);
+      if (!id || typeof update.id !== 'string' || appliedAccountUpdates.has(update.id)) continue;
+      try {
+        await accountProvider.updateAccount({ accountId: id, ...(update.label !== undefined ? { label: update.label } : {}),
+          ...(update.plan !== undefined ? { plan: update.plan } : {}), idempotencyKey: `account-update:${update.id}` });
+        appliedAccountUpdates.add(update.id);
+      } catch { /* Retried from the next heartbeat. */ }
+    }
   }
   /**
    * During certificate rotation the hub announces the served and next fingerprints over the pinned channel. Adopt the
@@ -266,9 +314,12 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   const pathFor = record => `/${record.kind === 'assignment' ? 'assignments' : 'jobs'}/${encodeURIComponent(record.item.id)}`;
   async function report(record, event) {
     if (record.cancelRequested && event.type !== 'cancelled') throw record.work.signal.reason;
-    if (record.lost || Date.now() >= record.expires) { lose(record); throw record.lease.signal.reason; }
+    if (record.lost || clock() >= record.expires) { lose(record); throw record.lease.signal.reason; }
     try {
-      const outgoing = event.type === 'usage' && typeof event.data?.accountId === 'string'
+      // Account ids leave the machine as their public ids: usage records and the account.bound progress the hub uses
+      // to count agents per account for pacing.
+      const bound = event.type === 'progress' && event.data?.interaction === 'account.bound';
+      const outgoing = (event.type === 'usage' || bound) && typeof event.data?.accountId === 'string'
         ? { ...event, data: { ...event.data, accountId: publicAccountId(event.data.accountId) } } : event;
       return await hub.retry(`${pathFor(record)}/events`, { ...outgoing, attempt: record.attempt }, { signal: record.lease.signal });
     } catch (error) {
@@ -279,11 +330,11 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   async function renewLoop(record) {
     while (!record.lease.signal.aborted && !record.cancelRequested) {
       try {
-        await sleep(Math.min(config.timing.renewMs, Math.max(1, (record.expires - Date.now()) / 3)), record.lease.signal);
+        await sleep(Math.min(config.timing.renewMs, Math.max(1, (record.expires - clock()) / 3)), record.lease.signal);
         if (record.cancelRequested) return;
         const result = await hub.retry(`${pathFor(record)}/renew`, { attempt: record.attempt }, { signal: record.lease.signal });
         const expires = Date.parse(result.leaseExpiresAt ?? result.lease?.leaseExpiresAt);
-        if (!Number.isFinite(expires) || expires <= Date.now()) { lose(record); return; }
+        if (!Number.isFinite(expires) || expires <= clock()) { lose(record); return; }
         record.expires = expires;
         armExpiry(record);
         // Messages that reached this assignment's role since the last renewal; the hub re-offers them until the
@@ -298,7 +349,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   }
   function armExpiry(record) {
     clearTimeout(record.expiryTimer);
-    record.expiryTimer = setTimeout(() => lose(record), Math.max(0, record.expires - Date.now()));
+    record.expiryTimer = setTimeout(() => lose(record), Math.max(0, record.expires - clock()));
   }
   async function execute(record) {
     armExpiry(record);
@@ -380,7 +431,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     }
   }
   function accepts(item, kind) {
-    if (!item || typeof item.id !== 'string' || !Number.isSafeInteger(item.attempt) || item.attempt < 0 || !Number.isFinite(Date.parse(item.leaseExpiresAt)) || Date.parse(item.leaseExpiresAt) <= Date.now()) return false;
+    if (!item || typeof item.id !== 'string' || !Number.isSafeInteger(item.attempt) || item.attempt < 0 || !Number.isFinite(Date.parse(item.leaseExpiresAt)) || Date.parse(item.leaseExpiresAt) <= clock()) return false;
     const key = `${kind}:${item.id}`;
     if (active.has(key) || (seen[key] ?? -1) >= item.attempt) return false;
     const req = item.requirements ?? {};

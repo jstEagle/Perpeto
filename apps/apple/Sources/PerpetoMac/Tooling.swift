@@ -12,6 +12,8 @@ import SwiftUI
 //     --themes <prefix>   capture only Overview, Workflows, the live map,
 //     Messages and Settings, named <prefix>overview.png and so on; combine
 //     with -perpeto.appearance light|dark to force the appearance
+//     --pacing <prefix>   capture only Accounts and Pacing, named
+//     <prefix>accounts.png and <prefix>pacing.png
 //   --render-icon <dir> write the app icon PNGs, then quit
 
 enum LaunchArgument {
@@ -50,7 +52,8 @@ struct Snapshotter {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         await store.refresh()
         guard let project = store.factory.projects.first?.id else { return }
-        let shots = LaunchArgument.string(after: "--themes").map { themeShots(project, prefix: $0) }
+        let shots = LaunchArgument.string(after: "--pacing").map { pacingShots(prefix: $0) }
+            ?? LaunchArgument.string(after: "--themes").map { themeShots(project, prefix: $0) }
             ?? (store.isDemo ? demoShots(project) : hubShots(project))
         try? await Task.sleep(for: .seconds(1.5))
         for (name, show) in shots {
@@ -80,6 +83,7 @@ struct Snapshotter {
             ("hub-05-messages", { navigator.route = .project(project, .messages) }),
             ("hub-07-machines", { navigator.route = .factory(.machines) }),
             ("hub-08-accounts", { navigator.route = .factory(.accounts) }),
+            ("hub-08b-pacing", { navigator.route = .factory(.pacing) }),
             ("hub-09-usage", { navigator.route = .factory(.usage) }),
         ] + (CommandLine.arguments.contains("--live-check") ? liveCheck(project, run: run) : [])
     }
@@ -99,6 +103,23 @@ struct Snapshotter {
         ]
     }
 
+    /// Subscriptions and pacing, for reviewing them in each appearance.
+    private func pacingShots(prefix: String) -> [(String, () -> Void)] {
+        [
+            ("\(prefix)accounts", { tall(); navigator.route = .factory(.accounts) }),
+            ("\(prefix)pacing", { navigator.route = .factory(.pacing) }),
+        ]
+    }
+
+    /// Makes the main window tall enough to show a whole screen in one capture.
+    private func tall(height: CGFloat = 1360) {
+        guard let window = NSApp.windows.first(where: { $0.isVisible && !$0.isSheet && $0.frame.width > 200 }) else { return }
+        var frame = window.frame
+        frame.origin.y += frame.height - height
+        frame.size.height = height
+        window.setFrame(frame, display: true)
+    }
+
     /// The screens used to review light and dark appearance side by side.
     private func themeShots(_ project: String, prefix: String) -> [(String, () -> Void)] {
         [
@@ -107,6 +128,8 @@ struct Snapshotter {
             ("\(prefix)run-live-map", { navigator.selectedRunId = DemoFixtures.liveRunId; navigator.route = .project(project, .runs) }),
             ("\(prefix)run-node-selected", { navigator.selectedNodeId = "review" }),
             ("\(prefix)messages", { navigator.route = .project(project, .messages) }),
+            ("\(prefix)accounts", { navigator.route = .factory(.accounts) }),
+            ("\(prefix)pacing", { navigator.route = .factory(.pacing) }),
             ("\(prefix)usage", { navigator.route = .factory(.usage) }),
             ("\(prefix)settings", { openSettings() }),
         ]
@@ -123,6 +146,7 @@ struct Snapshotter {
             ("06-merge-queue", { navigator.route = .project(project, .mergeQueue) }),
             ("07-machines", { navigator.route = .factory(.machines) }),
             ("08-accounts", { navigator.route = .factory(.accounts) }),
+            ("08b-pacing", { navigator.route = .factory(.pacing) }),
             ("09-usage", { navigator.route = .factory(.usage) }),
             ("10-workflow-prompt", { navigator.route = .project("prj_docs", .workflows) }),
             ("11-architect-progress", {

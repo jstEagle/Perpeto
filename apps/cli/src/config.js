@@ -38,7 +38,11 @@ export function hubConfig(dir, { host = '127.0.0.1', port = 4320, tls = false } 
     longPollMs: 25000, maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
     finishedWorkRetentionMs: 604800000, eventRetentionMs: 2592000000, usageRetentionMs: 2592000000,
     idempotencyRetentionMs: 86400000, archiveFinished: true, retentionSweepIntervalMs: 60000, sessionTtlMs: 43200000, messageRatePerMinute: 30,
-    architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' } };
+    architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' },
+    // Subscription pacing (apps/hub/src/config.js); burn-rate priors are uncalibrated percent-per-agent-hour starting points.
+    pacing: { enabled: true, strategy: 'rotation', targetUsePercent: 95, minAgents: 0, maxAgents: null, handoverMins: 15, sprintMins: 90, horizonMins: 600,
+      recomputeMs: 15000, nudgeIntervalMs: 1800000,
+      priors: { default: { session: 20, weekly: 2.5, monthly: 0.6, other: 20 }, claudeAgent: { session: 20, weekly: 2.5 }, codex: { session: 15, weekly: 2 } } } };
 }
 export function hubUrl(value) {
   let url;

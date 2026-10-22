@@ -64,15 +64,29 @@ async function heartbeat(machine) {
     accounts: machine.accounts,
   }, machine.token);
 }
-const now = new Date().toISOString();
+// Subscription usage the simulated nodes report, so /pacing has a rich plan: five Claude subs mid-rotation (two
+// burned, one burning, two fresh) and two Codex subs. Percentages and reset times only, as real heartbeats carry.
+// Pacing is off while the script leases its scripted work and switched on at the end.
+const seededAt = Date.now();
+const inMinutes = (minutes) => new Date(seededAt + minutes * 60_000).toISOString();
+const usageWindow = (id, kind, label, usedPercent, resetMins, windowMins) =>
+  ({ id, kind, label, usedPercent, windowMins, ...(resetMins === undefined ? {} : { resetsAt: inMinutes(resetMins) }) });
+const claudeUsage = (session, sessionReset, weekly, weeklyReset) => ({ checkedAt: inMinutes(0), windows: [
+  usageWindow('five_hour', 'session', '5-hour limit', session, sessionReset, 300), usageWindow('seven_day', 'weekly', 'Weekly limit', weekly, weeklyReset, 10080)] });
+const codexUsage = (session, sessionReset, weekly, weeklyReset) => ({ checkedAt: inMinutes(0), windows: [
+  usageWindow('primary', 'session', '5-hour limit', session, sessionReset, 300), usageWindow('secondary', 'weekly', 'Weekly limit', weekly, weeklyReset, 10080)] });
+const subscription = (id, provider, label, plan, usage, extra = {}) => ({ id, provider, label, plan, status: 'active', usage, ...extra });
+await call('PUT', '/pacing/settings', { enabled: false });
 const studio = await enroll('studio-m4', 'darwin', ['claudeAgent', 'codex'], { maxAgents: 6, maxJobs: 0 }, [
-  { id: 'acct_claude_1', provider: 'claudeAgent', label: 'Claude Max 1', status: 'active', lastUsedAt: now },
-  { id: 'acct_codex_1', provider: 'codex', label: 'ChatGPT Pro 1', status: 'active', lastUsedAt: now },
-  { id: 'acct_claude_2', provider: 'claudeAgent', label: 'Claude Max 2', status: 'cooling', cooldownUntil: new Date(Date.now() + 40 * 60000).toISOString() },
+  subscription('acct_claude_1', 'claudeAgent', 'Claude Max 1', 'Claude Max 20x', claudeUsage(38, 260, 44, 1500), { lastUsedAt: inMinutes(0) }),
+  subscription('acct_codex_1', 'codex', 'ChatGPT Pro 1', 'ChatGPT Pro', codexUsage(41, 210, 37, 1700), { lastUsedAt: inMinutes(-5) }),
+  subscription('acct_claude_2', 'claudeAgent', 'Claude Max 2', 'Claude Max 20x', claudeUsage(96, 195, 51, 2200), { lastUsedAt: inMinutes(-40) }),
 ]);
 const linux = await enroll('build-linux-01', 'linux', ['claudeAgent', 'codex'], { maxAgents: 2, maxJobs: 2 }, [
-  { id: 'acct_codex_2', provider: 'codex', label: 'ChatGPT Pro 2', status: 'active', lastUsedAt: now },
-  { id: 'acct_claude_3', provider: 'claudeAgent', label: 'Claude Max 3', status: 'active', lastUsedAt: now },
+  subscription('acct_codex_2', 'codex', 'ChatGPT Pro 2', 'ChatGPT Pro', codexUsage(0, undefined, 18, 2600)),
+  subscription('acct_claude_3', 'claudeAgent', 'Claude Max 3', 'Claude Max 20x', claudeUsage(0, undefined, 33, 1900)),
+  subscription('acct_claude_4', 'claudeAgent', 'Claude Max 4', 'Claude Max 20x', claudeUsage(0, undefined, 29, 2900)),
+  subscription('acct_claude_5', 'claudeAgent', 'Claude Max 5', 'Claude Max 20x', claudeUsage(97, 125, 58, 1100), { status: 'cooling', cooldownUntil: inMinutes(125), lastUsedAt: inMinutes(-170) }),
 ]);
 const machines = [studio, linux];
 
@@ -205,7 +219,11 @@ for (let turn = 0; turn < 40 && idle < 4; turn++) {
   }).catch(error => console.warn(error.message));
 }
 
-console.log(JSON.stringify({ projectId: project.id, workflowId: workflow.id, runId: run.id, held: held.size }));
+await call('PUT', '/pacing/settings', { enabled: true });
+for (const machine of machines) await heartbeat(machine);
+const pacing = await call('GET', '/pacing');
+console.log(JSON.stringify({ projectId: project.id, workflowId: workflow.id, runId: run.id, held: held.size,
+  pacing: pacing.providers.map(p => ({ provider: p.provider, targetAgents: p.targetAgents, limitedBy: p.limitedBy, starved: p.starved })) }));
 
 // Stay alive for the requested time, then let leases lapse.
 await sleep(minutes * 60000);

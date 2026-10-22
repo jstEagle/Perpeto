@@ -1,5 +1,8 @@
 import type {
   Account,
+  AccountPatch,
+  Pacing,
+  PacingSettings,
   Assignment,
   DraftRequest,
   GraphDiff,
@@ -126,6 +129,11 @@ export interface HubApi {
   createEnrollmentCode(): Promise<EnrollmentCode>;
   drainMachine(id: string): Promise<Machine>;
   listAccounts(): Promise<Account[]>;
+  /** Rename a subscription or set its plan. */
+  updateAccount(id: string, patch: AccountPatch): Promise<Account>;
+  /** Subscription pacing; `null` when the hub has no pacing route yet. */
+  pacing(): Promise<Pacing | null>;
+  updatePacing(settings: PacingSettings): Promise<Pacing>;
 
   listJobs(query?: { projectId?: string; runId?: string }): Promise<Job[]>;
   getJob(id: string): Promise<Job>;

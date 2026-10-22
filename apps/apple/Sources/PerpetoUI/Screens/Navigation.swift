@@ -36,7 +36,7 @@ public enum ProjectSection: String, CaseIterable, Hashable, Sendable, Identifiab
 }
 
 public enum FactorySection: String, CaseIterable, Hashable, Sendable, Identifiable {
-    case machines, accounts, usage
+    case machines, accounts, pacing, usage
 
     public var id: String { rawValue }
 
@@ -44,6 +44,7 @@ public enum FactorySection: String, CaseIterable, Hashable, Sendable, Identifiab
         switch self {
         case .machines: "Machines"
         case .accounts: "Accounts"
+        case .pacing: "Pacing"
         case .usage: "Usage"
         }
     }
@@ -52,6 +53,7 @@ public enum FactorySection: String, CaseIterable, Hashable, Sendable, Identifiab
         switch self {
         case .machines: "desktopcomputer"
         case .accounts: "person.2"
+        case .pacing: "gauge.with.dots.needle.67percent"
         case .usage: "chart.bar"
         }
     }

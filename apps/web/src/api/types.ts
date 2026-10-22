@@ -355,6 +355,109 @@ export interface Account {
   status: AccountStatus;
   cooldownUntil?: IsoTime;
   lastUsedAt?: IsoTime;
+  /** Subscription plan as the owner or the harness named it ("Max 20x"). */
+  plan?: string;
+  /** Limit windows the harness last reported for this login. */
+  usage?: AccountUsage;
+}
+
+/** Kinds of subscription limit. Anything else a hub sends decodes as `other`. */
+export type UsageWindowKind = 'session' | 'weekly' | 'monthly' | 'other';
+
+export interface UsageWindow {
+  id: string;
+  kind: UsageWindowKind;
+  label: string;
+  /** 0 to 100. */
+  usedPercent: number;
+  resetsAt?: IsoTime;
+  windowMins?: number;
+}
+
+export interface AccountUsage {
+  checkedAt?: IsoTime;
+  windows: UsageWindow[];
+}
+
+export interface AccountPatch {
+  label?: string;
+  /** Null clears the plan. */
+  plan?: string | null;
+}
+
+/*
+ * Subscription pacing: GET /pacing. The hub scales running agents so each
+ * subscription's limit is used up by its reset. Enums carry an `unknown`
+ * member so a newer hub's values decode instead of failing.
+ */
+export type PacingStrategy = 'rotation' | 'parallel' | 'unknown';
+export type PacingLimit = 'weekly' | 'session' | 'slots' | 'work' | 'none' | 'unknown';
+export type PacingAccountState = 'burning' | 'next' | 'resting' | 'cooling' | 'exhausted' | 'unknown';
+export type OnTrack = 'under' | 'on' | 'over' | 'unknown';
+
+export interface PacingProvider {
+  provider: string;
+  targetAgents: number;
+  runningAgents: number;
+  slots: number;
+  readyWork: number;
+  limitedBy: PacingLimit;
+  starved: boolean;
+}
+
+export interface PacingWindow {
+  id: string;
+  kind: UsageWindowKind;
+  label: string;
+  usedPercent: number;
+  resetsAt?: IsoTime;
+  projectedPercentAtReset: number;
+  onTrack: OnTrack;
+}
+
+export interface PacingAccount {
+  accountId: Id;
+  machineId: Id;
+  provider: string;
+  label: string;
+  plan?: string;
+  state: PacingAccountState;
+  targetAgents: number;
+  runningAgents: number;
+  /** Percent of the binding window one agent uses per hour. */
+  burnPerAgentHour?: number;
+  windows: PacingWindow[];
+  /** Minutes this subscription is forecast to sit unused before its reset. */
+  idleForecastMins: number;
+}
+
+export interface PacingSegment {
+  accountId: Id;
+  from: IsoTime;
+  to: IsoTime;
+  phase: 'burn' | 'rest';
+}
+
+export interface Pacing {
+  enabled: boolean;
+  strategy: PacingStrategy;
+  targetUsePercent: number;
+  /** Only when the hub reports them; a null maximum means no cap. */
+  minAgents?: number;
+  maxAgents?: number | null;
+  updatedAt?: IsoTime;
+  providers: PacingProvider[];
+  accounts: PacingAccount[];
+  timeline: PacingSegment[];
+}
+
+export interface PacingSettings {
+  enabled?: boolean;
+  strategy?: 'rotation' | 'parallel';
+  targetUsePercent?: number;
+  minAgents?: number;
+  /** Null removes the cap. */
+  maxAgents?: number | null;
 }
 
 export interface UsageRecord {

@@ -5,9 +5,15 @@ export interface ProviderOption {
   id: string;
   label: string;
   models: string[];
+  /** Subscription plans offered when naming an account; any text is accepted. */
+  plans?: string[];
 }
 
 export const PROVIDERS: ProviderOption[] = providerConfig.providers;
+
+export function planSuggestions(provider: string): string[] {
+  return PROVIDERS.find((p) => p.id === provider)?.plans ?? [];
+}
 
 export function providerLabel(id: string): string {
   return PROVIDERS.find((p) => p.id === id)?.label ?? id;

@@ -112,7 +112,7 @@ public final class FactoryStore {
     /// so a burst of interactions costs one round of requests.
     private func scheduleRefresh(for event: HubEvent) {
         let type = event.type
-        if type.hasPrefix("machine.") || type.hasPrefix("enrollment.") || type.hasSuffix(".usage") {
+        if type.hasPrefix("machine.") || type.hasPrefix("enrollment.") || type.hasSuffix(".usage") || type.hasPrefix("pacing.") || type.hasPrefix("account.") {
             pendingFactory = true
         }
         if let runId = event.runId, projectStates[event.projectId ?? ""]?.runs.contains(where: { $0.id == runId }) == true {
@@ -310,6 +310,39 @@ public final class FactoryStore {
             factory = try await source.loadFactory()
         } catch {
             lastError = describe(error, operation: "Draining \(machine.name)")
+        }
+    }
+
+    // MARK: Subscriptions and pacing
+
+    /// Renames a subscription or sets its plan, then reloads the factory.
+    @discardableResult
+    public func updateAccount(_ account: Account, label: String, plan: String) async -> Bool {
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let plan = plan.trimmingCharacters(in: .whitespacesAndNewlines)
+        let patch = AccountPatch(label: label == account.label ? nil : label, plan: plan == (account.plan ?? "") ? nil : plan)
+        guard patch.label != nil || patch.plan != nil else { return true }
+        do {
+            _ = try await source.updateAccount(id: account.id, patch)
+            factory = try await source.loadFactory()
+            lastError = nil
+            return true
+        } catch {
+            lastError = describe(error, operation: "Saving \(account.label)")
+            return false
+        }
+    }
+
+    /// Applies pacing settings on screen at once; the hub's answer replaces them.
+    public func updatePacing(_ settings: PacingSettings) async {
+        let before = factory.pacing
+        if let current = factory.pacing { factory.pacing = settings.applied(to: current) }
+        do {
+            factory.pacing = try await source.updatePacing(settings)
+            lastError = nil
+        } catch {
+            factory.pacing = before
+            lastError = describe(error, operation: "Saving the pacing settings")
         }
     }
 

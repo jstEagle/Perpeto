@@ -2,6 +2,40 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fail, integer, nonblank, object, requireValue } from './errors.js';
 
+/** Subscription pacing defaults. Burn-rate priors (percent of a window per agent-hour) are uncalibrated starting points. */
+export const PACING_CONFIG_DEFAULTS = Object.freeze({
+  enabled: true, strategy: 'rotation', targetUsePercent: 95, minAgents: 0, maxAgents: null,
+  handoverMins: 15, sprintMins: 90, horizonMins: 600, recomputeMs: 15000, nudgeIntervalMs: 1800000,
+  priors: { default: { session: 20, weekly: 2.5, monthly: 0.6, other: 20 }, claudeAgent: { session: 20, weekly: 2.5 }, codex: { session: 15, weekly: 2 } },
+});
+const WINDOW_KINDS = ['session', 'weekly', 'monthly', 'other'];
+
+/** Validated pacing settings; shared by hub config and `PUT /pacing/settings` so both accept the same values. */
+export function pacingFields(value, { partial = false } = {}) {
+  object(value, 'pacing');
+  const keys = Object.keys(PACING_CONFIG_DEFAULTS);
+  requireValue(Object.keys(value).every(key => keys.includes(key)), 'Unknown pacing setting.');
+  const has = key => !partial || Object.hasOwn(value, key);
+  if (has('enabled')) requireValue(typeof value.enabled === 'boolean', 'pacing.enabled must be a boolean.');
+  if (has('strategy')) requireValue(['rotation', 'parallel'].includes(value.strategy), 'pacing.strategy must be rotation or parallel.');
+  if (has('targetUsePercent')) integer(value.targetUsePercent, 'pacing.targetUsePercent', 50, 100);
+  if (has('minAgents')) integer(value.minAgents, 'pacing.minAgents', 0, 10000);
+  if (has('maxAgents') && value.maxAgents !== null) integer(value.maxAgents, 'pacing.maxAgents', 0, 10000);
+  if (value.maxAgents !== undefined && value.maxAgents !== null && value.minAgents !== undefined) requireValue(value.minAgents <= value.maxAgents, 'pacing.minAgents cannot exceed maxAgents.');
+  for (const [key, min, max] of [['handoverMins', 1, 240], ['sprintMins', 0, 1440], ['horizonMins', 60, 2880], ['recomputeMs', 1000, 3600000], ['nudgeIntervalMs', 60000, 86400000]]) {
+    if (has(key)) integer(value[key], `pacing.${key}`, min, max);
+  }
+  if (has('priors')) {
+    object(value.priors, 'pacing.priors');
+    for (const [provider, rates] of Object.entries(value.priors)) {
+      nonblank(provider, 'pacing.priors provider', 200); object(rates, `pacing.priors.${provider}`);
+      for (const [kind, rate] of Object.entries(rates)) requireValue(WINDOW_KINDS.includes(kind) && typeof rate === 'number' && Number.isFinite(rate) && rate > 0 && rate <= 1000,
+        'pacing.priors rates are positive percent-per-agent-hour numbers by window kind.');
+    }
+  }
+  return value;
+}
+
 export const isLoopback = host => ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(host) || /^127\.\d+\.\d+\.\d+$/.test(host);
 /** An http(s) origin machines can reach; plain http only on loopback. */
 export function publicOrigin(value) {
@@ -21,9 +55,15 @@ export function loadConfig(filename) {
     maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
     finishedWorkRetentionMs: 604800000, eventRetentionMs: 2592000000, usageRetentionMs: 2592000000, idempotencyRetentionMs: 86400000,
     archiveFinished: true, retentionSweepIntervalMs: 60000, sessionTtlMs: 43200000, messageRatePerMinute: 30, architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' },
+    pacing: PACING_CONFIG_DEFAULTS,
   };
   requireValue(Object.keys(input).every(key => Object.hasOwn(defaults, key)), 'Unknown hub configuration field.');
   const config = { ...defaults, ...input };
+  // A partial pacing section keeps the other defaults; priors merge per provider.
+  const pacing = object(input.pacing ?? {}, 'pacing');
+  const priors = structuredClone(PACING_CONFIG_DEFAULTS.priors);
+  for (const [provider, rates] of Object.entries(object(pacing.priors ?? {}, 'pacing.priors'))) priors[provider] = { ...(priors[provider] ?? {}), ...object(rates, `pacing.priors.${provider}`) };
+  config.pacing = pacingFields({ ...PACING_CONFIG_DEFAULTS, ...pacing, priors });
   object(config.architectHarness, 'architectHarness'); nonblank(config.architectHarness.provider, 'architect provider', 200); nonblank(config.architectHarness.model, 'architect model', 200);
   nonblank(config.host, 'host'); integer(config.port, 'port', 0, 65535);
   integer(config.requestMaxBytes, 'requestMaxBytes', 128, 16 * 1024 * 1024);

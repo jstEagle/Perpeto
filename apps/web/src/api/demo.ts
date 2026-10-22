@@ -1,9 +1,14 @@
 import { HubError, OWNER_ROLE_ID } from './hub';
 import type { EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import { createDemoState, DEMO_IDS } from './fixtures';
+import { applyPacingSettings, demoPacing, demoSubscriptions } from './pacing-fixtures';
 import type { DemoState } from './fixtures';
 import type {
+  Account,
+  AccountPatch,
   Assignment,
+  Pacing,
+  PacingSettings,
   DraftRequest,
   Goal,
   GoalInput,
@@ -420,6 +425,38 @@ export class DemoHub implements HubApi {
   async listAccounts() {
     await latency();
     return clone(this.#state.accounts);
+  }
+  async updateAccount(id: string, patch: AccountPatch): Promise<Account> {
+    await latency();
+    const account = this.#state.accounts.find((a) => a.id === id) ?? notFound('Account');
+    if (patch.label !== undefined) {
+      if (!patch.label.trim()) throw new HubError(400, 'INVALID_INPUT', 'A subscription needs a label.');
+      account.label = patch.label.trim();
+    }
+    if (patch.plan !== undefined) account.plan = patch.plan?.trim() || undefined;
+    this.#emit('account.updated', { kind: 'account', id }, {});
+    this.#emit('pacing.updated', { kind: 'pacing', id: 'pacing' }, {});
+    return clone(account);
+  }
+  async pacing(): Promise<Pacing> {
+    await latency();
+    const s = this.#state;
+    const plan = demoPacing(demoSubscriptions({ studio: DEMO_IDS.studio, linux: DEMO_IDS.linux }), s.pacing, s.createdAt, s.pacingUpdatedAt);
+    // Labels and plans follow edits made on the Accounts screen.
+    for (const a of plan.accounts) {
+      const own = s.accounts.find((x) => x.id === a.accountId);
+      if (own) Object.assign(a, { label: own.label, plan: own.plan });
+    }
+    return plan;
+  }
+  async updatePacing(settings: PacingSettings): Promise<Pacing> {
+    await latency();
+    if (settings.targetUsePercent !== undefined && !(settings.targetUsePercent >= 50 && settings.targetUsePercent <= 100))
+      throw new HubError(400, 'INVALID_INPUT', 'Target use must be between 50% and 100%.');
+    this.#state.pacing = applyPacingSettings(this.#state.pacing, settings);
+    this.#state.pacingUpdatedAt = Date.now();
+    this.#emit('pacing.updated', { kind: 'pacing', id: 'pacing' }, {});
+    return this.pacing();
   }
 
   async listJobs(query: { projectId?: string; runId?: string } = {}) {

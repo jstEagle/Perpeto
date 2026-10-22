@@ -527,3 +527,59 @@ test('Claude keychain service names follow Claude Code per config directory', ()
   assert.equal(claudeKeychainService(dir), `Claude Code-credentials-${digest}`);
   assert.equal(claudeKeychainService(`${dir}/`), claudeKeychainService(dir));
 });
+
+test('snapshot reports plan and usage windows with kind, label, reset and length, never raw messages', t => {
+  const f = fixture(t);
+  f.add('acct_claude', 'claudeAgent'); f.add('acct_codex');
+  // T3 normalized snapshot, then a sparse update that keeps the window's length and label.
+  f.pool.observe({ accountId: 'acct_claude', idempotencyKey: f.next(), plan: 'Claude Max', message: { windows: [
+    { id: 'five_hour', kind: 'session', label: '5-hour limit', usedPercent: 40, resetsAt: '2026-10-21T04:00:00.000Z', windowDurationMins: 300 },
+    { id: 'seven_day', kind: 'weekly', label: 'Weekly limit', usedPercent: 12, resetsAt: '2026-10-25T00:00:00.000Z', windowDurationMins: 10080 }] } });
+  f.observe('acct_claude', { windows: [{ id: 'five_hour', usedPercent: 55 }] });
+  // Native Codex notification: primary/secondary infer session/weekly from their length.
+  f.observe('acct_codex', { method: 'account/rateLimits/updated', params: { rateLimits: { primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: 1792557600 },
+    secondary: { usedPercent: 5, windowDurationMins: 10080 } } } });
+  const [claudeAccount, codexAccount] = f.pool.snapshot();
+  assert.equal(claudeAccount.plan, 'Claude Max');
+  assert.deepEqual(claudeAccount.usage, { checkedAt: '2026-10-21T02:00:00.000Z', windows: [
+    { id: 'five_hour', kind: 'session', label: '5-hour limit', usedPercent: 55, resetsAt: '2026-10-21T04:00:00.000Z', windowMins: 300 },
+    { id: 'seven_day', kind: 'weekly', label: 'Weekly limit', usedPercent: 12, resetsAt: '2026-10-25T00:00:00.000Z', windowMins: 10080 }] });
+  assert.deepEqual(codexAccount.usage.windows.map(window => [window.id, window.kind, window.usedPercent, window.windowMins]),
+    [['primary', 'session', 20, 300], ['secondary', 'weekly', 5, 10080]]);
+  // After its reset a window reports 0 % without a reset time.
+  f.advance(3 * 3_600_000);
+  assert.deepEqual(f.pool.snapshot()[0].usage.windows[0], { id: 'five_hour', kind: 'session', label: '5-hour limit', usedPercent: 0, windowMins: 300 });
+  const text = JSON.stringify(f.pool.snapshot());
+  for (const secret of ['fixture-claude-secret', 'fixture-codex-secret', f.nodeDataDir]) assert.ok(!text.includes(secret));
+  assert.throws(() => f.pool.observe({ accountId: 'acct_claude', message: {}, plan: 'bad\nplan', idempotencyKey: f.next() }), code('INVALID_INPUT'));
+});
+
+test('operator label and plan updates are idempotent and clearing the plan reveals the detected one', t => {
+  const f = fixture(t);
+  f.add('acct_one', 'claudeAgent');
+  f.pool.observe({ accountId: 'acct_one', message: {}, plan: 'Claude Pro', idempotencyKey: f.next() });
+  const updated = f.pool.update({ accountId: 'acct_one', label: 'Rotation A', plan: 'Claude Max 20x', idempotencyKey: 'meta-1' });
+  assert.equal(updated.label, 'Rotation A'); assert.equal(updated.plan, 'Claude Max 20x');
+  assert.deepEqual(f.pool.update({ accountId: 'acct_one', label: 'Rotation A', plan: 'Claude Max 20x', idempotencyKey: 'meta-1' }), updated);
+  assert.throws(() => f.pool.update({ accountId: 'acct_one', label: 'Other', idempotencyKey: 'meta-1' }), code('IDEMPOTENCY_CONFLICT'));
+  assert.equal(f.pool.update({ accountId: 'acct_one', plan: null, idempotencyKey: f.next() }).plan, 'Claude Pro');
+  assert.throws(() => f.pool.update({ accountId: 'acct_one', label: ' ', idempotencyKey: f.next() }), code('INVALID_INPUT'));
+});
+
+test('paced selection only uses accounts with free allowance and falls back without a plan', t => {
+  const f = fixture(t, { selection: 'paced', maxConcurrentPerAccount: 1 });
+  for (const id of ['acct_a', 'acct_b', 'acct_c']) f.add(id);
+  // The burning account takes several agents, beyond maxConcurrentPerAccount, up to its allowance.
+  f.pool.setPacing({ acct_b: 3, acct_c: 0 });
+  assert.deepEqual(['asg_1', 'asg_2', 'asg_3'].map(id => f.select(id).account.id), ['acct_b', 'acct_b', 'acct_b']);
+  // Allowance used up: the plan has no room, so the headroom policy applies (acct_a, the least recently used free one).
+  assert.equal(f.select('asg_4').account.id, 'acct_a');
+  f.release('asg_1');
+  assert.equal(f.select('asg_5').account.id, 'acct_b');
+  // A plan that does not cover this provider, or no plan, keeps the headroom policy.
+  f.pool.setPacing(null);
+  assert.equal(f.select('asg_6').account.id, 'acct_c');
+  assert.throws(() => f.pool.setPacing({ acct_a: -1 }), code('INVALID_INPUT'));
+  assert.throws(() => f.pool.setPacing({ 'not-an-account': 1 }), code('INVALID_INPUT'));
+  assert.throws(() => new AccountPool({ nodeDataDir: f.nodeDataDir, machineId: 'mch_fixture', selection: 'greedy' }), code('INVALID_CONFIG'));
+});

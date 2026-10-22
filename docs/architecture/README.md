@@ -41,6 +41,7 @@ Deployable surfaces live in `apps/`; libraries they compose live in `packages/` 
 | `packages/workflow` | `@perpeto/workflow` | Workflow graph schema, validation, compilation, and the deterministic run engine. No I/O except its SQLite store. |
 | `packages/delivery` | `@perpeto/delivery` | PR policy, merge queue, CI job definitions, revision-bound evidence. |
 | `packages/accounts` | `@perpeto/accounts` | Per-machine subscription pool and hot swapping, in the spirit of CCswap. |
+| `packages/pacer` | `@perpeto/pacer` | Pure subscription pacer: plans agents per provider and account from usage windows, learned burn rates, slots and ready work. No I/O. |
 | `packages/t3-executor` | `@perpeto/t3-executor` | Executor that drives a local T3 environment: threads, turns, events, token usage, subagent policy. |
 | `packages/messaging` | `@perpeto/messaging` | Existing durable messaging store. Shared by the hub and the T3 environment server. |
 | `packages/sdk` | `@perpeto/sdk` | Messaging HTTP client, `perpeto-messages` CLI and MCP stdio server for agents. |
@@ -89,7 +90,9 @@ MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queu
 // Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
                running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
-Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt? }
+Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt?, plan?: string,
+               usage?: { checkedAt, windows: UsageWindow[] } }   // percentages and reset times only: never credentials, emails, fingerprints or paths
+UsageWindow  { id /* provider's stable id: five_hour, seven_day, primary… */, kind: 'session'|'weekly'|'monthly'|'other', label, usedPercent /* 0..100 */, resetsAt?, windowMins? }
 UsageRecord  { id, projectId, runId?, assignmentId?, machineId, accountId?, provider, model,
                inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd?, at }
 Event        { seq /* hub-global increasing integer */, at, type, projectId?, runId?, subject: { kind, id }, data }
@@ -163,11 +166,11 @@ NodeMetrics   { nodeId, queued, active, done, failed, concurrency, utilization /
 EdgeMetrics   { edgeId, kind, count, unplanned }
 RunMetrics    { velocity: { itemsDonePerDay, trend: number[] }, cycleTimeSec: { avg, p90 }, wip,
                 tokensPerItem, activeAgents, conflictRejections, rebases, machines: { machineId, activeAgents, nodes: string[] }[] }
-Bottleneck    { nodeId, reason: 'saturated'|'queue-growing'|'high-failure'|'waiting-on-human'|'no-capacity'|'rework-loop'|'conflict-churn',
+Bottleneck    { nodeId, reason: 'saturated'|'queue-growing'|'high-failure'|'waiting-on-human'|'no-capacity'|'rework-loop'|'conflict-churn'|'under-burning',
                 evidence: string, severity: 'info'|'warning'|'critical' }
 ```
 
-Bottlenecks are computed from measured state, never guessed by a model. Examples: utilization at or above 0.9 with a growing queue is `saturated`; queued work whose requirements no online machine meets is `no-capacity`; loop iterations rising above the configured average is `rework-loop`. Each bottleneck carries the numbers behind it in `evidence`.
+Bottlenecks are computed from measured state, never guessed by a model. Examples: utilization at or above 0.9 with a growing queue is `saturated`; queued work whose requirements no online machine meets is `no-capacity`; loop iterations rising above the configured average is `rework-loop`; a pacing plan whose provider has less ready work than its subscriptions sustain is `under-burning`, attached to the input node of each running run that uses that provider (see [subscription pacing](#subscription-pacing)). Each bottleneck carries the numbers behind it in `evidence`.
 
 The run view shows on each node its active agents, queue depth, wait time and throughput. Edges show recent traffic counts, and bottlenecks are marked with their reason. Beside the map, a velocity panel and a "where work is running" panel show machines with their active agents. Use explicit numbers and status labels; any motion is brief and respects reduced motion.
 
@@ -192,7 +195,9 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |
 | `POST /work-items/:id/decision` `{ decision, note?, decisionId }` | Answer a `human` gate; `decisionId` (exposed on the work item and `human.requested`) binds the answer to one gate visit, and a stale one gets `409 STALE_DECISION` |
 | `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain`, `POST /machines/:id/revoke` | Machines; revoke permanently invalidates every token for the machine |
-| `GET /accounts` | Subscription pool across machines |
+| `GET /accounts` | Subscription pool across machines, with each account's `plan` and `usage` |
+| `PATCH /accounts/:id` `{ label?, plan? }` | Owner display metadata; `plan: null` clears the operator plan. Shown at once and relayed to the owning node on its next heartbeat |
+| `GET /pacing`, `PUT /pacing/settings` | Subscription pacing plan and settings; see [subscription pacing](#subscription-pacing) |
 | `GET /assignments/:id` | One assignment, used to follow the workflow architect |
 | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
 | `GET /jobs/:id/bundle?attempt=N` | Git bundle of a hub-hosted job revision for the leasing machine or the owner; jobs with `source: { kind: 'hub-bundle' }` are fetched this way so any enrolled machine can run them. `409 SOURCE_UNAVAILABLE` if the revision is gone |
@@ -230,7 +235,7 @@ Planner `items[].touches?: string[]` survive hub result transport and remain eng
 
 Enrollment codes come wrapped in a paste-able join code, `pj1_` + base64url `{ url, fingerprint?, code }` (`POST /machines/enrollment-codes` accepts `{ url?, pin? }`). With hub TLS enabled (self-signed, generated on first start), nodes pin the certificate's SHA-256 fingerprint and send nothing to a server with a different one; `GET /tls`, `POST /tls/rotate` and `POST /tls/activate` manage rotation, and heartbeat responses carry `tls.fingerprints` so running nodes follow it. A non-loopback hub without TLS refuses to start (`INSECURE_BIND`) unless `allowInsecureRemote` is set. Tailscale (`perpeto hub expose --tailscale`) is the recommended path between machines.
 
-| `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers, labels }` | Every 10 s. Missing three marks the machine `offline` |
+| `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers, labels }` | Every 10 s. Missing three marks the machine `offline`. Accounts may carry `plan` and `usage` |
 | `POST /nodes/lease` `{ kinds: ['assignment','job'], max }` | Long-poll up to 25 s. Returns leased assignments and jobs with `leaseExpiresAt` (60 s) |
 | `POST /assignments/:id/renew`, `POST /jobs/:id/renew` | Extend a lease while working |
 | `POST /assignments/:id/release`, `POST /jobs/:id/release` `{ attempt, idempotencyKey?, reason? }` | Hand back unstarted work without consuming an attempt; the same machine is not offered it again for one lease duration |
@@ -242,7 +247,8 @@ Lease wire format, fixed after the node implementation:
 
 - `POST /nodes/lease` returns `{ assignments: Assignment[], jobs: Job[] }`. Every item includes `attempt` and `leaseExpiresAt`.
 - Renew and event bodies include `attempt` beside `idempotencyKey`. The hub checks machine ownership, attempt and expiry atomically, so an older attempt re-leased to the same machine is fenced off. Renew returns `{ leaseExpiresAt }`; a node that gets no confirmation abandons the work.
-- Heartbeat bodies include `status: 'online'|'draining'`. Heartbeat responses are `{ status, cancel: { assignments: string[], jobs: string[] } }`; the node aborts listed work and reports it `cancelled`. This is how stopping a run or cancelling a job reaches a machine.
+- Heartbeat bodies include `status: 'online'|'draining'`. Heartbeat responses are `{ status, cancel: { assignments: string[], jobs: string[] }, tls?, pacing?: { accounts: { [accountId]: { targetAgents } } }, accountUpdates?: { id, accountId, label?, plan?: string|null }[] }`; the node aborts listed work and reports it `cancelled`. This is how stopping a run or cancelling a job reaches a machine. `pacing` is present only while pacing is enabled and lists this machine's accounts of paced providers; without it the node's `paced` selection falls back to its own policy. `accountUpdates` repeat until the node's snapshot shows them.
+- An assignment's `progress` event `{ interaction: 'account.bound', accountId }` names the account the agent runs on (an account of the same machine); the hub records it as `Assignment.accountId` to count agents per account.
 
 A run result the engine refuses is acknowledged with `200` plus a `reason` and recorded as a failed attempt, so a node never loops resending it.
 
@@ -251,6 +257,25 @@ Heartbeats, renewals and CI log lines do not write events; liveness lives in mac
 Finished assignments and jobs are archived after `finishedWorkRetentionMs` but remain readable by id and in per-run listings. Events, usage and idempotency records have their own retention keys; event retention is at least 7 days so metric windows stay complete, and usage past retention keeps hourly rollups.
 
 An expired lease on run work is reported to the engine as a failed attempt, and the engine's retry policy schedules the next attempt. Project-scoped work and merge-queue jobs return to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
+
+### Subscription pacing
+
+The pacer keeps every subscription working and spends each usage window by its reset. Inputs are the heartbeat usage windows, burn rates learned per account and window, running agents per account, machine slots and ready work. The algorithm, worked examples and limits are in the [pacer handoff](../handoffs/pacer.md). Real subscriptions have not been paced live.
+
+```ts
+Pacing         { enabled, strategy: 'rotation'|'parallel', targetUsePercent, minAgents, maxAgents: number|null, updatedAt,
+                 providers: PacingProvider[], accounts: PacingAccount[], timeline: { accountId, from, to, phase: 'burn'|'rest' }[] }   // timeline covers the next 10 h
+PacingProvider { provider, targetAgents, runningAgents, slots, readyWork, limitedBy: 'weekly'|'session'|'slots'|'work'|'none', starved, sustainableAgents }
+PacingAccount  { accountId, machineId, provider, label, plan?, status, state: 'burning'|'next'|'resting'|'cooling'|'exhausted'|'unknown',
+                 targetAgents, runningAgents, burnPerAgentHour?, idleForecastMins,
+                 windows: { id, kind, label, usedPercent, resetsAt?, projectedPercentAtReset, onTrack: 'under'|'on'|'over' }[] }
+```
+
+- A provider is paced once one of its enabled accounts reports usage windows; only paced providers appear in `providers`. Accounts of other providers are listed with `state: 'unknown'` and no allowance.
+- `sustainableAgents` is what the subscriptions and slots could run with unlimited work; `starved` means `readyWork` is below it. `burnPerAgentHour` is the learned session rate (percent per agent-hour) and is absent while the provider prior is used. `idleForecastMins` counts minutes in the next 10 h when the account's session clock runs with headroom but no agents are planned on it. Disabled and invalid accounts report `state: 'resting'` with their `status`.
+- `PUT /pacing/settings` `{ enabled?, strategy?, targetUsePercent? (50..100), minAgents?, maxAgents? (null clears) }` takes `idempotencyKey` like other mutations, persists in the hub database, and returns the `Pacing` view. Defaults come from the hub config key `pacing` (`enabled: true`, `strategy: 'rotation'`, `targetUsePercent: 95`, burn-rate priors per provider and window kind).
+- While enabled, leases cap each machine's agents per paced provider at the sum of its accounts' `targetAgents`; caps never raise workflow or machine limits. The hub emits `pacing.updated` (provider targets, limits, account states and targets) when the plan changes materially, `pacing.settings-updated`, `account.updated` after `PATCH /accounts/:id`, and `pacing.nudged` when a starved fleet gives an idle keep-open scheduled run one improvement pass ahead of its schedule (at most once per `pacing.nudgeIntervalMs`).
+- Usage samples are stored per account when a fresh reading arrives (its `checkedAt` moves) and expire with `usageRetentionMs`.
 
 ## Node executors
 
@@ -264,7 +289,7 @@ The node ships a `fake` executor for tests and loads `@perpeto/t3-executor` for 
 
 `@perpeto/t3-executor` creates a T3 thread for each assignment on the configured provider and model, sends the prompt, follows the thread's events to completion, forwards token usage as `usage` events, and enforces `AgentPolicy`: subagent creation beyond `maxSubagents` or to a provider outside `allowedSubagentProviders` is refused.
 
-`@perpeto/accounts` chooses which subscription account a T3 provider instance uses. When a harness reports a rate limit, the account cools down and new assignments and retries go to the next eligible account. A running conversation is not moved between accounts. It never copies credentials between machines.
+`@perpeto/accounts` chooses which subscription account a T3 provider instance uses. When a harness reports a rate limit, the account cools down and new assignments and retries go to the next eligible account. A running conversation is not moved between accounts. It never copies credentials between machines. Its `paced` selection, the node default, picks accounts with free hub allowance first. The executor reads the account instance's T3 usage-limit snapshot when the instance is ready, after each root turn and every `usagePollMs` (2 min) during a turn, and feeds it to the pool, so heartbeats carry current windows.
 
 ## Clients and brand
 

@@ -66,6 +66,8 @@ export class Observation {
       const group = byMachine.get(assignment.machineId) ?? { machineId: assignment.machineId, activeAgents: 0, nodes: [] };
       group.activeAgents++; if (!group.nodes.includes(assignment.nodeId)) group.nodes.push(assignment.nodeId); byMachine.set(assignment.machineId, group);
     }
-    return { ...result, run: { ...result.run, activeAgents: running.length, machines: [...byMachine.values()] } };
+    // Subscription headroom going unused for lack of ready work is a bottleneck of the factory, not of one node.
+    const underBurning = this.hub.pacing.bottlenecks(runs).map(finding => runId ? (({ runId: _, ...rest }) => rest)(finding) : finding);
+    return { ...result, bottlenecks: [...result.bottlenecks, ...underBurning], run: { ...result.run, activeAgents: running.length, machines: [...byMachine.values()] } };
   }
 }

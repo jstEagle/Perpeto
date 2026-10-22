@@ -77,7 +77,7 @@ export async function startFactory(t, { executor, hub: hubConfig = {}, node: nod
   await writeFile(nodePath, JSON.stringify({ hubUrl: url, name: 'e2e-machine', dataDir: './data', enrollmentCodeFile: './enrollment-code',
     labels: ['e2e'], capacity: { maxAgents: 2, maxJobs: 1 }, providers: [], fake: {}, executorPackages: [], accounts: {},
     timing: { heartbeatMs: 200, renewMs: 1000, requestMs: 5000, pollIdleMs: 20, backoffMinMs: 20, backoffMaxMs: 200 }, ...nodeConfig }));
-  const node = await createNode({ configPath: nodePath, registry: new ExecutorRegistry().register(executor) });
+  const node = await createNode({ configPath: nodePath, registry: new ExecutorRegistry().register(executor), clock });
   await node.start();
   cleanups.push(() => node.stop({ drain: false }));
 

@@ -8,14 +8,17 @@ public struct FactoryState: Sendable, Hashable {
     public var jobs: [Job]
     public var overview: FactoryOverview
     public var usage: UsageBundle
+    /// Subscription pacing; nil when the hub has no pacing route yet.
+    public var pacing: Pacing?
 
-    public init(projects: [Project], machines: [Machine], accounts: [Account], jobs: [Job], overview: FactoryOverview, usage: UsageBundle) {
+    public init(projects: [Project], machines: [Machine], accounts: [Account], jobs: [Job], overview: FactoryOverview, usage: UsageBundle, pacing: Pacing? = nil) {
         self.projects = projects
         self.machines = machines
         self.accounts = accounts
         self.jobs = jobs
         self.overview = overview
         self.usage = usage
+        self.pacing = pacing
     }
 
     public static let empty = FactoryState(projects: [], machines: [], accounts: [], jobs: [], overview: .init(activeAgents: 0, queuedWork: 0, tokensToday: 0, machinesOnline: 0), usage: .empty)
@@ -203,5 +206,18 @@ public protocol FactoryDataSource: Sendable {
     func markRead(projectId: String, channelId: String, messageId: String) async throws -> UnreadState
     func enrollmentCode() async throws -> EnrollmentCode
     func drain(machineId: String) async throws -> Machine
+    /// Renames a subscription or sets its plan.
+    func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account
+    func updatePacing(_ settings: PacingSettings) async throws -> Pacing
     func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error>
+}
+
+extension FactoryDataSource {
+    /// Sources that predate subscription pacing refuse its writes.
+    public func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account {
+        throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Editing subscriptions is not available here.")
+    }
+    public func updatePacing(_ settings: PacingSettings) async throws -> Pacing {
+        throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Pacing is not available here.")
+    }
 }

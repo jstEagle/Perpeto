@@ -821,8 +821,13 @@ public struct Account: Codable, Hashable, Identifiable, Sendable {
     public var status: Status
     public var cooldownUntil: Date?
     public var lastUsedAt: Date?
+    /// Subscription plan as the owner or the harness named it ("Max 20x").
+    public var plan: String?
+    /// Limit windows the harness last reported for this login.
+    public var usage: AccountUsage?
 
-    public init(id: String, machineId: String, provider: String, label: String, status: Status, cooldownUntil: Date? = nil, lastUsedAt: Date? = nil) {
+    public init(id: String, machineId: String, provider: String, label: String, status: Status, cooldownUntil: Date? = nil, lastUsedAt: Date? = nil,
+                plan: String? = nil, usage: AccountUsage? = nil) {
         self.id = id
         self.machineId = machineId
         self.provider = provider
@@ -830,6 +835,25 @@ public struct Account: Codable, Hashable, Identifiable, Sendable {
         self.status = status
         self.cooldownUntil = cooldownUntil
         self.lastUsedAt = lastUsedAt
+        self.plan = plan
+        self.usage = usage
+    }
+
+    enum CodingKeys: String, CodingKey { case id, machineId, provider, label, status, cooldownUntil, lastUsedAt, plan, usage }
+
+    /// `plan` and `usage` are new in the contract: a malformed value is
+    /// dropped instead of failing the whole account list.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        machineId = try c.decode(String.self, forKey: .machineId)
+        provider = try c.decode(String.self, forKey: .provider)
+        label = try c.decode(String.self, forKey: .label)
+        status = try c.decode(Status.self, forKey: .status)
+        cooldownUntil = try c.decodeIfPresent(Date.self, forKey: .cooldownUntil)
+        lastUsedAt = try c.decodeIfPresent(Date.self, forKey: .lastUsedAt)
+        plan = (try? c.decodeIfPresent(String.self, forKey: .plan)).flatMap { $0?.isEmpty == false ? $0 : nil }
+        usage = (try? c.decodeIfPresent(AccountUsage.self, forKey: .usage)) ?? nil
     }
 }
 

@@ -34,6 +34,7 @@ The node passes its `runtime` section as `config`. Executor settings can sit at 
 | `personalSkillDirs` | `["~/.agents/skills"]` (absolute) | Shared skill folders whose skills factory Codex instances disable |
 | `turnTimeoutMs` | 4 hours | Assignment time limit |
 | `settleMs`, `pollMs`, `accountReadyTimeoutMs` | 2000, 1000, 60000 | Timing |
+| `usagePollMs` | 120000 | How often a running pooled assignment re-reads its account's T3 usage-limit snapshot; `0` keeps only the reads at instance readiness and turn ends |
 
 A minted session gets `orchestration:read`, `orchestration:operate` and `providers:manage`. The last one is needed to register account instances.
 
@@ -47,7 +48,7 @@ A minted session gets `orchestration:read`, `orchestration:operate` and `provide
 
    With `agentIsolation: factory` the bound instance gets the factory Git identity and project-only settings, as below; the pool's Perpeto-owned home is kept.
 
-   It sends every provider failure to `observe`, so the pool decides between rate-limit cooldown and auth invalidation. Binding checks, observations and release carry the selected reservation token. It always stops renewal and releases the reservation in `finally`. Renewal loss interrupts followed root and child runs and returns an assignment `failure`. `ACCOUNT_POOL_EXHAUSTED` also returns `failure` with a retry-with-backoff summary and never selects the operator's default login. With no enrolled accounts or no pool support (`acquire` returns `null`), it uses a ready instance of the harness's driver.
+   It sends every provider failure to `observe`, so the pool decides between rate-limit cooldown and auth invalidation. It also reads the account instance's `usageLimits` from `server.getConfig` when the instance is ready, after each root turn and every `usagePollMs`, and observes its windows with the detected plan (T3's subscription auth label; never an API-key login or an email), so the node heartbeat carries current usage and a window at 100 % cools the account. Binding checks, observations and release carry the selected reservation token. It always stops renewal and releases the reservation in `finally`. Renewal loss interrupts followed root and child runs and returns an assignment `failure`. `ACCOUNT_POOL_EXHAUSTED` also returns `failure` with a retry-with-backoff summary and never selects the operator's default login. With no enrolled accounts or no pool support (`acquire` returns `null`), it uses a ready instance of the harness's driver.
    Without a pool it picks a ready operator instance of the driver and, in `factory` mode, registers and waits for its factory instance (`perpeto_<base>_<hash>`) instead.
 2. **Workspace from `assignment.repo`.**
    - A local working checkout (`localPath`) gets a T3-managed worktree on the work branch. An existing branch or worktree is reused.

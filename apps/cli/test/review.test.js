@@ -61,6 +61,7 @@ test('L15 generated hub config covers the current contract and keeps durable dat
   const example = await readJson(new URL('../../../config/hub.example.json', import.meta.url));
   const config = hubConfig('/tmp/perpeto');
   assert.deepEqual(Object.keys(config).sort(), Object.keys(example).sort());
+  assert.deepEqual(config.pacing, example.pacing, 'pacing defaults match the example');
   for (const key of ['databasePath', 'messagingDatabasePath', 'deliveryDatabasePath', 'workflowDatabasePath', 'deliveryRepositoriesPath', 'ownerTokenPath']) assert.match(config[key], /^\.\/hub\//);
   assert.equal(config.deliveryMaxStepFailures, 5); assert.equal(config.deliveryRetryBackoffMs, 2000);
   const node = nodeConfig('/tmp/perpeto', 'https://hub.example');

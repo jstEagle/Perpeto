@@ -18,6 +18,7 @@ const MessagesPage = lazyRouteComponent(() => import('../routes/messages'), 'Mes
 const MergeQueuePage = lazyRouteComponent(() => import('../routes/merge-queue'), 'MergeQueuePage');
 const MachinesPage = lazyRouteComponent(() => import('../routes/machines'), 'MachinesPage');
 const AccountsPage = lazyRouteComponent(() => import('../routes/accounts'), 'AccountsPage');
+const PacingPage = lazyRouteComponent(() => import('../routes/pacing'), 'PacingPage');
 const UsagePage = lazyRouteComponent(() => import('../routes/usage'), 'UsagePage');
 const SettingsPage = lazyRouteComponent(() => import('../routes/settings'), 'SettingsPage');
 
@@ -55,6 +56,7 @@ const messages = createRoute({
 const mergeQueue = createRoute({ getParentRoute: () => project, path: '/merge-queue', component: MergeQueuePage });
 const machines = createRoute({ getParentRoute: () => root, path: '/machines', component: MachinesPage });
 const accounts = createRoute({ getParentRoute: () => root, path: '/accounts', component: AccountsPage });
+const pacing = createRoute({ getParentRoute: () => root, path: '/pacing', component: PacingPage });
 const usage = createRoute({ getParentRoute: () => root, path: '/usage', component: UsagePage });
 const settings = createRoute({ getParentRoute: () => root, path: '/settings', component: SettingsPage });
 
@@ -63,6 +65,7 @@ const tree = root.addChildren([
   project.addChildren([overview, workflows, workflow, editor, runs, run, work, messages, mergeQueue]),
   machines,
   accounts,
+  pacing,
   usage,
   settings,
 ]);

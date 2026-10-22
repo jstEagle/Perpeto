@@ -3,18 +3,25 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { assertPrivate, fail, guarded, privateDirectory, readJson, writePrivate } from './private-files.js';
 import { checkHome, providers, readImport, writeHome } from './imports.js';
-import { detectProviderSignal, usageWindows } from './signals.js';
+import { detectProviderSignal, kindOf, usageWindows } from './signals.js';
 import { hasClaudeKeychainLogin } from './claude-login.js';
 
 export { AccountPoolError } from './private-files.js';
 export { detectProviderSignal, detectClaudeSignal, detectCodexSignal } from './signals.js';
 export { claudeKeychainService, claudeOauth, deleteClaudeKeychainLogin, hasClaudeKeychainLogin, readClaudeKeychainLogin } from './claude-login.js';
 
-/** @typedef {{id:string,machineId:string,provider:string,label:string,status:'active'|'cooling'|'disabled'|'invalid',cooldownUntil?:string,lastUsedAt?:string}} Account */
+/** @typedef {{id:string,kind:'session'|'weekly'|'monthly'|'other',label:string,usedPercent:number,resetsAt?:string,windowMins?:number}} UsageWindow */
+/** @typedef {{id:string,machineId:string,provider:string,label:string,status:'active'|'cooling'|'disabled'|'invalid',cooldownUntil?:string,lastUsedAt?:string,plan?:string,usage?:{checkedAt:string,windows:UsageWindow[]}}} Account */
 /** @typedef {{kind:'provider-home',homePath:string,accountConfigPath?:string}|{kind:'ccswap',storePath:string,slot:string|number}} ImportSource */
 const identifier = (value, pattern = /^[a-zA-Z0-9_-]{1,128}$/) => {
   if (typeof value !== 'string' || !pattern.test(value)) fail('INVALID_INPUT');
   return value;
+};
+const KIND_ORDER = { session: 0, weekly: 1, monthly: 2, other: 3 };
+/** Operator plan names and labels are display metadata; they must never carry secrets. */
+const displayText = (value, max) => {
+  if (typeof value !== 'string' || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/.test(value)) fail('INVALID_INPUT');
+  return value.trim();
 };
 const canonical = value => JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item)
   ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
@@ -24,8 +31,10 @@ const canonical = value => JSON.stringify(value, (_, item) => item && typeof ite
  */
 export class AccountPool {
   #root; #file; #lock; #machineId; #clock; #config; #keychain;
+  /** Hub pacing allowances by local account id (`paced` selection); in memory, replaced on every heartbeat. */
+  #pacing = null;
 
-  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,maxReceipts?:number,receiptRetentionMs?:number,reservationLeaseMs?:number,clock?:()=>number,claudeKeychain?:(home:string)=>boolean}} options
+  /** @param {{nodeDataDir:string,machineId:string,selection?:'lru'|'headroom'|'paced',defaultCooldownMs?:number,maxConcurrentPerAccount?:number,maxReceipts?:number,receiptRetentionMs?:number,reservationLeaseMs?:number,clock?:()=>number,claudeKeychain?:(home:string)=>boolean}} options
    * `claudeKeychain` reports whether Claude moved a home's login into the keychain; tests replace the macOS probe. */
   constructor({ nodeDataDir, machineId, selection = 'lru', defaultCooldownMs = 300_000,
     maxConcurrentPerAccount = 1, maxReceipts = 512, receiptRetentionMs = 86_400_000,
@@ -33,7 +42,7 @@ export class AccountPool {
     guarded(() => {
       if (typeof nodeDataDir !== 'string' || !path.isAbsolute(nodeDataDir)) fail('INVALID_PATH');
       this.#machineId = identifier(machineId);
-      if (!['lru', 'headroom'].includes(selection) || !Number.isSafeInteger(defaultCooldownMs)
+      if (!['lru', 'headroom', 'paced'].includes(selection) || !Number.isSafeInteger(defaultCooldownMs)
           || defaultCooldownMs <= 0 || !Number.isSafeInteger(maxConcurrentPerAccount)
           || maxConcurrentPerAccount < 1 || !Number.isSafeInteger(maxReceipts) || maxReceipts < 1
           || maxReceipts > 1024 || !Number.isSafeInteger(receiptRetentionMs) || receiptRetentionMs < 1
@@ -144,9 +153,24 @@ export class AccountPool {
   }
   #account(record, now) {
     const status = this.#status(record, now);
+    const plan = record.plan ?? record.detectedPlan;
+    const usage = this.#usage(record, now);
     return { id: record.id, machineId: this.#machineId, provider: record.provider, label: record.label, status,
       ...(Date.parse(record.cooldownUntil) > now ? { cooldownUntil: record.cooldownUntil } : {}),
-      ...(record.lastUsedAt ? { lastUsedAt: record.lastUsedAt } : {}) };
+      ...(record.lastUsedAt ? { lastUsedAt: record.lastUsedAt } : {}),
+      ...(plan ? { plan } : {}), ...(usage ? { usage } : {}) };
+  }
+  /** Percentages and reset times only. A window whose reset has passed reports 0 % with no reset until the next update. */
+  #usage(record, now) {
+    const windows = Object.values(record.windows ?? {}).filter(window => window && typeof window.id === 'string')
+      .map(window => {
+        const expired = window.resetsAt && Date.parse(window.resetsAt) <= now;
+        return { id: window.id, kind: kindOf(window.id, window.kind, window.windowMins), label: window.label ?? window.id,
+          usedPercent: expired ? 0 : window.usedPercent, ...(window.resetsAt && !expired ? { resetsAt: window.resetsAt } : {}),
+          ...(window.windowMins ? { windowMins: window.windowMins } : {}) };
+      })
+      .sort((a, b) => (KIND_ORDER[a.kind] ?? 3) - (KIND_ORDER[b.kind] ?? 3) || a.id.localeCompare(b.id));
+    return windows.length ? { checkedAt: record.usageCheckedAt ?? new Date(now).toISOString(), windows } : null;
   }
   #usable(record, now) {
     if (this.#status(record, now) !== 'active') fail('ACCOUNT_UNAVAILABLE');
@@ -228,13 +252,22 @@ export class AccountPool {
         if (record.provider !== provider) fail('ASSIGNMENT_CONFLICT');
       } else {
         const counts = Object.values(state.reservations).map(reservation => reservation.accountId);
+        const held = account => counts.filter(id => id === account.id).length;
         const headroom = account => Math.min(100, ...Object.values(account.windows).map(window =>
           window.resetsAt && Date.parse(window.resetsAt) <= now ? 100 : 100 - window.usedPercent));
-        record = state.accounts.filter(account => account.provider === provider
-          && this.#status(account, now) === 'active'
-          && counts.filter(id => id === account.id).length < this.#config.maxConcurrentPerAccount)
-          .sort((a, b) => (this.#config.selection === 'headroom' ? headroom(b) - headroom(a) : 0)
-            || (a.lastUsedOrder ?? 0) - (b.lastUsedOrder ?? 0) || a.id.localeCompare(b.id))
+        const lru = (a, b) => (a.lastUsedOrder ?? 0) - (b.lastUsedOrder ?? 0) || a.id.localeCompare(b.id);
+        const active = state.accounts.filter(account => account.provider === provider && this.#status(account, now) === 'active');
+        // Paced: only accounts the hub's plan gives free allowance, the most free first. Without a plan for this
+        // provider, or when no planned account has room, the headroom policy below applies.
+        const pacing = this.#config.selection === 'paced' && this.#pacing ? this.#pacing : null;
+        if (pacing && active.some(account => Object.hasOwn(pacing, account.id))) {
+          const free = account => (Object.hasOwn(pacing, account.id) ? pacing[account.id] : 0) - held(account);
+          record = active.filter(account => free(account) > 0)
+            .sort((a, b) => free(b) - free(a) || headroom(b) - headroom(a) || lru(a, b))
+            .find(account => this.#healthy(account));
+        }
+        record ??= active.filter(account => held(account) < this.#config.maxConcurrentPerAccount)
+          .sort((a, b) => (this.#config.selection !== 'lru' ? headroom(b) - headroom(a) : 0) || lru(a, b))
           .find(account => this.#healthy(account));
       }
       if (!record) {
@@ -312,6 +345,31 @@ export class AccountPool {
     return result;
   }
 
+  /**
+   * Hub pacing allowances for `paced` selection: `{ [accountId]: targetAgents }` with local account ids, or null to
+   * fall back to the headroom policy. Kept in memory only; the node replaces it from every heartbeat response.
+   */
+  setPacing(allowances) {
+    if (allowances === null || allowances === undefined) { this.#pacing = null; return; }
+    if (typeof allowances !== 'object' || Array.isArray(allowances)) fail('INVALID_INPUT');
+    const next = Object.create(null);
+    for (const [id, value] of Object.entries(allowances)) {
+      identifier(id, /^acct_[a-zA-Z0-9_-]{1,48}$/);
+      if (!Number.isSafeInteger(value) || value < 0) fail('INVALID_INPUT');
+      next[id] = value;
+    }
+    this.#pacing = next;
+  }
+  /** Operator display metadata: `label` and `plan` (null clears an operator plan, revealing a detected one). */
+  update({ accountId, label, plan, idempotencyKey }) {
+    return this.#mutate('update', { accountId, label, plan }, idempotencyKey, (state, now) => {
+      const record = this.#record(state, accountId);
+      if (label !== undefined) record.label = displayText(label, 128);
+      if (plan === null) delete record.plan;
+      else if (plan !== undefined) record.plan = displayText(plan, 80);
+      return this.#account(record, now);
+    });
+  }
   disable(input) { return this.#update('disable', input, record => { record.disabled = true; }); }
   enable(input) { return this.#update('enable', input, record => { record.disabled = false; }); }
   /** Call only after account-specific reauthentication has been confirmed externally. */
@@ -330,17 +388,24 @@ export class AccountPool {
   }
 
   /** Raw error/usage messages are reduced before hashing/persistence. */
-  observe({ accountId, message, idempotencyKey }) {
+  observe({ accountId, message, plan, idempotencyKey }) {
     return guarded(() => {
       // Identify the provider without retaining any content from the message.
       const record = this.#read().accounts.find(account => account.id === accountId);
       if (!record) fail('ACCOUNT_NOT_FOUND');
       const windows = usageWindows(record.provider, message);
+      const detected = plan === undefined ? undefined : displayText(plan, 80);
       const messageDigest = createHash('sha256').update(canonical(message) ?? 'null').digest('hex');
-      return this.#mutate('observe', { accountId, messageDigest }, idempotencyKey, (state, now) => {
+      return this.#mutate('observe', { accountId, messageDigest, ...(detected ? { plan: detected } : {}) }, idempotencyKey, (state, now) => {
         const current = this.#record(state, accountId);
-        for (const window of windows) Object.defineProperty(current.windows, window.id,
-          { value: window, enumerable: true, writable: true, configurable: true });
+        current.windows ??= {};
+        for (const window of windows) {
+          // Sparse updates merge by id; a partial update keeps the window's known length, kind, label and reset.
+          const previous = Object.hasOwn(current.windows, window.id) ? current.windows[window.id] : {};
+          Object.defineProperty(current.windows, window.id, { value: { ...previous, ...window }, enumerable: true, writable: true, configurable: true });
+        }
+        if (windows.length) current.usageCheckedAt = new Date(now).toISOString();
+        if (detected) current.detectedPlan = detected;
         const mergedSignal = detectProviderSignal(current.provider, message,
           { now, windows: Object.values(current.windows), defaultCooldownMs: this.#config.defaultCooldownMs });
         if (mergedSignal?.kind === 'auth-failure') current.invalid = true;
@@ -355,7 +420,7 @@ export class AccountPool {
     });
   }
 
-  /** Account[] heartbeat allowlist. No home paths, source data, windows or credentials. */
+  /** Account[] heartbeat allowlist: metadata, plan and usage percentages/resets. No home paths, source data or credentials. */
   snapshot() {
     return guarded(() => { const now = this.#now(); return this.#read().accounts.map(record => this.#account(record, now)); });
   }

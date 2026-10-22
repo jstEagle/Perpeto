@@ -195,3 +195,42 @@ test('renewal loss before the launch reply still interrupts the turn T3 started'
   assert.equal(f.fake.commandsOf('run.interrupt').length, 1);
   assert.equal(f.pool.reservations().length, 0);
 });
+
+test('feeds the account instance usage-limit snapshot and plan into the pool after each turn', async t => {
+  const f = await fixture(t);
+  const resetsAt = new Date(Date.now() + 3 * 3_600_000).toISOString();
+  f.fake.state.onLaunch = launch => {
+    // T3 has merged a turn's rate-limit update into the factory instance snapshot by the time the turn ends.
+    const instance = f.fake.state.providers.find(item => item.instanceId.startsWith('factory_'));
+    instance.auth = { status: 'authenticated', type: 'pro', label: 'ChatGPT Pro', email: 'person@example.test' };
+    instance.usageLimits = { checkedAt: new Date().toISOString(), windows: [
+      { id: 'primary', kind: 'session', label: '5-hour limit', usedPercent: 42, resetsAt, windowDurationMins: 300 },
+      { id: 'secondary', kind: 'weekly', label: 'Weekly limit', usedPercent: 7, windowDurationMins: 10080 }] };
+    f.fake.emit(launch.threadId, 'run.updated', build.run(launch.threadId, 1, 'running'));
+    setTimeout(() => f.complete(), 20);
+  };
+  const result = await f.executor.run(f.assignment, f.ctx);
+  assert.equal(result.outcome, 'success');
+  const [snapshot] = f.pool.snapshot();
+  assert.equal(snapshot.plan, 'ChatGPT Pro');
+  assert.deepEqual(snapshot.usage.windows, [
+    { id: 'primary', kind: 'session', label: '5-hour limit', usedPercent: 42, resetsAt, windowMins: 300 },
+    { id: 'secondary', kind: 'weekly', label: 'Weekly limit', usedPercent: 7, windowMins: 10080 }]);
+  assert.ok(!JSON.stringify(snapshot).includes('person@example.test'));
+  const observed = f.calls.filter(([kind, input]) => kind === 'observe' && Array.isArray(input.message?.windows));
+  assert.ok(observed.length >= 1);
+  assert.ok(observed.every(([, input]) => !JSON.stringify(input).includes('person@example.test')));
+});
+
+test('a usage window at 100 % cools the account through the same path', async t => {
+  const f = await fixture(t);
+  f.fake.state.onLaunch = launch => {
+    const instance = f.fake.state.providers.find(item => item.instanceId.startsWith('factory_'));
+    instance.usageLimits = { checkedAt: new Date().toISOString(), windows: [
+      { id: 'primary', kind: 'session', label: '5-hour limit', usedPercent: 100, resetsAt: new Date(Date.now() + 3_600_000).toISOString() }] };
+    f.fake.emit(launch.threadId, 'run.updated', build.run(launch.threadId, 1, 'running'));
+    setTimeout(() => f.complete(), 20);
+  };
+  await f.executor.run(f.assignment, f.ctx);
+  assert.equal(f.pool.snapshot()[0].status, 'cooling');
+});

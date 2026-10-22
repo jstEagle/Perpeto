@@ -15,6 +15,7 @@ import {
   IconMessages,
   IconMore,
   IconOverview,
+  IconPacing,
   IconPerson,
   IconRuns,
   IconSelector,
@@ -35,6 +36,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   merge: IconMerge,
   machines: IconMachines,
   accounts: IconAccounts,
+  pacing: IconPacing,
   usage: IconUsage,
 };
 const withIcon = (e: NavEntry): NavItem => ({ ...e, icon: ICONS[e.key] });

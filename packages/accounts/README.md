@@ -1,6 +1,6 @@
 # Accounts
 
-A dependency-free, per-machine account pool for Node 24. Credentials remain on the execution machine. `snapshot()` returns the architecture's `Account[]` allowlist for node heartbeats. No credentials, credential fingerprints, local paths, usage payloads or source profiles appear in that snapshot.
+A dependency-free, per-machine account pool for Node 24. Credentials remain on the execution machine. `snapshot()` returns the architecture's `Account[]` allowlist for node heartbeats, including the account's `plan` and `usage` (window percentages and reset times). No credentials, credential fingerprints, emails, local paths, raw provider messages or source profiles appear in that snapshot.
 
 **Provider terms:** rotating consumer subscriptions may be restricted by provider terms. Perpeto documents this capability and its limits rather than encouraging circumvention. Operators are responsible for choosing permitted account arrangements. This package does not bypass limits, redeem reset credits, disguise clients or make inference requests.
 
@@ -45,15 +45,19 @@ All methods are synchronous. Every mutation requires a stable `idempotencyKey`. 
 - `reservations()`: detached local-only `{ id, assignmentId, accountId, expiresAt }[]` after expiry cleanup. No home paths or credentials.
 - `renewReservation({ assignmentId, reservationId, idempotencyKey })`: extends a live reservation by `reservationLeaseMs` from now. A retry returns its original expiry without extending it. Expired/replaced reservations throw `RESERVATION_ENDED`. Use a new key for each renewal.
 - `reconcileReservations({ activeReservationIds, idempotencyKey })`: atomically releases reservations absent from the supplied live token set and returns `{ released: string[], reservations }`. Call only after validating local ownership against durable assignment leases; an empty list releases all.
-- `observe({ accountId, message, idempotencyKey })`: merges sparse usage windows, cools on observed limits, marks invalid on authentication failure. Raw messages are not retained. A limit never enables a disabled/invalid account.
+- `observe({ accountId, message, plan?, idempotencyKey })`: merges sparse usage windows, cools on observed limits, marks invalid on authentication failure. Raw messages are not retained. A limit never enables a disabled/invalid account. Each window keeps `{ id, kind, label, usedPercent, resetsAt?, windowMins? }`; a sparse update keeps the window's earlier kind, label, length and reset. `plan` records the plan T3 detected (for example `Claude Max`), shown unless the operator set one.
+- `update({ accountId, label?, plan?, idempotencyKey })`: operator display metadata. `plan: null` clears the operator plan and reveals a detected one. Labels and plans are single-line text and must never contain secrets.
+- `setPacing(allowances | null)`: in-memory hub allowances `{ [accountId]: targetAgents }` for `paced` selection. The node replaces them from every heartbeat response; `null` returns selection to its own policy.
 - `disable({ accountId, idempotencyKey })` / `enable(…)`: manual eligibility. Enabling retains authentication invalidity and any cooldown.
 - `markAuthenticated({ accountId, idempotencyKey })`: clear invalidity only after externally confirmed, account-specific reauthentication. This checks file safety, not the provider's acceptance of credentials; it never performs login.
-- `snapshot()`: detached `Account[]`, with expired cooldowns reflected as active. Returns future `cooldownUntil` even when disabled/invalid takes precedence.
+- `snapshot()`: detached `Account[]`, with expired cooldowns reflected as active. Returns future `cooldownUntil` even when disabled/invalid takes precedence. `usage` is `{ checkedAt, windows }`, `checkedAt` being when windows were last observed; a window whose reset has passed reports 0 % without `resetsAt` until the next observation.
 - `bindingFor(accountId, { reservationId? }?)`: eligibility/file-safety check (and a live, matching reservation check when supplied) and local-only T3 descriptor. Never include this descriptor in a heartbeat or send it to the hub.
 
 Selection checks candidate homes in policy order, flags unsafe, missing or malformed homes as `invalid`, and continues to healthy accounts. Quarantine persists even when no candidate succeeds. Repair the private home and explicitly call `markAuthenticated()` after confirming account authentication to restore eligibility.
 
-`selection: "lru"` is the default. A persisted sequence breaks same-millisecond ties. `"headroom"` first chooses the account with the greatest minimum remaining percentage across known windows, then LRU. Missing usage is treated as unknown/full headroom; no quota probe occurs. Expired usage windows stop reducing headroom. `maxConcurrentPerAccount` defaults to 1 and is independent of the node's overall agent capacity.
+`selection: "lru"` is the package default; the node adapter defaults to `"paced"`. A persisted sequence breaks same-millisecond ties. `"headroom"` first chooses the account with the greatest minimum remaining percentage across known windows, then LRU. Missing usage is treated as unknown/full headroom; no quota probe occurs. Expired usage windows stop reducing headroom. `maxConcurrentPerAccount` defaults to 1 and is independent of the node's overall agent capacity.
+
+`"paced"` follows the hub's [pacing plan](../../docs/architecture/README.md#subscription-pacing): when the allowances cover the provider, it picks the account with the most free allowance (`targetAgents` minus live reservations), then headroom, then LRU, and an account may hold up to its allowance even above `maxConcurrentPerAccount`. With no allowances, none for this provider, or no account with free allowance, it falls back to `"headroom"` with `maxConcurrentPerAccount`. The fallback is deliberate: the hub caps leases per machine at the plan, so a miss is a race between a heartbeat and a lease, and failing the assignment would cost more than one early agent. It can still start an account's session early in that race.
 
 ## Import design
 
@@ -140,7 +144,7 @@ Receipts are compacted on startup and mutation. Defaults are `receiptRetentionMs
 
 The current node/executor adapter still needs to retain `selection.reservation.id`, forward it on release and binding checks, renew during execution with a fresh idempotency key per tick, and cancel on renewal loss. On restart, use `reservations()` plus `reconcileReservations()` against durable attempt ownership before acquiring new work. The existing adapter already propagates `ACCOUNT_POOL_EXHAUSTED`; no fallback-path change is needed for that error. These caller changes are outside this package.
 
-Only fixture and local process tests are claimed. No real account enrollment, live authentication, T3 readiness, harness turn, end-to-end node/hub heartbeat, or provider-terms compliance has been verified.
+Only fixture and local process tests are claimed. No real account enrollment, live authentication, T3 readiness, harness turn, real usage-limit reading, end-to-end node/hub heartbeat, or provider-terms compliance has been verified.
 
 ```sh
 source ~/.nvm/nvm.sh && nvm use 24

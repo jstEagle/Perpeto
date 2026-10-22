@@ -26,7 +26,9 @@ public struct HubDataSource: FactoryDataSource {
         async let jobs = client.jobs()
         async let overview = client.overview()
         async let usage = usageBundle(projectId: nil)
-        return try await FactoryState(projects: projects, machines: machines, accounts: accounts, jobs: jobs, overview: overview, usage: usage)
+        // Hubs without pacing, or a failing pacing route, leave the rest of the factory readable.
+        async let pacing = (try? client.pacing()) ?? nil
+        return try await FactoryState(projects: projects, machines: machines, accounts: accounts, jobs: jobs, overview: overview, usage: usage, pacing: pacing)
     }
 
     public func loadProject(_ projectId: String, window: MetricsWindow) async throws -> ProjectState {
@@ -186,5 +188,7 @@ public struct HubDataSource: FactoryDataSource {
     }
     public func enrollmentCode() async throws -> EnrollmentCode { try await client.createEnrollmentCode() }
     public func drain(machineId: String) async throws -> Machine { try await client.drain(machineId: machineId) }
+    public func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account { try await client.updateAccount(id: id, patch) }
+    public func updatePacing(_ settings: PacingSettings) async throws -> Pacing { try await client.updatePacing(settings) }
     public func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> { client.eventStream(after: after) }
 }

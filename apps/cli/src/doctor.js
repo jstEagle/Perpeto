@@ -118,6 +118,16 @@ async function configurationChecks(dir, role, config) {
     for (const [key, [min, max]] of Object.entries(bounds)) if (config[key] !== undefined && (!Number.isSafeInteger(config[key]) || config[key] < min || config[key] > max)) problems.push(`Set ${key} to an integer from ${min} through ${max}.`);
     if (config.host !== undefined && (typeof config.host !== 'string' || !config.host.trim())) problems.push('Set host to a non-empty address.');
     if (config.architectHarness !== undefined && (!config.architectHarness || ['provider', 'model'].some(key => typeof config.architectHarness[key] !== 'string' || !config.architectHarness[key].trim()))) problems.push('Set architectHarness.provider and architectHarness.model.');
+    if (config.pacing !== undefined) {
+      // Mirrors apps/hub/src/config.js pacingFields for the settings an operator is most likely to edit.
+      const pacing = config.pacing;
+      if (!pacing || typeof pacing !== 'object' || Array.isArray(pacing) || Object.keys(pacing).some(key => !Object.hasOwn(defaults.pacing, key))) problems.push('Set pacing to an object with the keys in config/hub.example.json.');
+      else {
+        if (pacing.enabled !== undefined && typeof pacing.enabled !== 'boolean') problems.push('Set pacing.enabled to true or false.');
+        if (pacing.strategy !== undefined && !['rotation', 'parallel'].includes(pacing.strategy)) problems.push('Set pacing.strategy to rotation or parallel.');
+        if (pacing.targetUsePercent !== undefined && (!Number.isSafeInteger(pacing.targetUsePercent) || pacing.targetUsePercent < 50 || pacing.targetUsePercent > 100)) problems.push('Set pacing.targetUsePercent to an integer from 50 through 100.');
+      }
+    }
     if (config.corsOrigins !== undefined && (!Array.isArray(config.corsOrigins) || config.corsOrigins.some(origin => {
       try { const url = new URL(origin); return !['http:', 'https:'].includes(url.protocol) || url.origin !== origin; } catch { return true; }
     }))) problems.push('Set corsOrigins to exact HTTP(S) origins.');

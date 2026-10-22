@@ -1,9 +1,13 @@
 import { HubError, newIdempotencyKey, OWNER_ROLE_ID } from './hub';
 import { decodeProject } from './goals';
 import { decodeMessage } from './messages';
+import { decodeAccount, decodePacing, looksLikePacing } from './pacing';
 import type { EventPageResult, EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import type {
   Account,
+  AccountPatch,
+  Pacing,
+  PacingSettings,
   Assignment,
   Channel,
   DraftRequest,
@@ -178,7 +182,11 @@ export class HttpHub implements HubApi {
   async #request<T>(method: string, path: string, options: { body?: object; query?: Query; auth?: boolean } = {}): Promise<T> {
     const mutating = method !== 'GET' && method !== 'DELETE';
     const body = mutating ? { idempotencyKey: newIdempotencyKey(), ...(options.body ?? {}) } : undefined;
-    const headers: Record<string, string> = { Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) };
+    // The key goes in the body and, identically, in the header the hub also accepts.
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      ...(body ? { 'Content-Type': 'application/json', 'Idempotency-Key': String((body as { idempotencyKey: unknown }).idempotencyKey) } : {}),
+    };
     const init: RequestInit & { headers: Record<string, string> } = { method, headers, body: body ? JSON.stringify(body) : undefined };
     let response: Response;
     try {
@@ -305,7 +313,26 @@ export class HttpHub implements HubApi {
     return await this.#request<Machine>('POST', `/machines/${enc(id)}/drain`);
   }
   async listAccounts() {
-    return list<Account>(await this.#request('GET', '/accounts'), 'accounts');
+    return list<unknown>(await this.#request('GET', '/accounts'), 'accounts').map(decodeAccount);
+  }
+  async updateAccount(id: string, patch: AccountPatch): Promise<Account> {
+    const body = await this.#request<unknown>('PATCH', `/accounts/${enc(id)}`, { body: patch });
+    const wrapped = body && typeof body === 'object' && 'account' in body ? (body as { account: unknown }).account : body;
+    return decodeAccount(wrapped);
+  }
+  async pacing(): Promise<Pacing | null> {
+    try {
+      return decodePacing(await this.#request<unknown>('GET', '/pacing'));
+    } catch (error) {
+      if (error instanceof HubError && (error.status === 404 || error.status === 405)) return null;
+      throw error;
+    }
+  }
+  /** The hub may answer with the new pacing state or a bare acknowledgement; read it back if so. */
+  async updatePacing(settings: PacingSettings): Promise<Pacing> {
+    const body = await this.#request<unknown>('PUT', '/pacing/settings', { body: settings });
+    if (looksLikePacing(body)) return decodePacing(body);
+    return decodePacing(await this.#request<unknown>('GET', '/pacing'));
   }
 
   async listJobs(query: { projectId?: string; runId?: string } = {}) {

@@ -9,14 +9,17 @@
 #   captures the main screens in light and dark (default: screenshots/themes,
 #   light-*.png and dark-*.png). Set APPEARANCE=light|dark to force one
 #   appearance for a normal run.
+#        scripts/snapshots.sh --pacing [output-dir]
+#   captures Accounts and Pacing in light and dark (default: screenshots/pacing).
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-if [ "${1:-}" = "--themes" ]; then
-  OUT="${2:-$ROOT/screenshots/themes}"
+if [ "${1:-}" = "--themes" ] || [ "${1:-}" = "--pacing" ]; then
+  MODE_FLAG="$1"
+  OUT="${2:-$ROOT/screenshots/${MODE_FLAG#--}}"
   "$ROOT/scripts/build-app.sh" debug >/dev/null
   mkdir -p "$OUT"
   for MODE in light dark; do
-    "$ROOT/build/Perpeto.app/Contents/MacOS/Perpeto" --snapshots "$OUT" --themes "$MODE-" -perpeto.appearance "$MODE" &
+    "$ROOT/build/Perpeto.app/Contents/MacOS/Perpeto" --snapshots "$OUT" "$MODE_FLAG" "$MODE-" -perpeto.appearance "$MODE" &
     PID=$!
     ( sleep 90; kill "$PID" 2>/dev/null ) &
     wait "$PID" || true

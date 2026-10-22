@@ -48,13 +48,32 @@ for (const spec of specs) {
   const enrolled = await call('', 'POST', '/nodes/enroll', { code, name: spec.name, os: spec.os, arch: spec.arch, version: '0.1.0', labels: spec.labels, providers: spec.providers });
   machines.push({ ...spec, id: enrolled.machineId, api: as(enrolled.token), held: [] });
 }
+// Subscription usage the simulated nodes report, so /pacing has a rich plan: five Claude subs mid-rotation (two
+// burned, one burning, two fresh) and two Codex subs. Percentages and reset times only, as real heartbeats carry.
+// Pacing is off while the script leases its scripted work and switched on at the end.
+const seededAt = Date.now();
+const inMinutes = (minutes) => new Date(seededAt + minutes * 60_000).toISOString();
+const usageWindow = (id, kind, label, usedPercent, resetMins, windowMins) =>
+  ({ id, kind, label, usedPercent, windowMins, ...(resetMins === undefined ? {} : { resetsAt: inMinutes(resetMins) }) });
+const claudeUsage = (session, sessionReset, weekly, weeklyReset) => ({ checkedAt: inMinutes(0), windows: [
+  usageWindow('five_hour', 'session', '5-hour limit', session, sessionReset, 300), usageWindow('seven_day', 'weekly', 'Weekly limit', weekly, weeklyReset, 10080)] });
+const codexUsage = (session, sessionReset, weekly, weeklyReset) => ({ checkedAt: inMinutes(0), windows: [
+  usageWindow('primary', 'session', '5-hour limit', session, sessionReset, 300), usageWindow('secondary', 'weekly', 'Weekly limit', weekly, weeklyReset, 10080)] });
+const subscription = (id, provider, label, plan, usage, extra = {}) => ({ id, provider, label, plan, status: 'active', usage, ...extra });
 const accounts = {
   'studio-mac': [
-    { id: 'acct_studio_claude', provider: 'claudeAgent', label: 'Claude Max · personal', status: 'active' },
-    { id: 'acct_studio_codex', provider: 'codex', label: 'ChatGPT Pro', status: 'active' },
+    subscription('acct_claude_1', 'claudeAgent', 'Claude Max · 1', 'Claude Max 20x', claudeUsage(38, 260, 44, 1500), { lastUsedAt: inMinutes(0) }),
+    subscription('acct_claude_2', 'claudeAgent', 'Claude Max · 2', 'Claude Max 20x', claudeUsage(96, 195, 51, 2200), { lastUsedAt: inMinutes(-40) }),
+    subscription('acct_claude_3', 'claudeAgent', 'Claude Max · 3', 'Claude Max 20x', claudeUsage(0, undefined, 33, 1900)),
+    subscription('acct_codex_1', 'codex', 'ChatGPT Pro · 1', 'ChatGPT Pro', codexUsage(41, 210, 37, 1700), { lastUsedAt: inMinutes(-5) }),
   ],
-  'build-linux': [{ id: 'acct_linux_codex', provider: 'codex', label: 'ChatGPT Pro · build', status: 'cooling', cooldownUntil: new Date(Date.now() + 30 * 60_000).toISOString() }],
+  'build-linux': [
+    subscription('acct_claude_4', 'claudeAgent', 'Claude Max · 4', 'Claude Max 20x', claudeUsage(0, undefined, 29, 2900)),
+    subscription('acct_claude_5', 'claudeAgent', 'Claude Max · 5', 'Claude Max 20x', claudeUsage(97, 125, 58, 1100), { lastUsedAt: inMinutes(-170) }),
+    subscription('acct_codex_2', 'codex', 'ChatGPT Pro · 2', 'ChatGPT Pro', codexUsage(0, undefined, 18, 2600)),
+  ],
 };
+await hub('PUT', '/pacing/settings', { enabled: false });
 async function heartbeat(m) {
   const running = { agents: m.held.filter((w) => w.kind === 'assignment').length, jobs: m.held.filter((w) => w.kind === 'job').length };
   await m.api('POST', '/nodes/heartbeat', { capacity: m.capacity, running, providers: m.providers, accounts: accounts[m.name], status: 'online' });
@@ -257,6 +276,11 @@ if (improveRun) {
   const view = await hub('GET', `/runs/${improveRun.id}`);
   console.log(`improve intake: ${view.intake?.paused ? `paused (${view.intake.reason?.limit})` : 'open'}, ${view.budgetUsage?.tokens ?? 0} tokens today`);
 }
+await hub('PUT', '/pacing/settings', { enabled: true });
+for (const m of machines) await heartbeat(m);
+const pacing = await hub('GET', '/pacing');
+console.log(`pacing: ${pacing.providers.map((p) => `${p.provider} ${p.targetAgents}/${p.sustainableAgents} agents (${p.limitedBy}${p.starved ? ', starved' : ''})`).join('; ')}; `
+  + pacing.accounts.map((a) => `${a.accountId} ${a.state}`).join(', '));
 const metrics = await hub('GET', `/runs/${run.id}/metrics?window=24h`);
 console.log(`metrics: ${metrics.nodes.length} nodes, ${metrics.edges.filter((e) => e.count).length} edges with traffic, ${metrics.bottlenecks.length} bottlenecks`);
 console.log(`open work: ${machines.map((m) => `${m.name} ${m.held.length}`).join(', ')}`);

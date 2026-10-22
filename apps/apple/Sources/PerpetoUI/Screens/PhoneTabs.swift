@@ -112,6 +112,8 @@ struct PhoneTabs: View {
                         Rule()
                         link("Accounts", FactorySection.accounts.systemImage, .factory(.accounts))
                         Rule()
+                        link("Pacing", FactorySection.pacing.systemImage, .factory(.pacing))
+                        Rule()
                         link("Usage", FactorySection.usage.systemImage, .factory(.usage))
                     }
                     .card()
@@ -139,6 +141,7 @@ struct PhoneTabs: View {
                         if let project = store.project(id) { ProjectScreen(store: store, navigator: navigator, project: project, section: section) }
                     case .factory(.machines): MachinesScreen(store: store)
                     case .factory(.accounts): AccountsScreen(store: store)
+                    case .factory(.pacing): PacingScreen(store: store)
                     case .factory(.usage): UsageScreen(store: store)
                     }
                 }

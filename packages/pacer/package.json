@@ -1,0 +1,14 @@
+{
+  "name": "@perpeto/pacer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pure subscription pacer: plans how many agents run on which account so usage windows are used up by their reset.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "engines": {
+    "node": ">=24.13.1 <25"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

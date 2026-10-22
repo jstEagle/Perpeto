@@ -235,3 +235,40 @@ test('a durable settlement proof cannot release a replacement token for the same
   await second.start();
   assert.deepEqual(accounts.pool.reservations().map(r => r.id), [replacement.reservation.id]);
 });
+
+test('heartbeats carry plan and usage; hub allowances drive paced selection and relayed edits reach the pool', async t => {
+  let response = {};
+  const hub = await fakeHub(t, { heartbeat: () => response });
+  const { configPath, config } = await nodeConfig(t, hub, { accounts: {} });
+  await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
+  const accountProvider = createAccountProvider({ config: {}, dataDir: config.dataDir });
+  const node = await createNode({ configPath, accountProvider });
+  addCleanup(t, () => node.stop({ drain: false }));
+  await node.start();
+  const first = accountProvider.pool.importAccount({ provider: 'codex', label: 'First', source: await codexSource(t), idempotencyKey: 'import-1' });
+  const second = accountProvider.pool.importAccount({ provider: 'codex', label: 'Second', source: await codexSource(t), idempotencyKey: 'import-2' });
+  const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
+  accountProvider.pool.observe({ accountId: first.id, plan: 'ChatGPT Pro', idempotencyKey: 'usage-1', message: { windows: [
+    { id: 'primary', kind: 'session', label: '5-hour limit', usedPercent: 30, resetsAt, windowDurationMins: 300 }] } });
+  const reportsUsage = value => value.accounts?.some(account => account.id === first.id && account.usage);
+  await eventually(() => hub.heartbeats.some(reportsUsage));
+  const beat = hub.heartbeats.findLast(reportsUsage);
+  const reported = beat.accounts.find(account => account.id === first.id);
+  assert.equal(reported.plan, 'ChatGPT Pro');
+  assert.deepEqual(reported.usage.windows, [{ id: 'primary', kind: 'session', label: '5-hour limit', usedPercent: 30, resetsAt, windowMins: 300 }]);
+  assert.ok(!JSON.stringify(hub.heartbeats).includes('fixture-codex-secret') && !JSON.stringify(hub.heartbeats).includes(config.dataDir));
+
+  // The plan burns the second account; selection follows it rather than least-recently-used order.
+  response = { pacing: { accounts: { [first.id]: { targetAgents: 0 }, [second.id]: { targetAgents: 2 } } },
+    accountUpdates: [{ id: 'aup_test', accountId: first.id, label: 'Rotation A', plan: 'ChatGPT Pro (team)' }] };
+  await eventually(async () => (await accountProvider.list()).find(account => account.id === first.id).label === 'Rotation A');
+  assert.equal((await accountProvider.list()).find(account => account.id === first.id).plan, 'ChatGPT Pro (team)');
+  assert.equal((await accountProvider.acquire({ provider: 'codex', assignmentId: 'asg_paced', attempt: 1 })).account.id, second.id);
+  assert.equal((await accountProvider.acquire({ provider: 'codex', assignmentId: 'asg_paced_2', attempt: 1 })).account.id, second.id);
+  // No plan in the response: selection returns to its own policy.
+  response = {};
+  await eventually(async () => {
+    const selection = await accountProvider.acquire({ provider: 'codex', assignmentId: `asg_free_${Date.now()}`, attempt: 1 }).catch(() => null);
+    return selection?.account.id === first.id;
+  });
+});

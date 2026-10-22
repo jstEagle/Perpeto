@@ -12,8 +12,12 @@ public actor DemoDataSource: FactoryDataSource {
     public init(now: @escaping @Sendable () -> Date = Date.init, stageDelay: Duration = .milliseconds(900)) {
         self.now = now
         self.stageDelay = stageDelay
-        self.factory = DemoFixtures.factory(now: now())
+        let start = now()
+        self.createdAt = start
+        self.factory = DemoFixtures.factory(now: start)
     }
+
+    private let createdAt: Date
 
     public nonisolated var isDemo: Bool { true }
 
@@ -312,6 +316,39 @@ public actor DemoDataSource: FactoryDataSource {
         }
         factory.machines[index].status = .draining
         return factory.machines[index]
+    }
+
+    private var pacingSettings = DemoPacing.defaultSettings
+
+    public func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account {
+        guard let index = factory.accounts.firstIndex(where: { $0.id == id }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "That subscription is no longer reported.")
+        }
+        if let label = patch.label {
+            guard !label.trimmingCharacters(in: .whitespaces).isEmpty else { throw HubError.http(status: 400, code: "INVALID_INPUT", message: "A subscription needs a label.") }
+            factory.accounts[index].label = label
+        }
+        if let plan = patch.plan { factory.accounts[index].plan = plan.isEmpty ? nil : plan }
+        refreshPacing()
+        return factory.accounts[index]
+    }
+
+    public func updatePacing(_ settings: PacingSettings) async throws -> Pacing {
+        if let target = settings.targetUsePercent, !(50...100).contains(target) {
+            throw HubError.http(status: 400, code: "INVALID_INPUT", message: "Target use must be between 50% and 100%.")
+        }
+        pacingSettings = PacingSettings(
+            enabled: settings.enabled ?? pacingSettings.enabled, strategy: settings.strategy ?? pacingSettings.strategy,
+            targetUsePercent: settings.targetUsePercent ?? pacingSettings.targetUsePercent,
+            minAgents: settings.minAgents ?? pacingSettings.minAgents, maxAgents: settings.removeMaxAgents ? nil : settings.maxAgents ?? pacingSettings.maxAgents)
+        refreshPacing()
+        return factory.pacing!
+    }
+
+    /// The demo plan keeps the fixture clock so it stays consistent with the accounts' reset times.
+    private func refreshPacing() {
+        let labels = Dictionary(factory.accounts.map { ($0.id, (label: $0.label, plan: $0.plan)) }, uniquingKeysWith: { a, _ in a })
+        factory.pacing = DemoPacing.pacing(now: createdAt, settings: pacingSettings, labels: labels)
     }
 
     public nonisolated func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> {

@@ -12,6 +12,7 @@ import { Intake } from './intake.js';
 import { Workflows } from './workflows.js';
 import { Observation } from './observation.js';
 import { HubMessaging } from './messaging.js';
+import { Pacing, accountUsage, displayText } from './pacing.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings, gitIdentity } from './errors.js';
 
@@ -76,6 +77,7 @@ export class Hub {
     this.store.onCommit = () => this.flush();
     this.store.onRollback = () => { this.signals = { work: [], machines: new Set(), events: false }; };
     this.intake = new Intake(this); this.workflows = new Workflows(this); this.observation = new Observation(this); this.agentMessaging = new HubMessaging(this);
+    this.pacing = new Pacing(this);
     try {
       try {
         const stat = lstatSync(config.ownerTokenPath);
@@ -175,6 +177,8 @@ export class Hub {
   /** Note what a written assignment or job could unblock: new queued work, or a slot freed on its machine. */
   observe(kind, value) {
     if (kind !== 'assignment' && kind !== 'job') return;
+    // Ready work and running agents feed the pacing plan.
+    if (kind === 'assignment' && this.pacing) this.pacing.dirty = true;
     if (value.status === 'queued') this.signals.work.push({ kind, at: value.notBefore, requirements: value.requirements ?? {}, provider: kind === 'assignment' ? value.harness?.provider : undefined });
     else if (!active(value) && value.machineId) this.signals.machines.add(value.machineId);
   }
@@ -294,6 +298,9 @@ export class Hub {
       await this.store.transaction(async () => {
         const time = this.clock();
         await this.intake.tick(at);
+        // Subscription pacing: replan when inputs changed or the plan is stale, then nudge intake for starved fleets.
+        if (this.pacing.refresh()) changed = true;
+        this.pacing.nudge();
         for (const cancellation of this.store.list('cancellation', value => Date.parse(value.leaseExpiresAt) <= time)) this.store.remove('cancellation', cancellation.id);
         for (const machine of this.store.list('machine')) {
           if (machine.status !== 'offline' && time - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) {
@@ -503,6 +510,9 @@ export class Hub {
     const result = { assignments: [], jobs: [] };
     if (machine.status !== 'online' || this.clock() - Date.parse(machine.lastHeartbeatAt) >= this.config.heartbeatIntervalMs * 3) return result;
     let remaining = max; const full = {}; const runs = new Map();
+    // Subscription pacing caps agents per provider on this machine at its accounts' planned targets (never raising
+    // workflow or machine limits). Providers without a plan are not capped.
+    const caps = kinds.includes('assignment') ? this.pacing.leaseCaps(machine.id) : null;
     const runStatus = runId => { if (!runs.has(runId)) runs.set(runId, this.store.get('run', runId)?.status); return runs.get(runId); };
     for (const kind of [...new Set(kinds)]) {
       const capacity = machine.capacity[kind === 'assignment' ? 'maxAgents' : 'maxJobs'];
@@ -521,11 +531,14 @@ export class Hub {
           if (!(requirements.labels ?? []).every(label => machine.labels.includes(label))) continue;
           if (!(requirements.providers ?? []).every(provider => machine.providers.includes(provider))) continue;
           if (kind === 'assignment' && value.harness?.provider && !machine.providers.includes(value.harness.provider)) continue;
+          const paced = kind === 'assignment' ? caps?.[value.harness?.provider] : undefined;
+          if (paced && paced.held >= paced.limit) continue;
           // Merge-queue jobs serve a queue shared by every run, so pausing one run must not hold the others' merges.
           if (value.runId && !value.delivery && runStatus(value.runId) !== 'running') continue;
           // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
           if (value.notBefore && Date.parse(value.notBefore) > this.clock()) continue;
           if (value.releasedBy?.machineId === machine.id && Date.parse(value.releasedBy.until) > this.clock()) continue;
+          if (paced) paced.held++;
           value.status = 'leased'; value.machineId = machine.id; delete value.releasedBy;
           value.leaseExpiresAt = new Date(this.clock() + this.config.leaseDurationMs).toISOString();
           this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
@@ -761,11 +774,25 @@ export class Hub {
           const previous = this.store.get('account', account.id);
           if (previous && previous.machineId !== machine.id) fail(409, 'CONFLICT', 'Account belongs to another machine.');
           for (const field of ['cooldownUntil', 'lastUsedAt']) if (account[field] !== undefined) requireValue(typeof account[field] === 'string' && Number.isFinite(Date.parse(account[field])), `Invalid account ${field}.`);
-          // Only allow public metadata through. Credentials never belong in hub snapshots.
+          const plan = account.plan !== undefined ? displayText(account.plan, 'account plan', 80) : undefined;
+          const usage = account.usage !== undefined ? accountUsage(account.usage) : undefined;
+          // Only allow public metadata through: status, plan and usage percentages. Credentials never belong in hub snapshots.
           return { id: account.id, machineId: machine.id, provider: account.provider, label: account.label, status: account.status,
-            ...(account.cooldownUntil ? { cooldownUntil: account.cooldownUntil } : {}), ...(account.lastUsedAt ? { lastUsedAt: account.lastUsedAt } : {}) };
+            ...(account.cooldownUntil ? { cooldownUntil: account.cooldownUntil } : {}), ...(account.lastUsedAt ? { lastUsedAt: account.lastUsedAt } : {}),
+            ...(plan ? { plan } : {}), ...(usage ? { usage } : {}) };
         });
         requireValue(new Set(accounts.map(account => account.id)).size === accounts.length, 'Duplicate account IDs.');
+        // Owner label/plan edits wait for the node to apply them; until its snapshot agrees, the edit is shown.
+        for (const account of accounts) {
+          const update = this.store.get('account-update', account.id);
+          if (!update) continue;
+          const applied = (update.label === undefined || account.label === update.label)
+            && (update.plan === undefined || (update.plan === null ? Boolean(update.deliveredAt) : account.plan === update.plan));
+          if (applied) { this.store.remove('account-update', update.id); continue; }
+          if (update.label !== undefined) account.label = update.label;
+          if (update.plan === null) delete account.plan; else if (update.plan !== undefined) account.plan = update.plan;
+        }
+        this.pacing.observe(machine, accounts);
         for (const account of this.store.list('account', value => value.machineId === machine.id)) this.store.remove('account', account.id);
         for (const account of accounts) this.store.put('account', account);
       }
@@ -775,11 +802,37 @@ export class Hub {
       // Liveness lives in machine state; the log records only transitions (machine.offline comes from maintenance).
       if (wasOffline) this.emit('machine.online', 'machine', machine, { status: machine.status });
       const cancelled = this.store.list('cancellation', value => value.machineId === machine.id && Date.parse(value.leaseExpiresAt) > this.clock());
+      this.pacing.refresh();
+      const pacing = this.pacing.allowances(machine.id);
+      const updates = this.store.list('account-update', value => value.machineId === machine.id).map(update => {
+        if (!update.deliveredAt) { update.deliveredAt = this.now(); this.store.put('account-update', update); }
+        return { id: update.updateId, accountId: update.accountId, ...(update.label !== undefined ? { label: update.label } : {}), ...(update.plan !== undefined ? { plan: update.plan } : {}) };
+      });
       return reply({ status: machine.status, cancel: { assignments: cancelled.filter(value => value.kind === 'assignment').map(value => value.entityId), jobs: cancelled.filter(value => value.kind === 'job').map(value => value.entityId) },
+        // Per-account agent allowances from the pacing plan, and owner label/plan edits for the node's pool.
+        ...(pacing ? { pacing } : {}), ...(updates.length ? { accountUpdates: updates } : {}),
         // The served and next certificate fingerprints, so pinned machines follow a rotation without re-joining.
         ...(this.tls ? { tls: { fingerprints: this.tls.fingerprints } } : {}) });
     }
     if (path === '/accounts' && method === 'GET') return reply({ accounts: this.store.list('account') });
+    if (collection === 'accounts' && entityId && segments.length === 2 && method === 'PATCH') {
+      const account = this.store.need('account', entityId);
+      requireValue(Object.keys(body).every(key => ['label', 'plan', 'idempotencyKey'].includes(key)), 'Accounts accept label and plan.');
+      requireValue(body.label !== undefined || body.plan !== undefined, 'Set label or plan.');
+      const update = this.store.get('account-update', account.id) ?? { id: account.id, accountId: account.id, machineId: account.machineId };
+      const changes = {};
+      if (body.label !== undefined) { update.label = changes.label = displayText(body.label, 'label', 128); account.label = update.label; }
+      if (body.plan === null) { update.plan = changes.plan = null; delete account.plan; }
+      else if (body.plan !== undefined) { update.plan = changes.plan = displayText(body.plan, 'plan', 80); account.plan = update.plan; }
+      // Relayed to the owning node on its next heartbeat; the hub shows the edit meanwhile.
+      // Each edit gets a fresh id, so a node that applied an earlier edit never mistakes this one for it.
+      update.updateId = id('aup'); update.requestedAt = this.now(); delete update.deliveredAt;
+      this.store.put('account-update', update); this.store.put('account', account);
+      this.emit('account.updated', 'account', account, changes); this.pacing.dirty = true;
+      return reply(account);
+    }
+    if (path === '/pacing' && method === 'GET') return reply(this.pacing.view());
+    if (path === '/pacing/settings' && method === 'PUT') return reply(this.pacing.updateSettings(body));
     if (path === '/jobs' && method === 'GET') {
       const runId = query.get('runId'); const projectId = query.get('projectId');
       const jobs = runId ? this.store.forRun('job', runId).filter(value => !projectId || value.projectId === projectId) : projectId ? this.store.forProject('job', projectId) : this.store.list('job');
@@ -858,6 +911,11 @@ export class Hub {
         }
         if (body.type === 'delivered') return reply({ accepted: true, delivered: this.agentMessaging.delivered(value, data) });
         if (body.type === 'started') value.status = 'running';
+        // The account an agent runs on, for pacing's agents-per-account count; only an account of this machine.
+        if (kind === 'assignment' && body.type === 'progress' && data.interaction === 'account.bound' && typeof data.accountId === 'string') {
+          const account = this.store.get('account', data.accountId);
+          if (account?.machineId === value.machineId && value.accountId !== account.id) { value.accountId = account.id; this.observation.assignment(value); }
+        }
         if (kind === 'assignment' && body.type === 'usage') { this.recordUsage(value, data); if (data.accountId) { value.accountId = data.accountId; this.observation.assignment(value); } }
         if (kind === 'job' && body.type === 'log') {
           // Blank lines are ordinary CI output; NUL is replaced rather than failing the step.

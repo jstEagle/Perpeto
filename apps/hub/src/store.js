@@ -38,6 +38,9 @@ export class HubStore {
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at TEXT NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS usage_roles (assignment_id TEXT PRIMARY KEY, role TEXT NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS hub_keys (name TEXT PRIMARY KEY, fingerprint TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS account_usage (seq INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, machine_id TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL) STRICT;
+      CREATE INDEX IF NOT EXISTS account_usage_account ON account_usage(account_id, seq);
+      CREATE INDEX IF NOT EXISTS account_usage_at ON account_usage(at);
     `);
     if (version < 2) this.#migrate();
     if (version < 3) {
@@ -208,6 +211,15 @@ export class HubStore {
   endSession(hash) { this.#sql('DELETE FROM sessions WHERE hash=?').run(hash); }
   log(jobId, chunk, at, id) { this.#sql('INSERT INTO job_logs(id,job_id,chunk,at) VALUES(?,?,?,?)').run(id, jobId, chunk, at); }
   logs(jobId) { return this.#sql('SELECT id,job_id,chunk,at FROM job_logs WHERE job_id=? ORDER BY seq').all(jobId).map(row => ({ id: row.id, jobId: row.job_id, chunk: row.chunk, at: row.at })); }
+  /** One subscription usage sample (window percentages and resets) for an account; kept for usageRetentionMs. */
+  accountUsage(accountId, machineId, at, data) {
+    this.#sql('INSERT INTO account_usage(account_id,machine_id,at,data) VALUES(?,?,?,?)').run(accountId, machineId, at, JSON.stringify(data));
+  }
+  /** The most recent samples for an account, oldest first. */
+  accountUsageSamples(accountId, limit = 100) {
+    return this.#sql('SELECT at, data FROM account_usage WHERE account_id=? ORDER BY seq DESC LIMIT ?').all(accountId, limit)
+      .reverse().map(row => ({ at: row.at, ...JSON.parse(row.data) }));
+  }
   usageRole(assignmentId, role) { if (role) this.#sql('INSERT OR IGNORE INTO usage_roles VALUES(?,?)').run(assignmentId, role); }
   usage(record) {
     this.#sql(`INSERT INTO usage VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(record.id, record.projectId, record.runId ?? null, record.assignmentId ?? null,
@@ -263,7 +275,7 @@ export class HubStore {
    * older than its cutoff folds into hourly rollups, and idempotency and message records expire. Returns counts.
    */
   sweep({ finishedBefore, eventsBefore, usageBefore, idempotencyBefore, sessionsBefore, archive, batch = 500 }) {
-    const counts = { assignments: 0, jobs: 0, events: 0, usage: 0, idempotency: 0 };
+    const counts = { assignments: 0, jobs: 0, events: 0, usage: 0, idempotency: 0, accountUsage: 0 };
     const archivedAt = new Date(this.clock()).toISOString();
     for (const kind of ['assignment', 'job']) {
       const rows = this.#sql(`SELECT id, data FROM entities WHERE kind=? AND ${json('finishedAt')}<? LIMIT ?`).all(kind, finishedBefore, batch);
@@ -285,6 +297,7 @@ export class HubStore {
       ${TOKENS.map(name => `SUM(${name})`).join(', ')}, SUM(COALESCE(cost_usd,0)), COUNT(*) FROM usage WHERE at<? GROUP BY substr(at,1,13), ${keys.join(', ')}
       ON CONFLICT(hour, project_id, run_id, assignment_id, machine_id, account_id, provider, model) DO UPDATE SET ${[...TOKENS, 'cost_usd', 'records'].map(name => `${name}=${name}+excluded.${name}`).join(', ')}`).run(usageBefore);
     counts.usage = Number(this.#sql('DELETE FROM usage WHERE at<?').run(usageBefore).changes);
+    counts.accountUsage = Number(this.#sql('DELETE FROM account_usage WHERE at<?').run(usageBefore).changes);
     counts.idempotency = Number(this.#sql('DELETE FROM idempotency WHERE created_at<?').run(idempotencyBefore).changes);
     this.#sql('DELETE FROM message_interactions WHERE at<?').run(idempotencyBefore);
     if (sessionsBefore) this.#sql('DELETE FROM sessions WHERE expires_at<?').run(sessionsBefore);

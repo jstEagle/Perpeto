@@ -19,6 +19,7 @@ describe('sidebar', () => {
     ['/projects/prj_1/merge-queue', 'merge'],
     ['/machines', 'machines'],
     ['/accounts', 'accounts'],
+    ['/pacing', 'pacing'],
     ['/usage', 'usage'],
   ])('marks exactly one item current on %s', (path, key) => {
     expect(current(path)).toEqual([key]);

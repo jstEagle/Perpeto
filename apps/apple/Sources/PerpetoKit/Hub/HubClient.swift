@@ -254,6 +254,38 @@ public final class HubClient: Sendable {
     public func machines() async throws -> [Machine] { try await list("/machines", key: "machines") }
     public func accounts() async throws -> [Account] { try await list("/accounts", key: "accounts") }
 
+    /// Renames a subscription or sets its plan. Accepts the account bare or in an `account` envelope.
+    public func updateAccount(id: String, _ patch: AccountPatch, idempotencyKey: String = UUID().uuidString) async throws -> Account {
+        let data = try await raw("PATCH", "/accounts/\(escape(id))", body: patch, idempotencyKey: idempotencyKey)
+        struct Envelope: Decodable { var account: Account }
+        if let wrapped = try? HubCoding.decoder().decode(Envelope.self, from: data) { return wrapped.account }
+        return try decode(Account.self, from: data)
+    }
+
+    /// Subscription pacing, or nil when the hub has no pacing route yet.
+    public func pacing() async throws -> Pacing? {
+        do {
+            return try await get("/pacing")
+        } catch HubError.http(let status, _, _) where status == 404 || status == 405 {
+            return nil
+        }
+    }
+
+    /// Changes pacing settings. The hub may answer with the new state or a
+    /// bare acknowledgement; the state is read back in that case.
+    public func updatePacing(_ settings: PacingSettings, idempotencyKey: String = UUID().uuidString) async throws -> Pacing {
+        let data = try await raw("PUT", "/pacing/settings", body: settings, idempotencyKey: idempotencyKey)
+        if Self.looksLikePacing(data), let pacing = try? HubCoding.decoder().decode(Pacing.self, from: data) { return pacing }
+        guard let pacing = try await pacing() else { throw HubError.http(status: 404, code: "NOT_FOUND", message: "This hub does not pace subscriptions yet.") }
+        return pacing
+    }
+
+    static func looksLikePacing(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        let body = (object["pacing"] as? [String: Any]) ?? object
+        return body["enabled"] != nil || body["accounts"] != nil || body["providers"] != nil
+    }
+
     public func createEnrollmentCode(idempotencyKey: String = UUID().uuidString) async throws -> EnrollmentCode {
         try await send("POST", "/machines/enrollment-codes", body: EmptyBody(), idempotencyKey: idempotencyKey)
     }
@@ -487,6 +519,8 @@ public final class HubClient: Sendable {
     private func raw<B: Encodable>(_ method: String, _ path: String, body: B, idempotencyKey: String?) async throws -> Data {
         var request = try makeRequest(method, path)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // The key goes in the body and, identically, in the header the hub also accepts.
+        if let idempotencyKey { request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key") }
         request.httpBody = try HubCoding.encoder().encode(Keyed(body: body, idempotencyKey: idempotencyKey))
         return try await perform(request)
     }

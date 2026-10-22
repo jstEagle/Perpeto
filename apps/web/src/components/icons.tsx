@@ -57,6 +57,21 @@ export const IconAccounts = icon(
     <path d="M15.8 5.6a3.2 3.2 0 0 1 0 5.8M17.6 14.3a5.7 5.7 0 0 1 2.6 4.7" />
   </>,
 );
+/** Pacing: a gauge needle settling on its mark. */
+export const IconPacing = icon(
+  <>
+    <path d="M4.5 16.5a7.5 7.5 0 1 1 15 0" />
+    <path d="M12 16.5l3.6-4.6" />
+    <circle cx="12" cy="16.5" r="1.1" fill="currentColor" />
+  </>,
+);
+/** Up next: an outline circle with a forward chevron. */
+export const IconNext = icon(
+  <>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M10.5 8.8l3.2 3.2-3.2 3.2" />
+  </>,
+);
 export const IconUsage = icon(<path d="M5 19.5v-6M10 19.5v-11M15 19.5v-8M20 19.5v-14" />);
 export const IconSettings = icon(
   <>

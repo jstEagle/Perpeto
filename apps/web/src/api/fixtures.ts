@@ -22,6 +22,8 @@ import type {
 } from './types';
 import { COL, ROW, buildTemplate, improveTemplate } from '../workflow/templates';
 import { libraryTemplates } from './library';
+import { DEFAULT_PACING, demoAccounts, demoSubscriptions } from './pacing-fixtures';
+import type { DemoPacingSettings } from './pacing-fixtures';
 
 /**
  * Demo factory used when no hub is configured. The story: the Perpeto build
@@ -42,6 +44,10 @@ export interface DemoState {
   assignments: Assignment[];
   machines: Machine[];
   accounts: Account[];
+  /** Subscription pacing settings; the plan is derived from them and `createdAt`. */
+  pacing: DemoPacingSettings;
+  pacingUpdatedAt: number;
+  createdAt: number;
   jobs: Job[];
   jobLogs: Record<string, string>;
   mergeQueue: MergeEntry[];
@@ -472,14 +478,7 @@ export function createDemoState(now = Date.now()): DemoState {
     },
   ];
 
-  const accounts: Account[] = [
-    { id: 'acct_s1', machineId: DEMO_IDS.studio, provider: 'claudeAgent', label: 'Claude Max · personal', status: 'active', lastUsedAt: ago(20_000) },
-    { id: 'acct_s2', machineId: DEMO_IDS.studio, provider: 'claudeAgent', label: 'Claude Team · lumin', status: 'cooling', cooldownUntil: iso(now + 38 * MIN), lastUsedAt: ago(22 * MIN) },
-    { id: 'acct_s3', machineId: DEMO_IDS.studio, provider: 'codex', label: 'ChatGPT Pro', status: 'active', lastUsedAt: ago(9_000) },
-    { id: 'acct_l1', machineId: DEMO_IDS.linux, provider: 'claudeAgent', label: 'Claude Max · build', status: 'active', lastUsedAt: ago(3_000) },
-    { id: 'acct_l2', machineId: DEMO_IDS.linux, provider: 'codex', label: 'ChatGPT Plus', status: 'invalid', lastUsedAt: ago(2 * DAY) },
-    { id: 'acct_l3', machineId: DEMO_IDS.linux, provider: 'codex', label: 'ChatGPT Pro · build', status: 'disabled', lastUsedAt: ago(9 * DAY) },
-  ];
+  const accounts: Account[] = demoAccounts(demoSubscriptions({ studio: DEMO_IDS.studio, linux: DEMO_IDS.linux }), now);
 
   const ciItem = wiAt('Workflow: version history');
   const mergeItem = wiAt('Hub: workflow activation');
@@ -787,6 +786,9 @@ export function createDemoState(now = Date.now()): DemoState {
     assignments,
     machines,
     accounts,
+    pacing: { ...DEFAULT_PACING },
+    pacingUpdatedAt: now - 2 * MIN,
+    createdAt: now,
     jobs,
     jobLogs,
     mergeQueue,

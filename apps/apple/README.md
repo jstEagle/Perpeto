@@ -16,6 +16,7 @@ scripts/build-app.sh         # build/Perpeto.app, release, ad-hoc signed
 open build/Perpeto.app
 scripts/snapshots.sh         # rebuild screenshots/ from demo data
 scripts/snapshots.sh --themes # screenshots/themes/: main screens in light and dark
+scripts/snapshots.sh --pacing # screenshots/pacing/: Accounts and Pacing in light and dark
 ```
 
 iPhone and iPad:
@@ -57,6 +58,12 @@ SwiftPM builds the Mac app; the iOS app is the only Xcode project. Open `Package
 
 Settings has an Appearance control: System (default), Light (pure white) or Dark (graphite). The choice is stored in UserDefaults under `perpeto.appearance`; on the Mac it also sets the app appearance so menus and windows match. Every token colour resolves per appearance, including the logo, which is drawn in `ink`. Pass `-perpeto.appearance light` or `dark` at launch to override it once (`APPEARANCE=dark scripts/snapshots.sh` does this).
 
+## Subscriptions and pacing
+
+Accounts lists each Claude and Codex subscription by provider, in rotation order: label, plan, machine, the session and weekly meters with their resets and the hub's projection at reset (the lighter extension and the small mark), and the pacing state. The pencil edits the label and plan (`PATCH /accounts/:id`). "Add subscription" explains how a login gets into a machine's account pool; the `perpeto` CLI has no command for that yet, and the sheet says so.
+
+Pacing is its own Factory section: the headline sentence, what limits each provider, the rotation for the next ten hours (burn turns in ink, rest in grey, a line at now and the live dot on the subscription burning), the projection per subscription, and the settings (on or off, Rotation or Parallel, target use, and agent limits when the hub reports them; `PUT /pacing/settings`). It refreshes on `pacing.*` and `account.*` events. A hub without `GET /pacing` shows an explanation instead. The contract is new, so decoding is tolerant: optional fields, lenient numbers, and unknown enum values decode to a neutral case (`Models/Pacing.swift`). Demo data has five Claude subscriptions mid-rotation and two Codex ones (`Data/DemoPacing.swift`).
+
 ## Hub connection
 
 Open Settings (⌘,) on the Mac, or Settings in the sidebar footer or the More tab on iPhone and iPad, and enter the hub address and owner token. The address is stored in UserDefaults under `perpeto.hubURL`. The token is stored only in the Keychain (service `app.perpeto.hub`) and is sent only in the `Authorization` header. HTTPS is required except for localhost. Without both values the app shows demo data, marked in the sidebar footer and window subtitle.
@@ -66,7 +73,7 @@ Open Settings (⌘,) on the Mac, or Settings in the sidebar footer or the More t
 | Keys | Action |
 | --- | --- |
 | ⌘1 to ⌘6 | Overview, Workflows, Runs, Work, Messages, Merge queue |
-| ⌥⌘1 to ⌥⌘3 | Machines, Accounts, Usage |
+| ⌥⌘1 to ⌥⌘4 | Machines, Accounts, Pacing, Usage |
 | ⌘N | New workflow draft |
 | ⌘R | Refresh |
 | ⌘↩ | Draft workflow from the prompt; send a message |

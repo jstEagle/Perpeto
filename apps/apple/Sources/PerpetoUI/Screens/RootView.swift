@@ -98,6 +98,7 @@ struct DetailView: View {
             }
         case .factory(.machines): MachinesScreen(store: store)
         case .factory(.accounts): AccountsScreen(store: store)
+        case .factory(.pacing): PacingScreen(store: store)
         case .factory(.usage): UsageScreen(store: store)
         case nil:
             if store.isLoading {

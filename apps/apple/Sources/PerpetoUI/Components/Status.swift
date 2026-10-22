@@ -24,6 +24,10 @@ public enum StatusTone: Sendable, Hashable {
     case error
     /// Turned away without being a failure of the system, such as a rejected PR.
     case dismissed
+    /// Starts on its own shortly, such as the subscription pacing picks next.
+    case next
+    /// Waiting for something that comes on its own, such as a limit reset.
+    case waiting
 
     var symbol: String? {
         switch self {
@@ -37,6 +41,8 @@ public enum StatusTone: Sendable, Hashable {
         case .ok: "circle.fill"
         case .success: "checkmark.circle"
         case .error, .dismissed: "xmark.circle"
+        case .next: "chevron.forward.circle"
+        case .waiting: "clock"
         }
     }
 
@@ -44,8 +50,8 @@ public enum StatusTone: Sendable, Hashable {
         switch self {
         case .running: PerpetoColor.accent
         case .warning, .approval: PerpetoColor.ink
-        case .blocked, .success: PerpetoColor.inkSoft
-        case .neutral, .paused, .stopped, .dismissed: PerpetoColor.faint
+        case .blocked, .success, .next: PerpetoColor.inkSoft
+        case .neutral, .paused, .stopped, .dismissed, .waiting: PerpetoColor.faint
         case .ok: PerpetoColor.faint
         case .error: PerpetoColor.error
         }
@@ -54,8 +60,8 @@ public enum StatusTone: Sendable, Hashable {
     var textColor: Color {
         switch self {
         case .running, .warning, .approval: PerpetoColor.ink
-        case .blocked, .success, .ok: PerpetoColor.inkSoft
-        case .neutral, .paused, .stopped, .dismissed: PerpetoColor.muted
+        case .blocked, .success, .ok, .next: PerpetoColor.inkSoft
+        case .neutral, .paused, .stopped, .dismissed, .waiting: PerpetoColor.muted
         case .error: PerpetoColor.error
         }
     }
@@ -63,7 +69,7 @@ public enum StatusTone: Sendable, Hashable {
     /// Things that need a person, or are failing, read in medium weight.
     var weight: Font.Weight {
         switch self {
-        case .running, .warning, .approval, .error: .medium
+        case .running, .warning, .approval, .error, .next: .medium
         default: .regular
         }
     }
@@ -293,6 +299,18 @@ extension Bottleneck.Severity {
         case .warning: "Warning"
         case .info: "Note"
         case .unknown: "Note"
+        }
+    }
+}
+
+extension PacingAccount.State {
+    public var tone: StatusTone {
+        switch self {
+        case .burning: .running
+        case .next: .next
+        case .resting, .cooling: .waiting
+        case .exhausted: .stopped
+        case .unknown: .neutral
         }
     }
 }

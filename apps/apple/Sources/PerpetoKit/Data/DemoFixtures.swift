@@ -47,7 +47,8 @@ public enum DemoFixtures {
                 tokensToday: UsageBundle(records: records).today,
                 machinesOnline: machines.filter { $0.status == .online }.count,
                 owner: OwnerProfile(name: "Justus", initials: "JH")),
-            usage: UsageBundle(records: records))
+            usage: UsageBundle(records: records),
+            pacing: DemoPacing.pacing(now: now))
     }
 
     public static func projects(now: Date) -> [Project] {
@@ -105,15 +106,8 @@ public enum DemoFixtures {
         ]
     }
 
-    public static func accounts(now: Date) -> [Account] {
-        [
-            Account(id: "acct_c1", machineId: studioId, provider: "claudeAgent", label: "Claude Max 1", status: .active, lastUsedAt: now.addingTimeInterval(-40)),
-            Account(id: "acct_c2", machineId: studioId, provider: "claudeAgent", label: "Claude Max 2", status: .cooling, cooldownUntil: now.addingTimeInterval(38 * 60), lastUsedAt: now.addingTimeInterval(-22 * 60)),
-            Account(id: "acct_x1", machineId: studioId, provider: "codex", label: "ChatGPT Pro 1", status: .active, lastUsedAt: now.addingTimeInterval(-90)),
-            Account(id: "acct_c3", machineId: linuxId, provider: "claudeAgent", label: "Claude Max 3", status: .active, lastUsedAt: now.addingTimeInterval(-300)),
-            Account(id: "acct_x2", machineId: linuxId, provider: "codex", label: "ChatGPT Pro 2", status: .invalid, lastUsedAt: now.addingTimeInterval(-86400 * 3)),
-        ]
-    }
+    /// Seven subscriptions mid-rotation; see `DemoPacing`.
+    public static func accounts(now: Date) -> [Account] { DemoPacing.accounts(now: now) }
 
     public static func jobs(now: Date) -> [Job] {
         [
@@ -435,7 +429,7 @@ public enum DemoFixtures {
             .init(minutesAgo: 27.5, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_03", data: ["sourceNodeId": "loop", "targetNodeId": "loop", "summary": "Account pool hot swap failed at maxIterations 3."]),
             .init(minutesAgo: 31, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_b3", data: ["sourceNodeId": "build", "targetNodeId": "plan", "senderRoleId": "builder-3", "recipientRoleId": "planner", "unplanned": true, "summary": "Reported the metrics item is larger than one PR."]),
             .init(minutesAgo: 34, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_13", data: ["sourceNodeId": "ci", "targetNodeId": "mq", "edgeId": "e7", "summary": "Enrollment codes expire after 15 minutes queued for merge."]),
-            .init(minutesAgo: 40, type: "assignment.state", subjectKind: "assignment", subjectId: "asg_rv118", data: ["nodeId": "review", "state": "running", "machineId": .string(studioId), "accountId": "acct_c1", "summary": "Reviewer switched to Claude Max 1 after Claude Max 2 hit a rate limit."]),
+            .init(minutesAgo: 40, type: "assignment.state", subjectKind: "assignment", subjectId: "asg_rv118", data: ["nodeId": "review", "state": "running", "machineId": .string(studioId), "accountId": "acct_c1", "summary": "Reviewer switched to Claude · build after Claude · Lumin 3 used its session."]),
             .init(minutesAgo: 52, type: "workitem.moved", subjectKind: "workItem", subjectId: "wi_11", data: ["sourceNodeId": "mq", "targetNodeId": "out", "edgeId": "e9", "summary": "Overview counts endpoint merged to main as PR #224."]),
             .init(minutesAgo: 58, type: "agent.messaged", subjectKind: "assignment", subjectId: "asg_rv118", data: ["sourceNodeId": "plan", "targetNodeId": "review", "edgeId": "m2", "senderRoleId": "planner", "recipientRoleId": "reviewer", "summary": "Flagged items 16 and 19 as contract-sensitive."]),
         ]

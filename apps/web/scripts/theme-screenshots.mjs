@@ -1,12 +1,13 @@
 // Captures key screens in the light and dark appearance at desktop width
 // from a running dev server (default http://localhost:5180), demo data.
 // Usage: node scripts/theme-screenshots.mjs [baseUrl]
-// Writes apps/web/screenshots/themes/{light,dark}-<screen>.png
+// Writes apps/web/screenshots/themes/{light,dark}-<screen>.png, or to OUT
+// (relative to apps/web). ONLY=accounts,pacing limits the screens.
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 
 const base = process.argv[2] ?? 'http://localhost:5180';
-const out = new URL('../screenshots/themes/', import.meta.url).pathname;
+const out = new URL(process.env.OUT ? `../${process.env.OUT.replace(/\/?$/, '/')}` : '../screenshots/themes/', import.meta.url).pathname;
 await mkdir(out, { recursive: true });
 
 const P = '/projects/prj_perpeto';
@@ -19,6 +20,8 @@ const screens = [
   ['runs', `${P}/runs`],
   ['work', `${P}/work`],
   ['messages', `${P}/messages`],
+  ['accounts', '/accounts'],
+  ['pacing', '/pacing'],
   ['usage', '/usage'],
   ['settings', '/settings'],
 ];

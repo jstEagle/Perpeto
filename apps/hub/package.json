@@ -25,6 +25,7 @@
   "dependencies": {
     "@perpeto/delivery": "*",
     "@perpeto/messaging": "*",
+    "@perpeto/pacer": "*",
     "@perpeto/workflow": "*"
   }
 }

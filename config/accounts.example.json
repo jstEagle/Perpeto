@@ -1,7 +1,7 @@
 {
   "nodeDataDir": "/absolute/path/to/perpeto-node",
   "machineId": "mch_example",
-  "selection": "lru",
+  "selection": "paced",
   "defaultCooldownMs": 300000,
   "maxConcurrentPerAccount": 1
 }
