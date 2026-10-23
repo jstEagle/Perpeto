@@ -215,6 +215,12 @@ public protocol FactoryDataSource: Sendable {
     /// Renames a subscription or sets its plan.
     func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account
     func updatePacing(_ settings: PacingSettings) async throws -> Pacing
+    /// Project merge queues; nil when the source has none to configure.
+    func mergeQueues(projectId: String) async throws -> MergeQueueSettings?
+    func saveMergeQueues(projectId: String, config: MergeQueueConfig, baseVersion: Int) async throws -> MergeQueueSettings
+    func mergeQueueView(id: String, window: MetricsWindow) async throws -> MergeQueueView
+    func setMergeQueueFrozen(id: String, frozen: Bool, reason: String?) async throws -> MergeQueueView
+    func mergeEntryCommand(entryId: String, _ command: MergeEntryCommand) async throws -> MergeEntry
     func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error>
 }
 
@@ -228,5 +234,18 @@ extension FactoryDataSource {
     }
     public func updateMachine(id: String, _ patch: MachinePatch) async throws -> Machine {
         throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Cordoning machines is not available here.")
+    }
+    public func mergeQueues(projectId: String) async throws -> MergeQueueSettings? { nil }
+    public func saveMergeQueues(projectId: String, config: MergeQueueConfig, baseVersion: Int) async throws -> MergeQueueSettings {
+        throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Merge queue settings are not available here.")
+    }
+    public func mergeQueueView(id: String, window: MetricsWindow) async throws -> MergeQueueView {
+        throw HubError.http(status: 404, code: "NOT_FOUND", message: "Merge queue not found.")
+    }
+    public func setMergeQueueFrozen(id: String, frozen: Bool, reason: String?) async throws -> MergeQueueView {
+        throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Freezing is not available here.")
+    }
+    public func mergeEntryCommand(entryId: String, _ command: MergeEntryCommand) async throws -> MergeEntry {
+        throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Queue commands are not available here.")
     }
 }

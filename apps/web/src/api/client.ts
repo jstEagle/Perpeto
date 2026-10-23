@@ -21,6 +21,10 @@ import type {
   Machine,
   MachinePatch,
   MergeEntry,
+  MergeEntryCommand,
+  MergeQueueConfig,
+  MergeQueueSettings,
+  MergeQueueView,
   Message,
   MessagePage,
   MetricsSnapshot,
@@ -376,6 +380,31 @@ export class HttpHub implements HubApi {
   async mergeQueue(projectId: string) {
     return list<MergeEntry>(await this.#request('GET', `/projects/${enc(projectId)}/merge-queue`), 'entries');
   }
+  async mergeQueues(projectId: string): Promise<MergeQueueSettings | null> {
+    try {
+      return await this.#request<MergeQueueSettings>('GET', `/projects/${enc(projectId)}/merge-queues`);
+    } catch (e) {
+      // A hub from before configurable queues answers 404 for the whole route.
+      if (e instanceof HubError && e.status === 404 && /route not found/i.test(e.message)) return null;
+      throw e;
+    }
+  }
+  async saveMergeQueues(projectId: string, config: MergeQueueConfig, baseVersion: number) {
+    return this.#request<MergeQueueSettings>('PUT', `/projects/${enc(projectId)}/merge-queues`, { body: { config, baseVersion } });
+  }
+  async mergeQueueView(id: string, window: MetricsWindow = '24h') {
+    return this.#request<MergeQueueView>('GET', `/merge-queues/${enc(id)}`, { query: { window } });
+  }
+  async freezeMergeQueue(id: string, reason?: string) {
+    return this.#request<MergeQueueView>('POST', `/merge-queues/${enc(id)}/freeze`, { body: reason ? { reason } : {} });
+  }
+  async unfreezeMergeQueue(id: string) {
+    return this.#request<MergeQueueView>('POST', `/merge-queues/${enc(id)}/unfreeze`, { body: {} });
+  }
+  async mergeEntryCommand(id: string, command: MergeEntryCommand) {
+    const { action, ...body } = command;
+    return this.#request<MergeEntry>('POST', `/merge-entries/${enc(id)}/${action}`, { body });
+  }
 
   async ciPipelines(projectId: string): Promise<PipelineList | null> {
     try {
@@ -574,14 +603,18 @@ export function cookieAdvice(hubBase: string, appHost = typeof location === 'und
 async function errorFrom(response: Response): Promise<HubError> {
   let code = `HTTP_${response.status}`;
   let message = `The hub returned HTTP ${response.status}.`;
+  let details: { path: string; message: string }[] | undefined;
   try {
-    const parsed = (await response.json()) as { error?: { code?: string; message?: string } };
+    const parsed = (await response.json()) as { error?: { code?: string; message?: string; details?: unknown } };
     if (parsed.error?.code) code = parsed.error.code;
     if (parsed.error?.message) message = parsed.error.message;
+    if (Array.isArray(parsed.error?.details)) {
+      details = parsed.error.details.filter((d): d is { path: string; message: string } => !!d && typeof d.path === 'string' && typeof d.message === 'string');
+    }
   } catch {
     /* non-JSON error body */
   }
-  return new HubError(response.status, code, message);
+  return new HubError(response.status, code, message, details);
 }
 
 function enc(value: string) {

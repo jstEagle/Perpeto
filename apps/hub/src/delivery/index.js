@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DeliveryError, LocalGitAdapter, MergeQueue, MergeQueueStore } from '@perpeto/delivery';
+import { DeliveryError, LocalGitAdapter, MergeQueue, MergeQueueStore, queuePolicy } from '@perpeto/delivery';
 
 import { githubAdapter, githubRepository } from './github.js';
 
@@ -71,10 +71,22 @@ export class HubDelivery {
   queue(record) {
     let queue = this.queues.get(record.id);
     if (!queue) {
-      queue = new MergeQueue({ store: this.store, queueId: record.id, config: record.config, adapter: record.github ? githubAdapter(record) : new LocalGitAdapter({ repository: record.repository }), leaseMs: this.hub.config.deliveryLeaseDurationMs });
+      // Named project queues adopt changed policy; workflow-defined queues keep their immutable configuration.
+      queue = new MergeQueue({ store: this.store, queueId: record.id, config: record.config, adapter: record.github ? githubAdapter(record) : new LocalGitAdapter({ repository: record.repository }),
+        leaseMs: this.hub.config.deliveryLeaseDurationMs, reconfigure: Boolean(record.queueName) });
       this.queues.set(record.id, queue);
     }
     return queue;
+  }
+  /** Named queue policy for a delivery queue record; adopts changes in the record and its live queue. */
+  applyNamed(record, queue) {
+    const config = { ...record.config, strategy: queue.strategy, method: queue.method, publication: queue.publication, batchSize: queue.maxBatchSize,
+      requiredChecks: [...new Set([...queue.requiredChecks, ...(record.nodeChecks ?? [])])], policy: queuePolicy(queue) };
+    if (digest(config) === digest(record.config) && record.autoRebase === queue.autoRebaseOnConflict) return record;
+    record.config = config; record.autoRebase = queue.autoRebaseOnConflict;
+    this.hub.store.put('delivery-queue', record);
+    this.queues.get(record.id)?.reconfigure(config);
+    return record;
   }
   /** One queue per project repository, base and merge configuration. CI comes from the ci nodes the merge requires. */
   queueRecord(entry) {
@@ -85,7 +97,10 @@ export class HubDelivery {
     if (!repository) throw new Unsupported('Automatic publication supports GitHub repositories and local bare repositories.');
     const graph = store.need('run-workflow', entry.runId).workflow.graph;
     const node = graph.nodes.find(value => value.id === entry.nodeId) ?? { config: {} };
-    const required = entry.requiredChecks ?? node.config.requiredChecks ?? [];
+    // A node naming a project queue takes its policy from the project's merge queue settings.
+    const named = node.config.queue ? this.hub.mergeQueues.resolve(entry.projectId, node.config.queue, entry.baseBranch) : null;
+    if (named?.error) throw new Unsupported(named.error);
+    const required = named ? [...new Set([...named.queue.requiredChecks, ...(node.config.requiredChecks ?? [])])] : entry.requiredChecks ?? node.config.requiredChecks ?? [];
     const ciNodes = graph.nodes.filter(value => value.type === 'ci');
     const referenced = ciNodes.filter(value => required.includes(value.id));
     const sources = referenced.length ? referenced : ciNodes;
@@ -98,6 +113,20 @@ export class HubDelivery {
       strategy: entry.strategy ?? node.config.strategy ?? 'serial', method: entry.method ?? node.config.method ?? 'squash', requiredChecks: required,
       ...(github || node.config.publication ? { publication: node.config.publication ?? 'fast-forward-push' } : {}),
       ci: { steps: steps.length ? steps : [{ name: 'candidate', run: 'git rev-parse --verify HEAD' }], requirements: requirements(sources.map(value => value.config.requirements ?? {})) } };
+    if (named) {
+      // Stable across policy edits: one delivery queue per named queue, base and CI recipe. Policy changes reconfigure it.
+      const id = `dq_${digest({ projectId: entry.projectId, queue: named.queue.name, baseBranch: entry.baseBranch, repository, ci: config.ci, ...(pipelines.length ? { pipelines } : {}) }).slice(0, 24)}`;
+      let record = store.get('delivery-queue', id);
+      if (!record) {
+        record = { id, projectId: entry.projectId, repository, ...(github ? { github, remote: project.repo.url } : {}), config, checks: [...referenced.map(value => value.id), ...pipelineChecks],
+          ...(pipelines.length ? { pipelines } : {}), queueName: named.queue.name, nodeChecks: node.config.requiredChecks ?? [] };
+        this.applyNamed(record, named.queue);
+        const freeze = named.state.freeze;
+        if (freeze) this.queue(record).freeze({ reason: freeze.reason, by: freeze.by }, { idempotencyKey: `freeze:${id}:${freeze.at}` });
+        return record;
+      }
+      return this.applyNamed(record, named.queue);
+    }
     const id = `dq_${digest(pipelines.length ? { ...config, pipelines } : config).slice(0, 24)}`;
     // Required checks named after ci nodes are proven by the speculative job running those nodes' steps.
     return store.get('delivery-queue', id) ?? store.put('delivery-queue', { id, projectId: entry.projectId, repository, ...(github ? { github, remote: project.repo.url } : {}), config, checks: [...referenced.map(value => value.id), ...pipelineChecks], ...(pipelines.length ? { pipelines } : {}) });
@@ -110,6 +139,8 @@ export class HubDelivery {
       try {
         do {
           this.again = false; this.dirty = false;
+          // Named queues read the project's committed .perpeto/merge-queue.json (cached, refreshed every few seconds).
+          for (const projectId of await this.hub.serialize(() => this.namedProjects())) await this.hub.mergeQueues.refresh(projectId).catch(() => {});
           const ids = await this.hub.serialize(() => this.hub.store.transaction(() => this.admit()));
           for (const id of ids) await this.advance(id);
           if (this.closed) break;
@@ -120,9 +151,24 @@ export class HubDelivery {
     })();
     return this.running;
   }
+  /** Projects whose named queues may need the repository file: entries waiting for admission, or named queues in use. */
+  namedProjects() {
+    const { store } = this.hub;
+    return [...new Set([...store.byStatus('merge-entry', ['queued'], value => !value.queueId && !value.deliveryRejected).map(entry => entry.projectId),
+      ...store.list('delivery-queue', record => record.queueName).map(record => record.projectId)])];
+  }
   /** Enqueue newly created hub merge entries and return the queues with open work. */
   admit() {
     const { store } = this.hub;
+    // A changed repository file reaches named queues already running.
+    const named = store.list('delivery-queue', record => record.queueName);
+    for (const projectId of new Set(named.map(record => record.projectId))) {
+      const { config } = this.hub.mergeQueues.effective(projectId);
+      for (const record of named.filter(item => item.projectId === projectId)) {
+        const queue = config.queues.find(item => item.name === record.queueName);
+        if (queue) this.applyNamed(record, queue);
+      }
+    }
     for (const entry of store.byStatus('merge-entry', ['queued'], value => !value.queueId && !value.deliveryRejected)) {
       // Entries are admitted one by one, so one project's unusable repository never halts admission for the others.
       // A blocked entry stays queued and is retried, for example after the project's repo is corrected.
@@ -136,7 +182,8 @@ export class HubDelivery {
       }
       try {
         this.queue(record).enqueue({ id: entry.id, projectId: entry.projectId, prUrl: entry.prUrl, headSha: entry.headSha, baseBranch: entry.baseBranch,
-          ...(entry.workItemId ? { workItemId: entry.workItemId } : {}), ...(entry.runId ? { runId: entry.runId } : {}) }, { idempotencyKey: `enqueue:${entry.id}` });
+          ...(entry.workItemId ? { workItemId: entry.workItemId } : {}), ...(entry.runId ? { runId: entry.runId } : {}),
+          ...(record.queueName ? this.routing(entry, record) : {}) }, { idempotencyKey: `enqueue:${entry.id}` });
       } catch (error) {
         if (!(error instanceof DeliveryError)) throw error;
         // The entry itself is unusable (for example a PR URL that is not local:<branch>); hand it back to the run.
@@ -156,6 +203,24 @@ export class HubDelivery {
         state.entries.some(entry => TERMINAL.has(entry.status) && this.unmirrored(entry, store.get('merge-entry', entry.id))) ||
         state.jobs.some(job => job.status === 'queued' && !store.get('job', job.id)) || this.errors.has(record.id) || record.lastError;
     }).map(record => record.id);
+  }
+  /**
+   * What a named queue needs to place an entry: its head branch and labels (lanes), and how many review gates passed
+   * for its work item in this run (required approvals).
+   */
+  routing(entry, record) {
+    const { store } = this.hub;
+    let item = null;
+    try { item = entry.workItemId ? store.get('work-item', entry.workItemId) ?? this.hub.engine.getWorkItem?.(entry.workItemId) : null; } catch { item = null; }
+    const headBranch = item?.branch ?? (entry.prUrl.startsWith('local:') ? entry.prUrl.slice(6) : undefined);
+    const labels = Array.isArray(item?.labels) ? item.labels.filter(label => typeof label === 'string' && label.trim()).slice(0, 50) : [];
+    const value = { ...(headBranch ? { headBranch } : {}), ...(labels.length ? { labels } : {}) };
+    if (record.config.policy?.requiredApprovals && entry.runId) {
+      const graph = store.get('run-workflow', entry.runId)?.workflow.graph;
+      const reviews = new Set((graph?.nodes ?? []).filter(node => node.type === 'review').map(node => node.id));
+      value.approvals = store.forRun('assignment', entry.runId).filter(assignment => assignment.workItemId === entry.workItemId && reviews.has(assignment.nodeId) && assignment.result?.verdict === 'pass').length;
+    }
+    return value;
   }
   /** A terminal delivery outcome the hub entry does not show yet. A published merge always wins over a hub rejection. */
   unmirrored(entry, hubEntry) {
@@ -271,7 +336,10 @@ export class HubDelivery {
         if (!hubEntry || (TERMINAL.has(hubEntry.status) && !this.unmirrored(entry, hubEntry))) continue;
         // deliveryError shows why an entry is stuck while its attempt keeps failing, and why the hub rejected it.
         const deliveryError = this.rejected.get(entry.id) ?? (failing && state.active.entryIds.includes(entry.id) ? failing : undefined);
-        const next = { ...(entry.status === 'rejected' ? { rejectionKind: rejectionKind(entry) } : {}), status: entry.status, jobId: entry.jobId, reason: entry.reason, testedRevision: entry.testedRevision, mergedRevision: entry.mergedRevision, deliveryError };
+        // A named queue with autoRebaseOnConflict false reports conflicts as plain rejections, so runs take their fail route.
+        const kind = entry.status === 'rejected' ? rejectionKind(entry) : undefined;
+        const next = { ...(kind ? { rejectionKind: kind === 'conflict' && record.autoRebase === false ? 'other' : kind } : {}), status: entry.status, jobId: entry.jobId, reason: entry.reason, testedRevision: entry.testedRevision, mergedRevision: entry.mergedRevision, deliveryError,
+          lane: entry.lane, priority: entry.priority, cause: entry.cause };
         if (TERMINAL.has(entry.status)) this.rejected.delete(entry.id);
         if (Object.entries(next).every(([key, value]) => hubEntry[key] === value)) continue;
         const value = { ...hubEntry, ...next };

@@ -144,7 +144,7 @@ export async function createHub({ configPath, engine = createWorkflowAdapter(), 
     } catch (error) {
       if (response.headersSent) { response.destroy(); return; }
       const expected = error instanceof HubError;
-      json(response, expected ? error.status : 500, { error: { code: expected ? error.code : 'INTERNAL_ERROR', message: expected ? error.message : 'The hub could not complete this request.' } });
+      json(response, expected ? error.status : 500, { error: { code: expected ? error.code : 'INTERNAL_ERROR', message: expected ? error.message : 'The hub could not complete this request.', ...(expected && error.details ? { details: error.details } : {}) } });
     }
   };
   // HTTPS with the hub's own certificate when tlsEnabled; activating a rotated certificate swaps it without a restart.

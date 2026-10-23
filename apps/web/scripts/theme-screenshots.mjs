@@ -34,6 +34,14 @@ const fullScreens = [
   ['pacing', '/pacing'],
   ['usage', '/usage'],
   ['settings', '/settings'],
+  ['merge-queue', `${P}/merge-queue`],
+  ['merge-queue-release', `${P}/merge-queue`, (page) => page.getByRole('radio', { name: /release/ }).click()],
+  ['merge-queue-settings', `${P}/merge-queue`, (page) => page.getByRole('button', { name: 'Settings', exact: true }).click()],
+  ['merge-queue-settings-invalid', `${P}/merge-queue`, async (page) => {
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByLabel('Flaky retries').fill('9');
+    await page.getByLabel('Starts (cron, UTC)').fill('0 17 * *');
+  }],
 ];
 const screens = observe ? observeScreens : fullScreens;
 const only = process.env.ONLY?.split(',');
@@ -57,10 +65,14 @@ for (const theme of ['light', 'dark']) {
   );
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(`${theme} ${page.url()}: ${e.message}`));
-  for (const [name, path] of screens) {
+  for (const [name, path, action] of screens) {
     if (only && !only.includes(name)) continue;
     await page.goto(base + path, { waitUntil: 'networkidle' });
     await page.waitForTimeout(900);
+    if (action) {
+      await action(page);
+      await page.waitForTimeout(600);
+    }
     const height = await page.evaluate(() => document.documentElement.scrollHeight);
     await page.setViewportSize({ width: 1440, height: Math.max(960, Math.min(height, 2400)) });
     await page.waitForTimeout(150);

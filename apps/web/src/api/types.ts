@@ -329,7 +329,127 @@ export interface MergeEntry {
   jobId?: Id;
   reason?: string;
   deliveryError?: string;
+  /** Queue the hub admitted the entry to (a delivery queue id). */
+  queueId?: Id;
+  lane?: string;
+  priority?: number;
+  /** Why it left without merging: ci, conflict, head-changed, timeout, manual, approvals or other. */
+  cause?: string;
 }
+
+/*
+ * Project merge queues (GET/PUT /projects/:id/merge-queues, GET /merge-queues/:id). Named queues come from the hub
+ * settings and the repository's .perpeto/merge-queue.json; workflow queues are the ones inline workflow nodes define.
+ */
+export type { MergeQueueConfig, QueueConfig, Lane as QueueLane, FreezeWindow, ConfigProblem } from '@perpeto/delivery/queue-config';
+
+export interface MergeQueueFreeze {
+  kind?: 'manual' | 'window';
+  reason: string;
+  since?: IsoTime;
+  until?: IsoTime;
+  by?: string;
+}
+
+export interface MergeQueueSummary {
+  id: Id;
+  kind: 'project' | 'workflow';
+  name: string;
+  projectId: Id;
+  branches: string[];
+  strategy: string;
+  source: 'hub' | 'repo' | 'merged' | 'workflow';
+  frozen: MergeQueueFreeze | null;
+  counts: { queued: number; testing: number; merging: number };
+}
+
+export interface MergeQueueSettings {
+  projectId: Id;
+  version: number;
+  updatedAt: IsoTime | null;
+  /** The hub's own document, before the repository file is applied. */
+  config: import('@perpeto/delivery/queue-config').MergeQueueConfig;
+  history: { version: number; updatedAt: IsoTime }[];
+  repo: { path: string; found: boolean; revision?: string; error?: string; errors?: import('@perpeto/delivery/queue-config').ConfigProblem[]; applied: boolean };
+  effective: import('@perpeto/delivery/queue-config').MergeQueueConfig;
+  queues: MergeQueueSummary[];
+}
+
+export interface QueueEntryView {
+  id: Id;
+  prUrl: string;
+  headSha: string;
+  baseBranch: string;
+  status: MergeStatus;
+  position: number;
+  priority: number;
+  workItemId?: Id;
+  runId?: Id;
+  lane?: string;
+  pinned?: boolean;
+  headBranch?: string;
+  labels?: string[];
+  enqueuedAt?: IsoTime;
+  waitedMs?: number;
+  etaAt?: IsoTime;
+  finishedAt?: IsoTime;
+  attemptId?: Id;
+  phase?: string;
+  reason?: string;
+  cause?: string;
+  jobId?: Id;
+  retries?: number;
+  deliveryError?: string;
+}
+
+export interface QueueAttemptView {
+  id: Id;
+  head: boolean;
+  phase: 'preparing' | 'testing' | 'merging' | 'blocked' | string;
+  entryIds: Id[];
+  size: number;
+  startedAt?: IsoTime;
+  jobId?: Id;
+  jobStatus?: JobStatus;
+  revision?: string;
+  retries?: number;
+  reason?: string;
+}
+
+export interface QueueMetrics {
+  windowMs: number;
+  merged: number;
+  rejected: number;
+  throughputPerHour: number;
+  medianTimeInQueueMs: number | null;
+  failureRate: number | null;
+  failuresByReason: { cause: string; count: number; rate: number }[];
+  batches: { total: number; succeeded: number; successRate: number | null };
+  flakyRetries: number;
+  hourly: { start: IsoTime; merged: number; rejected: number }[];
+}
+
+export interface MergeQueueView {
+  id: Id;
+  kind: 'project' | 'workflow';
+  projectId: Id;
+  name: string;
+  source: MergeQueueSummary['source'] | 'removed';
+  config?: import('@perpeto/delivery/queue-config').QueueConfig;
+  branches: string[];
+  strategy: string;
+  frozen: MergeQueueFreeze | null;
+  entries: QueueEntryView[];
+  attempts: QueueAttemptView[];
+  testing: Id[];
+  recent: QueueEntryView[];
+  eta: { attemptMs: number | null; samples: number };
+  metrics: QueueMetrics;
+  window: string;
+  generatedAt: IsoTime;
+}
+
+export type MergeEntryCommand = { action: 'priority'; lane?: string; priority?: number } | { action: 'eject'; reason?: string } | { action: 'requeue'; reason?: string };
 
 export type MachineStatus = 'online' | 'offline' | 'draining';
 

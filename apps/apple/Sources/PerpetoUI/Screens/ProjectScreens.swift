@@ -164,59 +164,7 @@ struct WorkItemDetail: View {
 
 // MARK: Merge queue
 
-struct MergeQueueScreen: View {
-    var store: FactoryStore
-    var project: Project
-    var state: ProjectState
-
-    var body: some View {
-        let queue = state.mergeQueue
-        let open = queue.filter { $0.status == .queued || $0.status == .testing || $0.status == .merging }
-        ScrollView {
-            VStack(alignment: .leading, spacing: PerpetoGap.cards) {
-                ScreenHeader("Merge queue", subtitle: "Pull requests merge into \(project.repo.defaultBranch) one at a time, after checks pass at their exact head commit.")
-                if queue.isEmpty {
-                    EmptyState("The queue is empty", message: "Pull requests join the queue when they pass review and CI.", systemImage: "arrow.triangle.branch").card()
-                } else {
-                    VStack(alignment: .leading, spacing: PerpetoSpacing.x(6)) {
-                        FigureStrip([
-                            Figure("In the queue", value: "\(open.count)"),
-                            Figure("Merged", value: "\(queue.filter { $0.status == .merged }.count)"),
-                            Figure("Rejected", value: "\(queue.filter { $0.status == .rejected }.count)"),
-                        ])
-                    }
-                    .card()
-                    RowList(queue) { entry in
-                        let item = state.workItems.first { $0.prUrl == entry.prUrl }
-                        HStack(alignment: .top, spacing: PerpetoSpacing.x(4)) {
-                            Text(open.firstIndex(of: entry).map { "\($0 + 1)" } ?? "")
-                                .font(PerpetoFont.bodyMedium.monospacedDigit()).foregroundStyle(PerpetoColor.muted)
-                                .frame(width: 20, alignment: .leading)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(item?.title ?? Format.prNumber(entry.prUrl)).font(PerpetoFont.bodyMedium).foregroundStyle(PerpetoColor.ink)
-                                HStack(spacing: 5) {
-                                    Text(Format.prNumber(entry.prUrl)).font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-                                    Text("·").foregroundStyle(PerpetoColor.muted)
-                                    Mono(Format.shortSha(entry.headSha))
-                                    Text("into").font(PerpetoFont.caption).foregroundStyle(PerpetoColor.muted)
-                                    Mono(entry.baseBranch)
-                                }
-                                if let reason = entry.reason, !reason.isEmpty {
-                                    Text(reason).font(PerpetoFont.caption).foregroundStyle(entry.status == .rejected ? PerpetoColor.inkSoft : PerpetoColor.muted)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                            Spacer(minLength: PerpetoSpacing.x(2))
-                            StatusLabel(entry.status.label)
-                        }
-                    }
-                    .card()
-                }
-            }
-            .screenPadding()
-        }
-    }
-}
+// MergeQueueScreen lives in MergeQueueScreen.swift.
 
 // MARK: Messages
 

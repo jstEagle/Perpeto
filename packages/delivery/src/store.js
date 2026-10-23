@@ -4,6 +4,12 @@ import { requireValue, stableHash, stableJSON, string } from './common.js';
 import { createQueueState, reduceQueue } from './machine.js';
 import { inverseEdits, undoEdits } from './history.js';
 
+/**
+ * Actions that commit without the worker lease: submissions, and owner commands whose single transition is safe
+ * against a concurrent step (the step's next dispatch revalidates its attempt and stops if it is gone).
+ */
+const LOCK_FREE = ['enqueue', 'result', 'freeze', 'unfreeze', 'eject', 'requeue-entry', 'prioritize'];
+
 /** SQLite snapshot + request receipts. One aggregate per repo/base queue, WAL/FULL durability. */
 export class MergeQueueStore {
   #db;
@@ -48,7 +54,7 @@ export class MergeQueueStore {
     try { const result = fn(); this.#db.exec('COMMIT'); return result; }
     catch (error) { this.#db.exec('ROLLBACK'); throw error; }
   }
-  initialize(queueId, config) {
+  initialize(queueId, config, { reconfigure = false, at } = {}) {
     string(queueId, 'queueId');
     const state = createQueueState(config);
     return this.#transaction(() => {
@@ -65,9 +71,20 @@ export class MergeQueueStore {
           row.config_hash = stableHash(state.config); row.state = stableJSON(saved);
         }
       }
+      if (row.config_hash !== stableHash(state.config) && reconfigure) return this.#reconfigure(queueId, config, at);
       requireValue(row.config_hash === stableHash(state.config), 'Queue configuration differs from its persisted configuration.', 'CONFLICT');
       return JSON.parse(row.state);
     });
+  }
+  /** Adopt a changed configuration through the reducer, inside initialize's transaction, keeping undo history. */
+  #reconfigure(queueId, config, at) {
+    const before = this.read(queueId);
+    const result = reduceQueue(before, { type: 'configure', config, ...(at !== undefined ? { at } : {}) });
+    const undo = inverseEdits(before, result);
+    const { revision } = this.#db.prepare('UPDATE delivery_queues SET state=?,config_hash=?,revision=revision+1 WHERE id=? RETURNING revision')
+      .get(stableJSON(result), stableHash(result.config), queueId);
+    if (undo.length) this.#db.prepare('INSERT INTO delivery_revisions VALUES(?,?,?)').run(queueId, revision, stableJSON(undo));
+    return result;
   }
   read(queueId) {
     const row = this.#db.prepare('SELECT state FROM delivery_queues WHERE id=?').get(queueId);
@@ -105,21 +122,21 @@ export class MergeQueueStore {
       (SELECT revision FROM delivery_queues WHERE id=?))`).run(queueId, queueId, queueId);
   }
   /** Synchronous reducer commands are transactional and retry-safe across connections. */
-  dispatch(queueId, action, { idempotencyKey, token, stepKey } = {}) {
+  dispatch(queueId, action, { idempotencyKey, token, stepKey, receiptBody = action } = {}) {
     return this.#transaction(() => {
       this.#prune(queueId);
-      const original = stepKey ? this.receipt(queueId, stepKey, { type: 'step' }) : this.receipt(queueId, idempotencyKey, action);
+      const original = stepKey ? this.receipt(queueId, stepKey, { type: 'step' }) : this.receipt(queueId, idempotencyKey, receiptBody);
       if (original) return original;
-      if (!['enqueue', 'result'].includes(action.type)) this.assertLock(queueId, token);
+      if (!LOCK_FREE.includes(action.type)) this.assertLock(queueId, token);
       const before = this.read(queueId);
       const result = reduceQueue(before, action);
       const undo = inverseEdits(before, result);
       if (!undo.length) return result;
-      const { revision } = this.#db.prepare('UPDATE delivery_queues SET state=?,revision=revision+1 WHERE id=? RETURNING revision').get(stableJSON(result), queueId);
+      const { revision } = this.#db.prepare('UPDATE delivery_queues SET state=?,config_hash=?,revision=revision+1 WHERE id=? RETURNING revision').get(stableJSON(result), stableHash(result.config), queueId);
       this.#db.prepare('INSERT INTO delivery_revisions VALUES(?,?,?)').run(queueId, revision, stableJSON(undo));
       // A process crash cannot separate a phase transition from its public tick receipt.
       if (stepKey) this.#remember(queueId, stepKey, { type: 'step' }, revision);
-      else this.#remember(queueId, idempotencyKey, action, revision);
+      else this.#remember(queueId, idempotencyKey, receiptBody, revision);
       this.#prune(queueId);
       return result;
     });

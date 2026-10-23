@@ -7,7 +7,11 @@
   "exports": {
     ".": "./src/index.js",
     "./commands": "./src/commands.js",
-    "./pipelines": "./src/pipelines.js"
+    "./pipelines": "./src/pipelines.js",
+    "./queue-config": {
+      "types": "./src/queue-config.d.ts",
+      "default": "./src/queue-config.js"
+    }
   },
   "engines": {
     "node": ">=24.13.1 <25"

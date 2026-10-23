@@ -17,6 +17,10 @@ import type {
   Machine,
   MachinePatch,
   MergeEntry,
+  MergeEntryCommand,
+  MergeQueueConfig,
+  MergeQueueSettings,
+  MergeQueueView,
   Message,
   MessagePage,
   NewProject,
@@ -152,6 +156,15 @@ export interface HubApi {
   getJob(id: string): Promise<Job>;
   getJobLog(id: string): Promise<string>;
   mergeQueue(projectId: string): Promise<MergeEntry[]>;
+  /** Project merge queue settings and queues; `null` when the hub predates configurable queues. */
+  mergeQueues(projectId: string): Promise<MergeQueueSettings | null>;
+  /** Save the hub's merge queue settings. `baseVersion` refuses a save over someone else's change. */
+  saveMergeQueues(projectId: string, config: MergeQueueConfig, baseVersion: number): Promise<MergeQueueSettings>;
+  mergeQueueView(id: string, window?: MetricsWindow): Promise<MergeQueueView>;
+  freezeMergeQueue(id: string, reason?: string): Promise<MergeQueueView>;
+  unfreezeMergeQueue(id: string): Promise<MergeQueueView>;
+  /** Move an entry to a lane or priority, eject it, or send it to the back of its lane. */
+  mergeEntryCommand(id: string, command: MergeEntryCommand): Promise<MergeEntry>;
 
   /** Pipelines from the repository's .perpeto/ci.json or the project config; `null` when the hub has no CI pipelines. */
   ciPipelines(projectId: string): Promise<PipelineList | null>;
@@ -196,11 +209,14 @@ export interface HubApi {
 export class HubError extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number, code: string, message: string) {
+  /** Field problems with JSON paths, for example from merge queue validation. */
+  readonly details?: { path: string; message: string }[];
+  constructor(status: number, code: string, message: string, details?: { path: string; message: string }[]) {
     super(message);
     this.name = 'HubError';
     this.status = status;
     this.code = code;
+    if (details) this.details = details;
   }
 }
 

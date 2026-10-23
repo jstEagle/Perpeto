@@ -8,6 +8,7 @@ import { service } from './service.js';
 import { machinesCommand } from './fleet.js';
 import { invite, inviteLines } from './invite.js';
 import { ci } from './ci.js';
+import { listQueues, freezeQueue, validateConfig } from './queue.js';
 
 export const help = `Usage: perpeto <command> [--dir <data-directory>]
 
@@ -33,6 +34,10 @@ ci status [--project <id or name>]
 ci logs <jobId> [--follow]
 ci validate [--file <path>]
 sessions
+queue [projectId]
+queue freeze <queueId> [--reason <text>]
+queue unfreeze <queueId>
+queue config validate <file>
 doctor
 status
 
@@ -102,6 +107,10 @@ export async function main(args, { print = console.log, fetchImpl = fetch } = {}
     const checks = await doctor(dir);
     for (const check of checks) print(`${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
     return checks.some(check => check.status === 'fail') ? 1 : 0;
+  } else if (group === 'queue') {
+    if (action === 'validate') return validateConfig(positionals[0], { print });
+    if (action === 'list') await listQueues(dir, positionals[0], { print, fetchImpl });
+    else await freezeQueue(dir, positionals[0], action === 'freeze', flags.reason, { print, fetchImpl });
   } else if (group === 'sessions') {
     const { url, token, pins } = await owner(dir);
     const summary = await request(url, '/sessions/summary?window=24h', { token, pins, fetchImpl });

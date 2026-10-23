@@ -474,6 +474,36 @@ public final class HubClient: Sendable {
         let page: Page = try await get("/ci/flaky", query: ["projectId": projectId])
         return page.flaky.elements
     }
+    // MARK: Project merge queues
+
+    /// Merge queue settings and queues, or nil when the hub predates configurable queues.
+    public func mergeQueues(projectId: String) async throws -> MergeQueueSettings? {
+        do {
+            return try await get("/projects/\(escape(projectId))/merge-queues")
+        } catch HubError.http(let status, _, let message) where status == 404 && (message ?? "").lowercased().contains("route not found") {
+            return nil
+        }
+    }
+    public func saveMergeQueues(projectId: String, config: MergeQueueConfig, baseVersion: Int, idempotencyKey: String = UUID().uuidString) async throws -> MergeQueueSettings {
+        struct Body: Encodable { var config: MergeQueueConfig; var baseVersion: Int }
+        return try await send("PUT", "/projects/\(escape(projectId))/merge-queues", body: Body(config: config, baseVersion: baseVersion), idempotencyKey: idempotencyKey)
+    }
+    public func mergeQueueView(id: String, window: MetricsWindow = .day) async throws -> MergeQueueView {
+        try await get("/merge-queues/\(escape(id))", query: ["window": window.rawValue])
+    }
+    public func setMergeQueueFrozen(id: String, frozen: Bool, reason: String? = nil, idempotencyKey: String = UUID().uuidString) async throws -> MergeQueueView {
+        struct Body: Encodable { var reason: String? }
+        return try await send("POST", "/merge-queues/\(escape(id))/\(frozen ? "freeze" : "unfreeze")", body: Body(reason: frozen ? reason : nil), idempotencyKey: idempotencyKey)
+    }
+    public func mergeEntryCommand(entryId: String, _ command: MergeEntryCommand, idempotencyKey: String = UUID().uuidString) async throws -> MergeEntry {
+        struct Body: Encodable { var lane: String?; var reason: String? }
+        let body: Body = switch command {
+        case .lane(let lane): Body(lane: lane)
+        case .requeue: Body()
+        case .eject(let reason): Body(reason: reason)
+        }
+        return try await send("POST", "/merge-entries/\(escape(entryId))/\(command.action)", body: body, idempotencyKey: idempotencyKey)
+    }
 
     public func usage(projectId: String? = nil, runId: String? = nil, groupBy: UsageGrouping) async throws -> [UsageGroup] {
         var query = ["groupBy": groupBy.rawValue]

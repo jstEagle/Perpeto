@@ -125,7 +125,7 @@ public final class FactoryStore {
             pendingRuns.insert(runId)
         }
         if let projectId = event.projectId,
-           type.hasPrefix("workflow.") || type.hasPrefix("merge-entry.") || type.hasPrefix("project.") || type == "run.started"
+           type.hasPrefix("workflow.") || type.hasPrefix("merge-entry.") || type.hasPrefix("merge-queue.") || type.hasPrefix("project.") || type == "run.started"
             || type.hasPrefix("message.") || type == "agent.messaged"
             || (event.runId != nil && projectStates[projectId]?.runs.contains(where: { $0.id == event.runId }) != true) {
             pendingProjects.insert(projectId)
@@ -367,6 +367,39 @@ public final class FactoryStore {
             factory.pacing = before
             lastError = describe(error, operation: "Saving the pacing settings")
         }
+    }
+
+    // MARK: Merge queues
+
+    /// Project merge queue settings; nil for sources without configurable queues.
+    public func mergeQueues(projectId: String) async -> MergeQueueSettings? {
+        do { return try await source.mergeQueues(projectId: projectId) } catch {
+            lastError = describe(error, operation: "Loading the merge queues")
+            return nil
+        }
+    }
+    public func mergeQueueView(id: String) async -> MergeQueueView? {
+        do { return try await source.mergeQueueView(id: id, window: metricsWindow) } catch {
+            lastError = describe(error, operation: "Loading the merge queue")
+            return nil
+        }
+    }
+    public func setMergeQueueFrozen(id: String, frozen: Bool, reason: String? = nil) async -> MergeQueueView? {
+        do {
+            let view = try await source.setMergeQueueFrozen(id: id, frozen: frozen, reason: reason)
+            lastError = nil
+            return view
+        } catch {
+            lastError = describe(error, operation: frozen ? "Freezing the queue" : "Unfreezing the queue")
+            return nil
+        }
+    }
+    public func mergeEntryCommand(entryId: String, projectId: String, _ command: MergeEntryCommand) async {
+        await perform("Changing the queue entry", projectId: projectId) { [source] in _ = try await source.mergeEntryCommand(entryId: entryId, command) }
+    }
+    /// Saves settings; throws so the editor can show the hub's reason next to the form.
+    public func saveMergeQueues(projectId: String, config: MergeQueueConfig, baseVersion: Int) async throws -> MergeQueueSettings {
+        try await source.saveMergeQueues(projectId: projectId, config: config, baseVersion: baseVersion)
     }
 
     private func perform(_ operation: String, projectId: String, _ body: @escaping () async throws -> Void) async {

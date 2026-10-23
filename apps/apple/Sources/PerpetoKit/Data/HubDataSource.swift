@@ -212,5 +212,16 @@ public struct HubDataSource: FactoryDataSource {
     public func updateMachine(id: String, _ patch: MachinePatch) async throws -> Machine { try await client.updateMachine(id: id, patch) }
     public func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account { try await client.updateAccount(id: id, patch) }
     public func updatePacing(_ settings: PacingSettings) async throws -> Pacing { try await client.updatePacing(settings) }
+    public func mergeQueues(projectId: String) async throws -> MergeQueueSettings? { try await client.mergeQueues(projectId: projectId) }
+    public func saveMergeQueues(projectId: String, config: MergeQueueConfig, baseVersion: Int) async throws -> MergeQueueSettings {
+        try await client.saveMergeQueues(projectId: projectId, config: config, baseVersion: baseVersion)
+    }
+    public func mergeQueueView(id: String, window: MetricsWindow) async throws -> MergeQueueView { try await client.mergeQueueView(id: id, window: window) }
+    public func setMergeQueueFrozen(id: String, frozen: Bool, reason: String?) async throws -> MergeQueueView {
+        try await client.setMergeQueueFrozen(id: id, frozen: frozen, reason: reason)
+    }
+    public func mergeEntryCommand(entryId: String, _ command: MergeEntryCommand) async throws -> MergeEntry {
+        try await client.mergeEntryCommand(entryId: entryId, command)
+    }
     public func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> { client.eventStream(after: after) }
 }

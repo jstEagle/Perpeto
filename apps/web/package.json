@@ -16,6 +16,7 @@
     "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {
+    "@perpeto/delivery": "*",
     "@perpeto/design-tokens": "*",
     "@tanstack/react-router": "^1.170.45",
     "@xyflow/react": "^12.12.0",

@@ -18,6 +18,7 @@ import { Placement } from './placement.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
 import { HubPipelines } from './ci/pipelines.js';
 import { runnerInfo } from './ci/runners.js';
+import { MergeQueues, mergeQueuesRoute } from './merge-queues.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings, gitIdentity } from './errors.js';
 
 const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
@@ -111,7 +112,7 @@ export class Hub {
         this.store.db.prepare('UPDATE tokens SET generation=? WHERE hash=?').run(generation, row.hash);
       }
       this.messaging = new MessagingStore(config.messagingDatabasePath);
-      this.delivery = new HubDelivery(this);
+      this.delivery = new HubDelivery(this); this.mergeQueues = new MergeQueues(this);
       engine.open?.({ databasePath: config.workflowDatabasePath });
       // Hub snapshots may contain private prompts/logs. Keep all persisted files private.
       for (const file of databases) chmodSync(file, 0o600);
@@ -584,6 +585,8 @@ export class Hub {
     const [collection, entityId, action, childId, childAction] = segments;
     const reply = (value, status = 200) => ({ status, body: value });
     if (collection === 'messaging') return reply(this.agentMessaging.route(method, segments.slice(1), body, query, auth));
+    const queues = await mergeQueuesRoute(this, method, segments, query, body);
+    if (queues) return reply(queues);
     if (path === '/projects') {
       if (method === 'GET') return reply({ projects: this.store.list('project').map(project => this.projectView(project)) });
       if (method === 'POST') {
