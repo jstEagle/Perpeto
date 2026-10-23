@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.js",
-    "./commands": "./src/commands.js"
+    "./commands": "./src/commands.js",
+    "./pipelines": "./src/pipelines.js"
   },
   "engines": {
     "node": ">=24.13.1 <25"

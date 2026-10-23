@@ -32,7 +32,7 @@ export async function loadConfig(configPath) {
   const root = dirname(resolve(configPath));
   const raw = JSON.parse(await readFile(configPath, 'utf8'));
   const allowed = ['hubUrl', 'name', 'dataDir', 'credentialFile', 'enrollmentCodeFile', 'labels', 'capacity', 'providers',
-    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs', 'hubFingerprint', 'observe', 'health'];
+    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs', 'hubFingerprint', 'observe', 'health', 'runner'];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !allowed.includes(key))) {
     throw new Error('Invalid node configuration; credentials belong in owner-only files.');
   }
@@ -55,7 +55,9 @@ export async function loadConfig(configPath) {
   const path = value => resolve(root, value);
   for (const key of ['path', 'protectedPaths']) if (jobs[key]) jobs[key] = jobs[key].map(path);
   const dataDir = path(raw.dataDir ?? '../.perpeto/node');
-  const capacity = raw.capacity ?? { maxAgents: 1, maxJobs: 1 };
+  const runner = runnerConfig(raw.runner, root, dataDir);
+  // Runner pools split CI capacity; without an explicit capacity their sum is this machine's job slots.
+  const capacity = raw.capacity ?? { maxAgents: 1, maxJobs: runner.pools ? runner.pools.reduce((sum, pool) => sum + pool.maxJobs, 0) : 1 };
   for (const key of ['maxAgents', 'maxJobs']) {
     if (!Number.isSafeInteger(capacity[key]) || capacity[key] < 0) throw new Error(`Invalid capacity.${key}.`);
   }
@@ -82,11 +84,43 @@ export async function loadConfig(configPath) {
     if (!['heartbeatMs', 'renewMs', 'requestMs', 'pollIdleMs', 'backoffMinMs', 'backoffMaxMs'].includes(key) || !Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new Error('Invalid timing configuration.');
   }
   if (timing.backoffMaxMs < timing.backoffMinMs) throw new Error('Invalid backoff bounds.');
-  return { ...raw, hubUrl: url.href.replace(/\/+$/, ''), dataDir, capacity, timing, tokenRotationMs, ...(observe ? { observe } : {}),
+  return { ...raw, hubUrl: url.href.replace(/\/+$/, ''), dataDir, capacity, timing, tokenRotationMs, runner, ...(observe ? { observe } : {}),
     credentialFile: raw.credentialFile ? path(raw.credentialFile) : resolve(dataDir, 'machine.json'),
     enrollmentCodeFile: raw.enrollmentCodeFile ? path(raw.enrollmentCodeFile) : undefined,
     labels: raw.labels ?? [], configRoot: root };
 }
+
+const RUNNER_KEYS = ['pools', 'labels', 'cacheDir', 'cacheMaxBytes', 'artifactMaxBytes'];
+/**
+ * `runner`: this machine's CI runner, separate from agent slots. `pools` name CI capacity with their own concurrency
+ * (jobs choose one with runsOn.pool), `labels` are runner-only labels jobs can require, and `cacheDir` is the
+ * per-machine dependency cache (default `<dataDir>/ci-cache`, LRU-evicted above `cacheMaxBytes`). Storage cleanup
+ * tools find the cache through `ciCacheRoot(config)`.
+ */
+export function runnerConfig(value, root = process.cwd(), dataDir = resolve(root, '../.perpeto/node')) {
+  const input = value ?? {};
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !RUNNER_KEYS.includes(key))) throw new Error('Invalid runner configuration.');
+  const result = { labels: [], cacheDir: resolve(root, input.cacheDir ?? resolve(dataDir, 'ci-cache')), cacheMaxBytes: input.cacheMaxBytes ?? 10 * 1024 ** 3,
+    artifactMaxBytes: input.artifactMaxBytes ?? 100 * 1024 ** 2 };
+  if (input.pools !== undefined) {
+    if (!Array.isArray(input.pools) || !input.pools.length || input.pools.length > 16 || input.pools.some(pool => !pool || typeof pool !== 'object' ||
+        typeof pool.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(pool.name) || !Number.isSafeInteger(pool.maxJobs) || pool.maxJobs < 0 ||
+        Object.keys(pool).some(key => !['name', 'maxJobs'].includes(key)))) throw new Error('runner.pools must list 1 to 16 { name, maxJobs } pools.');
+    if (new Set(input.pools.map(pool => pool.name)).size !== input.pools.length) throw new Error('runner.pools names must be distinct.');
+    result.pools = input.pools.map(pool => ({ name: pool.name, maxJobs: pool.maxJobs }));
+  }
+  if (input.labels !== undefined) {
+    if (!Array.isArray(input.labels) || input.labels.length > 64 || input.labels.some(label => typeof label !== 'string' || !label.trim())) throw new Error('Invalid runner.labels.');
+    result.labels = [...input.labels];
+  }
+  if (typeof input.cacheDir === 'string' && (!input.cacheDir.trim() || input.cacheDir.includes('\0'))) throw new Error('Invalid runner.cacheDir.');
+  for (const key of ['cacheMaxBytes', 'artifactMaxBytes']) {
+    if (!Number.isSafeInteger(result[key]) || result[key] < 0) throw new Error(`Invalid runner.${key}.`);
+  }
+  return result;
+}
+/** The per-machine CI dependency cache directory ("ci-cache" storage kind). */
+export const ciCacheRoot = config => config.runner?.cacheDir ?? resolve(config.dataDir, 'ci-cache');
 
 const OBSERVE_KEYS = ['enabled', 't3BaseDir', 'url', 'pollMs', 'includeTitles', 'cli', 'credentialFile', 'tokenTtl', 'backfillHours', 'fetchesPerPoll'];
 /**

@@ -6,6 +6,7 @@ import { Hub } from './hub.js';
 import { HubError, fail, integer, object } from './errors.js';
 import { createWorkflowAdapter } from './engine/workflow-adapter.js';
 import { sendBundle } from './delivery/source.js';
+import { sendFile } from './ci/download.js';
 
 async function readBody(request, limit) {
   if (request.headers['content-length'] && Number(request.headers['content-length']) > limit) fail(413, 'REQUEST_TOO_LARGE', 'Request body exceeds the configured limit.');
@@ -138,6 +139,7 @@ export async function createHub({ configPath, engine = createWorkflowAdapter(), 
       const result = await hub.request(args);
       // Job sources stream outside the request serializer, after their lease was checked.
       if (result.bundle) return await sendBundle(response, result.bundle);
+      if (result.file) return await sendFile(response, result.file);
       json(response, result.status, result.body, setCookie(request, result.cookie));
     } catch (error) {
       if (response.headersSent) { response.destroy(); return; }

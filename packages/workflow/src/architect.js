@@ -51,8 +51,9 @@ const CONFIG_SCHEMAS = {
   agent: role(),
   review: role({ rubric: text }),
   ci: {
-    type: 'object', required: ['steps'],
+    type: 'object', oneOf: [{ required: ['steps'] }, { required: ['pipeline'] }],
     properties: {
+      pipeline: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$', description: 'Name of a pipeline in the repository .perpeto/ci.json, instead of steps.' },
       steps: {
         type: 'array', minItems: 1, maxItems: LIMITS.steps,
         items: { type: 'object', required: ['name', 'run'], additionalProperties: false,
@@ -126,7 +127,7 @@ Nodes are { "id", "type", "label", "position": { "x", "y" }, "config" }. Ids use
 | planner | agent that splits input into work items | harness*, prompt*, emptyResult ("continue" or "complete"; complete ends an explicit empty items result), maxItems (1-${LIMITS.maxItems}, default 20), serializeOverlappingTouches (boolean, default true), concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
 | agent | agent role that does a work item | harness*, prompt*, concurrency (default 1), policy, requirements, role, retry, onExhausted, onBlocked |
 | review | agent review gate; the reviewer reports verdict "pass" or "fail" | harness*, prompt*, rubric, concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
-| ci | CI gate run on a user machine at the exact head commit | steps* ([{ name, run, timeoutSec? }]), requirements, retry, onExhausted |
+| ci | CI gate run on a user machine at the exact head commit | steps* ([{ name, run, timeoutSec? }]) or pipeline* (a pipeline name from the repository's .perpeto/ci.json), requirements, retry, onExhausted |
 | merge-queue | serialises merges into the base branch | strategy* ("serial" or "batch"), method* ("squash", "merge" or "rebase"), requiredChecks, onConflict ("rebase" default or "review"), rebaseReview ("changed" default, "always" or "never") |
 | loop | repeats its body; after maxIterations passes the item escalates to onExhausted or fails | until* ("review-pass", "ci-pass" or "manual"), maxIterations* (1-${LIMITS.maxIterations}), expectedIterations, onExhausted |
 | human | waits for a person to pass or fail the item | prompt* |

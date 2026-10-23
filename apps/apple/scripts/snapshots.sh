@@ -14,6 +14,8 @@
 #        scripts/snapshots.sh --fleet [output-dir]
 #   captures Fleet on the overloaded two-machine demo, then with a machine
 #   cordoned, in light and dark (default: screenshots/fleet).
+#        scripts/snapshots.sh --ci [output-dir]
+#   captures the CI screen and two pipeline runs in light and dark (default: screenshots/ci).
 #        scripts/snapshots.sh --observe [output-dir]
 #   captures the observe-only demo (no projects: Home, Sessions, Accounts,
 #   Pacing, Usage, Machines) in light and dark (default: screenshots/observe).
@@ -45,7 +47,7 @@ if [ "${1:-}" = "--fleet" ]; then
   ls "$OUT"
   exit 0
 fi
-if [ "${1:-}" = "--themes" ] || [ "${1:-}" = "--pacing" ]; then
+if [ "${1:-}" = "--themes" ] || [ "${1:-}" = "--pacing" ] || [ "${1:-}" = "--ci" ]; then
   MODE_FLAG="$1"
   OUT="${2:-$ROOT/screenshots/${MODE_FLAG#--}}"
   "$ROOT/scripts/build-app.sh" debug >/dev/null

@@ -17,6 +17,8 @@ describe('sidebar', () => {
     ['/projects/prj_1/work', 'work'],
     ['/projects/prj_1/messages', 'messages'],
     ['/projects/prj_1/merge-queue', 'merge'],
+    ['/projects/prj_1/ci', 'ci'],
+    ['/projects/prj_1/ci/plr_1', 'ci'],
     ['/sessions', 'sessions'],
     ['/machines', 'machines'],
     ['/accounts', 'accounts'],

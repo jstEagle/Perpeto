@@ -16,6 +16,7 @@ import SwiftUI
 //     <prefix>accounts.png and <prefix>pacing.png
 //     --fleet <prefix>    capture Fleet, then Fleet with a machine cordoned;
 //     combine with -perpeto.demo fleet for the overloaded two-machine fleet
+//     --ci <prefix>       capture the CI screen and two demo pipeline runs
 //     --observe <prefix>  capture the observe-only screens (Home, Sessions,
 //     Accounts, Pacing, Usage, Machines);
 //     combine with -perpeto.demo observe for the demo without projects
@@ -69,6 +70,7 @@ struct Snapshotter {
         guard let project = store.factory.projects.first?.id else { return }
         let shots = LaunchArgument.string(after: "--fleet").map { fleetShots(prefix: $0) }
             ?? LaunchArgument.string(after: "--pacing").map { pacingShots(prefix: $0) }
+            ?? LaunchArgument.string(after: "--ci").map { ciShots(project, prefix: $0) }
             ?? LaunchArgument.string(after: "--themes").map { themeShots(project, prefix: $0) }
             ?? (store.isDemo ? demoShots(project) : hubShots(project))
         try? await Task.sleep(for: .seconds(1.5))
@@ -116,6 +118,15 @@ struct Snapshotter {
             ("hub-11-after-live-input", {
                 Task { try? await source.client.addInputs(runId: run, items: ["Live update check"]) }
             }),
+        ]
+    }
+
+    /// CI: pipeline runs, runners and flaky jobs, then a live run's jobs and log.
+    private func ciShots(_ project: String, prefix: String) -> [(String, () -> Void)] {
+        [
+            ("\(prefix)ci", { tall(height: 1100); navigator.selectedPipelineRunId = nil; navigator.route = .project(project, .ci) }),
+            ("\(prefix)ci-run", { navigator.selectedPipelineRunId = "plr_live" }),
+            ("\(prefix)ci-run-failed", { navigator.selectedPipelineRunId = "plr_failed" }),
         ]
     }
 

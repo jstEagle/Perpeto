@@ -18,6 +18,7 @@ scripts/snapshots.sh         # rebuild screenshots/ from demo data
 scripts/snapshots.sh --themes # screenshots/themes/: main screens in light and dark
 scripts/snapshots.sh --pacing # screenshots/pacing/: Accounts and Pacing in light and dark
 scripts/snapshots.sh --observe # screenshots/observe/: the observe-only demo in light and dark
+scripts/snapshots.sh --ci     # screenshots/ci/: CI runs, runners, flaky jobs and two runs in light and dark
 ```
 
 iPhone and iPad:

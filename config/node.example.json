@@ -8,5 +8,12 @@
   "capacity": { "maxAgents": 2, "maxJobs": 1 },
   "runtime": { "enabled": false, "repoRoot": "..", "url": "http://127.0.0.1:4310" },
   "jobs": { "defaultTimeoutSec": 600, "checkoutTimeoutSec": 120, "maxLogChunkBytes": 8192, "redactPatterns": [] },
-  "health": { "enabled": true, "slowProbeMs": 30000, "warmRepoMs": 3600000 }
+  "health": { "enabled": true, "slowProbeMs": 30000, "warmRepoMs": 3600000 },
+  "runner": {
+    "pools": [{ "name": "default", "maxJobs": 1 }],
+    "labels": [],
+    "cacheDir": "../.perpeto/node/ci-cache",
+    "cacheMaxBytes": 10737418240,
+    "artifactMaxBytes": 104857600
+  }
 }

@@ -89,15 +89,18 @@ export class HubDelivery {
     const ciNodes = graph.nodes.filter(value => value.type === 'ci');
     const referenced = ciNodes.filter(value => required.includes(value.id));
     const sources = referenced.length ? referenced : ciNodes;
-    const steps = sources.length === 1 ? sources[0].config.steps
-      : sources.flatMap(value => value.config.steps.map(item => ({ ...item, name: `${value.id}:${item.name}` })));
+    // Required checks may also name repository pipelines (.perpeto/ci.json); a candidate then runs them as pipeline runs.
+    const { pipelines, checks: pipelineChecks } = this.hub.pipelines.forMerge(project, required, sources, ciNodes);
+    const inline = sources.filter(value => value.config.steps?.length);
+    const steps = inline.length === 1 ? inline[0].config.steps
+      : inline.flatMap(value => value.config.steps.map(item => ({ ...item, name: `${value.id}:${item.name}` })));
     const config = { projectId: entry.projectId, repo: { url: repository, defaultBranch: project.repo.defaultBranch }, baseBranch: entry.baseBranch,
       strategy: entry.strategy ?? node.config.strategy ?? 'serial', method: entry.method ?? node.config.method ?? 'squash', requiredChecks: required,
       ...(github || node.config.publication ? { publication: node.config.publication ?? 'fast-forward-push' } : {}),
       ci: { steps: steps.length ? steps : [{ name: 'candidate', run: 'git rev-parse --verify HEAD' }], requirements: requirements(sources.map(value => value.config.requirements ?? {})) } };
-    const id = `dq_${digest(config).slice(0, 24)}`;
+    const id = `dq_${digest(pipelines.length ? { ...config, pipelines } : config).slice(0, 24)}`;
     // Required checks named after ci nodes are proven by the speculative job running those nodes' steps.
-    return store.get('delivery-queue', id) ?? store.put('delivery-queue', { id, projectId: entry.projectId, repository, ...(github ? { github, remote: project.repo.url } : {}), config, checks: referenced.map(value => value.id) });
+    return store.get('delivery-queue', id) ?? store.put('delivery-queue', { id, projectId: entry.projectId, repository, ...(github ? { github, remote: project.repo.url } : {}), config, checks: [...referenced.map(value => value.id), ...pipelineChecks], ...(pipelines.length ? { pipelines } : {}) });
   }
   schedule() { if (!this.closed) setImmediate(() => this.pump().catch(() => {})); }
   async pump() {
@@ -249,8 +252,10 @@ export class HubDelivery {
           // Candidates exist only in the hub's repository, so machines fetch them from the hub rather than a hub path.
           const value = servedFromHub({ id: job.id, projectId: job.projectId, ...(job.runId ? { runId: job.runId } : {}), ...(job.workItemId ? { workItemId: job.workItemId } : {}),
             ...(members[0]?.nodeId ? { nodeId: members[0].nodeId } : {}), revision: job.revision, steps: job.steps, requirements: job.requirements,
-            status: 'queued', attempt: 1, artifacts: [], configHash: job.configHash, delivery: { queueId: id, mergeEntryIds: members.map(entry => entry.id) }, createdAt: now() }, job.repo);
+            status: 'queued', attempt: 1, artifacts: [], configHash: job.configHash, delivery: { queueId: id, mergeEntryIds: members.map(entry => entry.id) }, createdAt: now(),
+            ...(record.pipelines?.length ? { pipelines: record.pipelines } : {}) }, job.repo);
           this.hub.requirements(value.requirements);
+          if (value.pipelines) this.hub.pipelines.adopt(value);
           store.put('job', value); this.hub.emit('job.updated', 'job', value, { status: 'queued', source: 'merge-queue' }); changed = true;
           if (members.length && members.every(entry => TERMINAL.has(entry.status))) this.hub.cancelWork('job', value);
           continue;

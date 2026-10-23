@@ -7,6 +7,7 @@ import { doctor } from './doctor.js';
 import { service } from './service.js';
 import { machinesCommand } from './fleet.js';
 import { invite, inviteLines } from './invite.js';
+import { ci } from './ci.js';
 
 export const help = `Usage: perpeto <command> [--dir <data-directory>]
 
@@ -27,6 +28,10 @@ machines cordon|uncordon|drain <name>
 machines set <name> [--max-agents N|default] [--max-jobs N|default] [--labels a,b|default] [--weight 0-10] [--battery allow|deny|default]
 machines revoke <name>
 service install|uninstall [hub|node] [--dry-run]
+ci run <pipeline> [--rev <commit>] [--ref <branch>] [--project <id or name>]
+ci status [--project <id or name>]
+ci logs <jobId> [--follow]
+ci validate [--file <path>]
 sessions
 doctor
 status
@@ -38,6 +43,7 @@ hub invite lists every address the hub answers on (Tailscale, then LAN); node jo
 Cordon stops new work on a machine; drain also lets its running work finish; uncordon undoes both.
 --observe joins an observe-only node: it watches this Mac's running T3 Code read-only (default ~/.t3/userdata) and runs no agents or CI.
 Service --dry-run prints generated files without writing or loading them.
+ci validate checks .perpeto/ci.json (or --file) offline; ci run without --rev runs the default branch head the hub holds.
 The service manager uses hub/node run internally for foreground execution.`;
 export async function main(args, { print = console.log, fetchImpl = fetch } = {}) {
   const parsed = parseArgs(args);
@@ -87,6 +93,8 @@ export async function main(args, { print = console.log, fetchImpl = fetch } = {}
       throw error;
     });
     print(JSON.stringify(result));
+  } else if (group === 'ci') {
+    return await ci(action, dir, positionals, flags, { print, fetchImpl });
   } else if (group === 'service') {
     const results = await service(action, dir, positionals[0], { dryRun: flags['dry-run'] });
     for (const result of results) print(flags['dry-run'] ? `${result.file}\n${result.contents}` : `${result.state}: ${result.file}`);

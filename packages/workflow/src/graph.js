@@ -124,7 +124,9 @@ export const NODE_CONFIG = Object.freeze({
   planner: { ...agentRole, emptyResult: optional(oneOf(['continue', 'complete'])), maxItems: optional(integer(1, LIMITS.maxItems)), serializeOverlappingTouches: optional(boolean) },
   agent: agentRole,
   review: { ...agentRole, rubric: optional(text(20000)) },
-  ci: { steps: required(steps), requirements: optional(requirements), retry: optional(retry), onExhausted: optional(nodeRef) },
+  // A ci node runs inline steps, or names a repository pipeline (.perpeto/ci.json) the hub runs as a pipeline run.
+  ci: { steps: optional(steps), pipeline: optional(value => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value ?? '') ? null : invalid('must be a pipeline name of letters, numbers, ".", "_" or "-".')),
+    requirements: optional(requirements), retry: optional(retry), onExhausted: optional(nodeRef) },
   'merge-queue': {
     strategy: required(oneOf(['serial', 'batch'])), method: required(oneOf(['squash', 'merge', 'rebase'])),
     requiredChecks: optional(stringArray()),
@@ -193,6 +195,9 @@ function analyse(graph, { providers } = {}) {
       }
       const problem = field.check(config[key]);
       if (problem) error(problem[0], `${node.type} node "${node.id}" config.${key} ${problem[1]}`, at);
+    }
+    if (node.type === 'ci' && (config.steps === undefined) === (config.pipeline === undefined)) {
+      error('MISSING_CONFIG', `ci node "${node.id}" requires exactly one of config.steps or config.pipeline.`, at);
     }
     for (const key of Object.keys(config).sort()) {
       if (!Object.hasOwn(spec, key)) warn('UNKNOWN_CONFIG_KEY', `${node.type} node "${node.id}" has unknown config key "${key}".`, at);

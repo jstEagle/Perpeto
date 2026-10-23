@@ -2,7 +2,7 @@
  * Sidebar sections and which one a route belongs to. Pure, so the rule
  * "exactly one current item per route" is testable without a browser.
  */
-export type NavKey = 'home' | 'sessions' | 'overview' | 'workflows' | 'runs' | 'work' | 'messages' | 'merge' | 'machines' | 'accounts' | 'pacing' | 'usage';
+export type NavKey = 'home' | 'sessions' | 'overview' | 'workflows' | 'runs' | 'work' | 'messages' | 'merge' | 'ci' | 'machines' | 'accounts' | 'pacing' | 'usage';
 
 export interface NavEntry {
   key: NavKey;
@@ -19,6 +19,7 @@ export const projectNavEntries = (projectId: string): NavEntry[] => {
     { key: 'work', to: `${base}/work`, label: 'Work' },
     { key: 'messages', to: `${base}/messages`, label: 'Messages' },
     { key: 'merge', to: `${base}/merge-queue`, label: 'Merge queue' },
+    { key: 'ci', to: `${base}/ci`, label: 'CI' },
   ];
 };
 
@@ -46,7 +47,7 @@ export function activeNav(pathname: string): NavKey | null {
     const rest = project[1] ?? '';
     if (rest === '') return 'overview';
     const section = rest.split('/')[1];
-    return ({ workflows: 'workflows', runs: 'runs', work: 'work', messages: 'messages', 'merge-queue': 'merge' } as Record<string, NavKey>)[section] ?? null;
+    return ({ workflows: 'workflows', runs: 'runs', work: 'work', messages: 'messages', 'merge-queue': 'merge', ci: 'ci' } as Record<string, NavKey>)[section] ?? null;
   }
   const factory = path.split('/')[1];
   return factory === 'sessions' || factory === 'machines' || factory === 'accounts' || factory === 'pacing' || factory === 'usage' ? (factory as NavKey) : null;
