@@ -13,6 +13,7 @@ import { sanitizeFailure } from './failure.js';
 import { createHealthCollector, repoKey } from './health.js';
 
 import { processIdentity } from './lock.js';
+import { createStorage, pruneSeen, workspaceName } from './storage.js';
 
 const VERSION = '0.1.0';
 const accountFields = ['id', 'machineId', 'provider', 'label', 'status', 'cooldownUntil', 'lastUsedAt', 'plan'];
@@ -31,11 +32,12 @@ function publicUsage(usage) {
 /**
  * Build a daemon without starting it. Optional injected integrations support embedders/tests.
  * @param {{configPath: string, registry?: object, accountProvider?: object, runtimeSupervisor?: object, onStatus?: (status: object) => void, clock?: () => number,
- *   healthCollector?: {collect(): Promise<object>}, storageState?: () => Promise<'ok'|'low'|'critical'|undefined>, warmRepos?: () => Promise<string[]>}} options
+ *   healthCollector?: {collect(): Promise<object>}, storageState?: () => Promise<'ok'|'low'|'critical'|undefined>, warmRepos?: () => Promise<string[]>,
+ *   storage?: {janitor?: object, statfs?: Function}}} options
  * `healthCollector` replaces machine telemetry (tests); `storageState` and `warmRepos` let a storage janitor report its volume and kept checkouts.
  * `clock` (epoch ms) judges hub lease expiry; it must agree with the hub's clock, so tests that inject one into the hub pass the same one here.
  */
-export async function createNode({ configPath, registry, accountProvider, runtimeSupervisor, onStatus = () => {}, clock = Date.now, healthCollector, storageState, warmRepos }) {
+export async function createNode({ configPath, registry, accountProvider, runtimeSupervisor, onStatus = () => {}, clock = Date.now, healthCollector, storageState, warmRepos, storage: storageOptions = {} }) {
   const config = await loadConfig(configPath);
   // Pinned hub certificates: the fingerprint from joining, then the set the hub announces over the pinned channel.
   const pinsFile = resolve(config.dataDir, 'hub-pins.json');
@@ -87,6 +89,12 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   /** Runner capability for heartbeats: pools, runner labels and cache size, beside agent slots. */
   const runnerStatus = () => config.capacity.maxJobs ? { runner: { ...(config.runner.pools ? { pools: config.runner.pools } : {}), labels: config.runner.labels,
     ...(ciCache ? { cache: ciCache.stats() } : {}) } } : {};
+  // Storage janitor (config `storage`): never touches the workspace of work this daemon is running.
+  // Placement hears the janitor's disk verdict through health telemetry unless a caller supplies its own.
+  let lastStorageState;
+  storageState ??= async () => lastStorageState;
+  const storage = createStorage({ config, hub, signal: service.signal, ...storageOptions, log: event => { try { console.error(JSON.stringify(event)); } catch { /* Logging cannot stop the janitor. */ } },
+    active: () => ({ workspaces: [...active.values()].filter(record => record.workspace).map(record => ({ path: record.workspace, assignmentId: record.item.id, ...(record.item.runId ? { runId: record.item.runId } : {}) })), branches: [] }) });
   const status = () => ({ machineId, state: stopped ? 'stopped' : fatalError ? 'error' : draining ? 'draining' : started ? 'running' : 'idle',
     running: { agents: [...active.values()].filter(item => item.kind === 'assignment').length,
       jobs: [...active.values()].filter(item => item.kind === 'job').length }, ...(observer ? { observe: observer.status } : {}) });
@@ -209,6 +217,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
 
   function persistSeen(item) {
     seen[item.key] = Math.max(seen[item.key] ?? -1, item.attempt);
+    pruneSeen(seen);
     const write = journalWrites.then(() => writePrivate(resolve(config.dataDir, 'leases.json'), seen));
     // Each caller sees its failure; subsequent leases still get their own durable write.
     journalWrites = write.catch(() => {});
@@ -234,8 +243,10 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       });
       localAccountIds = new Map(localAccounts.filter(account => typeof account.id === 'string').map(account => [publicAccountId(account.id), account.id]));
     } catch { /* A local account snapshot failure must not interrupt leased work. */ }
+    const storageSummary = await storage.heartbeat().catch(() => undefined);
+    lastStorageState = storageSummary?.state;
     const body = { capacity: config.capacity, running: status().running, labels: machine.labels,
-      ...(accounts ? { accounts } : {}), providers: machine.providers, status: draining ? 'draining' : 'online', ...runnerStatus(), ...await telemetry() };
+      ...(accounts ? { accounts } : {}), providers: machine.providers, status: draining ? 'draining' : 'online', ...runnerStatus(), ...(storageSummary ? { storage: storageSummary } : {}), ...await telemetry() };
     let result;
     try {
       result = await hub[retry ? 'retry' : 'post']('/nodes/heartbeat', body, { signal: service.signal });
@@ -292,6 +303,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     adoptPins(result.tls?.fingerprints);
     applyPacing(result.pacing);
     void applyAccountUpdates(result.accountUpdates);
+    storage.directive(result.storage);
   }
   /** Hub allowances for `paced` account selection; no plan in the response means no pacing. */
   function applyPacing(pacing) {
@@ -384,7 +396,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   async function execute(record) {
     armExpiry(record);
     const renewal = renewLoop(record);
-    const workspace = resolve(config.dataDir, 'assignments', randomUUID());
+    // Named after the assignment, so a workspace a crash left behind still shows its owner to the storage janitor.
+    const workspace = resolve(config.dataDir, 'assignments', record.kind === 'assignment' ? workspaceName(record.item.id, record.attempt, randomUUID().slice(0, 8)) : randomUUID());
+    if (record.kind === 'assignment') record.workspace = workspace;
     try {
       await persistSeen(record);
       if (record.kind === 'assignment') await mkdir(workspace, { recursive: true, mode: 0o700 });
@@ -491,6 +505,8 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       try {
         const used = [...active.values()].filter(item => item.kind === kind).length;
         if (used >= limit) { await sleep(config.timing.pollIdleMs, polling.signal); continue; }
+        // A critically full disk takes no new agent work until the janitor (or a person) frees space.
+        if (kind === 'assignment' && storage.blocksAgents()) { await sleep(config.timing.heartbeatMs, polling.signal); continue; }
         const response = await hub.retry('/nodes/lease', { kinds: [kind], max: Math.min(1000, limit - used) }, { signal: polling.signal });
         const items = response.leases ?? response.items ?? [
           ...(response.assignments ?? []).map(item => ({ kind: 'assignment', ...item })),
@@ -566,7 +582,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   function cleanup() {
     cleanupTask ??= (async () => {
       service.abort(); polling.abort();
-      await Promise.allSettled([heartbeatTask, rotationLoopTask, rotationTask, observationTask, ...pollTasks]);
+      await Promise.allSettled([heartbeatTask, rotationLoopTask, rotationTask, observationTask, ...pollTasks, storage.stop()]);
       await observer?.stop().catch(() => {});
       try { if (integrationsReady) { await registry?.close?.(); await accountProvider?.close?.(); } }
       finally {
@@ -630,6 +646,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
         pollTasks = ['assignment', 'job'].filter(kind => kind === 'job' ? config.capacity.maxJobs : config.capacity.maxAgents)
           .map(kind => pollLoop(kind));
         if (config.observe?.enabled) await startObserver();
+        await storage.start();
         notify();
         return this;
       } catch (error) { await cleanup(); throw error; }

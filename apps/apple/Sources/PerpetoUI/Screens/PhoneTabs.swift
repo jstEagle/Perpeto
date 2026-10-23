@@ -146,6 +146,8 @@ struct PhoneTabs: View {
                         if observing {
                             link("Machines", FactorySection.machines.systemImage, .factory(.machines))
                             Rule()
+                            link("Storage", FactorySection.storage.systemImage, .factory(.storage))
+                            Rule()
                             link("Pacing", FactorySection.pacing.systemImage, .factory(.pacing))
                         } else {
                             if let projectId {
@@ -159,6 +161,8 @@ struct PhoneTabs: View {
                             link("Sessions", FactorySection.sessions.systemImage, .factory(.sessions))
                             Rule()
                             link("Machines", FactorySection.machines.systemImage, .factory(.machines))
+                            Rule()
+                            link("Storage", FactorySection.storage.systemImage, .factory(.storage))
                             Rule()
                             link("Accounts", FactorySection.accounts.systemImage, .factory(.accounts))
                             Rule()

@@ -47,7 +47,9 @@ export function hubConfig(dir, { host = '127.0.0.1', port = 4320, tls = false } 
     placement: { loadSoftPerCore: 0.8, loadHardPerCore: 1.5, maxProcesses: 2000, minFreeDiskBytes: 10737418240, allowOnBattery: false, healthStaleMs: 120000, spreadMargin: 10, deferMs: 5000 },
     // CI pipeline runs (apps/hub/src/ci/config.js): bounded logs, artifact storage and retention.
     ci: { logMaxBytesPerJob: 5242880, logRetentionMs: 1209600000, artifactsPath: './hub/ci-artifacts', artifactMaxBytesPerJob: 209715200, artifactRetentionMs: 604800000,
-      runRetentionMs: 2592000000, redactPatterns: [], scheduleTriggers: true, pullRequestTriggers: true } };
+      runRetentionMs: 2592000000, redactPatterns: [], scheduleTriggers: true, pullRequestTriggers: true },
+    // Storage janitor retention policy (defaults in @perpeto/janitor) and per-machine overrides by machine id or name.
+    storage: { policy: {}, machines: {} } };
 }
 export function hubUrl(value) {
   let url;
@@ -90,6 +92,8 @@ export function nodeConfig(dir, url, { labels = [], name = hostname(), fingerpri
     executorPackages: observe ? [] : ['@perpeto/t3-executor'], ...(observe ? { observe } : {}),
     // CI runner: pools split maxJobs; the dependency cache is per machine and LRU-evicted above cacheMaxBytes.
     ...(observe ? {} : { runner: { labels: [], cacheDir: './node/ci-cache', cacheMaxBytes: 10737418240, artifactMaxBytes: 104857600 } }),
+    // Storage janitor with the hub's retention policy; local fields here override it on this machine.
+    storage: {},
     timing: { heartbeatMs: 10000, renewMs: 20000, requestMs: 30000, pollIdleMs: 200, backoffMinMs: 250, backoffMaxMs: 10000 },
     jobs: { defaultTimeoutSec: 600, checkoutTimeoutSec: 120, maxLogChunkBytes: 8192, redactPatterns: [], protectedPaths: [] }, runtime: { enabled: false, repoRoot,
       url: `http://${host.includes(':') ? `[${host}]` : host}:${runtime.port}` } };

@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fail, integer, nonblank, object, requireValue } from './errors.js';
 import { PLACEMENT_DEFAULTS, placementFields } from './placement.js';
 import { CI_DEFAULTS, ciConfig } from './ci/config.js';
+import { storageConfig, STORAGE_CONFIG_DEFAULTS } from './storage.js';
 
 /** Subscription pacing defaults. Burn-rate priors (percent of a window per agent-hour) are uncalibrated starting points. */
 export const PACING_CONFIG_DEFAULTS = Object.freeze({
@@ -57,7 +58,7 @@ export function loadConfig(filename) {
     maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
     finishedWorkRetentionMs: 604800000, eventRetentionMs: 2592000000, usageRetentionMs: 2592000000, idempotencyRetentionMs: 86400000,
     archiveFinished: true, retentionSweepIntervalMs: 60000, sessionTtlMs: 43200000, messageRatePerMinute: 30, architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' },
-    pacing: PACING_CONFIG_DEFAULTS, placement: PLACEMENT_DEFAULTS, ci: CI_DEFAULTS,
+    pacing: PACING_CONFIG_DEFAULTS, placement: PLACEMENT_DEFAULTS, ci: CI_DEFAULTS, storage: STORAGE_CONFIG_DEFAULTS,
   };
   requireValue(Object.keys(input).every(key => Object.hasOwn(defaults, key)), 'Unknown hub configuration field.');
   const config = { ...defaults, ...input };
@@ -67,6 +68,8 @@ export function loadConfig(filename) {
   for (const [provider, rates] of Object.entries(object(pacing.priors ?? {}, 'pacing.priors'))) priors[provider] = { ...(priors[provider] ?? {}), ...object(rates, `pacing.priors.${provider}`) };
   config.pacing = pacingFields({ ...PACING_CONFIG_DEFAULTS, ...pacing, priors });
   config.placement = placementFields({ ...PLACEMENT_DEFAULTS, ...object(input.placement ?? {}, 'placement') });
+  // Storage janitor retention policy for every machine, with per-machine overrides by id or name.
+  config.storage = storageConfig(config.storage);
   object(config.architectHarness, 'architectHarness'); nonblank(config.architectHarness.provider, 'architect provider', 200); nonblank(config.architectHarness.model, 'architect model', 200);
   nonblank(config.host, 'host'); integer(config.port, 'port', 0, 65535);
   integer(config.requestMaxBytes, 'requestMaxBytes', 128, 16 * 1024 * 1024);

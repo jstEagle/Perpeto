@@ -27,7 +27,13 @@ public actor DemoDataSource: FactoryDataSource {
         case .observe:
             self.factory = DemoObserve.factory(now: start)
         }
+        let storage = DemoStorage.machines(now: start)
+        self.storageMachines = storage
+        self.factory.storage = DemoStorage.fleet(storage)
     }
+
+    /// Demo machines' storage; cleanups apply here and the fleet view is rebuilt from it.
+    private var storageMachines: [MachineStorage]
 
     private let createdAt: Date
 
@@ -389,6 +395,30 @@ public actor DemoDataSource: FactoryDataSource {
         guard scenario != .observe else { return }
         let labels = Dictionary(factory.accounts.map { ($0.id, (label: $0.label, plan: $0.plan)) }, uniquingKeysWith: { a, _ in a })
         factory.pacing = DemoPacing.pacing(now: createdAt, settings: pacingSettings, labels: labels)
+    }
+
+    public func machineStorage(machineId: String) async throws -> MachineStorage {
+        guard let machine = storageMachines.first(where: { $0.machineId == machineId }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "machine not found.")
+        }
+        return machine
+    }
+
+    public func requestCleanup(machineId: String, mode: StorageCleanup.Mode, itemIds: [String]?) async throws -> StorageCleanup {
+        guard let index = storageMachines.firstIndex(where: { $0.machineId == machineId }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "machine not found.")
+        }
+        let (machine, cleanup) = DemoStorage.clean(storageMachines[index], id: "scl_demo\(UUID().uuidString.prefix(8).lowercased())", mode: mode, itemIds: itemIds, now: now())
+        storageMachines[index] = machine
+        factory.storage = DemoStorage.fleet(storageMachines)
+        return cleanup
+    }
+
+    public func storageCleanup(machineId: String, cleanupId: String) async throws -> StorageCleanup {
+        guard let cleanup = storageMachines.first(where: { $0.machineId == machineId })?.cleanups.first(where: { $0.id == cleanupId }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "Cleanup not found.")
+        }
+        return cleanup
     }
 
     public nonisolated func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> {

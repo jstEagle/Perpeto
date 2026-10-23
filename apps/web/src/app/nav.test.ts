@@ -24,6 +24,7 @@ describe('sidebar', () => {
     ['/accounts', 'accounts'],
     ['/pacing', 'pacing'],
     ['/usage', 'usage'],
+    ['/storage', 'storage'],
   ])('marks exactly one item current on %s', (path, key) => {
     expect(current(path)).toEqual([key]);
   });

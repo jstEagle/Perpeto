@@ -8,6 +8,7 @@ const commands = {
   machines: { list: ['json'], revoke: [], cordon: [], uncordon: [], drain: [], set: ['max-agents', 'max-jobs', 'labels', 'weight', 'battery'] },
   service: { install: ['dry-run'], uninstall: ['dry-run'] },
   ci: { run: ['rev', 'project', 'ref'], status: ['project'], logs: ['follow'], validate: ['file'] },
+  storage: { clean: ['machine', 'dry-run', 'items'] },
 };
 const booleans = new Set(['show-owner-token', 'show-code', 'dry-run', 'help', 'tls', 'tailscale', 'off', 'observe', 'no-titles', 'json', 'follow']);
 const id = value => typeof value === 'string' && /^[a-zA-Z0-9_-]+$/.test(value);
@@ -49,8 +50,8 @@ export function parseArgs(args) {
   if (flags.help || words.length === 0) return { help: true };
   if (words[0] === 'queue') return queueArgs(words.slice(1), flags);
   const [group, action, ...positionals] = words;
-  const simple = ['doctor', 'status', 'sessions'].includes(group);
-  const allowed = simple ? [] : commands[group]?.[action ?? (group === 'machines' ? 'list' : undefined)];
+  const simple = ['doctor', 'status', 'sessions'].includes(group) || group === 'storage' && action === undefined;
+  const allowed = group === 'storage' && action === undefined ? ['machine'] : simple ? [] : commands[group]?.[action ?? (group === 'machines' ? 'list' : undefined)];
   if (!allowed || Object.keys(flags).some(key => !['dir', ...allowed].includes(key))) throw new Error('Unknown command or option. Use perpeto --help.');
   if (simple && words.length !== 1) throw new Error('Unexpected argument.');
   if (!simple && !(group === 'machines' && action === undefined)) {
@@ -76,8 +77,12 @@ export function parseArgs(args) {
       if (positionals.length !== expected || (expected && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(positionals[0]))) throw new Error(action === 'run' ? 'Use perpeto ci run <pipeline>.' : action === 'logs' ? 'Use perpeto ci logs <jobId>.' : 'Unexpected argument.');
     } else if (group === 'service') {
       if (positionals.length > 1 || (positionals[0] && !['hub', 'node'].includes(positionals[0]))) throw new Error('Service role must be hub or node.');
+    } else if (group === 'storage') {
+      if (positionals.length) throw new Error('Unexpected argument.');
+      if (flags.items !== undefined && !flags.items.split(',').every(item => /^sti_[a-f0-9]{20}$/.test(item.trim()))) throw new Error('--items takes storage item ids separated by commas.');
     } else if (positionals.length) throw new Error('Unexpected argument.');
   }
+  if (flags.machine !== undefined && !/^[a-zA-Z0-9_-]{1,200}$/.test(flags.machine)) throw new Error('Invalid machine ID.');
   for (const key of ['port', 'https-port']) if (flags[key] !== undefined && (!/^\d+$/.test(flags[key]) || Number(flags[key]) > 65535)) throw new Error('Invalid port.');
   return { group, action, positionals, flags, dir: resolve(flags.dir ?? defaultDir()) };
 }

@@ -24,6 +24,7 @@ import {
   IconRuns,
   IconSelector,
   IconSettings,
+  IconStorage,
   IconUsage,
   IconWork,
   IconWorkflow,
@@ -45,6 +46,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   accounts: IconAccounts,
   pacing: IconPacing,
   usage: IconUsage,
+  storage: IconStorage,
 };
 const withIcon = (e: NavEntry): NavItem => ({ ...e, icon: ICONS[e.key] });
 const projectNav = (projectId: string): NavItem[] => projectNavEntries(projectId).map(withIcon);

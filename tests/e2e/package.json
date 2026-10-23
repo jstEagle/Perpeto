@@ -13,6 +13,7 @@
   "dependencies": {
     "@perpeto/delivery": "*",
     "@perpeto/hub": "*",
+    "@perpeto/janitor": "*",
     "@perpeto/node": "*",
     "@perpeto/sdk": "*",
     "@perpeto/t3-observer": "*",

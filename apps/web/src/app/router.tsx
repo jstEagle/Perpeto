@@ -23,6 +23,7 @@ const CiRunPage = lazyRouteComponent(() => import('../routes/ci-run'), 'CiRunPag
 const MachinesPage = lazyRouteComponent(() => import('../routes/machines'), 'MachinesPage');
 const AccountsPage = lazyRouteComponent(() => import('../routes/accounts'), 'AccountsPage');
 const PacingPage = lazyRouteComponent(() => import('../routes/pacing'), 'PacingPage');
+const StoragePage = lazyRouteComponent(() => import('../routes/storage'), 'StoragePage');
 const UsagePage = lazyRouteComponent(() => import('../routes/usage'), 'UsagePage');
 const SettingsPage = lazyRouteComponent(() => import('../routes/settings'), 'SettingsPage');
 
@@ -66,6 +67,12 @@ const sessions = createRoute({ getParentRoute: () => root, path: '/sessions', co
 const machines = createRoute({ getParentRoute: () => root, path: '/machines', component: MachinesPage });
 const accounts = createRoute({ getParentRoute: () => root, path: '/accounts', component: AccountsPage });
 const pacing = createRoute({ getParentRoute: () => root, path: '/pacing', component: PacingPage });
+const storage = createRoute({
+  getParentRoute: () => root,
+  path: '/storage',
+  component: StoragePage,
+  validateSearch: (search: Record<string, unknown>): { machine?: string } => ({ machine: typeof search.machine === 'string' ? search.machine : undefined }),
+});
 const usage = createRoute({ getParentRoute: () => root, path: '/usage', component: UsagePage });
 const settings = createRoute({ getParentRoute: () => root, path: '/settings', component: SettingsPage });
 
@@ -78,6 +85,7 @@ const tree = root.addChildren([
   accounts,
   pacing,
   usage,
+  storage,
   settings,
 ]);
 

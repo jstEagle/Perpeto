@@ -45,6 +45,7 @@ import type {
   SessionsWindow,
 } from './types';
 import type { CiArtifact, CiInsights, FlakyJob, JobLogPage, NewPipelineRun, PipelineList, PipelineRun, PipelineRunQuery, RunnersView } from './ci';
+import type { CleanupRequest, FleetStorage, MachineStorage, StorageCleanup } from './storage';
 
 export interface EventQuery {
   runId?: string;
@@ -146,6 +147,16 @@ export interface HubApi {
   /** Subscription pacing; `null` when the hub has no pacing route yet. */
   pacing(): Promise<Pacing | null>;
   updatePacing(settings: PacingSettings): Promise<Pacing>;
+
+  /** Disk and reclaimable storage across machines; `null` when the hub has no storage janitor. */
+  storage(): Promise<FleetStorage | null>;
+  /** One machine's storage inventory and recent cleanups. */
+  machineStorage(machineId: string): Promise<MachineStorage>;
+  /** Ask a machine to preview (dry-run) or run a cleanup; it runs on the machine's next heartbeat. */
+  requestStorageCleanup(machineId: string, request: CleanupRequest): Promise<StorageCleanup>;
+  /** Ask a machine for a fresh inventory. */
+  requestStorageScan(machineId: string): Promise<void>;
+  storageCleanup(machineId: string, cleanupId: string): Promise<StorageCleanup>;
 
   /** Observed T3 Code sessions across machines; `null` when the hub doesn't observe sessions. */
   listSessions(query?: SessionQuery): Promise<SessionPage | null>;

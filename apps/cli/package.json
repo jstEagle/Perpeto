@@ -17,6 +17,7 @@
     "@perpeto/delivery": "*",
     "@perpeto/delivery": "*",
     "@perpeto/hub": "*",
+    "@perpeto/janitor": "*",
     "@perpeto/node": "*",
     "@perpeto/t3-observer": "*"
   }

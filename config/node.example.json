@@ -15,5 +15,9 @@
     "cacheDir": "../.perpeto/node/ci-cache",
     "cacheMaxBytes": 10737418240,
     "artifactMaxBytes": 104857600
+  },
+  "storage": {
+    "cleanupForeignWorktrees": false,
+    "foreignWorktreeRoots": ["~/.t3/worktrees"]
   }
 }

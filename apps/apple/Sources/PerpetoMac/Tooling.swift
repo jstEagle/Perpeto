@@ -17,6 +17,7 @@ import SwiftUI
 //     --fleet <prefix>    capture Fleet, then Fleet with a machine cordoned;
 //     combine with -perpeto.demo fleet for the overloaded two-machine fleet
 //     --ci <prefix>       capture the CI screen and two demo pipeline runs
+//     --storage <prefix>  capture only Storage, named <prefix>storage.png
 //     --observe <prefix>  capture the observe-only screens (Home, Sessions,
 //     Accounts, Pacing, Usage, Machines);
 //     combine with -perpeto.demo observe for the demo without projects
@@ -71,6 +72,7 @@ struct Snapshotter {
         let shots = LaunchArgument.string(after: "--fleet").map { fleetShots(prefix: $0) }
             ?? LaunchArgument.string(after: "--pacing").map { pacingShots(prefix: $0) }
             ?? LaunchArgument.string(after: "--ci").map { ciShots(project, prefix: $0) }
+            ?? LaunchArgument.string(after: "--storage").map { prefix in [("\(prefix)storage", { tall(height: 2200); navigator.route = .factory(.storage) })] }
             ?? LaunchArgument.string(after: "--themes").map { themeShots(project, prefix: $0) }
             ?? (store.isDemo ? demoShots(project) : hubShots(project))
         try? await Task.sleep(for: .seconds(1.5))
@@ -103,6 +105,7 @@ struct Snapshotter {
             ("hub-08-accounts", { navigator.route = .factory(.accounts) }),
             ("hub-08b-pacing", { navigator.route = .factory(.pacing) }),
             ("hub-09-usage", { navigator.route = .factory(.usage) }),
+            ("hub-09b-storage", { navigator.route = .factory(.storage) }),
         ] + (CommandLine.arguments.contains("--live-check") ? liveCheck(project, run: run) : [])
     }
 
@@ -207,6 +210,7 @@ struct Snapshotter {
             ("08-accounts", { navigator.route = .factory(.accounts) }),
             ("08b-pacing", { navigator.route = .factory(.pacing) }),
             ("09-usage", { navigator.route = .factory(.usage) }),
+            ("09b-storage", { navigator.route = .factory(.storage) }),
             ("10-workflow-prompt", { navigator.route = .project("prj_docs", .workflows) }),
             ("11-architect-progress", {
                 store.requestDraft(projectId: "prj_docs", prompt: "Plan from our goals, build with Codex, review every PR with Claude, run CI on the Linux box and merge one at a time.", baseWorkflowId: nil)

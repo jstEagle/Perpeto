@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@perpeto/accounts": "*",
+    "@perpeto/janitor": "*",
     "@perpeto/t3-observer": "*"
   }
 }

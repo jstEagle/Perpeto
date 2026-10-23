@@ -86,5 +86,24 @@
     "redactPatterns": [],
     "scheduleTriggers": true,
     "pullRequestTriggers": true
+  },
+  "storage": {
+    "policy": {
+      "scanIntervalMs": 900000,
+      "autoClean": true,
+      "finishedWorkspaceTtlHours": 24,
+      "idleArtifactTtlHours": 72,
+      "cleanupForeignWorktrees": false,
+      "stripForeignArtifacts": false,
+      "foreignWorktreeIdleHours": 168,
+      "lowFreePercent": 15,
+      "criticalFreePercent": 5,
+      "aggressive": {
+        "finishedWorkspaceTtlHours": 2,
+        "idleArtifactTtlHours": 12
+      },
+      "staleProcessHours": 24
+    },
+    "machines": {}
   }
 }
