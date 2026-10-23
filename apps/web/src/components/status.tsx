@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { AccountStatus, AssignmentStatus, JobStatus, MachineStatus, MergeStatus, RunStatus, WorkItemStatus, WorkflowStatus } from '../api/types';
+import type { AccountStatus, AssignmentStatus, JobStatus, MachineStatus, MergeStatus, PlacementStatus, RunStatus, WorkItemStatus, WorkflowStatus } from '../api/types';
 import { IconAlert, IconApproval, IconBlocked, IconCheckCircle, IconCircle, IconClock, IconNext, IconPause, IconStop, IconXCircle } from './icons';
 
 /**
@@ -114,6 +114,16 @@ const MACHINE: Record<MachineStatus, [Tone, string]> = {
   offline: ['attention', 'Offline'],
   draining: ['paused', 'Draining'],
 };
+/** Fleet placement: offline is the one failure; overloaded asks a person to look. */
+const PLACEMENT: Record<PlacementStatus, [Tone, string]> = {
+  online: ['done', 'Online'],
+  limited: ['blocked', 'Limited'],
+  overloaded: ['attention', 'Overloaded'],
+  cordoned: ['paused', 'Cordoned'],
+  draining: ['waiting', 'Draining'],
+  drained: ['stopped', 'Drained'],
+  offline: ['failed', 'Offline'],
+};
 const ACCOUNT: Record<AccountStatus, [Tone, string]> = {
   active: ['done', 'Active'],
   cooling: ['waiting', 'Cooling down'],
@@ -144,5 +154,6 @@ export const AssignmentStatusLabel = make(ASSIGNMENT);
 export const JobStatusLabel = make(JOB);
 export const MergeStatusLabel = make(MERGE);
 export const MachineStatusLabel = make(MACHINE);
+export const PlacementStatusLabel = make(PLACEMENT);
 export const AccountStatusLabel = make(ACCOUNT);
 export const WorkflowStatusLabel = make(WORKFLOW);

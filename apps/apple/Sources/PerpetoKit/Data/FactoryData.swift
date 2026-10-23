@@ -210,6 +210,8 @@ public protocol FactoryDataSource: Sendable {
     func markRead(projectId: String, channelId: String, messageId: String) async throws -> UnreadState
     func enrollmentCode() async throws -> EnrollmentCode
     func drain(machineId: String) async throws -> Machine
+    /// Cordons, uncordons or drains a machine (`PATCH /machines/:id`).
+    func updateMachine(id: String, _ patch: MachinePatch) async throws -> Machine
     /// Renames a subscription or sets its plan.
     func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account
     func updatePacing(_ settings: PacingSettings) async throws -> Pacing
@@ -223,5 +225,8 @@ extension FactoryDataSource {
     }
     public func updatePacing(_ settings: PacingSettings) async throws -> Pacing {
         throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Pacing is not available here.")
+    }
+    public func updateMachine(id: String, _ patch: MachinePatch) async throws -> Machine {
+        throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Cordoning machines is not available here.")
     }
 }

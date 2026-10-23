@@ -70,6 +70,19 @@ describe('HttpHub', () => {
     expect(account).toMatchObject({ label: 'ChatGPT · build', plan: 'Pro' });
   });
 
+  it('cordons a machine with an idempotency key', async () => {
+    const fetch = vi.fn(async () => json({ id: 'mch_1', name: 'studio-mini', placement: { status: 'cordoned' } }));
+    vi.stubGlobal('fetch', fetch);
+    const machine = await hub.updateMachine('mch_1', { cordoned: true });
+    const [url, init] = fetch.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toBe('http://localhost:4320/api/v1/machines/mch_1');
+    expect(init.method).toBe('PATCH');
+    const body = JSON.parse(String(init.body));
+    expect(body).toMatchObject({ cordoned: true });
+    expect(body.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+    expect(machine.placement?.status).toBe('cordoned');
+  });
+
   it('starts runs with settings and patches them later', async () => {
     const fetch = vi.fn(async () => json({ id: 'run_1', status: 'running' }));
     vi.stubGlobal('fetch', fetch);

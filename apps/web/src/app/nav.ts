@@ -27,7 +27,7 @@ export const HOME_NAV_ENTRY: NavEntry = { key: 'home', to: '/', label: 'Home' };
 
 export const FACTORY_NAV_ENTRIES: NavEntry[] = [
   { key: 'sessions', to: '/sessions', label: 'Sessions' },
-  { key: 'machines', to: '/machines', label: 'Machines' },
+  { key: 'machines', to: '/machines', label: 'Fleet' },
   { key: 'accounts', to: '/accounts', label: 'Accounts' },
   { key: 'pacing', to: '/pacing', label: 'Pacing' },
   { key: 'usage', to: '/usage', label: 'Usage' },

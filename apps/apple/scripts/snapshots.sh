@@ -11,6 +11,9 @@
 #   appearance for a normal run.
 #        scripts/snapshots.sh --pacing [output-dir]
 #   captures Accounts and Pacing in light and dark (default: screenshots/pacing).
+#        scripts/snapshots.sh --fleet [output-dir]
+#   captures Fleet on the overloaded two-machine demo, then with a machine
+#   cordoned, in light and dark (default: screenshots/fleet).
 #        scripts/snapshots.sh --observe [output-dir]
 #   captures the observe-only demo (no projects: Home, Sessions, Accounts,
 #   Pacing, Usage, Machines) in light and dark (default: screenshots/observe).
@@ -22,6 +25,19 @@ if [ "${1:-}" = "--observe" ]; then
   mkdir -p "$OUT"
   for MODE in light dark; do
     "$ROOT/build/Perpeto.app/Contents/MacOS/Perpeto" --snapshots "$OUT" --observe "$MODE-" -perpeto.appearance "$MODE" -perpeto.demo observe &
+    PID=$!
+    ( sleep 90; kill "$PID" 2>/dev/null ) &
+    wait "$PID" || true
+  done
+  ls "$OUT"
+  exit 0
+fi
+if [ "${1:-}" = "--fleet" ]; then
+  OUT="${2:-$ROOT/screenshots/fleet}"
+  "$ROOT/scripts/build-app.sh" debug >/dev/null
+  mkdir -p "$OUT"
+  for MODE in light dark; do
+    "$ROOT/build/Perpeto.app/Contents/MacOS/Perpeto" --snapshots "$OUT" --fleet "$MODE-" -perpeto.appearance "$MODE" -perpeto.demo fleet &
     PID=$!
     ( sleep 90; kill "$PID" 2>/dev/null ) &
     wait "$PID" || true

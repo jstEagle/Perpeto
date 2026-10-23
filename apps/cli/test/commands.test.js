@@ -41,7 +41,7 @@ test('commands use the real machine/token and decision routes without printing c
     assert.ok(!output.join('\n').includes(token)); assert.ok(!output.join('\n').includes(before.token));
     return output.join('\n');
   };
-  assert.equal(JSON.parse(await run(dir, 'machines')).machines[0].id, before.machineId);
+  assert.equal(JSON.parse(await run(dir, 'machines', '--json')).machines[0].id, before.machineId);
   const release = await acquireLock(nodeDir, 'node');
   await assert.rejects(run(nodeDir, 'node', 'rotate-token'), /running|Stop/); await release();
   await run(nodeDir, 'node', 'rotate-token');

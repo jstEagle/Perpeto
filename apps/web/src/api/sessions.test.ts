@@ -139,6 +139,6 @@ describe('observe-only demo', () => {
     const hub = new DemoHub(NOW);
     expect((await hub.pacing()).mode).toBe('enforce');
     const names = new Set((await hub.listSessions()).sessions.map((s) => s.machineName));
-    expect([...names].sort()).toEqual(['build-linux', 'studio-mac']);
+    expect([...names].sort()).toEqual(['justus-mbp', 'studio-mini']);
   });
 });

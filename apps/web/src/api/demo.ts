@@ -3,6 +3,7 @@ import type { EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQu
 import { createDemoState, DEMO_IDS } from './fixtures';
 import { applyPacingSettings, demoPacing, demoSubscriptions } from './pacing-fixtures';
 import type { DemoState } from './fixtures';
+import { applyMachinePatch, fleetMachines, generateFleet } from './fleet-fixtures';
 import { observeAccounts, observeMachines, observePacing, observeSessions, observeSummary } from './observe-fixtures';
 import type {
   Account,
@@ -15,6 +16,8 @@ import type {
   GoalInput,
   HubEvent,
   HumanDecision,
+  Machine,
+  MachinePatch,
   Message,
   UnreadState,
   MetricsSnapshot,
@@ -88,9 +91,13 @@ export class DemoHub implements HubApi {
   #ticker: ReturnType<typeof setInterval> | null = null;
   #tick = 0;
 
-  constructor(now = Date.now(), scenario: DemoScenario = 'full') {
+  /** `fleetSize` swaps the demo's two Macs for a generated fleet of that many machines. */
+  constructor(now = Date.now(), scenario: DemoScenario = 'full', options: { fleetSize?: number } = {}) {
     this.scenario = scenario;
     this.#state = createDemoState(now);
+    // The owner's Mac mini and MacBook Pro, with health and placement.
+    const ids = { studio: DEMO_IDS.studio, mbp: DEMO_IDS.linux };
+    this.#state.machines = options.fleetSize ? generateFleet(options.fleetSize, now, ids) : fleetMachines(now, ids);
     if (scenario === 'observe') {
       // Observe only: nothing but machines, subscriptions and the sessions they watch.
       Object.assign(this.#state, { projects: [], versions: [], runs: [], workItems: [], assignments: [], jobs: [], jobLogs: {}, mergeQueue: [], usage: [], events: [], channels: {}, messages: [], metrics: {} });
@@ -275,7 +282,7 @@ export class DemoHub implements HubApi {
     progress('Queued for the workflow architect', 'queued');
     step(900, () => {
       assignment.machineId = DEMO_IDS.studio;
-      progress('Leased by studio-mac', 'leased');
+      progress('Leased by studio-mini', 'leased');
     });
     step(1800, () => progress(`Reading ${project.docs.length} docs and ${project.goals.length} goals`));
     step(3200, () => progress('Checking 2 online machines and their providers'));
@@ -444,9 +451,24 @@ export class DemoHub implements HubApi {
   async drainMachine(id: string) {
     await latency();
     const machine = this.#state.machines.find((m) => m.id === id) ?? notFound('Machine');
+    if (machine.schedule) return this.updateMachine(id, { drain: true });
     machine.status = 'draining';
     this.#emit('machine.draining', { kind: 'machine', id }, {});
     return clone(machine);
+  }
+  async updateMachine(id: string, patch: MachinePatch) {
+    await latency();
+    const i = this.#state.machines.findIndex((m) => m.id === id);
+    if (i < 0) notFound('Machine');
+    let next: Machine;
+    try {
+      next = applyMachinePatch(this.#state.machines[i], patch, new Date().toISOString());
+    } catch (err) {
+      throw new HubError(400, 'INVALID_REQUEST', (err as Error).message);
+    }
+    this.#state.machines[i] = next;
+    this.#emit('machine.updated', { kind: 'machine', id }, { schedule: next.schedule, status: next.placement?.status });
+    return clone(next);
   }
   async listAccounts() {
     await latency();

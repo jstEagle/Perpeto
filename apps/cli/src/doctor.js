@@ -7,12 +7,13 @@ import { loadConfig as loadNodeConfig } from '@perpeto/node';
 import { repoRoot, configPath, readJson, readSecret, hubUrl, hubConfig, nodeConfig } from './config.js';
 import { nodePins, ownCertificatePins, request } from './api.js';
 import { control } from './process.js';
+import { probeHub } from './reach.js';
 
 export function supportedNode(version) {
   const [major, minor, patch] = version.replace(/^v/, '').split('.').map(Number);
   return major === 24 && (minor > 13 || minor === 13 && patch >= 1);
 }
-export async function doctor(dir, { version = process.version, run = spawnSync, fetchImpl = fetch, root = repoRoot, home = homedir(), binPath } = {}) {
+export async function doctor(dir, { version = process.version, run = spawnSync, fetchImpl = fetch, root = repoRoot, home = homedir(), binPath, probe = probeHub } = {}) {
   const checks = [{ name: 'Node', status: supportedNode(version) ? 'ok' : 'fail', detail: `${version}; requires >=24.13.1 <25` }];
   // An observe-only node runs no agents, so harness CLIs and the T3 runtime build are optional there.
   const nodeSettings = await readJson(configPath(dir, 'node')).catch(() => null);
@@ -29,7 +30,7 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
     await access(runtime);
     checks.push({ name: 'T3 build', status: 'ok', detail: runtime });
   } catch { checks.push({ name: 'T3 build', status: missing, detail: observeOnly ? 'Not needed to observe; run npm run setup and npm run build before running agents.' : 'Run npm run setup and npm run build in the installation directory.' }); }
-  const secrets = new Set(); let url; let pins;
+  const secrets = new Set(); let url; let pins; let reachRole;
   for (const role of ['hub', 'node']) {
     try {
       const config = await readJson(configPath(dir, role));
@@ -38,7 +39,7 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
       warnLegacy(checks, JSON.stringify(config), `${role}.json`);
       if (role === 'node') {
         if (config.observe?.enabled) checks.push(...await observeChecks(dir, config, { fetchImpl }));
-        if (!url) { url = config.hubUrl; pins = await nodePins(dir, config); }
+        if (!url) { url = config.hubUrl; pins = await nodePins(dir, config); reachRole = 'node'; }
         secrets.add(resolve(dir, config.credentialFile ?? `${config.dataDir ?? './node'}/machine.json`));
         if (config.enrollmentCodeFile) secrets.add(resolve(dir, config.enrollmentCodeFile));
         if (config.jobs?.redactionFile) secrets.add(resolve(dir, config.jobs.redactionFile));
@@ -47,7 +48,7 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
         const state = await control(dir, 'hub').catch(() => null);
         const host = ['0.0.0.0', '::'].includes(config.host) ? '127.0.0.1' : config.host ?? '127.0.0.1';
         url = state?.url ?? `${config.tlsEnabled ? 'https' : 'http'}://${host.includes(':') ? `[${host}]` : host}:${config.port ?? 4320}`;
-        pins = await ownCertificatePins(dir, config);
+        pins = await ownCertificatePins(dir, config); reachRole = 'hub';
       }
     } catch (error) {
       if (error.code !== 'ENOENT') checks.push({ name: `${role} config`, status: 'fail', detail: 'Invalid configuration.' });
@@ -66,7 +67,14 @@ export async function doctor(dir, { version = process.version, run = spawnSync, 
       const body = await request(target, '/health', { pins, fetchImpl });
       if (body.status !== 'ok') throw new Error();
       checks.push({ name: 'Hub', status: 'ok', detail: target });
-    } catch { checks.push({ name: 'Hub', status: 'fail', detail: 'Hub is unreachable or returned an invalid health response.' }); }
+    } catch {
+      // Say why: a pin mismatch (another server, or a rotated certificate), a wrong IP, a firewall or a closed port.
+      let detail = 'Hub is unreachable or returned an invalid health response.';
+      // A stubbed fetch (tests) is not followed by a real network probe unless a probe is injected too.
+      if (fetchImpl === fetch || probe !== probeHub) try { const result = await probe(url, { pins }); if (!result.ok) detail = `${reachRole === 'node' ? `This node cannot reach its hub at ${url}. ` : ''}${result.message}`; }
+      catch { /* Keep the generic message. */ }
+      checks.push({ name: 'Hub', status: 'fail', detail });
+    }
   } else checks.push({ name: 'Hub', status: 'warn', detail: 'No configured hub. Run perpeto hub init or node join.' });
   for (const role of ['hub', 'node']) {
     for (const file of [resolve(home, `Library/LaunchAgents/com.perpeto.${role}.plist`), resolve(home, `.config/systemd/user/perpeto-${role}.service`)]) {

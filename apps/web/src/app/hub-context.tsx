@@ -6,7 +6,7 @@ import { DemoHub } from '../api/demo';
 import type { DemoScenario } from '../api/demo';
 import type { HubApi, StreamState } from '../api/hub';
 import type { HubEvent } from '../api/types';
-import { loadDemoScenario, loadSettings, saveDemoScenario, saveSettings } from '../api/settings';
+import { loadDemoFleetSize, loadDemoScenario, loadSettings, saveDemoScenario, saveSettings } from '../api/settings';
 
 type Listener = (event: HubEvent) => void;
 
@@ -31,7 +31,7 @@ export function HubProvider({ children, initial }: { children: ReactNode; initia
   const [settings, setSettings] = useState<HubSettings | null>(loaded.settings);
   const [reconnect, setReconnect] = useState<string | undefined>(loaded.reconnect);
   const [demo, setDemoState] = useState<DemoScenario>(() => loadDemoScenario());
-  const api = useMemo<HubApi>(() => initial ?? (settings ? new HttpHub(settings) : new DemoHub(Date.now(), demo)), [settings, initial, demo]);
+  const api = useMemo<HubApi>(() => initial ?? (settings ? new HttpHub(settings) : new DemoHub(Date.now(), demo, { fleetSize: loadDemoFleetSize() })), [settings, initial, demo]);
   const setDemo = useCallback((scenario: DemoScenario) => {
     saveDemoScenario(scenario);
     setDemoState(scenario);

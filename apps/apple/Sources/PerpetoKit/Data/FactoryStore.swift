@@ -310,12 +310,29 @@ public final class FactoryStore {
         }
     }
 
-    public func drain(_ machine: Machine) async {
+    public func drain(_ machine: Machine) async { await apply(.drain, to: machine) }
+
+    /// Cordons, uncordons or drains a machine, shows the hub's answer at
+    /// once, then reloads the fleet. A hub without `PATCH /machines/:id`
+    /// still drains through its older route.
+    public func apply(_ action: FleetAction, to machine: Machine) async {
         do {
-            _ = try await source.drain(machineId: machine.id)
+            let updated: Machine
+            do {
+                updated = try await source.updateMachine(id: machine.id, action.patch)
+            } catch HubError.http(let status, _, _) where action == .drain && (status == 404 || status == 405) {
+                updated = try await source.drain(machineId: machine.id)
+            }
+            if let index = factory.machines.firstIndex(where: { $0.id == machine.id }) { factory.machines[index] = updated }
+            lastError = nil
             factory = try await source.loadFactory()
         } catch {
-            lastError = describe(error, operation: "Draining \(machine.name)")
+            let verb = switch action {
+            case .cordon: "Cordoning"
+            case .uncordon: "Uncordoning"
+            case .drain: "Draining"
+            }
+            lastError = describe(error, operation: "\(verb) \(machine.name)")
         }
     }
 

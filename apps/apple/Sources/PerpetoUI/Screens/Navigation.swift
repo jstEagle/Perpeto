@@ -48,7 +48,7 @@ public enum FactorySection: String, CaseIterable, Hashable, Sendable, Identifiab
         switch self {
         case .home: "Home"
         case .sessions: "Sessions"
-        case .machines: "Machines"
+        case .machines: "Fleet"
         case .accounts: "Accounts"
         case .pacing: "Pacing"
         case .usage: "Usage"

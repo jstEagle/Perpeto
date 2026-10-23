@@ -9,6 +9,7 @@ import { loadRedaction, runJob } from './job.js';
 import { createRuntimeSupervisor } from './runtime.js';
 import { FINGERPRINT } from './transport.js';
 import { sanitizeFailure } from './failure.js';
+import { createHealthCollector, repoKey } from './health.js';
 
 import { processIdentity } from './lock.js';
 
@@ -28,10 +29,12 @@ function publicUsage(usage) {
 
 /**
  * Build a daemon without starting it. Optional injected integrations support embedders/tests.
- * @param {{configPath: string, registry?: object, accountProvider?: object, runtimeSupervisor?: object, onStatus?: (status: object) => void, clock?: () => number}} options
+ * @param {{configPath: string, registry?: object, accountProvider?: object, runtimeSupervisor?: object, onStatus?: (status: object) => void, clock?: () => number,
+ *   healthCollector?: {collect(): Promise<object>}, storageState?: () => Promise<'ok'|'low'|'critical'|undefined>, warmRepos?: () => Promise<string[]>}} options
+ * `healthCollector` replaces machine telemetry (tests); `storageState` and `warmRepos` let a storage janitor report its volume and kept checkouts.
  * `clock` (epoch ms) judges hub lease expiry; it must agree with the hub's clock, so tests that inject one into the hub pass the same one here.
  */
-export async function createNode({ configPath, registry, accountProvider, runtimeSupervisor, onStatus = () => {}, clock = Date.now }) {
+export async function createNode({ configPath, registry, accountProvider, runtimeSupervisor, onStatus = () => {}, clock = Date.now, healthCollector, storageState, warmRepos }) {
   const config = await loadConfig(configPath);
   // Pinned hub certificates: the fingerprint from joining, then the set the hub announces over the pinned channel.
   const pinsFile = resolve(config.dataDir, 'hub-pins.json');
@@ -74,6 +77,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   let integrationsReady = false;
   let observer;
   let observationTask;
+  let health = healthCollector;
+  // Repositories this machine worked on recently (key to time), reported so the hub prefers it for the same repository.
+  const recentRepos = new Map();
   const runtime = runtimeSupervisor ?? createRuntimeSupervisor(config.runtime, { configRoot: config.configRoot });
   const status = () => ({ machineId, state: stopped ? 'stopped' : fatalError ? 'error' : draining ? 'draining' : started ? 'running' : 'idle',
     running: { agents: [...active.values()].filter(item => item.kind === 'assignment').length,
@@ -223,7 +229,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       localAccountIds = new Map(localAccounts.filter(account => typeof account.id === 'string').map(account => [publicAccountId(account.id), account.id]));
     } catch { /* A local account snapshot failure must not interrupt leased work. */ }
     const body = { capacity: config.capacity, running: status().running, labels: machine.labels,
-      ...(accounts ? { accounts } : {}), providers: machine.providers, status: draining ? 'draining' : 'online' };
+      ...(accounts ? { accounts } : {}), providers: machine.providers, status: draining ? 'draining' : 'online', ...await telemetry() };
     let result;
     try {
       result = await hub[retry ? 'retry' : 'post']('/nodes/heartbeat', body, { signal: service.signal });
@@ -249,6 +255,22 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       }
     }
     handleHeartbeat(result);
+  }
+  /** Health and warm workspaces for the hub's placement. Telemetry failure never blocks a heartbeat. */
+  async function telemetry() {
+    if (config.health?.enabled === false) return {};
+    const result = {};
+    try {
+      health ??= createHealthCollector({ dataDir: config.dataDir, runtimeUrl: machine.runtimeUrl, slowProbeMs: config.health?.slowProbeMs, storageState });
+      result.health = await health.collect();
+    } catch { /* Placement falls back to capacity only. */ }
+    const since = Date.now() - (config.health?.warmRepoMs ?? 3600000);
+    for (const [key, at] of recentRepos) if (at < since) recentRepos.delete(key);
+    let kept = [];
+    try { kept = (await warmRepos?.()) ?? []; } catch { /* Optional. */ }
+    const repos = [...new Set([...recentRepos.keys(), ...kept.filter(value => typeof value === 'string')])].slice(0, 500);
+    if (repos.length) result.workspaces = { repos };
+    return result;
   }
   function handleHeartbeat(result) {
     for (const [kind, ids] of [['assignment', result.cancel?.assignments], ['job', result.cancel?.jobs]]) {
@@ -360,6 +382,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
     try {
       await persistSeen(record);
       if (record.kind === 'assignment') await mkdir(workspace, { recursive: true, mode: 0o700 });
+      if (typeof record.item.repo?.url === 'string') { const key = repoKey(record.item.repo.url); recentRepos.delete(key); recentRepos.set(key, Date.now()); }
       const ctx = { signal: record.work.signal, report: event => report(record, event), workspace,
         inbox: { take: () => record.inbox.take(), subscribe: listener => record.inbox.subscribe(listener) },
         // Where the agent's run-scoped messaging credential reaches the hub, with this machine's certificate pins.

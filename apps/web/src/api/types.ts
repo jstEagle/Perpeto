@@ -279,6 +279,7 @@ export interface Assignment {
   architectErrors?: (string | { code?: string; message: string })[];
   retryAssignmentId?: Id;
   architectAttempt?: number;
+  placement?: PlacementDecision;
 }
 
 export interface JobStep {
@@ -311,6 +312,7 @@ export interface Job {
   logRef?: string;
   artifacts: ArtifactRef[];
   configHash: string;
+  placement?: PlacementDecision;
 }
 
 export type MergeStatus = 'queued' | 'testing' | 'merging' | 'merged' | 'rejected';
@@ -331,18 +333,119 @@ export interface MergeEntry {
 
 export type MachineStatus = 'online' | 'offline' | 'draining';
 
+/** What a node last reported about its machine. Every part is optional: older nodes send less. */
+export interface MachineHealth {
+  reportedAt: IsoTime;
+  cpus?: number;
+  /** 1, 5 and 15 minute load averages. */
+  load?: [number, number, number];
+  memory?: { totalBytes: number; freeBytes: number; pressure?: 'normal' | 'warn' | 'critical' };
+  processes?: number;
+  power?: { source: 'ac' | 'battery'; percent?: number; charging?: boolean };
+  thermal?: 'nominal' | 'fair' | 'serious' | 'critical';
+  uptimeSec?: number;
+  nodeVersion?: string;
+  runtime?: { reachable: boolean };
+  /** The disk that holds the node's workspaces. */
+  disk?: { totalBytes: number; freeBytes: number };
+  storage?: { state: 'ok' | 'low' | 'critical' };
+}
+
+/** The owner's scheduling overrides; `null` falls back to the node's own config. */
+export interface MachineSchedule {
+  cordoned: boolean;
+  drain: boolean;
+  weight: number;
+  maxAgents: number | null;
+  maxJobs: number | null;
+  labels: string[] | null;
+  allowOnBattery: boolean | null;
+  updatedAt: IsoTime;
+}
+
+export type PlacementStatus = 'online' | 'limited' | 'overloaded' | 'cordoned' | 'draining' | 'drained' | 'offline';
+
+export type PlacementReasonCode =
+  | 'offline'
+  | 'revoked'
+  | 'cordoned'
+  | 'draining'
+  | 'overloaded'
+  | 'busy'
+  | 'memory-pressure'
+  | 'low-disk'
+  | 'on-battery'
+  | 'thermal'
+  | 'too-many-processes'
+  | 'runtime-unreachable'
+  | 'no-provider'
+  | 'full'
+  | 'capped-by-node'
+  | 'no-telemetry';
+
+export interface PlacementReason {
+  code: PlacementReasonCode;
+  message: string;
+  effect: 'blocks' | 'blocks-agents' | 'blocks-jobs' | 'reduces' | 'info';
+}
+
+/** How the hub places work on a machine right now, and why not when it doesn't. */
+export interface MachinePlacement {
+  status: PlacementStatus;
+  accepting: boolean;
+  /** Slots from the node config and the owner's overrides. */
+  configured: { agents: number; jobs: number };
+  /** Slots after health limits: what the hub will actually fill. */
+  effective: { agents: number; jobs: number };
+  /** Slots held by running or leased work. */
+  held: { agents: number; jobs: number };
+  loadPerCore?: number;
+  weight: number;
+  reasons: PlacementReason[];
+}
+
 export interface Machine {
   id: Id;
   name: string;
   os: string;
   arch: string;
+  /** Effective labels: the owner's override, else what the node reported. */
   labels: string[];
+  reportedLabels?: string[];
   providers: string[];
+  /** Slots from the node's own config. */
   capacity: { maxAgents: number; maxJobs: number };
   running: { agents: number; jobs: number };
+  /** Legacy liveness; `placement.status` is the full picture on newer hubs. */
   status: MachineStatus;
   lastHeartbeatAt: IsoTime;
   version: string;
+  revokedAt?: IsoTime;
+  health?: MachineHealth;
+  schedule?: MachineSchedule;
+  placement?: MachinePlacement;
+}
+
+/** Changes to a machine's scheduling. Uncordon is `{ cordoned: false, drain: false }`. */
+export interface MachinePatch {
+  cordoned?: boolean;
+  drain?: boolean;
+  /** 0 to 10, default 1. */
+  weight?: number;
+  /** `null` returns to the node config. */
+  maxAgents?: number | null;
+  maxJobs?: number | null;
+  /** `null` returns to the node-reported labels. */
+  labels?: string[] | null;
+  allowOnBattery?: boolean | null;
+}
+
+/** Why the hub placed an assignment or job where it did. */
+export interface PlacementDecision {
+  machineId: Id;
+  score: number;
+  reasons: string[];
+  at: IsoTime;
 }
 
 export type AccountStatus = 'active' | 'cooling' | 'disabled' | 'invalid';

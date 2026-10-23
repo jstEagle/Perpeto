@@ -32,7 +32,7 @@ export async function loadConfig(configPath) {
   const root = dirname(resolve(configPath));
   const raw = JSON.parse(await readFile(configPath, 'utf8'));
   const allowed = ['hubUrl', 'name', 'dataDir', 'credentialFile', 'enrollmentCodeFile', 'labels', 'capacity', 'providers',
-    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs', 'hubFingerprint', 'observe'];
+    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs', 'hubFingerprint', 'observe', 'health'];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !allowed.includes(key))) {
     throw new Error('Invalid node configuration; credentials belong in owner-only files.');
   }
@@ -60,6 +60,15 @@ export async function loadConfig(configPath) {
     if (!Number.isSafeInteger(capacity[key]) || capacity[key] < 0) throw new Error(`Invalid capacity.${key}.`);
   }
   const observe = observeConfig(raw.observe, root);
+  // Machine telemetry for health-aware placement: on by default; probes that spawn a process are cached for slowProbeMs.
+  if (raw.health !== undefined) {
+    const health = raw.health;
+    if (!health || typeof health !== 'object' || Array.isArray(health) || Object.keys(health).some(key => !['enabled', 'slowProbeMs', 'warmRepoMs'].includes(key))) throw new Error('Invalid health configuration.');
+    if (health.enabled !== undefined && typeof health.enabled !== 'boolean') throw new Error('health.enabled must be a boolean.');
+    for (const [key, min, max] of [['slowProbeMs', 1000, 3600000], ['warmRepoMs', 0, 604800000]]) {
+      if (health[key] !== undefined && (!Number.isSafeInteger(health[key]) || health[key] < min || health[key] > max)) throw new Error(`Invalid health.${key}.`);
+    }
+  }
   // An observe-only node runs no agents and no CI: it only watches the operator's own T3.
   if (!capacity.maxAgents && !capacity.maxJobs && !observe?.enabled) throw new Error('Node capacity must allow some work.');
   for (const key of ['labels', 'providers', 'executorPackages']) {

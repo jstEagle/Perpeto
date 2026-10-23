@@ -421,6 +421,15 @@ public final class HubClient: Sendable {
         try await send("POST", "/machines/\(escape(machineId))/drain", body: EmptyBody(), idempotencyKey: idempotencyKey)
     }
 
+    /// Cordons, uncordons, drains or retunes a machine (`PATCH /machines/:id`).
+    /// Accepts the machine bare or in a `machine` envelope.
+    public func updateMachine(id: String, _ patch: MachinePatch, idempotencyKey: String = UUID().uuidString) async throws -> Machine {
+        let data = try await raw("PATCH", "/machines/\(escape(id))", body: patch, idempotencyKey: idempotencyKey)
+        struct Envelope: Decodable { var machine: Machine }
+        if let wrapped = try? HubCoding.decoder().decode(Envelope.self, from: data) { return wrapped.machine }
+        return try decode(Machine.self, from: data)
+    }
+
     public func jobs(projectId: String? = nil, runId: String? = nil) async throws -> [Job] {
         var query: [String: String] = [:]
         query["projectId"] = projectId
