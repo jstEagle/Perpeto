@@ -18,8 +18,9 @@ public actor DemoDataSource: FactoryDataSource {
         let start = now()
         self.createdAt = start
         switch scenario {
-        case .full:
+        case .full, .fleet:
             var factory = DemoFixtures.factory(now: start)
+            factory.machines = scenario == .fleet ? DemoFleet.machines(now: start) : DemoFleet.equip(factory.machines, now: start)
             factory.sessions = DemoObserve.observed(now: start, machines: factory.machines)
             self.factory = factory
         case .observe:
@@ -324,7 +325,18 @@ public actor DemoDataSource: FactoryDataSource {
         guard let index = factory.machines.firstIndex(where: { $0.id == machineId }) else {
             throw HubError.http(status: 404, code: "NOT_FOUND", message: "That machine is no longer enrolled.")
         }
-        factory.machines[index].status = .draining
+        return try await updateMachine(id: machineId, .drain)
+    }
+
+    /// Replaces the demo fleet, such as with `DemoFleet.generated` for a large-fleet snapshot.
+    public func setMachines(_ machines: [Machine]) { factory.machines = machines }
+
+    /// Cordon, uncordon and drain, placed again the way the hub would.
+    public func updateMachine(id: String, _ patch: MachinePatch) async throws -> Machine {
+        guard let index = factory.machines.firstIndex(where: { $0.id == id }) else {
+            throw HubError.http(status: 404, code: "NOT_FOUND", message: "That machine is no longer enrolled.")
+        }
+        factory.machines[index] = try DemoFleet.apply(patch, to: factory.machines[index], now: now())
         return factory.machines[index]
     }
 
@@ -357,7 +369,7 @@ public actor DemoDataSource: FactoryDataSource {
 
     /// The demo plan keeps the fixture clock so it stays consistent with the accounts' reset times.
     private func refreshPacing() {
-        guard scenario == .full else { return }
+        guard scenario != .observe else { return }
         let labels = Dictionary(factory.accounts.map { ($0.id, (label: $0.label, plan: $0.plan)) }, uniquingKeysWith: { a, _ in a })
         factory.pacing = DemoPacing.pacing(now: createdAt, settings: pacingSettings, labels: labels)
     }

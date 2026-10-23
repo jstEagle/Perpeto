@@ -3,12 +3,12 @@ import { defaultDir } from './config.js';
 
 const commands = {
   hub: { init: ['host', 'port', 'tls', 'show-owner-token'], start: [], run: [], stop: [], status: [], 'enroll-code': ['labels', 'show-code', 'url'], decide: ['note'],
-    tls: [], expose: ['tailscale', 'https-port', 'off'] },
+    tls: [], expose: ['tailscale', 'https-port', 'off'], invite: ['ttl', 'labels'] },
   node: { join: ['code', 'code-file', 'labels', 'name', 'observe', 't3-dir', 'no-titles'], start: [], run: [], stop: [], status: [], drain: [], 'rotate-token': [], repin: [] },
-  machines: { revoke: [] },
+  machines: { list: ['json'], revoke: [], cordon: [], uncordon: [], drain: [], set: ['max-agents', 'max-jobs', 'labels', 'weight', 'battery'] },
   service: { install: ['dry-run'], uninstall: ['dry-run'] },
 };
-const booleans = new Set(['show-owner-token', 'show-code', 'dry-run', 'help', 'tls', 'tailscale', 'off', 'observe', 'no-titles']);
+const booleans = new Set(['show-owner-token', 'show-code', 'dry-run', 'help', 'tls', 'tailscale', 'off', 'observe', 'no-titles', 'json']);
 export function parseArgs(args) {
   const words = []; const flags = {};
   for (let i = 0; i < args.length; i++) {
@@ -27,11 +27,11 @@ export function parseArgs(args) {
   }
   if (flags.help || words.length === 0) return { help: true };
   const [group, action, ...positionals] = words;
-  const simple = ['doctor', 'status', 'sessions'].includes(group) || group === 'machines' && action === undefined;
-  const allowed = simple ? [] : commands[group]?.[action];
+  const simple = ['doctor', 'status', 'sessions'].includes(group);
+  const allowed = simple ? [] : commands[group]?.[action ?? (group === 'machines' ? 'list' : undefined)];
   if (!allowed || Object.keys(flags).some(key => !['dir', ...allowed].includes(key))) throw new Error('Unknown command or option. Use perpeto --help.');
   if (simple && words.length !== 1) throw new Error('Unexpected argument.');
-  if (!simple) {
+  if (!simple && !(group === 'machines' && action === undefined)) {
     if (group === 'node' && action === 'join' && (flags['t3-dir'] || flags['no-titles']) && !flags.observe) throw new Error('--t3-dir and --no-titles need --observe.');
     if (group === 'node' && action === 'join') {
       // Either a join code from perpeto hub enroll-code, or a hub URL with --code or --code-file.
@@ -46,7 +46,8 @@ export function parseArgs(args) {
     } else if (group === 'hub' && action === 'expose') {
       if (positionals.length || !flags.tailscale) throw new Error('Use hub expose --tailscale [--https-port <port>] [--off].');
     } else if (group === 'machines' || group === 'hub' && action === 'decide') {
-      if (positionals.length !== (group === 'machines' ? 1 : 2) || !/^[a-zA-Z0-9_-]+$/.test(positionals[0]) ||
+      // Machines are named by id or by name (host names may contain dots); names are looked up, never put in a path.
+      if (positionals.length !== (group === 'machines' ? 1 : 2) || !(group === 'machines' ? /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,199}$/ : /^[a-zA-Z0-9_-]+$/).test(positionals[0]) ||
         (group === 'hub' && !['pass', 'fail'].includes(positionals[1]))) throw new Error('Provide an ID and, for hub decide, pass or fail.');
     } else if (group === 'service') {
       if (positionals.length > 1 || (positionals[0] && !['hub', 'node'].includes(positionals[0]))) throw new Error('Service role must be hub or node.');

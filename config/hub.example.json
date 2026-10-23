@@ -65,5 +65,15 @@
         "weekly": 2
       }
     }
+  },
+  "placement": {
+    "loadSoftPerCore": 0.8,
+    "loadHardPerCore": 1.5,
+    "maxProcesses": 2000,
+    "minFreeDiskBytes": 10737418240,
+    "allowOnBattery": false,
+    "healthStaleMs": 120000,
+    "spreadMargin": 10,
+    "deferMs": 5000
   }
 }

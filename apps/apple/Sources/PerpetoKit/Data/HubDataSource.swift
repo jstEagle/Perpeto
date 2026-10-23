@@ -209,6 +209,7 @@ public struct HubDataSource: FactoryDataSource {
     }
     public func enrollmentCode() async throws -> EnrollmentCode { try await client.createEnrollmentCode() }
     public func drain(machineId: String) async throws -> Machine { try await client.drain(machineId: machineId) }
+    public func updateMachine(id: String, _ patch: MachinePatch) async throws -> Machine { try await client.updateMachine(id: id, patch) }
     public func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account { try await client.updateAccount(id: id, patch) }
     public func updatePacing(_ settings: PacingSettings) async throws -> Pacing { try await client.updatePacing(settings) }
     public func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> { client.eventStream(after: after) }

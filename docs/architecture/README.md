@@ -90,7 +90,17 @@ MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queu
                mergedRevision?, deliveryError?, rejectionKind?: 'conflict'|'ci'|'other' }
 // Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
-               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
+               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt?,
+               reportedLabels?, health?: MachineHealth, workspaces?: { repos: string[] /* repoKey of repos worked on recently */ },
+               schedule?: { cordoned, drain, weight /* 0..10 */, maxAgents|null, maxJobs|null, labels|null, allowOnBattery|null, updatedAt },
+               placement /* computed on read */: { status: 'online'|'limited'|'overloaded'|'cordoned'|'draining'|'drained'|'offline', accepting,
+                 configured: { agents, jobs }, effective: { agents, jobs }, held: { agents, jobs }, loadPerCore?, weight, reasons: PlacementReason[] } }
+MachineHealth { reportedAt, cpus?, load?: [1m, 5m, 15m], memory?: { totalBytes, freeBytes, pressure?: 'normal'|'warn'|'critical' }, processes?,
+               power?: { source: 'ac'|'battery', percent?, charging? }, thermal?: 'nominal'|'fair'|'serious'|'critical', uptimeSec?, nodeVersion?,
+               runtime?: { reachable }, disk?: { totalBytes, freeBytes } /* workspace volume */, storage?: { state: 'ok'|'low'|'critical' } /* storage janitor */ }
+PlacementReason { code: 'offline'|'revoked'|'cordoned'|'draining'|'overloaded'|'busy'|'memory-pressure'|'low-disk'|'on-battery'|'thermal'|'too-many-processes'|
+               'runtime-unreachable'|'no-provider'|'full'|'capped-by-node'|'no-telemetry', message, effect: 'blocks'|'blocks-agents'|'blocks-jobs'|'reduces'|'info' }
+// Assignments and Jobs record placement?: { machineId, score, reasons: string[], at } when leased.
 Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt?, plan?: string,
                usage?: { checkedAt, windows: UsageWindow[] },   // percentages and reset times only: never credentials, emails, fingerprints or paths
                source?: 'observed', providerInstanceId? }      // observed: a provider instance of an operator's own T3, reported by an observe-only node
@@ -199,7 +209,8 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /workflow-templates` | Template descriptions and editable graphs from `@perpeto/workflow` |
 | `GET /runs/:id/work-items`, `GET /runs/:id/assignments` | Run detail |
 | `POST /work-items/:id/decision` `{ decision, note?, decisionId }` | Answer a `human` gate; `decisionId` (exposed on the work item and `human.requested`) binds the answer to one gate visit, and a stale one gets `409 STALE_DECISION` |
-| `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain`, `POST /machines/:id/revoke` | Machines; revoke permanently invalidates every token for the machine |
+| `GET /machines`, `POST /machines/enrollment-codes`, `POST /machines/:id/drain`, `POST /machines/:id/revoke` | Machines with their computed `placement`; revoke permanently invalidates every token for the machine; the legacy drain stops the node's lease loop |
+| `PATCH /machines/:id` `{ cordoned?, drain?, weight?, maxAgents?, maxJobs?, labels?, allowOnBattery? }` | Owner schedule; idempotent. Emits `machine.cordoned`, `machine.uncordoned`, `machine.draining`, `machine.drain-cancelled`, `machine.updated` only on change. See [fleet placement](#fleet-placement) |
 | `GET /accounts` | Subscription pool across machines, with each account's `plan` and `usage` |
 | `PATCH /accounts/:id` `{ label?, plan? }` | Owner display metadata; `plan: null` clears the operator plan. Shown at once and relayed to the owning node on its next heartbeat |
 | `GET /pacing`, `PUT /pacing/settings` | Subscription pacing plan and settings; see [subscription pacing](#subscription-pacing) |
@@ -242,7 +253,7 @@ Planner `items[].touches?: string[]` survive hub result transport and remain eng
 
 Enrollment codes come wrapped in a paste-able join code, `pj1_` + base64url `{ url, fingerprint?, code }` (`POST /machines/enrollment-codes` accepts `{ url?, pin? }`). With hub TLS enabled (self-signed, generated on first start), nodes pin the certificate's SHA-256 fingerprint and send nothing to a server with a different one; `GET /tls`, `POST /tls/rotate` and `POST /tls/activate` manage rotation, and heartbeat responses carry `tls.fingerprints` so running nodes follow it. A non-loopback hub without TLS refuses to start (`INSECURE_BIND`) unless `allowInsecureRemote` is set. Tailscale (`perpeto hub expose --tailscale`) is the recommended path between machines.
 
-| `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers, labels }` | Every 10 s. Missing three marks the machine `offline`. Accounts may carry `plan` and `usage` |
+| `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers, labels, health?, workspaces? }` | Every 10 s. Missing three marks the machine `offline`. Accounts may carry `plan` and `usage`; `health` is sanitized field by field and never fails a heartbeat |
 | `POST /nodes/observations` `{ batchId, source, sessions, removedThreadIds?, usage?, providers?, resync? }` | Observe-only report from the machine's own T3; see [observe-only mode](#observe-only-mode). `batchId` is the idempotency key |
 | `POST /nodes/lease` `{ kinds: ['assignment','job'], max }` | Long-poll up to 25 s. Returns leased assignments and jobs with `leaseExpiresAt` (60 s) |
 | `POST /assignments/:id/renew`, `POST /jobs/:id/renew` | Extend a lease while working |
@@ -265,6 +276,15 @@ Heartbeats, renewals and CI log lines do not write events; liveness lives in mac
 Finished assignments and jobs are archived after `finishedWorkRetentionMs` but remain readable by id and in per-run listings. Events, usage and idempotency records have their own retention keys; event retention is at least 7 days so metric windows stay complete, and usage past retention keeps hourly rollups.
 
 An expired lease on run work is reported to the engine as a failed attempt, and the engine's retry policy schedules the next attempt. Project-scoped work and merge-queue jobs return to `queued` with `attempt + 1`. Results from a stale lease are rejected with `409 lease_lost`, so a reconnecting machine cannot overwrite newer work.
+
+### Fleet placement
+
+Placement is pull-based: nodes long-poll `POST /nodes/lease`, and the hub decides what each lease may take (`apps/hub/src/placement.js`).
+
+- **Effective capacity.** `configured` is the node's capacity lowered by any owner override (an override cannot raise it). Health then blocks or scales it: load per core at or above `placement.loadHardPerCore` (1.5), more than `maxProcesses` (2,000), critical memory pressure, less than `minFreeDiskBytes` (10 GiB) free or storage `critical`, battery power without `allowOnBattery`, or thermal `critical` block all new work; load between `loadSoftPerCore` (0.8) and the hard limit scales linearly, and memory `warn`, storage `low` or thermal `serious` halve it. An unreachable T3 runtime or no providers blocks agents only. Cordon and drain block everything; drain is placement-only (the node keeps running) and reports `draining` until nothing is held, then `drained`. Telemetry older than `healthStaleMs` is ignored (`no-telemetry`), so a node without telemetry places by capacity only.
+- **Spreading and affinity.** Each candidate is scored: free headroom (40), cool CPUs (20), the machine that last ran the item's work item or previous attempt (+25), a warm workspace for the item's repository (+15), all times the owner's `weight`. While another machine that is long-polling for that kind right now fits the item, has a free slot and scores at least `spreadMargin` (10) higher, a fresh item waits for it (that machine is woken at once); after `deferMs` (5 s) any eligible machine takes it. Leases record `placement`, also carried in the `*.leased` event.
+- **Transitions.** `machine.placement-changed { from, to, reasons }` records status changes (for example `online` to `overloaded`); steady heartbeats write nothing.
+- **Joining.** `perpeto hub invite` issues a join code whose `alts` lists every address the hub answers on (Tailscale name and IPs, then LAN), pinned to its certificate; `node join` keeps the first that answers. `perpeto doctor` explains a failed hub check: pin mismatch, refused port, timeout, no route, DNS or wrong protocol.
 
 ### Subscription pacing
 

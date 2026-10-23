@@ -214,7 +214,7 @@ export function createDemoState(now = Date.now()): DemoState {
       status: 'active',
       authoredBy: { kind: 'agent', assignmentId: 'asg_arch02', prompt: 'Builders are idle while work waits. Use more of the Linux box.' },
       rationale:
-        'Builder concurrency rises from 4 to 6. build-linux has 8 agent slots and was running 2. Review stays at 1 so review quality is unchanged; watch the reviewer queue.',
+        'Builder concurrency rises from 4 to 6. justus-mbp has 4 agent slots and was running 2. Review stays at 1 so review quality is unchanged; watch the reviewer queue.',
       createdAt: ago(3 * DAY + 2 * HOUR),
     },
     {
@@ -452,7 +452,7 @@ export function createDemoState(now = Date.now()): DemoState {
   const machines: Machine[] = [
     {
       id: DEMO_IDS.studio,
-      name: 'studio-mac',
+      name: 'studio-mini',
       os: 'darwin',
       arch: 'arm64',
       labels: ['macos', 'xcode', 'ci'],
@@ -465,7 +465,7 @@ export function createDemoState(now = Date.now()): DemoState {
     },
     {
       id: DEMO_IDS.linux,
-      name: 'build-linux',
+      name: 'justus-mbp',
       os: 'linux',
       arch: 'x64',
       labels: ['linux', 'docker', 'ci'],
@@ -612,19 +612,19 @@ export function createDemoState(now = Date.now()): DemoState {
   const story: [number, string, Record<string, unknown>][] = [
     [96, 'workitem.moved', { sourceNodeId: 'planner', targetNodeId: 'loop', edgeId: 'e-planner-out-loop', summary: 'Planner created 6 work items' }],
     [90, 'agent.delegated', { sourceNodeId: 'planner', targetNodeId: 'builder', edgeId: 'd-planner-builder', summary: 'Planner assigned "Hub: bottleneck detection" to Builder' }],
-    [84, 'assignment.state', { nodeId: 'builder', state: 'running', machineId: DEMO_IDS.linux, summary: 'Builder started on build-linux' }],
+    [84, 'assignment.state', { nodeId: 'builder', state: 'running', machineId: DEMO_IDS.linux, summary: 'Builder started on justus-mbp' }],
     [77, 'gate.result', { nodeId: 'reviewer', result: 'fail', sourceNodeId: 'reviewer', targetNodeId: 'loop', edgeId: 'e-reviewer-fail-loop', summary: 'Review returned "Node: job runner worktrees": type errors in runner.js' }],
     [71, 'workitem.moved', { sourceNodeId: 'reviewer', targetNodeId: 'loop', edgeId: 'e-reviewer-fail-loop', summary: '"Node: job runner worktrees" back to Builder, iteration 2' }],
     [64, 'agent.messaged', { sourceNodeId: 'builder', targetNodeId: 'reviewer', edgeId: 'm-builder-reviewer', summary: 'Builder asked Reviewer whether lease renewal needs its own test' }],
     [58, 'agent.messaged', { sourceNodeId: 'reviewer', targetNodeId: 'planner', unplanned: true, summary: 'Reviewer asked Planner to split "Delivery: merge queue batching". No messages edge connects these roles.' }],
-    [51, 'gate.result', { nodeId: 'ci', result: 'pass', sourceNodeId: 'ci', targetNodeId: 'merge', edgeId: 'e-ci-pass-merge', summary: 'CI passed at 4f1c9e2 on build-linux' }],
+    [51, 'gate.result', { nodeId: 'ci', result: 'pass', sourceNodeId: 'ci', targetNodeId: 'merge', edgeId: 'e-ci-pass-merge', summary: 'CI passed at 4f1c9e2 on justus-mbp' }],
     [44, 'agent.delegated', { sourceNodeId: 'builder', targetNodeId: 'builder', summary: 'Builder spawned 1 subagent (codex) for test fixtures, 1 of 2 allowed' }],
     [37, 'gate.result', { nodeId: 'reviewer', result: 'fail', sourceNodeId: 'reviewer', targetNodeId: 'loop', edgeId: 'e-reviewer-fail-loop', summary: 'Review returned "Delivery: merge queue batching": lint errors' }],
     [31, 'workitem.moved', { sourceNodeId: 'builder', targetNodeId: 'reviewer', edgeId: 'e-builder-out-reviewer', summary: '"Hub: usage by machine" waiting for review, 7 in queue' }],
-    [24, 'assignment.state', { nodeId: 'reviewer', state: 'running', machineId: DEMO_IDS.studio, summary: 'Reviewer started "Hub: metrics endpoint" on studio-mac' }],
+    [24, 'assignment.state', { nodeId: 'reviewer', state: 'running', machineId: DEMO_IDS.studio, summary: 'Reviewer started "Hub: metrics endpoint" on studio-mini' }],
     [18, 'agent.messaged', { sourceNodeId: 'reviewer', targetNodeId: 'planner', unplanned: true, summary: 'Reviewer asked Planner for acceptance criteria on "Hub: SSE event stream"' }],
     [12, 'agent.messaged', { sourceNodeId: 'builder', targetNodeId: 'reviewer', edgeId: 'm-builder-reviewer', summary: 'Builder flagged "Web: live run map" needs design review' }],
-    [7, 'assignment.state', { nodeId: 'ci', state: 'running', machineId: DEMO_IDS.studio, summary: 'CI job started for "Workflow: version history" on studio-mac' }],
+    [7, 'assignment.state', { nodeId: 'ci', state: 'running', machineId: DEMO_IDS.studio, summary: 'CI job started for "Workflow: version history" on studio-mini' }],
     [3, 'workitem.moved', { sourceNodeId: 'merge', targetNodeId: 'done', edgeId: 'e-merge-out-done', summary: '"Usage ledger: group by day" merged into main' }],
   ];
   for (const [mins, type, data] of story) push(mins * MIN, type, { kind: type.split('.')[0] === 'workitem' ? 'work_item' : type.split('.')[0], id: `ev_${mins}` }, data);

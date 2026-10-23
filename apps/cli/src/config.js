@@ -42,7 +42,9 @@ export function hubConfig(dir, { host = '127.0.0.1', port = 4320, tls = false } 
     // Subscription pacing (apps/hub/src/config.js); burn-rate priors are uncalibrated percent-per-agent-hour starting points.
     pacing: { enabled: true, strategy: 'rotation', targetUsePercent: 95, minAgents: 0, maxAgents: null, handoverMins: 15, sprintMins: 90, horizonMins: 600,
       recomputeMs: 15000, nudgeIntervalMs: 1800000,
-      priors: { default: { session: 20, weekly: 2.5, monthly: 0.6, other: 20 }, claudeAgent: { session: 20, weekly: 2.5 }, codex: { session: 15, weekly: 2 } } } };
+      priors: { default: { session: 20, weekly: 2.5, monthly: 0.6, other: 20 }, claudeAgent: { session: 20, weekly: 2.5 }, codex: { session: 15, weekly: 2 } } },
+    // Health-aware placement (apps/hub/src/placement.js): load per core, process and disk limits, battery policy, spreading.
+    placement: { loadSoftPerCore: 0.8, loadHardPerCore: 1.5, maxProcesses: 2000, minFreeDiskBytes: 10737418240, allowOnBattery: false, healthStaleMs: 120000, spreadMargin: 10, deferMs: 5000 } };
 }
 export function hubUrl(value) {
   let url;
@@ -61,7 +63,9 @@ export function decodeJoinCode(text) {
   try { value = /^pj1_[A-Za-z0-9_-]+$/.test(text) ? JSON.parse(Buffer.from(text.slice(4), 'base64url').toString('utf8')) : null; } catch { value = null; }
   if (!value || typeof value.code !== 'string' || !value.code || typeof value.url !== 'string' ||
     (value.fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(value.fingerprint))) throw new Error('Invalid join code. Copy the whole command from perpeto hub enroll-code.');
-  return { url: hubUrl(value.url), code: value.code, ...(value.fingerprint ? { fingerprint: value.fingerprint } : {}) };
+  // Invites (perpeto hub invite) also carry alternative addresses of the same hub, tried in order after `url`.
+  const alts = Array.isArray(value.alts) ? value.alts.slice(0, 16).flatMap(item => { try { return [hubUrl(item)]; } catch { return []; } }) : [];
+  return { url: hubUrl(value.url), code: value.code, ...(value.fingerprint ? { fingerprint: value.fingerprint } : {}), ...(alts.length ? { alts } : {}) };
 }
 /**
  * Observe-only: no agent or CI slots, no managed runtime and no executor; the node only watches the operator's own
@@ -78,6 +82,8 @@ export function nodeConfig(dir, url, { labels = [], name = hostname(), fingerpri
   if (fingerprint !== undefined && (!/^[a-f0-9]{64}$/.test(fingerprint) || !url.startsWith('https:'))) throw new Error('A pinned fingerprint needs an https hub URL.');
   return { hubUrl: hubUrl(url), ...(fingerprint ? { hubFingerprint: fingerprint } : {}), name, labels, dataDir: './node', credentialFile: './node/machine.json',
     capacity: observe ? { maxAgents: 0, maxJobs: 0 } : { maxAgents: 1, maxJobs: 1 }, allowInsecureHttp: false,
+    // Machine telemetry for the hub's health-aware placement (load, memory, disk, battery, processes).
+    health: { enabled: true, slowProbeMs: 30000, warmRepoMs: 3600000 },
     executorPackages: observe ? [] : ['@perpeto/t3-executor'], ...(observe ? { observe } : {}),
     timing: { heartbeatMs: 10000, renewMs: 20000, requestMs: 30000, pollIdleMs: 200, backoffMinMs: 250, backoffMaxMs: 10000 },
     jobs: { defaultTimeoutSec: 600, checkoutTimeoutSec: 120, maxLogChunkBytes: 8192, redactPatterns: [], protectedPaths: [] }, runtime: { enabled: false, repoRoot,

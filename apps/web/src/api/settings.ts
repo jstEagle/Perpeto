@@ -113,6 +113,12 @@ export function loadDemoScenario(search = typeof location === 'undefined' ? '' :
   }
 }
 
+/** `?fleet=50` shows a generated fleet of that many machines in the demo; for screenshots and checks, never stored. */
+export function loadDemoFleetSize(search = typeof location === 'undefined' ? '' : location.search): number | undefined {
+  const n = Number(new URLSearchParams(search).get('fleet'));
+  return Number.isInteger(n) && n >= 2 && n <= 500 ? n : undefined;
+}
+
 export function saveDemoScenario(scenario: StoredDemoScenario) {
   try {
     localStorage.setItem(DEMO_KEY, scenario);

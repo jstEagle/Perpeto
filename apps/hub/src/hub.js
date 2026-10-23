@@ -14,6 +14,7 @@ import { Observation } from './observation.js';
 import { HubMessaging } from './messaging.js';
 import { Pacing, accountUsage, displayText } from './pacing.js';
 import { Sessions, sessionsRoute } from './sessions.js';
+import { Placement } from './placement.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings, gitIdentity } from './errors.js';
 
@@ -78,7 +79,7 @@ export class Hub {
     this.store.onCommit = () => this.flush();
     this.store.onRollback = () => { this.signals = { work: [], machines: new Set(), events: false }; };
     this.intake = new Intake(this); this.workflows = new Workflows(this); this.observation = new Observation(this); this.agentMessaging = new HubMessaging(this);
-    this.pacing = new Pacing(this); this.sessions = new Sessions(this);
+    this.pacing = new Pacing(this); this.sessions = new Sessions(this); this.placement = new Placement(this);
     try {
       try {
         const stat = lstatSync(config.ownerTokenPath);
@@ -517,8 +518,11 @@ export class Hub {
     // workflow or machine limits). Providers without a plan are not capped.
     const caps = kinds.includes('assignment') ? this.pacing.leaseCaps(machine.id) : null;
     const runStatus = runId => { if (!runs.has(runId)) runs.set(runId, this.store.get('run', runId)?.status); return runs.get(runId); };
+    // Effective capacity follows machine health and the owner's schedule (cordon, drain, overrides); see placement.js.
+    const view = this.placement.assess(machine);
     for (const kind of [...new Set(kinds)]) {
-      const capacity = machine.capacity[kind === 'assignment' ? 'maxAgents' : 'maxJobs'];
+      const capacity = view.effective[kind === 'assignment' ? 'agents' : 'jobs'];
+      const choose = this.placement.chooser(machine, kind, view);
       // Free capacity counts the leases the hub holds for this machine. The heartbeat's running count can arrive after a
       // completion it predates and hold a free slot shut for a whole heartbeat; the node sizes `max` from its own count.
       const held = this.store.held(kind, machine.id).filter(value => Date.parse(value.leaseExpiresAt) > this.clock()).length;
@@ -541,10 +545,12 @@ export class Hub {
           // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
           if (value.notBefore && Date.parse(value.notBefore) > this.clock()) continue;
           if (value.releasedBy?.machineId === machine.id && Date.parse(value.releasedBy.until) > this.clock()) continue;
+          const placement = choose(value);
+          if (!placement) continue;
           if (paced) paced.held++;
-          value.status = 'leased'; value.machineId = machine.id; delete value.releasedBy;
+          value.status = 'leased'; value.machineId = machine.id; value.placement = placement; delete value.releasedBy;
           value.leaseExpiresAt = new Date(this.clock() + this.config.leaseDurationMs).toISOString();
-          this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt });
+          this.store.put(kind, value); this.emit(`${kind}.leased`, kind, value, { machineId: machine.id, attempt: value.attempt, placement: { score: placement.score, reasons: placement.reasons } });
           if (kind === 'assignment') this.observation.assignment(value);
           // Run assignments carry their messaging credential and whatever waits in their role's inbox.
           const credential = kind === 'assignment' ? this.agentMessaging.credential(value) : null;
@@ -702,7 +708,8 @@ export class Hub {
       }
       return reply({ accepted: true, ...(item.decisionId ? { decisionId: item.decisionId } : {}) });
     }
-    if (path === '/machines' && method === 'GET') return reply({ machines: this.store.list('machine') });
+    if (path === '/machines' && method === 'GET') return reply({ machines: this.placement.views() });
+    if (collection === 'machines' && entityId && segments.length === 2 && method === 'PATCH') return reply(this.placement.patch(entityId, body));
     if (path === '/machines/enrollment-codes' && method === 'POST') {
       const codeId = id('enr'); const code = this.credentials.issue();
       // Machines join at the URL given here, the configured public URL (for example a tailnet URL), or this hub's own
@@ -760,7 +767,7 @@ export class Hub {
       const machine = this.store.need('machine', auth.machineId);
       if (path === '/nodes/lease') return reply(this.lease(machine, body));
       object(body.capacity, 'capacity'); object(body.running, 'running');
-      const profile = () => JSON.stringify([machine.capacity, machine.running, machine.status, machine.labels, machine.providers]); const before = profile();
+      const profile = () => JSON.stringify([machine.capacity, machine.running, machine.status, machine.labels, machine.providers, this.placement.signature(machine)]); const before = profile();
       const wasOffline = machine.status === 'offline';
       for (const key of ['maxAgents', 'maxJobs']) integer(body.capacity[key], key, 0, 100000);
       for (const key of ['agents', 'jobs']) integer(body.running[key], key, 0, 100000);
@@ -769,6 +776,7 @@ export class Hub {
       requireValue(body.status === undefined || ['online', 'draining'].includes(body.status), 'Invalid heartbeat status.');
       machine.capacity = { maxAgents: body.capacity.maxAgents, maxJobs: body.capacity.maxJobs }; machine.running = { agents: body.running.agents, jobs: body.running.jobs };
       machine.providers = body.providers ?? machine.providers; machine.labels = body.labels ?? machine.labels; machine.lastHeartbeatAt = this.now(); machine.status = machine.drainRequested || body.status === 'draining' ? 'draining' : 'online';
+      this.placement.heartbeat(machine, body);
       if (body.accounts !== undefined) {
         requireValue(Array.isArray(body.accounts) && body.accounts.length <= 1000, 'Invalid accounts snapshot.');
         const accounts = body.accounts.map(account => {

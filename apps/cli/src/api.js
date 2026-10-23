@@ -6,14 +6,15 @@ import { X509Certificate } from 'node:crypto';
 import { createTransport, fingerprintOf } from '@perpeto/node';
 import { configPath, decodeJoinCode, hubUrl, nodeConfig, privateDir, readJson, readSecret, writeNew, writePrivateJson } from './config.js';
 import { acquireLock, control } from './process.js';
+import { probeHub } from './reach.js';
 
 /**
  * A hub request. HTTPS hubs with `pins` trust only those certificate fingerprints (the hub's self-signed certificate);
  * without pins, HTTPS uses the system CAs (for example a tailnet URL). `fetchImpl` lets tests stand in for the hub.
  */
-export async function request(url, path, { token, body, pins, fetchImpl = fetch } = {}) {
+export async function request(url, path, { token, body, pins, method, fetchImpl = fetch } = {}) {
   let response;
-  const init = { method: body ? 'POST' : 'GET', signal: AbortSignal.timeout(5000), headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  const init = { method: method ?? (body ? 'POST' : 'GET'), signal: AbortSignal.timeout(5000), headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) };
   const transport = fetchImpl === fetch ? createTransport(hubUrl(url), pins ? { pins: () => pins } : {}) : null;
   try {
@@ -59,9 +60,19 @@ export async function enrollCode(dir, labels = [], { url: joinUrl } = {}) {
   await writeNew(path, JSON.stringify({ code: result.code, labels, expiresAt: result.expiresAt }));
   return { ...result, path };
 }
-export async function join(dir, url, { code, codeFile, joinCode, labels, name, observe, platformName = platform(), fetchImpl = fetch } = {}) {
-  let fingerprint;
-  if (joinCode) ({ url, code, fingerprint } = decodeJoinCode(joinCode));
+export async function join(dir, url, { code, codeFile, joinCode, labels, name, observe, platformName = platform(), fetchImpl = fetch, probe = probeHub } = {}) {
+  let fingerprint; let alts;
+  if (joinCode) ({ url, code, fingerprint, alts } = decodeJoinCode(joinCode));
+  // An invite lists every address the hub may be reached at; keep the first that answers with the pinned certificate.
+  if (alts?.length) {
+    const failures = [];
+    for (const candidate of [url, ...alts]) {
+      const result = await probe(candidate, { pins: fingerprint ? [fingerprint] : undefined });
+      if (result.ok) { url = candidate; failures.length = 0; break; }
+      failures.push(`${candidate}: ${result.message}`);
+    }
+    if (failures.length) throw new Error(`No hub address in this invite answered:\n${failures.join('\n')}`);
+  }
   await privateDir(dir); url = hubUrl(url);
   if (codeFile) {
     const content = (await readSecret(resolve(codeFile))).trim();

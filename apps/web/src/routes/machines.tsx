@@ -1,12 +1,32 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useHub, useResource } from '../app/hub-context';
-import type { EnrollmentCode, Machine } from '../api/types';
-import { Async, Button, Dialog, Empty, Meter, PageHeader, Stat } from '../components/ui';
-import { MachineStatusLabel } from '../components/status';
-import { IconCopy, IconMachines, IconPlus } from '../components/icons';
-import { providerLabel } from '../workflow/registry';
-import { relative } from '../lib/format';
+import type { EnrollmentCode, Machine, MachinePatch } from '../api/types';
+import { Async, Button, Dialog, Empty, Meter, PageHeader, Segmented, Stat } from '../components/ui';
+import { LiveDot, PlacementStatusLabel } from '../components/status';
+import { IconBlocked, IconCircle, IconCopy, IconMachines, IconMinus, IconPlus } from '../components/icons';
+import { plural, relative } from '../lib/format';
+import {
+  canSchedule,
+  diskCell,
+  filterFleet,
+  fleetSummary,
+  healthLine,
+  isHeld,
+  loadCell,
+  memoryCell,
+  osLabel,
+  placementOf,
+  powerCell,
+  slotsSub,
+  slotsText,
+  sortFleet,
+} from '../lib/fleet';
+import type { FleetFilter, FleetSort, FleetSummary, HealthCell } from '../lib/fleet';
 
+/** Above this many machines the list gets a filter and a sort. */
+const MANY = 6;
+
+/** The Fleet screen at /machines: health, effective capacity and why the hub isn't placing work. */
 export function MachinesPage() {
   const machines = useResource((api) => api.listMachines(), [], (e) => e.subject.kind === 'machine' || e.type === 'assignment.state');
   const [enrolling, setEnrolling] = useState(false);
@@ -15,8 +35,8 @@ export function MachinesPage() {
   return (
     <div className="page">
       <PageHeader
-        title="Machines"
-        description="Machines enrolled in this factory. Each runs a node that leases agent work and CI jobs from the hub."
+        title="Fleet"
+        description="How each machine is holding up, and whether the hub is placing agents and CI jobs on it."
         actions={
           <Button variant="primary" onClick={() => setEnrolling(true)}>
             <IconPlus /> Enroll machine
@@ -32,83 +52,7 @@ export function MachinesPage() {
               </Empty>
             </section>
           ) : (
-            <>
-              <section className="card" aria-label="Capacity">
-                <dl className="metrics">
-                  <Stat label="Machines online" value={list.filter((m) => m.status === 'online').length} unit={`of ${list.length}`} />
-                  <Stat label="Agent slots in use" value={sum(list, (m) => m.running.agents)} unit={`of ${sum(list, (m) => m.capacity.maxAgents)}`} />
-                  <Stat label="Job slots in use" value={sum(list, (m) => m.running.jobs)} unit={`of ${sum(list, (m) => m.capacity.maxJobs)}`} />
-                </dl>
-              </section>
-              <section className="card">
-                <div className="table-wrap">
-                <table className="table">
-                  <caption className="visually-hidden">Machines</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Machine</th>
-                      <th scope="col">Status</th>
-                      <th scope="col">Agents</th>
-                      <th scope="col" className="hide-sm">Jobs</th>
-                      <th scope="col" className="hide-sm">Providers</th>
-                      <th scope="col" className="hide-sm">Heartbeat</th>
-                      <th scope="col">
-                        <span className="visually-hidden">Actions</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {list.map((m) => (
-                      <tr key={m.id}>
-                        <td>
-                          <span className="project-cell">
-                            <span className="tile tile-sm" aria-hidden="true">
-                              <IconMachines />
-                            </span>
-                            <span>
-                              <span className="cell-title mono">{m.name}</span>
-                              <span className="cell-sub">
-                                {m.os} {m.arch} · v{m.version}
-                                {m.labels.length ? ` · ${m.labels.join(', ')}` : ''}
-                              </span>
-                            </span>
-                          </span>
-                        </td>
-                        <td>
-                          <MachineStatusLabel status={m.status} />
-                        </td>
-                        <td>
-                          <span className="meter-cell">
-                            <span className="tabular">
-                              {m.running.agents} of {m.capacity.maxAgents}
-                            </span>
-                            <Meter value={m.running.agents} max={m.capacity.maxAgents} label={`${m.name} agents`} />
-                          </span>
-                        </td>
-                        <td className="hide-sm">
-                          <span className="meter-cell">
-                            <span className="tabular">
-                              {m.running.jobs} of {m.capacity.maxJobs}
-                            </span>
-                            <Meter value={m.running.jobs} max={m.capacity.maxJobs} label={`${m.name} jobs`} />
-                          </span>
-                        </td>
-                        <td className="hide-sm">{m.providers.map(providerLabel).join(', ')}</td>
-                        <td className="hide-sm muted">{relative(m.lastHeartbeatAt)}</td>
-                        <td className="num">
-                          {m.status === 'online' && (
-                            <Button size="sm" variant="ghost" onClick={() => setDraining(m)}>
-                              Drain
-                            </Button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                </div>
-              </section>
-            </>
+            <Fleet list={list} onDrain={setDraining} onChanged={machines.reload} />
           )
         }
       </Async>
@@ -118,8 +62,192 @@ export function MachinesPage() {
   );
 }
 
-function sum(list: Machine[], fn: (m: Machine) => number) {
-  return list.reduce((s, m) => s + fn(m), 0);
+export const FleetPage = MachinesPage;
+
+function Fleet({ list: served, onDrain, onChanged }: { list: Machine[]; onDrain(m: Machine): void; onChanged(): void }) {
+  const { api } = useHub();
+  // The hub's answer to a change shows at once; the next load replaces it.
+  const [updated, setUpdated] = useState<Record<string, Machine>>({});
+  useEffect(() => setUpdated({}), [served]);
+  const list = useMemo(() => served.map((m) => updated[m.id] ?? m), [served, updated]);
+  const [filter, setFilter] = useState<FleetFilter>('all');
+  const [sort, setSort] = useState<FleetSort>('attention');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const summary = fleetSummary(list);
+  const many = list.length > MANY;
+  const shown = sortFleet(many ? filterFleet(list, filter) : list, many ? sort : 'attention');
+  const notAccepting = list.length - summary.accepting;
+
+  async function change(m: Machine, patch: MachinePatch, verb: string) {
+    setBusy(m.id);
+    setError(null);
+    try {
+      const next = await api.updateMachine(m.id, patch);
+      setUpdated((u) => ({ ...u, [m.id]: next }));
+      onChanged();
+    } catch (err) {
+      setError(`${m.name} was not ${verb}. ${(err as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <>
+      <section className="card" aria-label="Fleet capacity">
+        <dl className="metrics">
+          <Stat label="Accepting work" value={summary.accepting} unit={`of ${summary.total}`} detail={summary.offline ? `${summary.offline} offline` : undefined} />
+          <Stat label="Agent slots in use" value={summary.held} unit={`of ${summary.effective}`} detail={slotsDetail(summary)} />
+          <Stat label="Overloaded" value={summary.overloaded} detail={`${summary.cordoned} cordoned or draining`} />
+        </dl>
+      </section>
+      {many && (
+        <div className="toolbar">
+          <Segmented<FleetFilter>
+            label="Show machines"
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: 'all', label: 'All', count: list.length },
+              { value: 'accepting', label: 'Accepting', count: summary.accepting },
+              { value: 'not-accepting', label: 'Not accepting', count: notAccepting },
+            ]}
+          />
+          <Segmented<FleetSort>
+            label="Sort machines"
+            value={sort}
+            onChange={setSort}
+            options={[
+              { value: 'attention', label: 'Needs a look first' },
+              { value: 'name', label: 'Name' },
+            ]}
+          />
+        </div>
+      )}
+      <section className="card" aria-label="Machines">
+        {error && (
+          <p className="form-error fleet-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="fleet-scroll">
+          <div className="fleet-row fleet-head" aria-hidden="true">
+            <span>Machine</span>
+            <span>Status</span>
+            <span>Agents</span>
+            <span>Load</span>
+            <span>Memory</span>
+            <span>Disk</span>
+            <span>Power</span>
+            <span />
+          </div>
+          {shown.length === 0 ? (
+            <p className="fleet-none muted">{filter === 'accepting' ? 'No machine is accepting work right now.' : 'Every machine is accepting work.'}</p>
+          ) : (
+            <ul className="fleet-list" aria-label={plural(shown.length, 'machine')}>
+              {shown.map((m) => (
+                <FleetRow
+                  key={m.id}
+                  machine={m}
+                  busy={busy === m.id}
+                  onCordon={() => change(m, { cordoned: true }, 'cordoned')}
+                  onUncordon={() => change(m, { cordoned: false, drain: false }, 'uncordoned')}
+                  onDrain={() => onDrain(m)}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function FleetRow({ machine: m, busy, onCordon, onUncordon, onDrain }: { machine: Machine; busy: boolean; onCordon(): void; onUncordon(): void; onDrain(): void }) {
+  const p = placementOf(m);
+  const running = p.held.agents + p.held.jobs > 0;
+  const schedulable = canSchedule(m);
+  const held = isHeld(m);
+  const line = healthLine(m);
+  return (
+    <li className="fleet-row" aria-label={m.name}>
+      <div className="fleet-machine">
+        <span className="tile tile-sm" aria-hidden="true">
+          <IconMachines />
+        </span>
+        <span className="fleet-name">
+          <span className="cell-title mono">{m.name}</span>
+          <span className="cell-sub">
+            {osLabel(m.os)} · v{m.version}
+          </span>
+          {line && <span className="cell-sub only-mobile">{line}</span>}
+        </span>
+      </div>
+      <div className="fleet-status">
+        <PlacementStatusLabel status={p.status} />
+        <span className="cell-sub">{p.status === 'offline' ? `Seen ${relative(m.lastHeartbeatAt)}` : relative(m.lastHeartbeatAt)}</span>
+      </div>
+      <div className="fleet-slots">
+        <span className="fleet-slots-head tabular">
+          {running && <LiveDot label={`${m.name} is running work`} />}
+          {slotsText(p)}
+        </span>
+        <Meter value={p.held.agents} max={Math.max(p.effective.agents, p.held.agents)} label={`${m.name} agent slots`} />
+        <span className="cell-sub">{slotsSub(p)}</span>
+      </div>
+      <Health cell={loadCell(m)} />
+      <Health cell={memoryCell(m)} />
+      <Health cell={diskCell(m)} />
+      <Health cell={powerCell(m)} />
+      <div className="fleet-actions">
+        {m.revokedAt ? null : held && schedulable ? (
+          <Button size="sm" variant="secondary" onClick={onUncordon} busy={busy}>
+            Uncordon
+          </Button>
+        ) : (
+          <>
+            {schedulable && (
+              <Button size="sm" variant="ghost" onClick={onCordon} busy={busy}>
+                Cordon
+              </Button>
+            )}
+            {!held && (
+              <Button size="sm" variant="ghost" onClick={onDrain} disabled={busy}>
+                Drain
+              </Button>
+            )}
+          </>
+        )}
+      </div>
+      {p.reasons.length > 0 && (
+        <ul className="fleet-reasons" aria-label={`Why ${m.name} ${p.accepting ? 'is limited' : 'is not taking work'}`}>
+          {p.reasons.map((r) => (
+            <li key={r.code + r.message} className={`fleet-reason fleet-reason-${r.effect === 'info' ? 'info' : r.effect === 'reduces' ? 'reduces' : 'blocks'}`}>
+              {r.effect === 'info' ? <IconCircle size={16} /> : r.effect === 'reduces' ? <IconMinus size={16} /> : <IconBlocked size={16} />}
+              {r.message}
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/** Configured slots when health cut them, and agents still running past a machine's limit. */
+function slotsDetail(s: FleetSummary): string | undefined {
+  const parts = [s.configured !== s.effective ? `${s.configured} configured` : '', s.over ? `${s.over} over limit` : ''].filter(Boolean);
+  return parts.length ? parts.join(' · ') : undefined;
+}
+
+function Health({ cell }: { cell: HealthCell }) {
+  return (
+    <div className={`fleet-health hide-sm ${cell.strong ? 'fleet-health-strong' : ''}`} title={cell.title}>
+      <span className="tabular">{cell.value}</span>
+      {cell.sub && <span className="cell-sub">{cell.sub}</span>}
+    </div>
+  );
 }
 
 function EnrollDialog({ open, onClose }: { open: boolean; onClose(): void }) {
@@ -211,7 +339,9 @@ function DrainDialog({ machine, onClose, onDone }: { machine: Machine | null; on
     setBusy(true);
     setError(null);
     try {
-      await api.drainMachine(machine.id);
+      // Newer hubs drain through the schedule; older ones only have the drain route.
+      if (canSchedule(machine)) await api.updateMachine(machine.id, { drain: true });
+      else await api.drainMachine(machine.id);
       onDone();
       onClose();
     } catch (err) {
@@ -220,6 +350,8 @@ function DrainDialog({ machine, onClose, onDone }: { machine: Machine | null; on
       setBusy(false);
     }
   }
+  const held = machine ? placementOf(machine).held : { agents: 0, jobs: 0 };
+  const running = held.agents + held.jobs > 0;
   return (
     <Dialog
       open={!!machine}
@@ -236,7 +368,11 @@ function DrainDialog({ machine, onClose, onDone }: { machine: Machine | null; on
         </>
       }
     >
-      <p className="muted">The machine stops leasing new work. Agents and jobs already running on it continue until they finish.</p>
+      <p className="muted">
+        The hub stops placing new work on it.{' '}
+        {running ? `The ${plural(held.agents, 'agent')} and ${plural(held.jobs, 'job')} already running finish first, then it shows as drained.` : 'Nothing is running on it, so it drains at once.'}
+        {machine && canSchedule(machine) ? ' Uncordon it to bring it back.' : ''}
+      </p>
       {error && (
         <p className="form-error" role="alert">
           {error}

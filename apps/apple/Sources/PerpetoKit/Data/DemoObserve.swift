@@ -2,10 +2,11 @@ import Foundation
 
 /// Which demo factory to show without a hub. `full` is the project factory
 /// with workflows and runs; `observe` has no projects and only watches T3
-/// Code sessions and subscriptions on two Macs. Chosen with the UserDefaults
-/// key `perpeto.demo` (`-perpeto.demo observe` at launch, or Settings).
+/// Code sessions and subscriptions on two Macs; `fleet` is the full factory
+/// on a two-machine fleet with one Mac overloaded (`DemoFleet`). Chosen with
+/// the UserDefaults key `perpeto.demo` (`-perpeto.demo observe` at launch, or Settings).
 public enum DemoScenario: String, CaseIterable, Sendable, Identifiable {
-    case full, observe
+    case full, observe, fleet
 
     public static let defaultsKey = "perpeto.demo"
     public var id: String { rawValue }
@@ -14,6 +15,7 @@ public enum DemoScenario: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .full: "Full factory"
         case .observe: "Observe only"
+        case .fleet: "Busy fleet"
         }
     }
 

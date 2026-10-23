@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { parseArgs } from './args.js';
 import { initHub, observeSettings } from './config.js';
 import { daemon, start, stop, control } from './process.js';
@@ -6,6 +5,8 @@ import { enrollCode, join, owner, request, decide, rotateToken, repin, hubTls } 
 import { exposeTailscale } from './tailscale.js';
 import { doctor } from './doctor.js';
 import { service } from './service.js';
+import { machinesCommand } from './fleet.js';
+import { invite, inviteLines } from './invite.js';
 
 export const help = `Usage: perpeto <command> [--dir <data-directory>]
 
@@ -13,6 +14,7 @@ hub init [--host <address>] [--port <port>] [--tls] [--show-owner-token]
 hub start|stop|status
 hub expose --tailscale [--https-port <port>] [--off]
 hub enroll-code [--url <https-origin>] [--labels <comma-separated>] [--show-code]
+hub invite [--ttl <10m|2h>] [--labels <comma-separated>]
 hub tls status|rotate|activate
 hub decide <workItemId> pass|fail [--note <text>]
 node join <join-code> [--name <name>] [--labels <comma-separated>] [--observe [--t3-dir <dir>] [--no-titles]]
@@ -20,8 +22,10 @@ node join <hubUrl> (--code <code> | --code-file <path>) [--name <name>] [--label
 node start|stop|status|drain
 node rotate-token
 node repin <fingerprint | join-code>
-machines
-machines revoke <id>
+machines [--json]
+machines cordon|uncordon|drain <name>
+machines set <name> [--max-agents N|default] [--max-jobs N|default] [--labels a,b|default] [--weight 0-10] [--battery allow|deny|default]
+machines revoke <name>
 service install|uninstall [hub|node] [--dry-run]
 sessions
 doctor
@@ -29,7 +33,9 @@ status
 
 Default directory: ~/.perpeto. Secrets are saved in owner-only files.
 A hub stays on loopback unless --tls gives it HTTPS; hub expose --tailscale is the recommended way to reach it.
-The join command printed by hub enroll-code is a one-time secret that expires; it pins the hub's certificate.
+The join command printed by hub enroll-code or hub invite is a one-time secret that expires; it pins the hub's certificate.
+hub invite lists every address the hub answers on (Tailscale, then LAN); node join keeps the first that works.
+Cordon stops new work on a machine; drain also lets its running work finish; uncordon undoes both.
 --observe joins an observe-only node: it watches this Mac's running T3 Code read-only (default ~/.t3/userdata) and runs no agents or CI.
 Service --dry-run prints generated files without writing or loading them.
 The service manager uses hub/node run internally for foreground execution.`;
@@ -62,12 +68,10 @@ export async function main(args, { print = console.log, fetchImpl = fetch } = {}
   } else if (group === 'node' && action === 'repin') {
     const result = await repin(dir, positionals[0]);
     print(`Pinned hub certificate ${result.fingerprint}. Run perpeto node start with the same --dir.`);
+  } else if (group === 'hub' && action === 'invite') {
+    for (const line of inviteLines(await invite(dir, { ttl: flags.ttl, labels, fetchImpl }))) print(line);
   } else if (group === 'machines') {
-    const { url, token, pins } = await owner(dir);
-    const result = await request(url, action === 'revoke' ? `/machines/${encodeURIComponent(positionals[0])}/revoke` : '/machines', {
-      token, pins, fetchImpl, ...(action === 'revoke' ? { body: { idempotencyKey: randomUUID() } } : {}),
-    });
-    print(JSON.stringify(result));
+    await machinesCommand(dir, action, positionals, flags, { print, fetchImpl });
   } else if (group === 'hub' && action === 'decide') {
     print(JSON.stringify(await decide(dir, positionals[0], positionals[1], flags.note, { fetchImpl })));
   } else if (group === 'node' && action === 'rotate-token') {

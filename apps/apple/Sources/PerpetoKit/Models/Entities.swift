@@ -772,11 +772,24 @@ public struct Machine: Codable, Hashable, Identifiable, Sendable {
     public var status: Status
     public var lastHeartbeatAt: Date
     public var version: String
+    /// Labels the node reported, before the owner's overrides (`labels` is effective).
+    public var reportedLabels: [String]?
+    public var revokedAt: Date?
+    /// Fleet fields; older hubs omit them (`Models/Fleet.swift`).
+    public var health: MachineHealth?
+    public var schedule: MachineSchedule?
+    public var placement: MachinePlacement?
 
     public init(
         id: String, name: String, os: String, arch: String, labels: [String], providers: [String], capacity: Capacity,
-        running: Running, status: Status, lastHeartbeatAt: Date, version: String
+        running: Running, status: Status, lastHeartbeatAt: Date, version: String, reportedLabels: [String]? = nil, revokedAt: Date? = nil,
+        health: MachineHealth? = nil, schedule: MachineSchedule? = nil, placement: MachinePlacement? = nil
     ) {
+        self.reportedLabels = reportedLabels
+        self.revokedAt = revokedAt
+        self.health = health
+        self.schedule = schedule
+        self.placement = placement
         self.id = id
         self.name = name
         self.os = os
@@ -790,7 +803,10 @@ public struct Machine: Codable, Hashable, Identifiable, Sendable {
         self.version = version
     }
 
-    enum CodingKeys: String, CodingKey { case id, name, os, arch, labels, providers, capacity, running, status, lastHeartbeatAt, version }
+    enum CodingKeys: String, CodingKey {
+        case id, name, os, arch, labels, providers, capacity, running, status, lastHeartbeatAt, version
+        case reportedLabels, revokedAt, health, schedule, placement
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -805,6 +821,11 @@ public struct Machine: Codable, Hashable, Identifiable, Sendable {
         status = try c.decode(Status.self, forKey: .status)
         lastHeartbeatAt = try c.decodeIfPresent(Date.self, forKey: .lastHeartbeatAt) ?? .distantPast
         version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
+        reportedLabels = c.lenient([String].self, .reportedLabels)
+        revokedAt = c.lenientDate(.revokedAt)
+        health = c.lenient(MachineHealth.self, .health)
+        schedule = c.lenient(MachineSchedule.self, .schedule)
+        placement = c.lenient(MachinePlacement.self, .placement)
     }
 }
 

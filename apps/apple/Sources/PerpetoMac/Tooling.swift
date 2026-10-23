@@ -14,6 +14,8 @@ import SwiftUI
 //     with -perpeto.appearance light|dark to force the appearance
 //     --pacing <prefix>   capture only Accounts and Pacing, named
 //     <prefix>accounts.png and <prefix>pacing.png
+//     --fleet <prefix>    capture Fleet, then Fleet with a machine cordoned;
+//     combine with -perpeto.demo fleet for the overloaded two-machine fleet
 //     --observe <prefix>  capture the observe-only screens (Home, Sessions,
 //     Accounts, Pacing, Usage, Machines);
 //     combine with -perpeto.demo observe for the demo without projects
@@ -65,7 +67,8 @@ struct Snapshotter {
             return
         }
         guard let project = store.factory.projects.first?.id else { return }
-        let shots = LaunchArgument.string(after: "--pacing").map { pacingShots(prefix: $0) }
+        let shots = LaunchArgument.string(after: "--fleet").map { fleetShots(prefix: $0) }
+            ?? LaunchArgument.string(after: "--pacing").map { pacingShots(prefix: $0) }
             ?? LaunchArgument.string(after: "--themes").map { themeShots(project, prefix: $0) }
             ?? (store.isDemo ? demoShots(project) : hubShots(project))
         try? await Task.sleep(for: .seconds(1.5))
@@ -121,6 +124,25 @@ struct Snapshotter {
         [
             ("\(prefix)accounts", { tall(); navigator.route = .factory(.accounts) }),
             ("\(prefix)pacing", { navigator.route = .factory(.pacing) }),
+        ]
+    }
+
+    /// The Fleet screen, then the same machine cordoned. Combine with
+    /// `-perpeto.demo fleet` for the overloaded two-machine fleet.
+    private func fleetShots(prefix: String) -> [(String, () -> Void)] {
+        [
+            ("\(prefix)fleet", { tall(height: 1000); navigator.route = .factory(.machines) }),
+            ("\(prefix)fleet-cordoned", {
+                if let machine = store.factory.machines.first(where: FleetText.accepting) { Task { await store.apply(.cordon, to: machine) } }
+            }),
+            ("\(prefix)fleet-50", {
+                tall(height: 1800)
+                guard let demo = store.source as? DemoDataSource else { return }
+                Task {
+                    await demo.setMachines(DemoFleet.generated(count: 50, now: Date()))
+                    await store.refresh()
+                }
+            }),
         ]
     }
 

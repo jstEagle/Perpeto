@@ -19,6 +19,7 @@ import type {
   HumanDecision,
   Job,
   Machine,
+  MachinePatch,
   MergeEntry,
   Message,
   MessagePage,
@@ -316,6 +317,10 @@ export class HttpHub implements HubApi {
   }
   async drainMachine(id: string) {
     return await this.#request<Machine>('POST', `/machines/${enc(id)}/drain`);
+  }
+  async updateMachine(id: string, patch: MachinePatch) {
+    const body = await this.#request<unknown>('PATCH', `/machines/${enc(id)}`, { body: patch });
+    return (body && typeof body === 'object' && 'machine' in body ? (body as { machine: Machine }).machine : body) as Machine;
   }
   async listAccounts() {
     return list<unknown>(await this.#request('GET', '/accounts'), 'accounts').map(decodeAccount);

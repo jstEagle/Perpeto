@@ -46,7 +46,7 @@ The join command carries the hub URL, the certificate fingerprint to pin (for bu
 
 ## Machine credentials
 
-`perpeto machines` lists the hub's machines as JSON. `perpeto machines revoke <id>` permanently revokes every token for that machine and expires its leases. Recovery requires enrollment with a new code and a fresh node directory.
+`perpeto machines` lists each machine's status, slots in use against its effective capacity, health and the reasons it takes less work (`--json` for the raw view). `perpeto machines cordon|uncordon|drain <name>` and `perpeto machines set <name> --max-agents N --labels a,b --weight W --battery allow|deny|default` change placement without touching the node; `default` clears an override. `perpeto hub invite [--ttl 30m]` prints a one-time join command listing every address the hub answers on. `perpeto machines revoke <name>` permanently revokes every token for that machine and expires its leases. Recovery requires enrollment with a new code and a fresh node directory.
 
 To rotate a local node's token, stop its service or daemon first:
 

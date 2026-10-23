@@ -5,3 +5,4 @@ export { createRuntimeSupervisor } from './runtime.js';
 export { loadConfig } from './config.js';
 export { createTransport, fingerprintOf, HubIdentityError, FINGERPRINT } from './transport.js';
 export { createAccountProvider } from './integrations/accounts.js';
+export { createHealthCollector, repoKey } from './health.js';

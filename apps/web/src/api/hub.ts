@@ -15,6 +15,7 @@ import type {
   HumanDecision,
   Job,
   Machine,
+  MachinePatch,
   MergeEntry,
   Message,
   MessagePage,
@@ -132,6 +133,8 @@ export interface HubApi {
   listMachines(): Promise<Machine[]>;
   createEnrollmentCode(): Promise<EnrollmentCode>;
   drainMachine(id: string): Promise<Machine>;
+  /** Cordon, drain or tune a machine's scheduling. */
+  updateMachine(id: string, patch: MachinePatch): Promise<Machine>;
   listAccounts(): Promise<Account[]>;
   /** Rename a subscription or set its plan. */
   updateAccount(id: string, patch: AccountPatch): Promise<Account>;
