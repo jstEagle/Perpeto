@@ -18,6 +18,8 @@ const RunPage = lazyRouteComponent(() => import('../routes/run'), 'RunPage');
 const WorkPage = lazyRouteComponent(() => import('../routes/work'), 'WorkPage');
 const MessagesPage = lazyRouteComponent(() => import('../routes/messages'), 'MessagesPage');
 const MergeQueuePage = lazyRouteComponent(() => import('../routes/merge-queue'), 'MergeQueuePage');
+const CiPage = lazyRouteComponent(() => import('../routes/ci'), 'CiPage');
+const CiRunPage = lazyRouteComponent(() => import('../routes/ci-run'), 'CiRunPage');
 const MachinesPage = lazyRouteComponent(() => import('../routes/machines'), 'MachinesPage');
 const AccountsPage = lazyRouteComponent(() => import('../routes/accounts'), 'AccountsPage');
 const PacingPage = lazyRouteComponent(() => import('../routes/pacing'), 'PacingPage');
@@ -58,6 +60,8 @@ const messages = createRoute({
   validateSearch: (search: Record<string, unknown>): { channel?: string } => ({ channel: typeof search.channel === 'string' ? search.channel : undefined }),
 });
 const mergeQueue = createRoute({ getParentRoute: () => project, path: '/merge-queue', component: MergeQueuePage });
+const ci = createRoute({ getParentRoute: () => project, path: '/ci', component: CiPage });
+const ciRun = createRoute({ getParentRoute: () => project, path: '/ci/$runId', component: CiRunPage });
 const sessions = createRoute({ getParentRoute: () => root, path: '/sessions', component: SessionsPage });
 const machines = createRoute({ getParentRoute: () => root, path: '/machines', component: MachinesPage });
 const accounts = createRoute({ getParentRoute: () => root, path: '/accounts', component: AccountsPage });
@@ -68,7 +72,7 @@ const settings = createRoute({ getParentRoute: () => root, path: '/settings', co
 const tree = root.addChildren([
   home,
   projects,
-  project.addChildren([overview, workflows, workflow, editor, runs, run, work, messages, mergeQueue]),
+  project.addChildren([overview, workflows, workflow, editor, runs, run, work, messages, mergeQueue, ci, ciRun]),
   sessions,
   machines,
   accounts,

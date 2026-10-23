@@ -5,6 +5,24 @@ import { jobEnvironment, jobSandbox } from './sandbox.js';
 import { StringDecoder } from 'node:string_decoder';
 import { readSecret } from './config.js';
 import { runProcess } from './process.js';
+import { insideCheckout, resolveKey } from './ci-cache.js';
+import { collectArtifacts } from './artifacts.js';
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+// The runner owns these; pipeline env cannot redirect a step's PATH, HOME or temp directories.
+const RESERVED_ENV = /^(?:PATH|HOME|TMPDIR|TMP|TEMP|LANG|LC_ALL|GIT_CONFIG_.*|GIT_TERMINAL_PROMPT|PERPETO_.*)$/;
+const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** Pipeline fields of a job (env, cache, collect, timeoutSec), validated before anything runs. */
+function pipelineFields(job) {
+  if (job.env !== undefined && (!plain(job.env) || Object.entries(job.env).some(([name, value]) => !ENV_NAME.test(name) || RESERVED_ENV.test(name) ||
+      typeof value !== 'string' || value.includes('\0') || value.length > 4096))) return false;
+  if (job.cache !== undefined && (!Array.isArray(job.cache) || job.cache.length > 4 || job.cache.some(item => !plain(item) || typeof item.key !== 'string' ||
+      !Array.isArray(item.paths) || !item.paths.length || !item.paths.every(insideCheckout)))) return false;
+  if (job.collect !== undefined && (!Array.isArray(job.collect) || job.collect.length > 8 || job.collect.some(item => !plain(item) || typeof item.name !== 'string' ||
+      /[/\\]/.test(item.name) || !Array.isArray(item.paths) || !item.paths.length || !item.paths.every(insideCheckout)))) return false;
+  return job.timeoutSec === undefined || (Number.isSafeInteger(job.timeoutSec) && job.timeoutSec > 0 && job.timeoutSec <= 86400);
+}
 
 /** Lines are held until redaction is safe. Oversized lines are masked in full. */
 export function createLogStream({ report, step, stream, literals = [], patterns = [], maxBytes = 8192, flushMs = 100 }) {
@@ -85,13 +103,14 @@ export async function loadRedaction(config) {
 }
 
 export async function runJob(job, ctx, options = {}) {
-  const { dataDir, maxLogChunkBytes = 8192, defaultTimeoutSec = 600, checkoutTimeoutSec = 120, redaction = {} } = options;
+  const { dataDir, maxLogChunkBytes = 8192, defaultTimeoutSec = 600, checkoutTimeoutSec = 120, redaction = {}, cache, artifactMaxBytes } = options;
   const evidence = { revision: job.revision, configHash: job.configHash, steps: [], artifacts: [] };
+  const deadline = job.timeoutSec ? Date.now() + job.timeoutSec * 1000 : Infinity;
   let workspace;
   try {
     if (!/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(job.revision) || typeof job.configHash !== 'string' || !job.configHash ||
         !Array.isArray(job.steps) || job.steps.some(step => !step || typeof step.name !== 'string' || typeof step.run !== 'string' ||
-          (step.timeoutSec !== undefined && (!Number.isFinite(step.timeoutSec) || step.timeoutSec <= 0)))) throw new Error('Invalid job.');
+          (step.timeoutSec !== undefined && (!Number.isFinite(step.timeoutSec) || step.timeoutSec <= 0))) || !pipelineFields(job)) throw new Error('Invalid job.');
     // A hub source names the job's own authenticated route; otherwise the job names a repository to clone.
     const source = job.source;
     if (source !== undefined && !(source?.kind === 'hub-bundle' && typeof source.path === 'string' && /^\/jobs\/[A-Za-z0-9_-]+\/bundle$/.test(source.path) && ctx.fetchSource)) throw new Error('Invalid job source.');
@@ -104,7 +123,10 @@ export async function runJob(job, ctx, options = {}) {
     workspace = await mkdtemp(join(tmpdir(), 'perpeto-ci-'));
     const checkout = join(workspace, 'source');
     const sandbox = await jobSandbox(workspace, [dataDir, process.env.GIT_CONFIG_GLOBAL, ...(options.protectedPaths ?? [])]);
-    const stepEnv = jobEnvironment(workspace, options.path);
+    // Pipeline env (non-secret, from the repository's ci.json) and runner-set CI variables come after the sandbox
+    // defaults, which pipeline env cannot override.
+    const stepEnv = { CI: 'true', ...(job.env ?? {}), ...jobEnvironment(workspace, options.path), PERPETO_CI: '1', PERPETO_JOB_ID: job.id ?? '', PERPETO_REVISION: job.revision,
+      ...(job.pipelineJob ? { PERPETO_PIPELINE_JOB: job.pipelineJob } : {}) };
     // Checkout is a trusted daemon operation. Preserve its configured remote rewrites,
     // but never expose the config path/content to untrusted shell steps.
     const gitEnv = { ...stepEnv, ...(process.env.GIT_CONFIG_GLOBAL ? { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL } : {}) };
@@ -129,28 +151,53 @@ export async function runJob(job, ctx, options = {}) {
     // Object ids are content hashes, so checking out the exact SHA and reading it back proves the tree is the job's.
     if (await git(['-C', checkout, 'rev-parse', 'HEAD']) !== job.revision.toLowerCase()) throw new Error('Checked-out revision does not match the job.');
     await ctx.report({ type: 'started', data: { revision: job.revision, configHash: job.configHash } });
+    const note = text => ctx.report({ type: 'log', data: { step: -1, stream: 'runner', chunk: `[perpeto] ${text}\n` } });
+    // Dependency caches: restored before the steps, saved after a passing run that missed. Keys are per project.
+    const caches = [];
+    for (const item of job.cache ?? []) {
+      if (!cache) { await note(`cache ${item.key}: this machine has no CI cache`); continue; }
+      let key;
+      try { key = await resolveKey(item.key, checkout); } catch (error) { await note(`cache ${item.key}: ${error.message}`); continue; }
+      const hit = await cache.restore(job.projectId ?? 'default', key, item.paths, checkout);
+      caches.push({ key, hit, paths: item.paths });
+      await note(`cache ${hit ? 'hit' : 'miss'}: ${key}`);
+    }
+    evidence.cache = caches.map(({ key, hit }) => ({ key, hit }));
+    let status = 'passed';
     for (const [index, step] of job.steps.entries()) {
       ctx.signal.throwIfAborted();
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) { await note(`job timed out after ${job.timeoutSec}s`); status = 'error'; evidence.reason = 'job_timeout'; break; }
       const startedAt = new Date().toISOString();
       const logs = Object.fromEntries(['stdout', 'stderr'].map(stream => [stream,
         createLogStream({ ...redaction, report: ctx.report, step: index, stream, maxBytes: maxLogChunkBytes })]));
       let result;
       try {
         result = await runProcess(sandbox.command, [...sandbox.args, '-c', step.run], {
-          cwd: checkout, env: stepEnv, signal: ctx.signal, timeoutMs: (step.timeoutSec ?? defaultTimeoutSec) * 1000,
+          cwd: checkout, env: stepEnv, signal: ctx.signal, timeoutMs: Math.min((step.timeoutSec ?? defaultTimeoutSec) * 1000, remainingMs),
           onOutput: (stream, chunk) => logs[stream].write(chunk),
         });
       } finally {
         await Promise.all(Object.values(logs).map(log => log.end()));
       }
-      const status = result.cancelled ? 'cancelled' : result.timedOut ? 'error' : result.code === 0 ? 'passed' : 'failed';
-      const item = { index, name: step.name, status, exitCode: result.code, timedOut: result.timedOut, startedAt, finishedAt: new Date().toISOString() };
+      const stepStatus = result.cancelled ? 'cancelled' : result.timedOut ? 'error' : result.code === 0 ? 'passed' : 'failed';
+      const item = { index, name: step.name, status: stepStatus, exitCode: result.code, timedOut: result.timedOut, startedAt, finishedAt: new Date().toISOString() };
       evidence.steps.push(item);
       await ctx.report({ type: 'step', data: { ...item, revision: job.revision, configHash: job.configHash } });
-      if (status !== 'passed') return { ...evidence, status };
+      if (item.status !== 'passed') { status = item.status; break; }
     }
     ctx.signal.throwIfAborted();
-    return { ...evidence, status: 'passed' };
+    if (status !== 'cancelled' && job.collect?.length) {
+      const { uploaded, notes } = await collectArtifacts(job.collect, { checkout, status, report: ctx.report, maxBytes: artifactMaxBytes, signal: ctx.signal });
+      evidence.artifacts = uploaded;
+      for (const text of notes) await note(text);
+    }
+    if (status === 'passed') for (const item of caches.filter(entry => !entry.hit)) {
+      const saved = await cache.save(job.projectId ?? 'default', item.key, item.paths, checkout).catch(error => ({ saved: false, reason: error.code ?? 'error' }));
+      await note(saved.saved ? `cache saved: ${item.key} (${saved.sizeBytes} bytes)` : `cache not saved: ${item.key} (${saved.reason})`);
+    }
+    ctx.signal.throwIfAborted();
+    return { ...evidence, status };
   } catch (error) {
     if (error?.code === 'lease_lost' || ctx.signal.reason?.code === 'lease_lost') throw error;
     return { ...evidence, status: ctx.signal.aborted ? 'cancelled' : 'error', reason: ctx.signal.aborted ? 'cancelled' : 'job_execution_error' };

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fail, integer, nonblank, object, requireValue } from './errors.js';
+import { CI_DEFAULTS, ciConfig } from './ci/config.js';
 
 /** Subscription pacing defaults. Burn-rate priors (percent of a window per agent-hour) are uncalibrated starting points. */
 export const PACING_CONFIG_DEFAULTS = Object.freeze({
@@ -55,7 +56,7 @@ export function loadConfig(filename) {
     maintenanceIntervalMs: 1000, enrollmentTtlMs: 600000,
     finishedWorkRetentionMs: 604800000, eventRetentionMs: 2592000000, usageRetentionMs: 2592000000, idempotencyRetentionMs: 86400000,
     archiveFinished: true, retentionSweepIntervalMs: 60000, sessionTtlMs: 43200000, messageRatePerMinute: 30, architectHarness: { provider: 'codex', model: 'gpt-6.1-sol' },
-    pacing: PACING_CONFIG_DEFAULTS,
+    pacing: PACING_CONFIG_DEFAULTS, ci: CI_DEFAULTS,
   };
   requireValue(Object.keys(input).every(key => Object.hasOwn(defaults, key)), 'Unknown hub configuration field.');
   const config = { ...defaults, ...input };
@@ -91,6 +92,7 @@ export function loadConfig(filename) {
   if (config.publicUrl !== null) config.publicUrl = publicOrigin(nonblank(config.publicUrl, 'publicUrl', 2048));
   if (config.ownerName !== null) config.ownerName = nonblank(config.ownerName, 'ownerName', 80).trim();
   for (const key of ['databasePath', 'messagingDatabasePath', 'deliveryDatabasePath', 'workflowDatabasePath', 'deliveryRepositoriesPath', 'ownerTokenPath', 'credentialKeyPath', 'tlsCertPath', 'tlsKeyPath']) config[key] = resolve(dirname(path), nonblank(config[key], key, 4096));
+  config.ci = ciConfig(input.ci ?? {}, dirname(path));
   requireValue(new Set([config.databasePath, config.messagingDatabasePath, config.deliveryDatabasePath, config.workflowDatabasePath, config.ownerTokenPath, config.credentialKeyPath, config.tlsCertPath, config.tlsKeyPath]).size === 8, 'Hub files must have distinct paths.');
   return config;
 }

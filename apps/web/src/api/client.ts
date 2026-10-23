@@ -45,6 +45,7 @@ import type {
   SessionsWindow,
 } from './types';
 import { localTemplates } from '../workflow/templates';
+import type { CiArtifact, CiInsights, FlakyJob, JobLogPage, NewPipelineRun, PipelineList, PipelineRun, PipelineRunQuery, RunnersView } from './ci';
 
 /**
  * How requests prove they come from the owner. `cookie` relies on an
@@ -369,6 +370,61 @@ export class HttpHub implements HubApi {
   }
   async mergeQueue(projectId: string) {
     return list<MergeEntry>(await this.#request('GET', `/projects/${enc(projectId)}/merge-queue`), 'entries');
+  }
+
+  async ciPipelines(projectId: string): Promise<PipelineList | null> {
+    try {
+      return await this.#request<PipelineList>('GET', '/pipelines', { query: { projectId } });
+    } catch (error) {
+      if (error instanceof HubError && (error.status === 404 || error.status === 405)) return null;
+      throw error;
+    }
+  }
+  async ciRuns(query: PipelineRunQuery) {
+    return list<PipelineRun>(await this.#request('GET', '/pipeline-runs', { query: { ...query } }), 'runs');
+  }
+  ciRun(id: string) {
+    return this.#request<PipelineRun>('GET', `/pipeline-runs/${enc(id)}`);
+  }
+  startCiRun(input: NewPipelineRun) {
+    return this.#request<PipelineRun>('POST', '/pipeline-runs', { body: { ...input } });
+  }
+  cancelCiRun(id: string) {
+    return this.#request<PipelineRun>('POST', `/pipeline-runs/${enc(id)}/cancel`);
+  }
+  retryCiRun(id: string, job?: string) {
+    return this.#request<PipelineRun>('POST', `/pipeline-runs/${enc(id)}/retry`, { body: job ? { job } : {} });
+  }
+  ciJobLog(jobId: string, after?: number, limit?: number) {
+    return this.#request<JobLogPage>('GET', `/jobs/${enc(jobId)}/log`, { query: { after, limit } });
+  }
+  async ciArtifacts(jobId: string) {
+    return list<CiArtifact>(await this.#request('GET', `/jobs/${enc(jobId)}/artifacts`), 'artifacts');
+  }
+  /** Artifacts are raw bytes, fetched with the same owner credentials as JSON requests. */
+  async ciArtifact(jobId: string, artifactId: string): Promise<Blob> {
+    let response: Response;
+    try {
+      response = await fetch(this.#url(`/jobs/${enc(jobId)}/artifacts/${enc(artifactId)}`), this.#init({ method: 'GET', headers: {} }));
+    } catch {
+      throw new HubError(0, 'NETWORK', 'The hub could not be reached.');
+    }
+    if (!response.ok) throw await errorFrom(response);
+    return await response.blob();
+  }
+  async ciRunners(): Promise<RunnersView | null> {
+    try {
+      return await this.#request<RunnersView>('GET', '/runners');
+    } catch (error) {
+      if (error instanceof HubError && (error.status === 404 || error.status === 405)) return null;
+      throw error;
+    }
+  }
+  async ciFlaky(projectId: string) {
+    return list<FlakyJob>(await this.#request('GET', '/ci/flaky', { query: { projectId } }), 'flaky');
+  }
+  ciInsights(projectId: string, window = '7d') {
+    return this.#request<CiInsights>('GET', '/ci/insights', { query: { projectId, window } });
   }
 
   async runMetrics(runId: string, window: MetricsWindow = '24h') {

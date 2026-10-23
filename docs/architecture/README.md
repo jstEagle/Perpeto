@@ -90,7 +90,16 @@ MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queu
                mergedRevision?, deliveryError?, rejectionKind?: 'conflict'|'ci'|'other' }
 // Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
-               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
+               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt?,
+               runner?: { pools: { name, maxJobs }[], labels: string[], cache?: { sizeBytes, maxBytes, entries } } }   // CI runner capability, separate from agent slots
+PipelineRun  { id /* plr_… */, projectId, pipeline, revision, ref?, trigger: { kind: 'manual'|'merge-queue'|'pull-request'|'schedule'|'workflow', runId?, workItemId?, jobId?, mergeEntryIds?, cron? },
+               status: 'queued'|'running'|'passed'|'failed'|'cancelled'|'error', configSource: 'repo'|'project'|'none', configHash?, jobs: PipelineRunJob[],
+               createdAt, startedAt?, finishedAt?, durationMs?, supersededBy?, reason?, retries? }
+PipelineRunJob { key /* 'test (node=22)' */, name, matrix?, needs: string[] /* keys */, runsOn: { pool?, os?, labels }, status: 'waiting'|'queued'|'leased'|'running'|'passed'|'failed'|'cancelled'|'error'|'skipped',
+               jobId? /* current hub Job */, machineId?, attempt, maxAttempts, attempts: { jobId, status, machineId?, queuedAt, startedAt?, finishedAt? }[],
+               queuedAt?, startedAt?, finishedAt?, durationMs?, queueWaitMs?, flaky?, cache?: { key, hit }[], artifacts?: { id, jobId, name, path, size }[] }
+// Pipeline Jobs also carry pipelineRunId, pipelineJob (key), runsOn, pool (once leased), env, cache, collect (artifact specs), timeoutSec, startedAt.
+// A Job with pipeline (workflow ci node) or pipelines (merge-queue candidate) is a proxy: never leased, status 'running' until its pipeline runs finish.
 Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt?, plan?: string,
                usage?: { checkedAt, windows: UsageWindow[] },   // percentages and reset times only: never credentials, emails, fingerprints or paths
                source?: 'observed', providerInstanceId? }      // observed: a provider instance of an operator's own T3, reported by an observe-only node
@@ -121,7 +130,7 @@ GraphEdge     { id, from: { node, port? }, to: { node, port? }, kind: 'flow'|'de
 | `planner` | Agent that turns input into work items | `harness`, `prompt`, `maxItems`, `serializeOverlappingTouches: boolean` (default true) |
 | `agent` | Agent role that does a work item | `harness`, `prompt`, `concurrency`, `policy` |
 | `review` | Agent review gate; passes or returns work | `harness`, `prompt`, `rubric` |
-| `ci` | CI gate run on a user-owned machine at the exact head commit | `steps`, `requirements` |
+| `ci` | CI gate run on a user-owned machine at the exact head commit | `steps` or `pipeline` (a pipeline name from `.perpeto/ci.json`), `requirements` |
 | `merge-queue` | Serialises merges into the base branch | `strategy: 'serial'|'batch'`, `requiredChecks`, `method: 'squash'|'merge'|'rebase'`, `publication: 'fast-forward-push'|'github-merge-queue'`, `onConflict: 'rebase'|'review'`, `rebaseReview: 'changed'|'always'|'never'` |
 | `loop` | Repeats its body until a condition or limit | `until: 'review-pass'|'ci-pass'|'manual'`, `maxIterations` |
 | `human` | Pauses for a person | `prompt` |
@@ -207,6 +216,15 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
 | `GET /jobs/:id/bundle?attempt=N` | Git bundle of a hub-hosted job revision for the leasing machine or the owner; jobs with `source: { kind: 'hub-bundle' }` are fetched this way so any enrolled machine can run them. `409 SOURCE_UNAVAILABLE` if the revision is gone |
 | `GET /projects/:id/merge-queue` | Merge queue |
+| `GET /pipelines?projectId&revision?` | Pipelines from `.perpeto/ci.json` at the revision (default: the default branch head the hub holds) or the project's stored config: `{ source, revision, path, pipelines: [{ name, triggers, jobs, lastRun? }], error? }` |
+| `GET/PUT /projects/:id/ci-config` `{ config\|null }` | Project-level pipeline configuration, used when the hub cannot read the repository file |
+| `GET /pipeline-runs?projectId&pipeline&status&limit`, `GET /pipeline-runs/:id` | Pipeline runs, newest first |
+| `POST /pipeline-runs` `{ projectId, pipeline, revision?, ref? }` | Manual trigger; without `revision` the hub runs the `ref` or default branch head it holds (`400 REVISION_REQUIRED` otherwise). A run with a `ref` cancels older active manual, pull-request or schedule runs of that pipeline and ref |
+| `POST /pipeline-runs/:id/cancel` `{ reason? }`, `POST /pipeline-runs/:id/retry` `{ job? }` | Cancel; rerun failed, cancelled or skipped jobs (one job and its dependents, or all) of a finished run |
+| `GET /jobs/:id/log?after=<seq>&limit=` | `{ chunks: [{ seq, id, chunk, at }], nextCursor, hasMore, truncated, bytes }`; stored redacted and capped at `ci.logMaxBytesPerJob` |
+| `GET /jobs/:id/artifacts`, `GET /jobs/:id/artifacts/:artifactId` | Artifacts a job uploaded (complete, digest-checked), and one artifact's bytes |
+| `GET /runners` | Machines' pools, busy slots, mode (`agents`, `ci`, `both`, `observe`), dependency cache size and 24-hour CI utilisation; per-pool slots and queue |
+| `GET /ci/insights?projectId&window=24h\|7d\|30d`, `GET /ci/flaky?projectId`, `POST /ci/validate` `{ config }` | Pass rate, duration trends and queue wait per pipeline and job; flaky jobs (passed and failed at the same revision); schema validation |
 | `GET /usage?projectId&runId&source=observed|factory&groupBy=provider|model|machine|day|role|source` | Token and agent usage; `source=observed` is usage from operators' own T3 sessions, which has no project |
 | `GET /sessions?machineId&status&provider&since&limit&cursor` | Observed sessions, newest activity first: `{ sessions: Session[], nextCursor? }`; see [observe-only mode](#observe-only-mode) |
 | `GET /sessions/summary?window=1h|24h|7d` | Machines observing, session totals and observed tokens by provider, model, machine and hour |
@@ -249,7 +267,7 @@ Enrollment codes come wrapped in a paste-able join code, `pj1_` + base64url `{ u
 | `POST /assignments/:id/release`, `POST /jobs/:id/release` `{ attempt, idempotencyKey?, reason? }` | Hand back unstarted work without consuming an attempt; the same machine is not offered it again for one lease duration |
 | `POST /nodes/token` `{ idempotencyKey? }` | Rotate this machine's token; the old token works until the new one is first used |
 | `POST /assignments/:id/events` `{ type: 'started'|'progress'|'usage'|'message'|'completed'|'failed', data }` | Report progress, usage and the final `AssignmentResult` |
-| `POST /jobs/:id/events` `{ type: 'started'|'log'|'step'|'completed', data }` | Report log chunks and the final status bound to `revision`; the final result must carry `configHash` |
+| `POST /jobs/:id/events` `{ type: 'started'|'log'|'step'|'artifact'|'completed', data }` | Report log chunks while the job runs, artifact chunks `{ name, path, size, sha256, offset, data (base64, ≤ 512 KiB) }`, and the final status bound to `revision`; the final result must carry `configHash` and may carry `cache: [{ key, hit }]` |
 
 Lease wire format, fixed after the node implementation:
 
@@ -306,6 +324,14 @@ ObservedProvider { instanceId, driver, displayName?, plan? /* T3's subscription 
 - Events: `session.updated` `{ machineId, threadId, status, previous? }` when a session appears or changes status (at most 50 per batch), and `sessions.changed` `{ machineId, running, waiting, idle, error }` per machine, at once after a status change and otherwise at most every 15 s. Token changes alone never emit per-session events.
 - `Machine` gains `observe?: { connected, lastObservedAt, serverVersion?, error? }`; the summary counts a machine as observing while it reported a connected T3 within 90 s.
 - `GET /sessions/summary` returns `{ window, machines: [{ machineId, name, online, observing, lastObservedAt?, observeError?, running, waiting, idle, error }], totals: { running, waiting, sessionsActive }, tokens: { byProvider: [{ provider, input, output, cacheRead, cacheWrite }], byModel: [{ model, … }], byMachine: [{ machineId, name, … }], series: [{ at, input, output }] } }`. `idle`, `error` and `sessionsActive` count sessions with activity in the window; `running` and `waiting` count all; `series` has one bucket per hour of the window.
+
+### CI pipelines and runner pools
+
+Pipelines come from the repository's `.perpeto/ci.json` at the run's revision (schema in [the CI guide](../guides/ci.md), validated by `@perpeto/delivery`'s `parsePipelineConfig`), else from the project's hub-stored config. The hub expands a pipeline into a DAG of Jobs (one per matrix combination) and creates each Job only when everything it `needs` passed; a failure skips dependents and the run finishes when nothing is left running. `retry.maxAttempts` reruns failed or errored jobs as new Jobs; a pass and a failure of the same job at the same revision mark it flaky (`ci.flaky-detected`). Events: `pipeline-run.created|started|finished|cancelled|superseded|retried`, `pipeline-job.retried`.
+
+Naming contract with merge queues: `merge-queue.requiredChecks` entries are strings naming either a `ci` node id or a pipeline. A candidate whose queue requires pipelines (or whose required `ci` nodes name one) gets a proxy Job; the hub runs each pipeline at the candidate revision from the queue's repository and records one result, with the pipeline names as passed checks. Pipelines with a `merge-queue` trigger apply when a graph has no ci nodes and no required checks. `pull-request` triggers run when an agent reports a new head commit; `schedule` triggers run once per matching UTC minute at the default branch head.
+
+Nodes advertise `runner: { pools, labels, cache }` in heartbeats. A Job's `runsOn.pool` selects a pool (absent: any pool with room) and `runsOn.labels` must be machine or runner labels. Leasing interleaves projects, fewest running jobs first. Node config `runner.cacheDir` (default `<dataDir>/ci-cache`, exported as `ciCacheRoot(config)` for storage cleanup, kind `ci-cache`) holds the per-project dependency cache, LRU-evicted above `runner.cacheMaxBytes`. Hub config `ci` sets the log cap, artifact path, caps and retention.
 
 ## Node executors
 

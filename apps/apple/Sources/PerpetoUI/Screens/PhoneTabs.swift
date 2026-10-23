@@ -153,6 +153,8 @@ struct PhoneTabs: View {
                                 Rule()
                                 link("Merge queue", ProjectSection.mergeQueue.systemImage, .project(projectId, .mergeQueue))
                                 Rule()
+                                link("CI", ProjectSection.ci.systemImage, .project(projectId, .ci))
+                                Rule()
                             }
                             link("Sessions", FactorySection.sessions.systemImage, .factory(.sessions))
                             Rule()

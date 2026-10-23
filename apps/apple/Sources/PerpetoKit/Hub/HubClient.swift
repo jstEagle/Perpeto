@@ -436,6 +436,36 @@ public final class HubClient: Sendable {
     }
     public func mergeQueue(projectId: String) async throws -> [MergeEntry] { try await list("/projects/\(escape(projectId))/merge-queue", key: "entries") }
 
+    // MARK: CI pipelines
+
+    /// Pipeline runs for a project, newest first.
+    public func pipelineRuns(projectId: String, limit: Int = 50) async throws -> [PipelineRun] {
+        struct Page: Decodable { var runs: Lossy<PipelineRun> }
+        let page: Page = try await get("/pipeline-runs", query: ["projectId": projectId, "limit": String(limit)])
+        return page.runs.elements
+    }
+    public func pipelineRun(_ id: String) async throws -> PipelineRun { try await get("/pipeline-runs/\(escape(id))") }
+    public func cancelPipelineRun(_ id: String, idempotencyKey: String = UUID().uuidString) async throws -> PipelineRun {
+        try await send("POST", "/pipeline-runs/\(escape(id))/cancel", body: EmptyBody(), idempotencyKey: idempotencyKey)
+    }
+    /// Retries failed jobs of a run, or only `job` (a job key).
+    public func retryPipelineRun(_ id: String, job: String? = nil, idempotencyKey: String = UUID().uuidString) async throws -> PipelineRun {
+        struct Body: Encodable { var job: String? }
+        return try await send("POST", "/pipeline-runs/\(escape(id))/retry", body: Body(job: job), idempotencyKey: idempotencyKey)
+    }
+    /// One page of a job's log after `after` (a chunk seq).
+    public func jobLogPage(_ id: String, after: Int? = nil, limit: Int = 500) async throws -> JobLogPage {
+        var query = ["limit": String(limit)]
+        if let after { query["after"] = String(after) }
+        return try await get("/jobs/\(escape(id))/log", query: query)
+    }
+    public func runners() async throws -> RunnersResponse { try await get("/runners") }
+    public func flakyJobs(projectId: String) async throws -> [FlakyJob] {
+        struct Page: Decodable { var flaky: Lossy<FlakyJob> }
+        let page: Page = try await get("/ci/flaky", query: ["projectId": projectId])
+        return page.flaky.elements
+    }
+
     public func usage(projectId: String? = nil, runId: String? = nil, groupBy: UsageGrouping) async throws -> [UsageGroup] {
         var query = ["groupBy": groupBy.rawValue]
         query["projectId"] = projectId

@@ -1,0 +1,285 @@
+/* ---------- CI: pipelines, runs, job graph and logs ---------- */
+
+.ci-source {
+  font-size: var(--text-13);
+  white-space: normal;
+  text-align: right;
+}
+.ci-failed-text {
+  color: var(--error);
+}
+
+/* Pipelines with their duration trend. */
+.ci-pipelines {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: var(--space-4);
+}
+.ci-pipeline {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+}
+.ci-pipeline-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+.ci-pipeline-name {
+  font-size: var(--text-16);
+  font-weight: var(--weight-semibold);
+  color: var(--ink);
+}
+.ci-pipeline-head p {
+  font-size: var(--text-13);
+  margin-top: var(--space-1);
+}
+.ci-trend {
+  display: grid;
+  gap: var(--space-2);
+}
+.ci-trend-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 48px;
+}
+.ci-trend-bar {
+  flex: 1 1 0;
+  min-width: 4px;
+  max-width: 10px;
+  border-radius: 3px;
+  background: var(--grey-400);
+}
+.ci-trend-bar-failed {
+  background: var(--error);
+}
+.ci-trend-caption {
+  display: flex;
+  gap: var(--space-4);
+  font-size: var(--text-12);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ci-flaky {
+  list-style: none;
+  display: grid;
+  gap: var(--space-2);
+}
+.ci-flaky-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+}
+.ci-flaky-row .row-meta {
+  white-space: normal;
+}
+.ci-section > p.muted {
+  margin-top: var(--space-3);
+}
+.ci-flaky-row + .ci-flaky-row {
+  border-top: var(--stroke-hairline) solid var(--border);
+}
+
+/* Run header facts on one wrapping line. */
+.ci-run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+}
+
+/* Job graph: one column per dependency depth. */
+.ci-dag {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+}
+.ci-dag-stage {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.ci-dag-arrow {
+  pointer-events: none;
+  display: inline-flex;
+  color: var(--faint);
+}
+.ci-dag-column {
+  list-style: none;
+  display: grid;
+  gap: var(--space-3);
+  align-content: center;
+}
+.ci-job {
+  display: grid;
+  gap: var(--space-2);
+  width: 15rem;
+  padding: var(--space-4);
+  text-align: left;
+  border: var(--stroke-hairline) solid var(--border);
+  border-radius: var(--radius-node);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  transition: box-shadow var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard);
+}
+.ci-job:hover {
+  box-shadow: var(--shadow-card);
+}
+.ci-job:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.ci-job[aria-pressed='true'] {
+  border-color: var(--ink);
+  box-shadow: var(--shadow-card);
+}
+.ci-job-failed {
+  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
+}
+.ci-job-live {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.ci-job-quiet,
+.ci-job-stopped {
+  background: var(--surface-subtle);
+}
+.ci-job-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.ci-job-head .i {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.ci-job-failed .ci-job-head .i {
+  color: var(--error);
+}
+.ci-job-quiet .ci-job-head .i,
+.ci-job-stopped .ci-job-head .i,
+.ci-job-waiting .ci-job-head .i {
+  color: var(--faint);
+}
+.ci-job-name {
+  font-weight: var(--weight-semibold);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ci-job-matrix {
+  font-family: var(--font-mono);
+  font-size: var(--text-12);
+  color: var(--ink-soft);
+}
+.ci-job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-13);
+  color: var(--muted);
+}
+.ci-job-meta .status .i,
+.ci-job-meta .status .dot {
+  display: none;
+}
+
+/* Selected job. */
+.ci-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: var(--space-5) var(--space-6);
+}
+.ci-facts dt {
+  font-size: var(--text-13);
+  color: var(--muted);
+}
+.ci-facts dd {
+  margin-top: var(--space-1);
+  color: var(--ink);
+}
+.ci-section {
+  margin-top: var(--space-8);
+}
+.ci-section-title {
+  font-size: var(--text-14);
+  font-weight: var(--weight-semibold);
+  color: var(--ink);
+  margin-bottom: var(--space-3);
+}
+.ci-plain {
+  list-style: none;
+  display: grid;
+  gap: var(--space-2);
+}
+.ci-plain .row {
+  flex-wrap: wrap;
+}
+.ci-artifact .btn {
+  margin-left: auto;
+}
+.ci-log-wrap {
+  display: grid;
+  gap: var(--space-2);
+}
+.ci-log-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  font-size: var(--text-13);
+  color: var(--ink-soft);
+}
+.ci-log {
+  margin-top: 0;
+  max-height: 28rem;
+  overflow: auto;
+}
+
+@media (max-width: 720px) {
+  .ci-dag {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ci-dag-stage {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ci-dag-arrow {
+    justify-content: center;
+    transform: rotate(90deg);
+  }
+  .ci-job {
+    width: 100%;
+  }
+  .ci-source {
+    text-align: left;
+  }
+  .ci-flaky-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.show-sm {
+  display: none;
+}
+@media (max-width: 720px) {
+  .cell-sub.show-sm {
+    display: block;
+  }
+}

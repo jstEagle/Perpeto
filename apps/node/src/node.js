@@ -6,6 +6,7 @@ import { loadConfig, readSecret, writePrivate } from './config.js';
 import { HubClient, HubError, sleep, jitter } from './hub.js';
 import { detectProviders, loadIntegrations } from './executors.js';
 import { loadRedaction, runJob } from './job.js';
+import { CiCache } from './ci-cache.js';
 import { createRuntimeSupervisor } from './runtime.js';
 import { FINGERPRINT } from './transport.js';
 import { sanitizeFailure } from './failure.js';
@@ -75,6 +76,11 @@ export async function createNode({ configPath, registry, accountProvider, runtim
   let observer;
   let observationTask;
   const runtime = runtimeSupervisor ?? createRuntimeSupervisor(config.runtime, { configRoot: config.configRoot });
+  // The CI dependency cache exists only on machines that run CI jobs.
+  const ciCache = config.capacity.maxJobs ? new CiCache({ root: config.runner.cacheDir, maxBytes: config.runner.cacheMaxBytes }) : null;
+  /** Runner capability for heartbeats: pools, runner labels and cache size, beside agent slots. */
+  const runnerStatus = () => config.capacity.maxJobs ? { runner: { ...(config.runner.pools ? { pools: config.runner.pools } : {}), labels: config.runner.labels,
+    ...(ciCache ? { cache: ciCache.stats() } : {}) } } : {};
   const status = () => ({ machineId, state: stopped ? 'stopped' : fatalError ? 'error' : draining ? 'draining' : started ? 'running' : 'idle',
     running: { agents: [...active.values()].filter(item => item.kind === 'assignment').length,
       jobs: [...active.values()].filter(item => item.kind === 'job').length }, ...(observer ? { observe: observer.status } : {}) });
@@ -177,7 +183,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       token = next.token; tokenGeneration = next.generation; tokenRotatedAt = rotatedAt; tokenRotationKey = undefined;
       hub.setToken(token);
       const response = await transport.retry('/nodes/heartbeat', { capacity: config.capacity, running: status().running,
-        labels: machine.labels, providers: machine.providers, status: draining ? 'draining' : 'online' }, { signal: service.signal });
+        labels: machine.labels, providers: machine.providers, status: draining ? 'draining' : 'online', ...runnerStatus() }, { signal: service.signal });
       handleHeartbeat(response);
       return { machineId, generation: tokenGeneration };
     }).finally(() => { rotationTask = undefined; });
@@ -223,7 +229,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
       localAccountIds = new Map(localAccounts.filter(account => typeof account.id === 'string').map(account => [publicAccountId(account.id), account.id]));
     } catch { /* A local account snapshot failure must not interrupt leased work. */ }
     const body = { capacity: config.capacity, running: status().running, labels: machine.labels,
-      ...(accounts ? { accounts } : {}), providers: machine.providers, status: draining ? 'draining' : 'online' };
+      ...(accounts ? { accounts } : {}), providers: machine.providers, status: draining ? 'draining' : 'online', ...runnerStatus() };
     let result;
     try {
       result = await hub[retry ? 'retry' : 'post']('/nodes/heartbeat', body, { signal: service.signal });
@@ -378,8 +384,9 @@ export async function createNode({ configPath, registry, accountProvider, runtim
             config.accounts?.nodeDataDir && resolve(config.configRoot, config.accounts.nodeDataDir),
             config.runtime?.repoRoot && resolve(config.configRoot, config.runtime.repoRoot, '.perpeto'),
             ...[config.runtime, config.runtime?.t3].flatMap(settings => [settings?.credentialFile, settings?.baseDir].filter(Boolean).map(path => resolve(config.configRoot, path))),
-            ...(config.jobs?.protectedPaths ?? [])].filter(Boolean),
+            ...(config.jobs?.protectedPaths ?? []), config.runner.cacheDir].filter(Boolean),
           redaction: { ...redaction, literals: [...redaction.literals, token] },
+          cache: ciCache, artifactMaxBytes: config.runner.artifactMaxBytes,
         });
       } else {
         await report(record, { type: 'started', data: {} });
@@ -579,6 +586,7 @@ export async function createNode({ configPath, registry, accountProvider, runtim
           if (!machine.providers.includes(provider) && (!config.providers || config.providers.includes(provider))) machine.providers.push(provider);
         }
         machine.providers = machine.providers.filter(provider => registry.find({ harness: { provider, model: 'discovery' }, requirements: {}, policy: {} }, machine));
+        await ciCache?.init();
         await enroll();
         // Machine-scoped integrations (the account pool) can only open once the machine ID is known.
         if (typeof accountProvider.prepare === 'function') {

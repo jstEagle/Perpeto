@@ -15,6 +15,8 @@ import { HubMessaging } from './messaging.js';
 import { Pacing, accountUsage, displayText } from './pacing.js';
 import { Sessions, sessionsRoute } from './sessions.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
+import { HubPipelines } from './ci/pipelines.js';
+import { runnerInfo } from './ci/runners.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings, gitIdentity } from './errors.js';
 
 const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
@@ -79,6 +81,8 @@ export class Hub {
     this.store.onRollback = () => { this.signals = { work: [], machines: new Set(), events: false }; };
     this.intake = new Intake(this); this.workflows = new Workflows(this); this.observation = new Observation(this); this.agentMessaging = new HubMessaging(this);
     this.pacing = new Pacing(this); this.sessions = new Sessions(this);
+    // CI pipeline runs, runner pools, bounded logs and artifacts (apps/hub/src/ci).
+    this.pipelines = new HubPipelines(this);
     try {
       try {
         const stat = lstatSync(config.ownerTokenPath);
@@ -328,6 +332,7 @@ export class Hub {
           this.store.put(kind, value); this.emit(`${kind}.requeued`, kind, value, { attempt: value.attempt });
           if (kind === 'assignment') this.observation.assignment(value); changed = true;
         }
+        await this.pipelines.tick(time);
       });
       if (changed) this.notify();
       // Retries waiting out a notBefore become leasable without any write; wake their machines when they are due.
@@ -389,7 +394,7 @@ export class Hub {
     return value;
   }
   cancelWork(kind, value) {
-    if (active(value)) {
+    if (active(value) && value.machineId) {
       this.store.put('cancellation', { id: `${kind}:${value.id}:${value.attempt}`, kind, entityId: value.id,
         machineId: value.machineId, attempt: value.attempt, leaseExpiresAt: value.leaseExpiresAt });
     }
@@ -397,6 +402,7 @@ export class Hub {
     this.store.put(kind, value); this.emit(`${kind}.cancelled`, kind, value);
     if (kind === 'assignment') this.observation.assignment(value);
     if (kind === 'job' && value.delivery) this.delivery.record(value, { status: 'cancelled' });
+    if (kind === 'job') this.pipelines.onCancel(value);
   }
   cancellationAck(kind, entityId, auth, body) {
     if (!Number.isSafeInteger(body.attempt)) return null;
@@ -489,6 +495,8 @@ export class Hub {
           nonblank(value.configHash, 'job configHash'); value.artifacts ??= [];
           // CI for a project whose repository lives on the hub fetches its revision from the hub, from any machine.
           if (!previous && hubRepository(this.store, value)) Object.assign(value, servedFromHub(value, this.store.need('project', run.projectId).repo));
+          // A ci node naming a repository pipeline runs it as a pipeline run; this job reports its outcome.
+          if (!previous && value.pipeline) this.pipelines.adopt(value);
         }
       }
       this.store.put(kind, value); this.emit(`${kind}.updated`, kind, value, { status: value.status });
@@ -524,8 +532,10 @@ export class Hub {
       const held = this.store.held(kind, machine.id).filter(value => Date.parse(value.leaseExpiresAt) > this.clock()).length;
       let available = Math.max(0, capacity - held);
       full[kind] = available === 0;
+      // CI jobs fill the machine's runner pools, and projects take turns (ci/runners.js).
+      const slots = kind === 'job' ? this.pipelines.runners.slots(machine) : null;
       // Queued work in pages, oldest first, stopping as soon as this lease is served.
-      for (let after = 0, page; remaining && available && (page = this.store.queuedPage(kind, after, 200)).length;) {
+      for (let after = 0, page; remaining && available && (page = kind === 'job' ? (after ? [] : this.pipelines.runners.queued()) : this.store.queuedPage(kind, after, 200)).length;) {
         for (const { rowid, value } of page) {
           after = rowid;
           if (!remaining || !available) break;
@@ -541,6 +551,7 @@ export class Hub {
           // Engine retries carry a backoff; the engine has no clock, so the hub enforces it here.
           if (value.notBefore && Date.parse(value.notBefore) > this.clock()) continue;
           if (value.releasedBy?.machineId === machine.id && Date.parse(value.releasedBy.until) > this.clock()) continue;
+          if (slots && !slots.take(value)) continue;
           if (paced) paced.held++;
           value.status = 'leased'; value.machineId = machine.id; delete value.releasedBy;
           value.leaseExpiresAt = new Date(this.clock() + this.config.leaseDurationMs).toISOString();
@@ -760,12 +771,14 @@ export class Hub {
       const machine = this.store.need('machine', auth.machineId);
       if (path === '/nodes/lease') return reply(this.lease(machine, body));
       object(body.capacity, 'capacity'); object(body.running, 'running');
-      const profile = () => JSON.stringify([machine.capacity, machine.running, machine.status, machine.labels, machine.providers]); const before = profile();
+      const profile = () => JSON.stringify([machine.capacity, machine.running, machine.status, machine.labels, machine.providers, machine.runner?.pools, machine.runner?.labels]); const before = profile();
       const wasOffline = machine.status === 'offline';
       for (const key of ['maxAgents', 'maxJobs']) integer(body.capacity[key], key, 0, 100000);
       for (const key of ['agents', 'jobs']) integer(body.running[key], key, 0, 100000);
       if (body.providers !== undefined) strings(body.providers, 'providers');
       if (body.labels !== undefined) strings(body.labels, 'labels');
+      // Runner pools, runner labels and dependency cache size, separate from agent slots.
+      if (body.runner !== undefined) machine.runner = runnerInfo(body.runner);
       requireValue(body.status === undefined || ['online', 'draining'].includes(body.status), 'Invalid heartbeat status.');
       machine.capacity = { maxAgents: body.capacity.maxAgents, maxJobs: body.capacity.maxJobs }; machine.running = { agents: body.running.agents, jobs: body.running.jobs };
       machine.providers = body.providers ?? machine.providers; machine.labels = body.labels ?? machine.labels; machine.lastHeartbeatAt = this.now(); machine.status = machine.drainRequested || body.status === 'draining' ? 'draining' : 'online';
@@ -841,6 +854,8 @@ export class Hub {
     const observed = sessionsRoute(this, method, segments, query, body, auth);
     if (observed) return reply(observed);
     if (path === '/pacing/settings' && method === 'PUT') return reply(this.pacing.updateSettings(body));
+    const ci = await this.pipelines.route(method, segments, query, body);
+    if (ci) return ci;
     if (path === '/jobs' && method === 'GET') {
       const runId = query.get('runId'); const projectId = query.get('projectId');
       const jobs = runId ? this.store.forRun('job', runId).filter(value => !projectId || value.projectId === projectId) : projectId ? this.store.forProject('job', projectId) : this.store.list('job');
@@ -856,13 +871,13 @@ export class Hub {
         // The leasing machine fetches exactly its job's revision; the hub picks the repository, never the caller.
         const value = auth.kind === 'node' ? this.fenced(kind, entityId, auth, body, true) : this.store.need(kind, entityId);
         if (auth.kind === 'node' && Number(query.get('attempt')) !== value.attempt) fail(409, 'lease_lost', 'The current attempt is required.');
-        const repository = value.source?.kind === 'hub-bundle' ? hubRepository(this.store, value) : null;
+        const repository = value.source?.kind === 'hub-bundle' ? this.pipelines.repository(value) ?? hubRepository(this.store, value) : null;
         if (!repository) fail(404, 'NOT_FOUND', 'This job has no hub source.');
         return { status: 200, body: null, bundle: { repository, revision: value.revision, jobId: value.id } };
       }
       if (kind === 'job' && action === 'log' && method === 'GET') {
         if (auth.kind === 'node') this.fenced(kind, entityId, auth, body, true); else if (!this.store.find(kind, entityId)) fail(404, 'NOT_FOUND', `${kind} not found.`);
-        return reply({ jobId: entityId, chunks: this.store.logs(entityId) });
+        return reply(this.pipelines.ci.logPage(entityId, query));
       }
       if (action === 'cancel' && kind === 'job' && method === 'POST') {
         const value = this.store.need(kind, entityId);
@@ -902,7 +917,7 @@ export class Hub {
         const acknowledgement = this.cancellationAck(kind, entityId, auth, body);
         if (acknowledgement) return acknowledgement;
         const value = this.fenced(kind, entityId, auth, body); object(body.data ?? {}, 'event data');
-        const types = kind === 'assignment' ? ['started', 'progress', 'usage', 'message', 'delivered', 'completed', 'failed', 'workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'] : ['started', 'log', 'step', 'completed', 'gate.result'];
+        const types = kind === 'assignment' ? ['started', 'progress', 'usage', 'message', 'delivered', 'completed', 'failed', 'workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'] : ['started', 'log', 'step', 'artifact', 'completed', 'gate.result'];
         requireValue(types.includes(body.type), 'Invalid work event type.');
         let data = body.data ?? {};
         if (['workitem.moved', 'agent.delegated', 'agent.messaged', 'gate.result'].includes(body.type)) {
@@ -918,7 +933,9 @@ export class Hub {
           return reply({ accepted: true, message: sent.message });
         }
         if (body.type === 'delivered') return reply({ accepted: true, delivered: this.agentMessaging.delivered(value, data) });
+        if (kind === 'job' && body.type === 'artifact') return reply({ accepted: true, artifact: this.pipelines.ci.artifactChunk(value, data) });
         if (body.type === 'started') value.status = 'running';
+        if (kind === 'job') this.pipelines.jobEvent(value, body.type);
         // The account an agent runs on, for pacing's agents-per-account count; only an account of this machine.
         if (kind === 'assignment' && body.type === 'progress' && data.interaction === 'account.bound' && typeof data.accountId === 'string') {
           const account = this.store.get('account', data.accountId);
@@ -928,7 +945,8 @@ export class Hub {
         if (kind === 'job' && body.type === 'log') {
           // Blank lines are ordinary CI output; NUL is replaced rather than failing the step.
           requireValue(typeof data.chunk === 'string' && data.chunk.length > 0 && data.chunk.length <= this.config.requestMaxBytes, 'Invalid log chunk.');
-          this.store.log(value.id, data.chunk.replaceAll('\0', '\uFFFD'), this.now(), id('log')); value.logRef = `/api/v1/jobs/${value.id}/log`;
+          // Bounded per job and redacted again on the hub (ci/store.js); also sets logRef.
+          this.pipelines.ci.log(value, data.chunk, this.now(), id('log'));
         }
         const final = ['completed', 'failed'].includes(body.type);
         if (final) {
@@ -967,6 +985,8 @@ export class Hub {
           }
         }
         this.store.put(kind, value);
+        if (final && kind === 'job' && value.pipelineRunId) await this.pipelines.finished(value, data);
+        if (final && kind === 'assignment') this.pipelines.onHead(value);
         if (refused) this.emit('assignment.result-refused', kind, value, { reason: refused });
         if (final && value.architectRequestId) await this.workflows.completed(value, data);
         if (kind === 'assignment' && (final || body.type === 'started')) this.observation.assignment(value);

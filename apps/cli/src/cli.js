@@ -6,6 +6,7 @@ import { enrollCode, join, owner, request, decide, rotateToken, repin, hubTls } 
 import { exposeTailscale } from './tailscale.js';
 import { doctor } from './doctor.js';
 import { service } from './service.js';
+import { ci } from './ci.js';
 
 export const help = `Usage: perpeto <command> [--dir <data-directory>]
 
@@ -23,6 +24,10 @@ node repin <fingerprint | join-code>
 machines
 machines revoke <id>
 service install|uninstall [hub|node] [--dry-run]
+ci run <pipeline> [--rev <commit>] [--ref <branch>] [--project <id or name>]
+ci status [--project <id or name>]
+ci logs <jobId> [--follow]
+ci validate [--file <path>]
 sessions
 doctor
 status
@@ -32,6 +37,7 @@ A hub stays on loopback unless --tls gives it HTTPS; hub expose --tailscale is t
 The join command printed by hub enroll-code is a one-time secret that expires; it pins the hub's certificate.
 --observe joins an observe-only node: it watches this Mac's running T3 Code read-only (default ~/.t3/userdata) and runs no agents or CI.
 Service --dry-run prints generated files without writing or loading them.
+ci validate checks .perpeto/ci.json (or --file) offline; ci run without --rev runs the default branch head the hub holds.
 The service manager uses hub/node run internally for foreground execution.`;
 export async function main(args, { print = console.log, fetchImpl = fetch } = {}) {
   const parsed = parseArgs(args);
@@ -83,6 +89,8 @@ export async function main(args, { print = console.log, fetchImpl = fetch } = {}
       throw error;
     });
     print(JSON.stringify(result));
+  } else if (group === 'ci') {
+    return await ci(action, dir, positionals, flags, { print, fetchImpl });
   } else if (group === 'service') {
     const results = await service(action, dir, positionals[0], { dryRun: flags['dry-run'] });
     for (const result of results) print(flags['dry-run'] ? `${result.file}\n${result.contents}` : `${result.state}: ${result.file}`);

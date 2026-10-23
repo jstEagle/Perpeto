@@ -39,6 +39,7 @@ import type {
   SessionsSummary,
   SessionsWindow,
 } from './types';
+import type { CiArtifact, CiInsights, FlakyJob, JobLogPage, NewPipelineRun, PipelineList, PipelineRun, PipelineRunQuery, RunnersView } from './ci';
 
 export interface EventQuery {
   runId?: string;
@@ -148,6 +149,23 @@ export interface HubApi {
   getJob(id: string): Promise<Job>;
   getJobLog(id: string): Promise<string>;
   mergeQueue(projectId: string): Promise<MergeEntry[]>;
+
+  /** Pipelines from the repository's .perpeto/ci.json or the project config; `null` when the hub has no CI pipelines. */
+  ciPipelines(projectId: string): Promise<PipelineList | null>;
+  ciRuns(query: PipelineRunQuery): Promise<PipelineRun[]>;
+  ciRun(id: string): Promise<PipelineRun>;
+  startCiRun(input: NewPipelineRun): Promise<PipelineRun>;
+  cancelCiRun(id: string): Promise<PipelineRun>;
+  /** Retry the run's failed jobs, or one job by key. */
+  retryCiRun(id: string, job?: string): Promise<PipelineRun>;
+  /** One page of a job's log after a cursor. */
+  ciJobLog(jobId: string, after?: number, limit?: number): Promise<JobLogPage>;
+  ciArtifacts(jobId: string): Promise<CiArtifact[]>;
+  ciArtifact(jobId: string, artifactId: string): Promise<Blob>;
+  /** Machines as CI runners, by pool; `null` when the hub has no runner route. */
+  ciRunners(): Promise<RunnersView | null>;
+  ciFlaky(projectId: string): Promise<FlakyJob[]>;
+  ciInsights(projectId: string, window?: string): Promise<CiInsights>;
 
   runMetrics(runId: string, window?: MetricsWindow): Promise<MetricsSnapshot>;
   projectMetrics(projectId: string, window?: MetricsWindow): Promise<MetricsSnapshot>;

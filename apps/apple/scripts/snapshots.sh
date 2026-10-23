@@ -11,6 +11,8 @@
 #   appearance for a normal run.
 #        scripts/snapshots.sh --pacing [output-dir]
 #   captures Accounts and Pacing in light and dark (default: screenshots/pacing).
+#        scripts/snapshots.sh --ci [output-dir]
+#   captures the CI screen and two pipeline runs in light and dark (default: screenshots/ci).
 #        scripts/snapshots.sh --observe [output-dir]
 #   captures the observe-only demo (no projects: Home, Sessions, Accounts,
 #   Pacing, Usage, Machines) in light and dark (default: screenshots/observe).
@@ -29,7 +31,7 @@ if [ "${1:-}" = "--observe" ]; then
   ls "$OUT"
   exit 0
 fi
-if [ "${1:-}" = "--themes" ] || [ "${1:-}" = "--pacing" ]; then
+if [ "${1:-}" = "--themes" ] || [ "${1:-}" = "--pacing" ] || [ "${1:-}" = "--ci" ]; then
   MODE_FLAG="$1"
   OUT="${2:-$ROOT/screenshots/${MODE_FLAG#--}}"
   "$ROOT/scripts/build-app.sh" debug >/dev/null

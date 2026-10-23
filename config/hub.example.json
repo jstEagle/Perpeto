@@ -65,5 +65,16 @@
         "weekly": 2
       }
     }
+  },
+  "ci": {
+    "logMaxBytesPerJob": 5242880,
+    "logRetentionMs": 1209600000,
+    "artifactsPath": "../.perpeto/hub/ci-artifacts",
+    "artifactMaxBytesPerJob": 209715200,
+    "artifactRetentionMs": 604800000,
+    "runRetentionMs": 2592000000,
+    "redactPatterns": [],
+    "scheduleTriggers": true,
+    "pullRequestTriggers": true
   }
 }

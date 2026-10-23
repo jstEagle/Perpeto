@@ -19,6 +19,7 @@ Start with the [quick start](../README.md#run-locally), [build status](product/s
 | [Install](guides/install.md) | Current CLI setup, lifecycle, enrollment, credentials and service instructions; real service loading unverified. |
 | [Remote machines](guides/remote-machines.md) | Implemented Tailscale/pinned-HTTPS join and rotation commands; real LAN/tailnet acceptance pending. |
 | [Messaging](guides/messaging.md) | Runtime-hosted CLI/MCP setup and recorded local live Codex smoke. |
+| [CI pipelines](guides/ci.md) | `.perpeto/ci.json` schema, triggers, runner pools and cache; loopback multi-node e2e only. |
 | [Prerequisites](guides/prerequisites.md) | Foundation-era setup inventory; harness and push-access claims are historical. Use Build status for current evidence. |
 | [T3 Code study](research/t3-code.md) | Source research at a pinned revision; proposals, not runtime acceptance. |
 | [Brand](../brand/README.md) | Mono UI selected; other brand choices remain provisional. Restyle wording predates the Apple update. |
@@ -48,6 +49,7 @@ All Markdown handoffs are listed here. Later addenda and commits supersede earli
 | [CLI](handoffs/perpeto-cli.md) | Installer/lifecycle and review fixes; real local hub, service managers stubbed. |
 | [Web app](handoffs/web-app.md) | Client, maps, storage, Chromium checks and seeded real-hub screens; cookie/event requests subsequently implemented. |
 | [Apple app](handoffs/apple-app.md) | Mono macOS/iOS/iPadOS client; tests, local-hub round trip, Mac captures and simulator builds/captures. Physical devices pending. |
+| [CI runners and pipelines](handoffs/ci-runners.md) | Repository pipelines, pipeline runs, runner pools, cache, logs, artifacts, CLI and clients; two loopback nodes, no physical second machine. |
 | [Design tokens](handoffs/design-tokens.md) | Selected Mono generator, contrast tests and specimen captures; original client-restyle follow-ups are historical. |
 | [Live acceptance run 1](handoffs/live-acceptance-1.md) | Real Codex workflow merged sample code locally; failures, fixes, screens and isolation follow-up. Its “not merged” branch notes are historical on this main. |
 

@@ -997,12 +997,14 @@ function buildPrompt(s, item, node, role) {
 
 function createJob(ctx, item, node) {
   const { s, at } = ctx;
-  const steps = structuredClone(node.config.steps);
+  const steps = structuredClone(node.config.steps ?? []);
   const requirements = structuredClone(node.config.requirements);
+  // A pipeline ci node names a repository pipeline; the hub runs it and reports one job result.
+  const pipeline = node.config.pipeline;
   const job = {
     id: nextId(ctx, 'job', 'job'), projectId: s.projectId, runId: s.runId, workItemId: item.id, nodeId: node.id,
-    repo: s.repo.url ?? s.repo.localPath, revision: item.headSha, steps, requirements,
-    status: 'queued', ...retryFields(ctx, item), artifacts: [], configHash: sha256(canonicalJson({ steps, requirements })), createdAt: at, updatedAt: at,
+    repo: s.repo.url ?? s.repo.localPath, revision: item.headSha, steps, requirements, ...(pipeline ? { pipeline } : {}),
+    status: 'queued', ...retryFields(ctx, item), artifacts: [], configHash: sha256(canonicalJson(pipeline ? { steps, requirements, pipeline } : { steps, requirements })), createdAt: at, updatedAt: at,
   };
   insert(ctx, 'jobs', job);
   activate(ctx, item, { jobId: job.id });

@@ -7,8 +7,9 @@ const commands = {
   node: { join: ['code', 'code-file', 'labels', 'name', 'observe', 't3-dir', 'no-titles'], start: [], run: [], stop: [], status: [], drain: [], 'rotate-token': [], repin: [] },
   machines: { revoke: [] },
   service: { install: ['dry-run'], uninstall: ['dry-run'] },
+  ci: { run: ['rev', 'project', 'ref'], status: ['project'], logs: ['follow'], validate: ['file'] },
 };
-const booleans = new Set(['show-owner-token', 'show-code', 'dry-run', 'help', 'tls', 'tailscale', 'off', 'observe', 'no-titles']);
+const booleans = new Set(['show-owner-token', 'show-code', 'dry-run', 'help', 'tls', 'tailscale', 'off', 'observe', 'no-titles', 'follow']);
 export function parseArgs(args) {
   const words = []; const flags = {};
   for (let i = 0; i < args.length; i++) {
@@ -48,6 +49,9 @@ export function parseArgs(args) {
     } else if (group === 'machines' || group === 'hub' && action === 'decide') {
       if (positionals.length !== (group === 'machines' ? 1 : 2) || !/^[a-zA-Z0-9_-]+$/.test(positionals[0]) ||
         (group === 'hub' && !['pass', 'fail'].includes(positionals[1]))) throw new Error('Provide an ID and, for hub decide, pass or fail.');
+    } else if (group === 'ci') {
+      const expected = ['run', 'logs'].includes(action) ? 1 : 0;
+      if (positionals.length !== expected || (expected && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(positionals[0]))) throw new Error(action === 'run' ? 'Use perpeto ci run <pipeline>.' : action === 'logs' ? 'Use perpeto ci logs <jobId>.' : 'Unexpected argument.');
     } else if (group === 'service') {
       if (positionals.length > 1 || (positionals[0] && !['hub', 'node'].includes(positionals[0]))) throw new Error('Service role must be hub or node.');
     } else if (positionals.length) throw new Error('Unexpected argument.');

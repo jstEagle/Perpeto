@@ -35,6 +35,8 @@ import type {
   WorkflowTemplate,
 } from './types';
 import { libraryTemplates } from './library';
+import { DemoCi } from './ci-fixtures';
+import type { NewPipelineRun, PipelineRunQuery } from './ci';
 import { diffGraphs } from '../workflow/diff';
 import { validateGraph } from '../workflow/validate';
 import { COL, buildTemplate } from '../workflow/templates';
@@ -84,6 +86,7 @@ export class DemoHub implements HubApi {
   readonly scenario: DemoScenario;
   #state: DemoState;
   #sessions: Session[];
+  #ci: DemoCi;
   #listeners = new Set<(event: HubEvent) => void>();
   #ticker: ReturnType<typeof setInterval> | null = null;
   #tick = 0;
@@ -91,6 +94,7 @@ export class DemoHub implements HubApi {
   constructor(now = Date.now(), scenario: DemoScenario = 'full') {
     this.scenario = scenario;
     this.#state = createDemoState(now);
+    this.#ci = new DemoCi(now);
     if (scenario === 'observe') {
       // Observe only: nothing but machines, subscriptions and the sessions they watch.
       Object.assign(this.#state, { projects: [], versions: [], runs: [], workItems: [], assignments: [], jobs: [], jobLogs: {}, mergeQueue: [], usage: [], events: [], channels: {}, messages: [], metrics: {} });
@@ -523,6 +527,63 @@ export class DemoHub implements HubApi {
   async mergeQueue(projectId: string) {
     await latency();
     return clone(this.#state.mergeQueue.filter((m) => m.projectId === projectId));
+  }
+
+  async ciPipelines(projectId: string) {
+    await latency();
+    if (this.scenario === 'observe') return null;
+    this.#project(projectId);
+    return this.#ci.pipelines(projectId);
+  }
+  async ciRuns(query: PipelineRunQuery) {
+    await latency();
+    return this.scenario === 'observe' ? [] : this.#ci.runs(query);
+  }
+  async ciRun(id: string) {
+    await latency(60);
+    return this.#ci.run(id);
+  }
+  async startCiRun(input: NewPipelineRun) {
+    await latency();
+    const run = this.#ci.start(input);
+    this.#emit('pipeline-run.created', { kind: 'pipeline-run', id: run.id }, { pipeline: run.pipeline }, { projectId: run.projectId });
+    return run;
+  }
+  async cancelCiRun(id: string) {
+    await latency();
+    const run = this.#ci.cancel(id);
+    this.#emit('pipeline-run.cancelled', { kind: 'pipeline-run', id }, {}, { projectId: run.projectId });
+    return run;
+  }
+  async retryCiRun(id: string, job?: string) {
+    await latency();
+    const run = this.#ci.retry(id, job);
+    this.#emit('pipeline-run.retried', { kind: 'pipeline-run', id }, job ? { job } : {}, { projectId: run.projectId });
+    return run;
+  }
+  async ciJobLog(jobId: string, after?: number, limit?: number) {
+    await latency(60);
+    return this.#ci.log(jobId, after, limit);
+  }
+  async ciArtifacts(jobId: string) {
+    await latency(60);
+    return this.#ci.artifacts(jobId);
+  }
+  async ciArtifact(jobId: string, artifactId: string) {
+    await latency(60);
+    return this.#ci.artifact(jobId, artifactId);
+  }
+  async ciRunners() {
+    await latency();
+    return this.scenario === 'observe' ? { runners: [], pools: [] } : this.#ci.runners();
+  }
+  async ciFlaky(projectId: string) {
+    await latency();
+    return this.#ci.flaky(projectId);
+  }
+  async ciInsights(projectId: string, window = '7d') {
+    await latency();
+    return this.#ci.insights(projectId, window);
   }
 
   async runMetrics(runId: string): Promise<MetricsSnapshot> {

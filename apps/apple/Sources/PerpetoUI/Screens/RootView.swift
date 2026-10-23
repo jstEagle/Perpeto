@@ -380,6 +380,7 @@ struct ProjectScreen: View {
         case .work: WorkScreen(store: store, project: project, state: state)
         case .messages: MessagesScreen(store: store, project: project, state: state)
         case .mergeQueue: MergeQueueScreen(store: store, project: project, state: state)
+        case .ci: CIScreen(store: store, navigator: navigator, project: project)
         }
     }
 }

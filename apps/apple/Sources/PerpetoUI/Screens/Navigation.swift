@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Project-level screens, in contract order.
 public enum ProjectSection: String, CaseIterable, Hashable, Sendable, Identifiable {
-    case overview, workflows, runs, work, messages, mergeQueue
+    case overview, workflows, runs, work, messages, mergeQueue, ci
 
     public var id: String { rawValue }
 
@@ -16,6 +16,7 @@ public enum ProjectSection: String, CaseIterable, Hashable, Sendable, Identifiab
         case .work: "Work"
         case .messages: "Messages"
         case .mergeQueue: "Merge queue"
+        case .ci: "CI"
         }
     }
 
@@ -27,6 +28,7 @@ public enum ProjectSection: String, CaseIterable, Hashable, Sendable, Identifiab
         case .work: "checklist"
         case .messages: "bubble.left"
         case .mergeQueue: "arrow.triangle.branch"
+        case .ci: "checkmark.seal"
         }
     }
 
@@ -96,6 +98,8 @@ public final class Navigator {
     public var route: Route?
     public var selectedRunId: String?
     public var selectedWorkflowId: String?
+    /// Pipeline run open on the CI screen.
+    public var selectedPipelineRunId: String?
     /// Set by ⌘N to open the architect prompt.
     public var composeWorkflowRequest = 0
     /// Opens the hand editor for the workflow version on screen.
