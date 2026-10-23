@@ -273,6 +273,8 @@ export class Placement {
         let best = null;
         for (const other of candidates()) {
           if (other.view.effective[slot] - other.view.held[slot] - other.promised <= 0 || !fits(other.machine, value, kind)) continue;
+          // CI jobs also need the runner pool and labels they ask for, or that machine is no home at all.
+          if (kind === 'job' && this.hub.pipelines && !this.hub.pipelines.runners.fits(other.machine, value)) continue;
           // A machine that handed this item back is not offered it again for a while, so it is no better home.
           if (value.releasedBy?.machineId === other.machine.id && Date.parse(value.releasedBy.until) > now) continue;
           const theirs = score(other.machine, { ...other.view, held: { ...other.view.held, [slot]: other.view.held[slot] + other.promised } }, kind, context);
