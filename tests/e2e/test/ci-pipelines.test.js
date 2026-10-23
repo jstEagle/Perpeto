@@ -38,6 +38,8 @@ async function addNode(t, factory, name, config) {
   await writeFile(join(root, 'enrollment-code'), enrollment.code, { mode: 0o600 });
   await writeFile(join(root, 'node.json'), JSON.stringify({ hubUrl: factory.url, name, dataDir: './data', enrollmentCodeFile: './enrollment-code',
     labels: ['e2e'], providers: [], fake: {}, executorPackages: [], accounts: {},
+    // The host's real load must not shrink test capacity; fleet tests inject their own health.
+    health: { enabled: false },
     timing: { heartbeatMs: 200, renewMs: 1000, requestMs: 5000, pollIdleMs: 20, backoffMinMs: 20, backoffMaxMs: 200 }, ...config }));
   const node = await createNode({ configPath: join(root, 'node.json'), registry: new ExecutorRegistry().register({ kind: 'none', canRun: () => false, run: async () => ({ outcome: 'failure', summary: 'unused' }) }) });
   await node.start();

@@ -69,12 +69,13 @@ struct Snapshotter {
             return
         }
         guard let project = store.factory.projects.first?.id else { return }
-        let shots = LaunchArgument.string(after: "--fleet").map { fleetShots(prefix: $0) }
-            ?? LaunchArgument.string(after: "--pacing").map { pacingShots(prefix: $0) }
-            ?? LaunchArgument.string(after: "--ci").map { ciShots(project, prefix: $0) }
-            ?? LaunchArgument.string(after: "--storage").map { prefix in [("\(prefix)storage", { tall(height: 2200); navigator.route = .factory(.storage) })] }
-            ?? LaunchArgument.string(after: "--themes").map { themeShots(project, prefix: $0) }
-            ?? (store.isDemo ? demoShots(project) : hubShots(project))
+        let shots: [(String, () -> Void)]
+        if let prefix = LaunchArgument.string(after: "--fleet") { shots = fleetShots(prefix: prefix) }
+        else if let prefix = LaunchArgument.string(after: "--pacing") { shots = pacingShots(prefix: prefix) }
+        else if let prefix = LaunchArgument.string(after: "--ci") { shots = ciShots(project, prefix: prefix) }
+        else if let prefix = LaunchArgument.string(after: "--storage") { shots = storageShots(prefix: prefix) }
+        else if let prefix = LaunchArgument.string(after: "--themes") { shots = themeShots(project, prefix: prefix) }
+        else { shots = store.isDemo ? demoShots(project) : hubShots(project) }
         try? await Task.sleep(for: .seconds(1.5))
         for (name, show) in shots {
             show()
@@ -134,6 +135,10 @@ struct Snapshotter {
     }
 
     /// Subscriptions and pacing, for reviewing them in each appearance.
+    private func storageShots(prefix: String) -> [(String, () -> Void)] {
+        [("\(prefix)storage", { tall(height: 2200); navigator.route = .factory(.storage) })]
+    }
+
     private func pacingShots(prefix: String) -> [(String, () -> Void)] {
         [
             ("\(prefix)accounts", { tall(); navigator.route = .factory(.accounts) }),

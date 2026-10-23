@@ -76,6 +76,8 @@ export async function startFactory(t, { executor, hub: hubConfig = {}, node: nod
   const nodePath = join(nodeDir, 'node.json');
   await writeFile(nodePath, JSON.stringify({ hubUrl: url, name: 'e2e-machine', dataDir: './data', enrollmentCodeFile: './enrollment-code',
     labels: ['e2e'], capacity: { maxAgents: 2, maxJobs: 1 }, providers: [], fake: {}, executorPackages: [], accounts: {},
+    // The host's real load must not shrink test capacity; fleet tests inject their own health.
+    health: { enabled: false },
     timing: { heartbeatMs: 200, renewMs: 1000, requestMs: 5000, pollIdleMs: 20, backoffMinMs: 20, backoffMaxMs: 200 }, ...nodeConfig }));
   const node = await createNode({ configPath: nodePath, registry: new ExecutorRegistry().register(executor), clock });
   await node.start();
