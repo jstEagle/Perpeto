@@ -7,6 +7,7 @@ const commands = {
   node: { join: ['code', 'code-file', 'labels', 'name', 'observe', 't3-dir', 'no-titles'], start: [], run: [], stop: [], status: [], drain: [], 'rotate-token': [], repin: [] },
   machines: { revoke: [] },
   service: { install: ['dry-run'], uninstall: ['dry-run'] },
+  storage: { clean: ['machine', 'dry-run', 'items'] },
 };
 const booleans = new Set(['show-owner-token', 'show-code', 'dry-run', 'help', 'tls', 'tailscale', 'off', 'observe', 'no-titles']);
 export function parseArgs(args) {
@@ -27,8 +28,8 @@ export function parseArgs(args) {
   }
   if (flags.help || words.length === 0) return { help: true };
   const [group, action, ...positionals] = words;
-  const simple = ['doctor', 'status', 'sessions'].includes(group) || group === 'machines' && action === undefined;
-  const allowed = simple ? [] : commands[group]?.[action];
+  const simple = ['doctor', 'status', 'sessions'].includes(group) || (group === 'machines' || group === 'storage') && action === undefined;
+  const allowed = group === 'storage' && action === undefined ? ['machine'] : simple ? [] : commands[group]?.[action];
   if (!allowed || Object.keys(flags).some(key => !['dir', ...allowed].includes(key))) throw new Error('Unknown command or option. Use perpeto --help.');
   if (simple && words.length !== 1) throw new Error('Unexpected argument.');
   if (!simple) {
@@ -50,8 +51,12 @@ export function parseArgs(args) {
         (group === 'hub' && !['pass', 'fail'].includes(positionals[1]))) throw new Error('Provide an ID and, for hub decide, pass or fail.');
     } else if (group === 'service') {
       if (positionals.length > 1 || (positionals[0] && !['hub', 'node'].includes(positionals[0]))) throw new Error('Service role must be hub or node.');
+    } else if (group === 'storage') {
+      if (positionals.length) throw new Error('Unexpected argument.');
+      if (flags.items !== undefined && !flags.items.split(',').every(item => /^sti_[a-f0-9]{20}$/.test(item.trim()))) throw new Error('--items takes storage item ids separated by commas.');
     } else if (positionals.length) throw new Error('Unexpected argument.');
   }
+  if (flags.machine !== undefined && !/^[a-zA-Z0-9_-]{1,200}$/.test(flags.machine)) throw new Error('Invalid machine ID.');
   for (const key of ['port', 'https-port']) if (flags[key] !== undefined && (!/^\d+$/.test(flags[key]) || Number(flags[key]) > 65535)) throw new Error('Invalid port.');
   return { group, action, positionals, flags, dir: resolve(flags.dir ?? defaultDir()) };
 }

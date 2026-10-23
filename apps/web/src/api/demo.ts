@@ -3,6 +3,8 @@ import type { EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQu
 import { createDemoState, DEMO_IDS } from './fixtures';
 import { applyPacingSettings, demoPacing, demoSubscriptions } from './pacing-fixtures';
 import type { DemoState } from './fixtures';
+import { DemoStorage } from './storage-fixtures';
+import type { CleanupRequest, FleetStorage, MachineStorage, StorageCleanup } from './storage';
 import { observeAccounts, observeMachines, observePacing, observeSessions, observeSummary } from './observe-fixtures';
 import type {
   Account,
@@ -87,10 +89,13 @@ export class DemoHub implements HubApi {
   #listeners = new Set<(event: HubEvent) => void>();
   #ticker: ReturnType<typeof setInterval> | null = null;
   #tick = 0;
+  #storage: DemoStorage;
 
   constructor(now = Date.now(), scenario: DemoScenario = 'full') {
     this.scenario = scenario;
     this.#state = createDemoState(now);
+    const named = (id: string, fallback: string) => ({ id, name: this.#state.machines.find((m) => m.id === id)?.name ?? fallback });
+    this.#storage = new DemoStorage(now, { studio: named(DEMO_IDS.studio, 'studio-mac'), linux: named(DEMO_IDS.linux, 'build-linux') });
     if (scenario === 'observe') {
       // Observe only: nothing but machines, subscriptions and the sessions they watch.
       Object.assign(this.#state, { projects: [], versions: [], runs: [], workItems: [], assignments: [], jobs: [], jobLogs: {}, mergeQueue: [], usage: [], events: [], channels: {}, messages: [], metrics: {} });
@@ -485,6 +490,31 @@ export class DemoHub implements HubApi {
     this.#state.pacingUpdatedAt = Date.now();
     this.#emit('pacing.updated', { kind: 'pacing', id: 'pacing' }, {});
     return this.pacing();
+  }
+
+  async storage(): Promise<FleetStorage | null> {
+    await latency();
+    if (this.scenario === 'observe') return null;
+    return this.#storage.fleet();
+  }
+  async machineStorage(machineId: string): Promise<MachineStorage> {
+    await latency();
+    return this.#storage.machine(machineId);
+  }
+  async requestStorageCleanup(machineId: string, request: CleanupRequest): Promise<StorageCleanup> {
+    await latency();
+    const cleanup = this.#storage.request(machineId, request);
+    this.#emit('storage.cleanup-requested', { kind: 'machine', id: machineId }, { cleanupId: cleanup.id, mode: cleanup.mode });
+    return cleanup;
+  }
+  async requestStorageScan(machineId: string): Promise<void> {
+    await latency();
+    this.#storage.scan(machineId);
+    this.#emit('storage.scanned', { kind: 'machine', id: machineId }, {});
+  }
+  async storageCleanup(machineId: string, cleanupId: string): Promise<StorageCleanup> {
+    await latency(60);
+    return this.#storage.cleanup(machineId, cleanupId);
   }
 
   async listSessions(query: SessionQuery = {}) {

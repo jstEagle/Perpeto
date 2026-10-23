@@ -43,6 +43,7 @@ Deployable surfaces live in `apps/`; libraries they compose live in `packages/` 
 | `packages/accounts` | `@perpeto/accounts` | Per-machine subscription pool and hot swapping, in the spirit of CCswap. |
 | `packages/pacer` | `@perpeto/pacer` | Pure subscription pacer: plans agents per provider and account from usage windows, learned burn rates, slots and ready work. No I/O. |
 | `packages/t3-executor` | `@perpeto/t3-executor` | Executor that drives a local T3 environment: threads, turns, events, token usage, subagent policy. |
+| `packages/janitor` | `@perpeto/janitor` | Storage janitor: bounded inventory of worktrees, workspaces, build artifacts and caches; retention policy; journaled, re-checked deletion. Injectable fs and exec. |
 | `packages/t3-observer` | `@perpeto/t3-observer` | Read-only observer of an operator's own running T3 Code: sessions, per-turn usage and subscription windows. No hub coupling. |
 | `packages/messaging` | `@perpeto/messaging` | Existing durable messaging store. Shared by the hub and the T3 environment server. |
 | `packages/sdk` | `@perpeto/sdk` | Messaging HTTP client, `perpeto-messages` CLI and MCP stdio server for agents. |
@@ -90,7 +91,8 @@ MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queu
                mergedRevision?, deliveryError?, rejectionKind?: 'conflict'|'ci'|'other' }
 // Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
-               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
+               running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt?,
+               storage?: { state: 'ok'|'low'|'critical', totalBytes?, freeBytes?, freePercent?, reclaimableBytes, attentionCount, scannedAt } }   // from the storage janitor; placement may avoid low/critical machines
 Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt?, plan?: string,
                usage?: { checkedAt, windows: UsageWindow[] },   // percentages and reset times only: never credentials, emails, fingerprints or paths
                source?: 'observed', providerInstanceId? }      // observed: a provider instance of an operator's own T3, reported by an observe-only node
@@ -210,6 +212,7 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /usage?projectId&runId&source=observed|factory&groupBy=provider|model|machine|day|role|source` | Token and agent usage; `source=observed` is usage from operators' own T3 sessions, which has no project |
 | `GET /sessions?machineId&status&provider&since&limit&cursor` | Observed sessions, newest activity first: `{ sessions: Session[], nextCursor? }`; see [observe-only mode](#observe-only-mode) |
 | `GET /sessions/summary?window=1h|24h|7d` | Machines observing, session totals and observed tokens by provider, model, machine and hour |
+| `GET /storage`, `GET /storage/policy`, `GET /machines/:id/storage`, `POST /machines/:id/storage/{scan,cleanup}`, `GET /machines/:id/storage/cleanups/:id` | Storage janitor; see [storage janitor](#storage-janitor) |
 | `GET /owner`, `PATCH /owner` `{ name?, initials? }` | Owner display name and initials (`ownerName` in hub config), also returned by `GET /session` and `/overview` |
 | `GET /overview` | Counts for dashboards plus active/paused `runs` with settings, `intake` and `budgetUsage` |
 | `GET /events?after=<seq>|latest=true|before=<seq>&runId=&limit=` | Event page, always oldest first; `after` returns `{events, nextCursor, hasMore}`, `latest`/`before` add `previousCursor`; the three are mutually exclusive. `Accept: text/event-stream` streams live, also filterable by `runId` |
@@ -243,6 +246,7 @@ Planner `items[].touches?: string[]` survive hub result transport and remain eng
 Enrollment codes come wrapped in a paste-able join code, `pj1_` + base64url `{ url, fingerprint?, code }` (`POST /machines/enrollment-codes` accepts `{ url?, pin? }`). With hub TLS enabled (self-signed, generated on first start), nodes pin the certificate's SHA-256 fingerprint and send nothing to a server with a different one; `GET /tls`, `POST /tls/rotate` and `POST /tls/activate` manage rotation, and heartbeat responses carry `tls.fingerprints` so running nodes follow it. A non-loopback hub without TLS refuses to start (`INSECURE_BIND`) unless `allowInsecureRemote` is set. Tailscale (`perpeto hub expose --tailscale`) is the recommended path between machines.
 
 | `POST /nodes/heartbeat` `{ capacity, running, accounts: Account[], providers, labels }` | Every 10 s. Missing three marks the machine `offline`. Accounts may carry `plan` and `usage` |
+| `POST /nodes/storage` `{ inventory?, summary?, cleanups? }` | Storage inventory and cleanup results; see [storage janitor](#storage-janitor) |
 | `POST /nodes/observations` `{ batchId, source, sessions, removedThreadIds?, usage?, providers?, resync? }` | Observe-only report from the machine's own T3; see [observe-only mode](#observe-only-mode). `batchId` is the idempotency key |
 | `POST /nodes/lease` `{ kinds: ['assignment','job'], max }` | Long-poll up to 25 s. Returns leased assignments and jobs with `leaseExpiresAt` (60 s) |
 | `POST /assignments/:id/renew`, `POST /jobs/:id/renew` | Extend a lease while working |
@@ -307,6 +311,25 @@ ObservedProvider { instanceId, driver, displayName?, plan? /* T3's subscription 
 - `Machine` gains `observe?: { connected, lastObservedAt, serverVersion?, error? }`; the summary counts a machine as observing while it reported a connected T3 within 90 s.
 - `GET /sessions/summary` returns `{ window, machines: [{ machineId, name, online, observing, lastObservedAt?, observeError?, running, waiting, idle, error }], totals: { running, waiting, sessionsActive }, tokens: { byProvider: [{ provider, input, output, cacheRead, cacheWrite }], byModel: [{ model, … }], byMachine: [{ machineId, name, … }], series: [{ at, input, output }] } }`. `idle`, `error` and `sessionsActive` count sessions with activity in the window; `running` and `waiting` count all; `series` has one bucket per hour of the window.
 
+### Storage janitor
+
+Justus asked on 23 October 2026 for Perpeto to keep machines from filling up (his Mac mini reached 98% with 55 GB of simulators, 29 GB of T3 worktrees and orphaned dev servers). Nodes whose config has a `storage` section (`perpeto node join` adds one) run `@perpeto/janitor`; the [storage handoff](../handoffs/storage.md) has the details and limits.
+
+```ts
+StorageItem    { id /* sti_…, stable per kind and path */, kind: 'perpeto-workspace'|'ci-workspace'|'ci-cache'|'perpeto-worktree'|'t3-worktree'|'build-artifact'|'global-cache',
+                 path /* display-safe: ~ and $TMPDIR */, bytes, approximate?, lastModifiedAt, owner: { runId?, assignmentId?, jobId?, threadId?, workItemId? },
+                 gitState?: { branch?, dirty, unpushedCommits, merged? }, reclaimable, action?: 'delete'|'strip', reason, attention?, advisory?, parentId?, hint?, ownedBy?: 'perpeto'|'foreign'|'system' }
+StorageSummary { scannedAt, state: 'ok'|'low'|'critical', disk?: { totalBytes, freeBytes }, truncated, reclaimableBytes, reclaimableByKind, advisoryBytes, attentionCount, staleProcesses, items, top: StorageItem-ish[] /* ≤ 5 */ }
+StorageCleanup { id /* scl_… or auto_… */, machineId, mode: 'dry-run'|'execute', itemIds?, source: 'owner'|'auto', status: 'pending'|'running'|'completed', requestedAt, completedAt?,
+                 result?: { dryRun, freedBytes, actions: { itemId, kind?, path?, action?, bytes, status: 'deleted'|'stripped'|'would-delete'|'would-strip'|'skipped'|'needs-attention'|'failed', reason? }[] } }
+```
+
+- Policy: hub config `storage: { policy, machines: { <id or name>: policy } }`, then the node's own `storage` fields win. Defaults: scan every 15 min, auto-clean on, finished Perpeto workspaces and worktrees kept 24 h, artifacts stripped after 72 h idle, `cleanupForeignWorktrees: false`, low below 15% free (aggressive retention 2 h / 12 h), critical below 5%.
+- Never deleted: dirty or unpushed work (it becomes `attention`), worktrees of unfinished work items (the heartbeat response lists their branches), folders a running assignment, CI job or dev server uses, artifacts Git does not ignore, global caches and processes (advisory only, with the command to run). Foreign (operator T3) worktrees go only when opted in and merged, clean, pushed and idle.
+- Heartbeats carry `storage: StorageSummary` (or `{ pending: true }` before the first scan) and set `Machine.storage`; the response's `storage` holds `{ policy, activeBranches, scan?, cleanups? }`. Nodes post the inventory (largest 400 items plus every attention item) and cleanup results to `POST /nodes/storage`. Owners name items by id only; paths never travel from hub to machine.
+- A `critical` node stops leasing new agent work itself; jobs and running work continue. The hub exposes the state for placement and lists it in `GET /storage` `alerts`.
+- Events: `storage.scanned` `{ machineId, state, items, reclaimableBytes, attentionCount, truncated }`, `storage.cleaned` `{ machineId, cleanupId, mode, source, freedBytes, counts }`, `storage.low` `{ machineId, state, previous, severity }` on each worsening, and `storage.cleanup-requested`.
+
 ## Node executors
 
 ```js
@@ -325,7 +348,7 @@ The node ships a `fake` executor for tests and loads `@perpeto/t3-executor` for 
 
 Both clients follow Perpeto Mono strictly (see [design system](design-system.md)): [brand/README.md](../../brand/README.md), [brand/tokens.css](../../brand/tokens.css) and the Spindle identity in `brand/identity/`. `packages/design-tokens` is the only place clients read colors, type scale, spacing and radii from. No ad-hoc colors, no uppercase microcopy, no numbered eyebrows or tracked-out kickers, no decorative node meshes or gradients. The workflow editor is the one place nodes and edges appear: soft rounded nodes and thin grey edges on a faint dot grid, not a ruled drawing or a sci-fi network.
 
-Primary navigation: Projects → Project (Overview, Workflows, Runs, Work, Messages, Merge queue) and Factory (Machines, Accounts, Usage). Usage and agent counts are always visible at the project level.
+Primary navigation: Projects → Project (Overview, Workflows, Runs, Work, Messages, Merge queue) and Factory (Machines, Accounts, Usage, Storage). Usage and agent counts are always visible at the project level.
 
 ## Scale target
 

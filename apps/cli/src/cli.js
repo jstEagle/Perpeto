@@ -6,6 +6,7 @@ import { enrollCode, join, owner, request, decide, rotateToken, repin, hubTls } 
 import { exposeTailscale } from './tailscale.js';
 import { doctor } from './doctor.js';
 import { service } from './service.js';
+import { showStorage, cleanStorage } from './storage.js';
 
 export const help = `Usage: perpeto <command> [--dir <data-directory>]
 
@@ -24,6 +25,8 @@ machines
 machines revoke <id>
 service install|uninstall [hub|node] [--dry-run]
 sessions
+storage [--machine <id>]
+storage clean [--machine <id>] [--dry-run] [--items <ids>]
 doctor
 status
 
@@ -32,6 +35,7 @@ A hub stays on loopback unless --tls gives it HTTPS; hub expose --tailscale is t
 The join command printed by hub enroll-code is a one-time secret that expires; it pins the hub's certificate.
 --observe joins an observe-only node: it watches this Mac's running T3 Code read-only (default ~/.t3/userdata) and runs no agents or CI.
 Service --dry-run prints generated files without writing or loading them.
+storage clean asks machines to delete what their retention policy marks reclaimable (or only --items); --dry-run previews it.
 The service manager uses hub/node run internally for foreground execution.`;
 export async function main(args, { print = console.log, fetchImpl = fetch } = {}) {
   const parsed = parseArgs(args);
@@ -96,6 +100,9 @@ export async function main(args, { print = console.log, fetchImpl = fetch } = {}
     for (const machine of summary.machines) print(`${machine.name}: ${machine.observing ? 'observing' : machine.online ? 'online, not observing' : 'offline'}; ${machine.running} running, ${machine.waiting} waiting`);
     const tokens = summary.tokens.byProvider.map(item => `${item.provider} ${item.input + item.output} in+out`).join(', ');
     print(`Active sessions (24 h): ${summary.totals.sessionsActive}. Tokens (24 h): ${tokens || 'none'}`);
+  } else if (group === 'storage') {
+    if (action === 'clean') await cleanStorage(dir, { machine: flags.machine, dryRun: Boolean(flags['dry-run']), itemIds: flags.items?.split(',').map(item => item.trim()), fetchImpl, print });
+    else await showStorage(dir, { machine: flags.machine, fetchImpl, print });
   } else if (group === 'status') {
     const { url, token, pins } = await owner(dir);
     const result = await request(url, '/overview', { token, pins });

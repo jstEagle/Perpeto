@@ -4,8 +4,28 @@
   "dataDir": "../.perpeto/node",
   "credentialFile": "../.perpeto/node/machine.json",
   "enrollmentCodeFile": "../.perpeto/node/enrollment-code",
-  "labels": ["local"],
-  "capacity": { "maxAgents": 2, "maxJobs": 1 },
-  "runtime": { "enabled": false, "repoRoot": "..", "url": "http://127.0.0.1:4310" },
-  "jobs": { "defaultTimeoutSec": 600, "checkoutTimeoutSec": 120, "maxLogChunkBytes": 8192, "redactPatterns": [] }
+  "labels": [
+    "local"
+  ],
+  "capacity": {
+    "maxAgents": 2,
+    "maxJobs": 1
+  },
+  "runtime": {
+    "enabled": false,
+    "repoRoot": "..",
+    "url": "http://127.0.0.1:4310"
+  },
+  "jobs": {
+    "defaultTimeoutSec": 600,
+    "checkoutTimeoutSec": 120,
+    "maxLogChunkBytes": 8192,
+    "redactPatterns": []
+  },
+  "storage": {
+    "cleanupForeignWorktrees": false,
+    "foreignWorktreeRoots": [
+      "~/.t3/worktrees"
+    ]
+  }
 }

@@ -16,6 +16,10 @@ public final class FactoryStore {
     public private(set) var drafts: [String: DraftProgress] = [:]
     /// Window for run and project metrics. Changing it refetches them.
     public private(set) var metricsWindow: MetricsWindow = .day
+    /// Storage inventories by machine, loaded when the Storage screen shows a machine.
+    public private(set) var machineStorage: [String: MachineStorage] = [:]
+    /// The latest cleanup (preview or executed) per machine, while it is on screen.
+    public private(set) var cleanups: [String: StorageCleanup] = [:]
 
     private var eventTask: Task<Void, Never>?
     private var draftTasks: [String: Task<Void, Never>] = [:]
@@ -54,6 +58,8 @@ public final class FactoryStore {
         factory = .empty
         projectStates = [:]
         drafts = [:]
+        machineStorage = [:]
+        cleanups = [:]
         templates = []
         await refresh()
     }
@@ -118,7 +124,7 @@ public final class FactoryStore {
     private func scheduleRefresh(for event: HubEvent) {
         let type = event.type
         if type.hasPrefix("machine.") || type.hasPrefix("enrollment.") || type.hasSuffix(".usage") || type.hasPrefix("pacing.") || type.hasPrefix("account.")
-            || type.hasPrefix("session.") || type.hasPrefix("sessions.") {
+            || type.hasPrefix("session.") || type.hasPrefix("sessions.") || type.hasPrefix("storage.") {
             pendingFactory = true
         }
         if let runId = event.runId, projectStates[event.projectId ?? ""]?.runs.contains(where: { $0.id == runId }) == true {
@@ -351,6 +357,48 @@ public final class FactoryStore {
             lastError = describe(error, operation: "Saving the pacing settings")
         }
     }
+
+    // MARK: Storage
+
+    /// Loads one machine's inventory and recent cleanups.
+    public func loadMachineStorage(_ machineId: String) async {
+        do {
+            machineStorage[machineId] = try await source.machineStorage(machineId: machineId)
+        } catch {
+            lastError = describe(error, operation: "Loading the storage inventory")
+        }
+    }
+
+    /// Requests a cleanup and follows it until the machine reports its result (the
+    /// machine picks it up on its next heartbeat). A dry run changes nothing; after an
+    /// executed cleanup the fleet and the machine's inventory are reloaded.
+    @discardableResult
+    public func cleanStorage(machineId: String, mode: StorageCleanup.Mode, itemIds: [String]? = nil,
+                             pollInterval: Duration = .seconds(2), timeout: Duration = .seconds(180)) async -> StorageCleanup? {
+        let operation = mode == .dryRun ? "Previewing the cleanup" : "Cleaning up storage"
+        do {
+            var cleanup = try await source.requestCleanup(machineId: machineId, mode: mode, itemIds: itemIds)
+            cleanups[machineId] = cleanup
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: timeout)
+            while !cleanup.isDone && clock.now < deadline {
+                try await Task.sleep(for: pollInterval)
+                cleanup = try await source.storageCleanup(machineId: machineId, cleanupId: cleanup.id)
+                cleanups[machineId] = cleanup
+            }
+            if !cleanup.isDone { lastError = "\(operation) on this machine is still waiting for it to check in. It runs when the machine next reports." }
+            if mode == .execute && cleanup.isDone {
+                factory = try await source.loadFactory()
+                await loadMachineStorage(machineId)
+            }
+            return cleanup
+        } catch {
+            lastError = describe(error, operation: operation)
+            return nil
+        }
+    }
+
+    public func clearCleanup(_ machineId: String) { cleanups[machineId] = nil }
 
     private func perform(_ operation: String, projectId: String, _ body: @escaping () async throws -> Void) async {
         do {

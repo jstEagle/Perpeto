@@ -12,10 +12,13 @@ public struct FactoryState: Sendable, Hashable {
     public var pacing: Pacing?
     /// Observed T3 Code sessions; nil when the hub doesn't observe sessions yet.
     public var sessions: ObservedSessions?
+    /// Disks and reclaimable storage across machines; nil when the hub has no storage route yet.
+    public var storage: FleetStorage?
 
     public init(projects: [Project], machines: [Machine], accounts: [Account], jobs: [Job], overview: FactoryOverview, usage: UsageBundle, pacing: Pacing? = nil,
-                sessions: ObservedSessions? = nil) {
+                sessions: ObservedSessions? = nil, storage: FleetStorage? = nil) {
         self.sessions = sessions
+        self.storage = storage
         self.projects = projects
         self.machines = machines
         self.accounts = accounts
@@ -213,6 +216,12 @@ public protocol FactoryDataSource: Sendable {
     /// Renames a subscription or sets its plan.
     func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account
     func updatePacing(_ settings: PacingSettings) async throws -> Pacing
+    /// One machine's storage inventory and recent cleanups.
+    func machineStorage(machineId: String) async throws -> MachineStorage
+    /// Queues a dry-run or executed cleanup on a machine.
+    func requestCleanup(machineId: String, mode: StorageCleanup.Mode, itemIds: [String]?) async throws -> StorageCleanup
+    /// Reads a cleanup back, to follow it until the machine reports its result.
+    func storageCleanup(machineId: String, cleanupId: String) async throws -> StorageCleanup
     func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error>
 }
 
@@ -223,5 +232,15 @@ extension FactoryDataSource {
     }
     public func updatePacing(_ settings: PacingSettings) async throws -> Pacing {
         throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Pacing is not available here.")
+    }
+    /// Sources that predate the storage janitor have no inventories or cleanups.
+    public func machineStorage(machineId: String) async throws -> MachineStorage {
+        throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Storage is not available here.")
+    }
+    public func requestCleanup(machineId: String, mode: StorageCleanup.Mode, itemIds: [String]?) async throws -> StorageCleanup {
+        throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Storage cleanup is not available here.")
+    }
+    public func storageCleanup(machineId: String, cleanupId: String) async throws -> StorageCleanup {
+        throw HubError.http(status: 405, code: "UNSUPPORTED", message: "Storage cleanup is not available here.")
     }
 }

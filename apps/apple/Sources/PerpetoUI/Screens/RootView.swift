@@ -360,6 +360,7 @@ struct FactoryScreen: View {
         case .accounts: AccountsScreen(store: store)
         case .pacing: PacingScreen(store: store)
         case .usage: UsageScreen(store: store)
+        case .storage: StorageScreen(store: store)
         }
     }
 }

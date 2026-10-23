@@ -44,7 +44,7 @@ struct PerpetoiOSApp: App {
 }
 
 /// Developer launch arguments, used to capture simulator screenshots:
-///   --route <overview|workflows|runs|runs-list|work|messages|merge-queue|home|sessions|machines|accounts|pacing|usage>
+///   --route <overview|workflows|runs|runs-list|work|messages|merge-queue|home|sessions|machines|accounts|pacing|usage|storage>
 ///     (`runs` opens the running run's map; `runs-list` the list of runs)
 ///   --node <node id>     select a node on the run map
 ///   --run <run id>       open this run instead of the running one

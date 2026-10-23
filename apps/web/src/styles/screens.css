@@ -1534,3 +1534,110 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---------- Storage ---------- */
+.storage-alerts .rows > li {
+  padding: var(--space-3) 0;
+}
+.storage-machines > li {
+  padding: 0;
+}
+.storage-machines > li + li {
+  border-top: 0;
+}
+.storage-machine-button {
+  display: grid;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-4);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.storage-machine-button:hover {
+  background: var(--surface-hover);
+}
+.storage-machine.is-selected .storage-machine-button {
+  background: var(--surface-subtle);
+}
+.storage-machine-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.storage-bar {
+  display: block;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--chart-quiet);
+  overflow: hidden;
+}
+.storage-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ink);
+  transition: width var(--duration-base) var(--ease-out);
+}
+.storage-bar.is-critical > span {
+  background: var(--error);
+}
+.storage-policy {
+  margin-top: var(--space-5);
+  font-size: var(--text-13);
+}
+.storage-machine-title {
+  font-size: var(--text-20);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-heading);
+  margin-top: var(--space-4);
+}
+.storage-machine-title .muted {
+  font-weight: var(--weight-regular);
+  font-size: var(--text-16);
+  letter-spacing: 0;
+}
+.storage-lead {
+  max-width: 70ch;
+  color: var(--ink-soft);
+}
+.storage-actions {
+  margin-top: var(--space-5);
+}
+.storage-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+  max-width: 100%;
+}
+.storage-preview {
+  max-height: 22rem;
+  overflow: auto;
+}
+.rows > li > .i {
+  flex: none;
+  color: var(--ink-soft);
+}
+@media (max-width: 640px) {
+  .storage-alerts .rows > li {
+    flex-wrap: wrap;
+  }
+  .storage-alerts .row-main {
+    flex-basis: 100%;
+    order: 2;
+  }
+  .storage-alerts .btn {
+    margin-left: auto;
+  }
+  .storage-machines .row-meta {
+    white-space: normal;
+  }
+}

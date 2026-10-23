@@ -1,0 +1,18 @@
+{
+  "name": "@perpeto/janitor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Storage janitor: inventories reclaimable worktrees, workspaces and build artifacts, plans retention-policy cleanups and executes them with journaled safety checks.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./policy": "./src/policy.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=24.13.1 <25"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

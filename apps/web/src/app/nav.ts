@@ -2,7 +2,7 @@
  * Sidebar sections and which one a route belongs to. Pure, so the rule
  * "exactly one current item per route" is testable without a browser.
  */
-export type NavKey = 'home' | 'sessions' | 'overview' | 'workflows' | 'runs' | 'work' | 'messages' | 'merge' | 'machines' | 'accounts' | 'pacing' | 'usage';
+export type NavKey = 'home' | 'sessions' | 'overview' | 'workflows' | 'runs' | 'work' | 'messages' | 'merge' | 'machines' | 'accounts' | 'pacing' | 'usage' | 'storage';
 
 export interface NavEntry {
   key: NavKey;
@@ -31,6 +31,7 @@ export const FACTORY_NAV_ENTRIES: NavEntry[] = [
   { key: 'accounts', to: '/accounts', label: 'Accounts' },
   { key: 'pacing', to: '/pacing', label: 'Pacing' },
   { key: 'usage', to: '/usage', label: 'Usage' },
+  { key: 'storage', to: '/storage', label: 'Storage' },
 ];
 
 /**
@@ -49,5 +50,5 @@ export function activeNav(pathname: string): NavKey | null {
     return ({ workflows: 'workflows', runs: 'runs', work: 'work', messages: 'messages', 'merge-queue': 'merge' } as Record<string, NavKey>)[section] ?? null;
   }
   const factory = path.split('/')[1];
-  return factory === 'sessions' || factory === 'machines' || factory === 'accounts' || factory === 'pacing' || factory === 'usage' ? (factory as NavKey) : null;
+  return factory === 'sessions' || factory === 'machines' || factory === 'accounts' || factory === 'pacing' || factory === 'usage' || factory === 'storage' ? (factory as NavKey) : null;
 }

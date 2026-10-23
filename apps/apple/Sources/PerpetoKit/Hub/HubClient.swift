@@ -407,6 +407,43 @@ public final class HubClient: Sendable {
         }
     }
 
+    // MARK: Storage
+
+    /// Every machine's disk, reclaimable space and alerts; nil when the hub has no storage route yet.
+    public func fleetStorage() async throws -> FleetStorage? {
+        do {
+            return try await get("/storage")
+        } catch HubError.http(let status, _, _) where status == 404 || status == 405 {
+            return nil
+        }
+    }
+
+    /// One machine's latest inventory and recent cleanups.
+    public func machineStorage(machineId: String) async throws -> MachineStorage {
+        try await get("/machines/\(escape(machineId))/storage")
+    }
+
+    /// Asks the machine to clean up on its next heartbeat: a dry run lists what would go, execute deletes it.
+    /// Without `itemIds` every reclaimable item is included. Replays of the same key return the same cleanup.
+    public func requestCleanup(machineId: String, mode: StorageCleanup.Mode, itemIds: [String]? = nil, idempotencyKey: String = UUID().uuidString) async throws -> StorageCleanup {
+        struct Envelope: Decodable { var cleanup: StorageCleanup }
+        let data = try await raw("POST", "/machines/\(escape(machineId))/storage/cleanup", body: StorageCleanupRequest(mode: mode, itemIds: itemIds), idempotencyKey: idempotencyKey)
+        if let wrapped = try? HubCoding.decoder().decode(Envelope.self, from: data) { return wrapped.cleanup }
+        return try decode(StorageCleanup.self, from: data)
+    }
+
+    public func storageCleanup(machineId: String, cleanupId: String) async throws -> StorageCleanup {
+        struct Envelope: Decodable { var cleanup: StorageCleanup }
+        let data = try await perform(try makeRequest("GET", "/machines/\(escape(machineId))/storage/cleanups/\(escape(cleanupId))"))
+        if let wrapped = try? HubCoding.decoder().decode(Envelope.self, from: data) { return wrapped.cleanup }
+        return try decode(StorageCleanup.self, from: data)
+    }
+
+    /// Asks the machine for a fresh inventory on its next heartbeat.
+    public func requestStorageScan(machineId: String, idempotencyKey: String = UUID().uuidString) async throws {
+        _ = try await raw("POST", "/machines/\(escape(machineId))/storage/scan", body: EmptyBody(), idempotencyKey: idempotencyKey)
+    }
+
     static func looksLikePacing(_ data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
         let body = (object["pacing"] as? [String: Any]) ?? object

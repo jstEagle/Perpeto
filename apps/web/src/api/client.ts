@@ -3,6 +3,8 @@ import { decodeProject } from './goals';
 import { decodeMessage } from './messages';
 import { decodeAccount, decodePacing, looksLikePacing } from './pacing';
 import { decodeSessionPage, decodeSessionsSummary } from './sessions';
+import { decodeCleanup, decodeFleetStorage, decodeMachineStorage } from './storage';
+import type { CleanupRequest, FleetStorage, MachineStorage, StorageCleanup } from './storage';
 import type { EventPageResult, EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import type {
   Account,
@@ -338,6 +340,31 @@ export class HttpHub implements HubApi {
     const body = await this.#request<unknown>('PUT', '/pacing/settings', { body: settings });
     if (looksLikePacing(body)) return decodePacing(body);
     return decodePacing(await this.#request<unknown>('GET', '/pacing'));
+  }
+
+  async storage(): Promise<FleetStorage | null> {
+    try {
+      return decodeFleetStorage(await this.#request<unknown>('GET', '/storage'));
+    } catch (error) {
+      if (error instanceof HubError && (error.status === 404 || error.status === 405)) return null;
+      throw error;
+    }
+  }
+  async machineStorage(machineId: string): Promise<MachineStorage> {
+    return decodeMachineStorage(await this.#request<unknown>('GET', `/machines/${enc(machineId)}/storage`));
+  }
+  async requestStorageCleanup(machineId: string, request: CleanupRequest): Promise<StorageCleanup> {
+    const cleanup = decodeCleanup(await this.#request<unknown>('POST', `/machines/${enc(machineId)}/storage/cleanup`, { body: { mode: request.mode, ...(request.itemIds ? { itemIds: request.itemIds } : {}) } }));
+    if (!cleanup) throw new HubError(200, 'INVALID_RESPONSE', 'The hub did not return the cleanup it queued.');
+    return cleanup;
+  }
+  async requestStorageScan(machineId: string): Promise<void> {
+    await this.#request('POST', `/machines/${enc(machineId)}/storage/scan`);
+  }
+  async storageCleanup(machineId: string, cleanupId: string): Promise<StorageCleanup> {
+    const cleanup = decodeCleanup(await this.#request<unknown>('GET', `/machines/${enc(machineId)}/storage/cleanups/${enc(cleanupId)}`));
+    if (!cleanup) throw new HubError(200, 'INVALID_RESPONSE', 'The hub returned no cleanup.');
+    return cleanup;
   }
 
   async listSessions(query: SessionQuery = {}): Promise<SessionPage | null> {

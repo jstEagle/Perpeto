@@ -14,6 +14,7 @@ import { Observation } from './observation.js';
 import { HubMessaging } from './messaging.js';
 import { Pacing, accountUsage, displayText } from './pacing.js';
 import { Sessions, sessionsRoute } from './sessions.js';
+import { Storage, storageRoute } from './storage.js';
 import { HubDelivery, hubRepository, servedFromHub } from './delivery/index.js';
 import { HubError, fail, requireValue, nonblank, object, integer, strings, gitIdentity } from './errors.js';
 
@@ -43,7 +44,7 @@ function canonicalUrl(path) {
 /** Node tokens reach only machine routes, judged on the same decoded segments route() dispatches on. */
 function nodeRoute(method, segments) {
   const [collection, entityId, action] = segments;
-  if (collection === 'nodes') return method === 'POST' && segments.length === 2 && ['heartbeat', 'lease', 'token', 'observations'].includes(entityId);
+  if (collection === 'nodes') return method === 'POST' && segments.length === 2 && ['heartbeat', 'lease', 'token', 'observations', 'storage'].includes(entityId);
   if (!['assignments', 'jobs'].includes(collection) || !entityId || segments.length > 3) return false;
   if (action === undefined) return method === 'GET';
   if (method === 'POST') return ['renew', 'events', 'release'].includes(action);
@@ -78,7 +79,7 @@ export class Hub {
     this.store.onCommit = () => this.flush();
     this.store.onRollback = () => { this.signals = { work: [], machines: new Set(), events: false }; };
     this.intake = new Intake(this); this.workflows = new Workflows(this); this.observation = new Observation(this); this.agentMessaging = new HubMessaging(this);
-    this.pacing = new Pacing(this); this.sessions = new Sessions(this);
+    this.pacing = new Pacing(this); this.sessions = new Sessions(this); this.storage = new Storage(this);
     try {
       try {
         const stat = lstatSync(config.ownerTokenPath);
@@ -802,6 +803,7 @@ export class Hub {
       }
       // Heartbeats write no event (they would dominate the global log) and wake only this machine's polls, when its
       // capacity, load or profile changed.
+      const storage = this.storage.heartbeat(machine, body.storage); // Disk summary onto machine.storage; cleanups to relay.
       this.store.put('machine', machine); if (profile() !== before) this.signalMachine(machine.id);
       // Liveness lives in machine state; the log records only transitions (machine.offline comes from maintenance).
       if (wasOffline) this.emit('machine.online', 'machine', machine, { status: machine.status });
@@ -814,7 +816,7 @@ export class Hub {
       });
       return reply({ status: machine.status, cancel: { assignments: cancelled.filter(value => value.kind === 'assignment').map(value => value.entityId), jobs: cancelled.filter(value => value.kind === 'job').map(value => value.entityId) },
         // Per-account agent allowances from the pacing plan, and owner label/plan edits for the node's pool.
-        ...(pacing ? { pacing } : {}), ...(updates.length ? { accountUpdates: updates } : {}),
+        ...(pacing ? { pacing } : {}), ...(updates.length ? { accountUpdates: updates } : {}), ...(storage ? { storage } : {}),
         // The served and next certificate fingerprints, so pinned machines follow a rotation without re-joining.
         ...(this.tls ? { tls: { fingerprints: this.tls.fingerprints } } : {}) });
     }
@@ -840,6 +842,8 @@ export class Hub {
     if (path === '/pacing' && method === 'GET') return reply(this.pacing.view());
     const observed = sessionsRoute(this, method, segments, query, body, auth);
     if (observed) return reply(observed);
+    const storageReply = storageRoute(this, method, segments, body, auth);
+    if (storageReply) return storageReply;
     if (path === '/pacing/settings' && method === 'PUT') return reply(this.pacing.updateSettings(body));
     if (path === '/jobs' && method === 'GET') {
       const runId = query.get('runId'); const projectId = query.get('projectId');

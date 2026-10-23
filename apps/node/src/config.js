@@ -2,6 +2,7 @@ import { readFile, lstat, open, mkdir, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { storageConfig } from './storage.js';
 
 export async function readSecret(path) {
   const stat = await lstat(path);
@@ -32,7 +33,7 @@ export async function loadConfig(configPath) {
   const root = dirname(resolve(configPath));
   const raw = JSON.parse(await readFile(configPath, 'utf8'));
   const allowed = ['hubUrl', 'name', 'dataDir', 'credentialFile', 'enrollmentCodeFile', 'labels', 'capacity', 'providers',
-    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs', 'hubFingerprint', 'observe'];
+    'timing', 'fake', 'executorPackages', 'accountProviderPackage', 'accounts', 'runtime', 'jobs', 'allowInsecureHttp', 'tokenRotationMs', 'hubFingerprint', 'observe', 'storage'];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !allowed.includes(key))) {
     throw new Error('Invalid node configuration; credentials belong in owner-only files.');
   }
@@ -60,6 +61,8 @@ export async function loadConfig(configPath) {
     if (!Number.isSafeInteger(capacity[key]) || capacity[key] < 0) throw new Error(`Invalid capacity.${key}.`);
   }
   const observe = observeConfig(raw.observe, root);
+  // The storage janitor runs when the config has a `storage` section (installed nodes get one by default).
+  const storage = storageConfig(raw.storage, root);
   // An observe-only node runs no agents and no CI: it only watches the operator's own T3.
   if (!capacity.maxAgents && !capacity.maxJobs && !observe?.enabled) throw new Error('Node capacity must allow some work.');
   for (const key of ['labels', 'providers', 'executorPackages']) {
@@ -73,7 +76,7 @@ export async function loadConfig(configPath) {
     if (!['heartbeatMs', 'renewMs', 'requestMs', 'pollIdleMs', 'backoffMinMs', 'backoffMaxMs'].includes(key) || !Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new Error('Invalid timing configuration.');
   }
   if (timing.backoffMaxMs < timing.backoffMinMs) throw new Error('Invalid backoff bounds.');
-  return { ...raw, hubUrl: url.href.replace(/\/+$/, ''), dataDir, capacity, timing, tokenRotationMs, ...(observe ? { observe } : {}),
+  return { ...raw, hubUrl: url.href.replace(/\/+$/, ''), dataDir, capacity, timing, tokenRotationMs, ...(observe ? { observe } : {}), ...(storage ? { storage } : {}),
     credentialFile: raw.credentialFile ? path(raw.credentialFile) : resolve(dataDir, 'machine.json'),
     enrollmentCodeFile: raw.enrollmentCodeFile ? path(raw.enrollmentCodeFile) : undefined,
     labels: raw.labels ?? [], configRoot: root };

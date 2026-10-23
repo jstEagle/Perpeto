@@ -72,6 +72,13 @@ export const IconNext = icon(
     <path d="M10.5 8.8l3.2 3.2-3.2 3.2" />
   </>,
 );
+export const IconStorage = icon(
+  <>
+    <rect x="4" y="4.5" width="16" height="6.5" rx="2" />
+    <rect x="4" y="13" width="16" height="6.5" rx="2" />
+    <path d="M7.5 7.75h3M7.5 16.25h3" />
+  </>,
+);
 export const IconUsage = icon(<path d="M5 19.5v-6M10 19.5v-11M15 19.5v-8M20 19.5v-14" />);
 export const IconSettings = icon(
   <>

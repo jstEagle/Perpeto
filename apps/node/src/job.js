@@ -84,6 +84,9 @@ export async function loadRedaction(config) {
   return { literals, patterns };
 }
 
+/** CI workspaces of jobs running in this process; the storage janitor never touches them. */
+export const activeJobWorkspaces = new Set();
+
 export async function runJob(job, ctx, options = {}) {
   const { dataDir, maxLogChunkBytes = 8192, defaultTimeoutSec = 600, checkoutTimeoutSec = 120, redaction = {} } = options;
   const evidence = { revision: job.revision, configHash: job.configHash, steps: [], artifacts: [] };
@@ -102,6 +105,7 @@ export async function runJob(job, ctx, options = {}) {
       if (url.password || url.search || url.hash || (url.username && url.protocol !== 'ssh:')) throw new Error('Repository credentials must use local credential helpers.');
     }
     workspace = await mkdtemp(join(tmpdir(), 'perpeto-ci-'));
+    activeJobWorkspaces.add(workspace);
     const checkout = join(workspace, 'source');
     const sandbox = await jobSandbox(workspace, [dataDir, process.env.GIT_CONFIG_GLOBAL, ...(options.protectedPaths ?? [])]);
     const stepEnv = jobEnvironment(workspace, options.path);
@@ -155,6 +159,6 @@ export async function runJob(job, ctx, options = {}) {
     if (error?.code === 'lease_lost' || ctx.signal.reason?.code === 'lease_lost') throw error;
     return { ...evidence, status: ctx.signal.aborted ? 'cancelled' : 'error', reason: ctx.signal.aborted ? 'cancelled' : 'job_execution_error' };
   } finally {
-    if (workspace) await rm(workspace, { recursive: true, force: true });
+    if (workspace) { await rm(workspace, { recursive: true, force: true }); activeJobWorkspaces.delete(workspace); }
   }
 }

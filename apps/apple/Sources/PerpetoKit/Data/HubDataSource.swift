@@ -29,11 +29,13 @@ public struct HubDataSource: FactoryDataSource {
         // Hubs without pacing, or a failing pacing route, leave the rest of the factory readable.
         async let pacing = (try? client.pacing()) ?? nil
         async let sessions = loadSessions()
+        // Hubs without the storage janitor leave the rest of the factory readable.
+        async let storage = (try? client.fleetStorage()) ?? nil
         // A pinned client follows a certificate rotation the hub announces; a no-op otherwise.
         async let rotation: Void = client.followCertificateRotation()
         _ = await rotation
         return try await FactoryState(projects: projects, machines: machines, accounts: accounts, jobs: jobs, overview: overview, usage: usage, pacing: pacing,
-                                      sessions: sessions)
+                                      sessions: sessions, storage: storage)
     }
 
     /// Observed T3 sessions and a summary per window. Nil when the hub has no
@@ -211,5 +213,12 @@ public struct HubDataSource: FactoryDataSource {
     public func drain(machineId: String) async throws -> Machine { try await client.drain(machineId: machineId) }
     public func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account { try await client.updateAccount(id: id, patch) }
     public func updatePacing(_ settings: PacingSettings) async throws -> Pacing { try await client.updatePacing(settings) }
+    public func machineStorage(machineId: String) async throws -> MachineStorage { try await client.machineStorage(machineId: machineId) }
+    public func requestCleanup(machineId: String, mode: StorageCleanup.Mode, itemIds: [String]?) async throws -> StorageCleanup {
+        try await client.requestCleanup(machineId: machineId, mode: mode, itemIds: itemIds)
+    }
+    public func storageCleanup(machineId: String, cleanupId: String) async throws -> StorageCleanup {
+        try await client.storageCleanup(machineId: machineId, cleanupId: cleanupId)
+    }
     public func events(after: Int?) -> AsyncThrowingStream<HubEvent, Error> { client.eventStream(after: after) }
 }

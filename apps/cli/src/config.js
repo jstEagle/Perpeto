@@ -42,7 +42,9 @@ export function hubConfig(dir, { host = '127.0.0.1', port = 4320, tls = false } 
     // Subscription pacing (apps/hub/src/config.js); burn-rate priors are uncalibrated percent-per-agent-hour starting points.
     pacing: { enabled: true, strategy: 'rotation', targetUsePercent: 95, minAgents: 0, maxAgents: null, handoverMins: 15, sprintMins: 90, horizonMins: 600,
       recomputeMs: 15000, nudgeIntervalMs: 1800000,
-      priors: { default: { session: 20, weekly: 2.5, monthly: 0.6, other: 20 }, claudeAgent: { session: 20, weekly: 2.5 }, codex: { session: 15, weekly: 2 } } } };
+      priors: { default: { session: 20, weekly: 2.5, monthly: 0.6, other: 20 }, claudeAgent: { session: 20, weekly: 2.5 }, codex: { session: 15, weekly: 2 } } },
+    // Storage janitor retention policy (defaults in @perpeto/janitor) and per-machine overrides by machine id or name.
+    storage: { policy: {}, machines: {} } };
 }
 export function hubUrl(value) {
   let url;
@@ -79,6 +81,8 @@ export function nodeConfig(dir, url, { labels = [], name = hostname(), fingerpri
   return { hubUrl: hubUrl(url), ...(fingerprint ? { hubFingerprint: fingerprint } : {}), name, labels, dataDir: './node', credentialFile: './node/machine.json',
     capacity: observe ? { maxAgents: 0, maxJobs: 0 } : { maxAgents: 1, maxJobs: 1 }, allowInsecureHttp: false,
     executorPackages: observe ? [] : ['@perpeto/t3-executor'], ...(observe ? { observe } : {}),
+    // Storage janitor with the hub's retention policy; local fields here override it on this machine.
+    storage: {},
     timing: { heartbeatMs: 10000, renewMs: 20000, requestMs: 30000, pollIdleMs: 200, backoffMinMs: 250, backoffMaxMs: 10000 },
     jobs: { defaultTimeoutSec: 600, checkoutTimeoutSec: 120, maxLogChunkBytes: 8192, redactPatterns: [], protectedPaths: [] }, runtime: { enabled: false, repoRoot,
       url: `http://${host.includes(':') ? `[${host}]` : host}:${runtime.port}` } };
