@@ -308,6 +308,8 @@ public enum WorkflowValidator {
         case .input: return oneOf("source", ["manual", "goals", "issues"]) ? [] : ["source"]
         case .planner, .agent, .review, .human: return text("prompt") ? [] : ["prompt"]
         case .mergeQueue:
+            // A node naming a project merge queue takes strategy and method from it.
+            if text("queue") { return [] }
             return (oneOf("strategy", ["serial", "batch"]) ? [] : ["strategy"]) + (oneOf("method", ["squash", "merge", "rebase"]) ? [] : ["method"])
         case .loop: return oneOf("until", ["review-pass", "ci-pass", "manual"]) ? [] : ["until"]
         case .ci, .output, .unknown: return []

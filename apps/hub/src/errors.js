@@ -1,5 +1,5 @@
 export class HubError extends Error {
-  constructor(status, code, message) { super(message); this.status = status; this.code = code; }
+  constructor(status, code, message, details) { super(message); this.status = status; this.code = code; if (details !== undefined) this.details = details; }
 }
 export function fail(status, code, message) { throw new HubError(status, code, message); }
 export function requireValue(condition, message) {

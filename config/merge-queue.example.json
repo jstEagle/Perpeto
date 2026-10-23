@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "queues": [
+    {
+      "name": "main",
+      "branches": ["main"],
+      "strategy": "batch",
+      "maxBatchSize": 4,
+      "requiredChecks": ["test", "lint"],
+      "method": "squash",
+      "publication": "fast-forward-push",
+      "lanes": [
+        { "name": "hotfix", "priority": 100, "labels": ["hotfix"], "branches": ["hotfix/*"] },
+        { "name": "normal", "priority": 50 },
+        { "name": "dependencies", "priority": 10, "labels": ["dependencies"], "branches": ["deps/*", "dependabot/**"] }
+      ],
+      "defaultLane": "normal",
+      "freeze": {
+        "windows": [
+          { "cron": "0 17 * * 5", "durationMinutes": 3840, "reason": "Weekend freeze" },
+          { "start": "2026-12-20T00:00:00Z", "end": "2027-01-02T00:00:00Z", "reason": "Holidays" }
+        ]
+      },
+      "maxInFlight": 8,
+      "flakyRetries": 1,
+      "bisectOnBatchFailure": true,
+      "autoRebaseOnConflict": true,
+      "ejectAfterMinutes": 240,
+      "requiredApprovals": 1
+    },
+    {
+      "name": "release",
+      "branches": ["release/*"],
+      "strategy": "serial",
+      "requiredChecks": ["test"],
+      "method": "merge",
+      "autoRebaseOnConflict": false,
+      "requiredApprovals": 2
+    }
+  ]
+}

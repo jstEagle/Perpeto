@@ -125,8 +125,10 @@ export const NODE_CONFIG = Object.freeze({
   agent: agentRole,
   review: { ...agentRole, rubric: optional(text(20000)) },
   ci: { steps: required(steps), requirements: optional(requirements), retry: optional(retry), onExhausted: optional(nodeRef) },
+  // strategy and method are required unless `queue` names a project merge queue, which then supplies them (see validation).
   'merge-queue': {
-    strategy: required(oneOf(['serial', 'batch'])), method: required(oneOf(['squash', 'merge', 'rebase'])),
+    strategy: optional(oneOf(['serial', 'batch'])), method: optional(oneOf(['squash', 'merge', 'rebase'])),
+    queue: optional(value => typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value) ? null : invalid('must name a project merge queue (letters, digits, ".", "_" or "-").')),
     requiredChecks: optional(stringArray()),
     onConflict: optional(oneOf(['rebase', 'review'])), rebaseReview: optional(oneOf(['changed', 'always', 'never'])),
   },
@@ -193,6 +195,9 @@ function analyse(graph, { providers } = {}) {
       }
       const problem = field.check(config[key]);
       if (problem) error(problem[0], `${node.type} node "${node.id}" config.${key} ${problem[1]}`, at);
+    }
+    if (node.type === 'merge-queue' && config.queue === undefined) {
+      for (const key of ['strategy', 'method']) if (config[key] === undefined) error('MISSING_CONFIG', `merge-queue node "${node.id}" requires config.${key}, or config.queue naming a project merge queue.`, at);
     }
     for (const key of Object.keys(config).sort()) {
       if (!Object.hasOwn(spec, key)) warn('UNKNOWN_CONFIG_KEY', `${node.type} node "${node.id}" has unknown config key "${key}".`, at);

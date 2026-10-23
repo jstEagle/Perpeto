@@ -6,7 +6,11 @@
   "type": "module",
   "exports": {
     ".": "./src/index.js",
-    "./commands": "./src/commands.js"
+    "./commands": "./src/commands.js",
+    "./queue-config": {
+      "types": "./src/queue-config.d.ts",
+      "default": "./src/queue-config.js"
+    }
   },
   "engines": {
     "node": ">=24.13.1 <25"

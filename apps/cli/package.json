@@ -14,6 +14,8 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
+    "@perpeto/delivery": "*",
+    "@perpeto/delivery": "*",
     "@perpeto/hub": "*",
     "@perpeto/node": "*",
     "@perpeto/t3-observer": "*"

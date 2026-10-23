@@ -1,0 +1,182 @@
+/* Merge queue screen and settings editor. Tokens only (brand/tokens.css). */
+
+.mq-picker {
+  margin-bottom: var(--space-6);
+}
+.mq-error {
+  margin-bottom: var(--space-4);
+}
+.mq-stack {
+  gap: var(--space-6);
+}
+
+/* A freeze is a state, not an alarm: monochrome, with the way out as the one primary action. */
+.mq-frozen {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+.mq-frozen-text {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.mq-frozen-text p {
+  font-size: var(--text-14);
+}
+
+.mq-now-head {
+  display: grid;
+  gap: var(--space-2);
+}
+.mq-headline {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-24);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-display);
+  line-height: var(--leading-heading);
+}
+.mq-headline .muted {
+  font-weight: var(--weight-regular);
+}
+.mq-headline .headline-dot {
+  align-self: center;
+}
+.mq-now-meta {
+  font-size: var(--text-14);
+}
+.mq-attempts {
+  margin-top: var(--space-6);
+}
+
+.mq-more {
+  margin-top: var(--space-6);
+}
+.mq-more-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--space-8);
+  margin-top: var(--space-4);
+  align-items: end;
+}
+.mq-chart {
+  margin: 0;
+}
+.mq-kv dd {
+  font-variant-numeric: tabular-nums;
+}
+
+.mq-table td.num,
+.mq-table th.num {
+  text-align: right;
+}
+.mq-table .cell-sub .mono {
+  font-size: var(--text-12);
+}
+.mq-actions {
+  width: 1%;
+  text-align: right;
+}
+
+.mq-recent {
+  padding-block: var(--space-5);
+}
+.mq-recent .rows {
+  margin-top: var(--space-4);
+}
+
+.mq-note {
+  font-size: var(--text-13);
+}
+.mq-repo-error {
+  display: grid;
+  gap: var(--space-2);
+}
+.mq-problems {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-13);
+}
+.mq-problems .form-error {
+  align-items: flex-start;
+}
+
+/* Settings editor */
+.mq-settings {
+  display: grid;
+  gap: var(--space-5);
+}
+.mq-settings-queues {
+  gap: var(--space-3);
+}
+.mq-form {
+  display: grid;
+  gap: var(--space-8);
+}
+.mq-form-section {
+  display: grid;
+  gap: var(--space-4);
+}
+.mq-form-title {
+  font-size: var(--text-16);
+  font-weight: var(--weight-semibold);
+}
+.mq-lane {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.7fr) minmax(0, 1.2fr) minmax(0, 1.4fr) auto;
+  gap: var(--space-3);
+  align-items: start;
+}
+/* Rows stay aligned when one field shows a problem: Remove sits level with the inputs, below their labels. */
+.mq-lane > .btn {
+  margin-top: var(--space-7);
+}
+.mq-window {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) minmax(0, 1.8fr) auto;
+}
+.mq-toggles {
+  display: grid;
+  gap: var(--space-3);
+}
+.mq-toggle {
+  font-size: var(--text-14);
+}
+.mq-remove-queue {
+  display: flex;
+  justify-content: flex-end;
+}
+.mq-foot-error {
+  margin-right: auto;
+  align-items: center;
+}
+
+@media (max-width: 720px) {
+  .mq-more-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mq-lane,
+  .mq-window {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .mq-headline {
+    font-size: var(--text-20);
+  }
+  /* Narrow screens: the pull request cell wraps so status stays in view without scrolling. */
+  .mq-table td:nth-child(2) {
+    white-space: normal;
+  }
+  .mq-table .cell-sub {
+    overflow-wrap: anywhere;
+  }
+  .mq-table .cell-wrap {
+    min-width: 0;
+  }
+}

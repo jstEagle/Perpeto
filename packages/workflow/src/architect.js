@@ -63,7 +63,7 @@ const CONFIG_SCHEMAS = {
   },
   'merge-queue': {
     type: 'object', required: ['strategy', 'method'],
-    properties: { strategy: { enum: ['serial', 'batch'] }, method: { enum: ['squash', 'merge', 'rebase'] }, requiredChecks: strings,
+    properties: { strategy: { enum: ['serial', 'batch'] }, method: { enum: ['squash', 'merge', 'rebase'] }, queue: { type: 'string', maxLength: 64 }, requiredChecks: strings,
       onConflict: { enum: ['rebase', 'review'], default: 'rebase' }, rebaseReview: { enum: ['changed', 'always', 'never'], default: 'changed' } },
   },
   loop: {
@@ -127,7 +127,7 @@ Nodes are { "id", "type", "label", "position": { "x", "y" }, "config" }. Ids use
 | agent | agent role that does a work item | harness*, prompt*, concurrency (default 1), policy, requirements, role, retry, onExhausted, onBlocked |
 | review | agent review gate; the reviewer reports verdict "pass" or "fail" | harness*, prompt*, rubric, concurrency, policy, requirements, role, retry, onExhausted, onBlocked |
 | ci | CI gate run on a user machine at the exact head commit | steps* ([{ name, run, timeoutSec? }]), requirements, retry, onExhausted |
-| merge-queue | serialises merges into the base branch | strategy* ("serial" or "batch"), method* ("squash", "merge" or "rebase"), requiredChecks, onConflict ("rebase" default or "review"), rebaseReview ("changed" default, "always" or "never") |
+| merge-queue | serialises merges into the base branch | strategy* ("serial" or "batch"), method* ("squash", "merge" or "rebase"), queue (name of a project merge queue; only when the user asks for one), requiredChecks, onConflict ("rebase" default or "review"), rebaseReview ("changed" default, "always" or "never") |
 | loop | repeats its body; after maxIterations passes the item escalates to onExhausted or fails | until* ("review-pass", "ci-pass" or "manual"), maxIterations* (1-${LIMITS.maxIterations}), expectedIterations, onExhausted |
 | human | waits for a person to pass or fail the item | prompt* |
 | output | terminal: work item finished | none |

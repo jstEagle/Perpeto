@@ -9,6 +9,26 @@ const commands = {
   service: { install: ['dry-run'], uninstall: ['dry-run'] },
 };
 const booleans = new Set(['show-owner-token', 'show-code', 'dry-run', 'help', 'tls', 'tailscale', 'off', 'observe', 'no-titles']);
+const id = value => typeof value === 'string' && /^[a-zA-Z0-9_-]+$/.test(value);
+/** perpeto queue [project] | queue freeze <queueId> [--reason <text>] | queue unfreeze <queueId> | queue config validate <file> */
+function queueArgs(words, flags) {
+  const [action, ...rest] = words;
+  const allow = keys => { if (Object.keys(flags).some(key => !['dir', ...keys].includes(key))) throw new Error('Unknown command or option. Use perpeto --help.'); };
+  const dir = resolve(flags.dir ?? defaultDir());
+  if (action === 'freeze' || action === 'unfreeze') {
+    allow(action === 'freeze' ? ['reason'] : []);
+    if (rest.length !== 1 || !id(rest[0])) throw new Error(`Use queue ${action} <queueId>.`);
+    return { group: 'queue', action, positionals: rest, flags, dir };
+  }
+  if (action === 'config') {
+    allow([]);
+    if (rest.length !== 2 || rest[0] !== 'validate') throw new Error('Use queue config validate <file>.');
+    return { group: 'queue', action: 'validate', positionals: [resolve(rest[1])], flags, dir };
+  }
+  allow([]);
+  if (rest.length || (action !== undefined && !id(action))) throw new Error('Use queue [projectId].');
+  return { group: 'queue', action: 'list', positionals: action ? [action] : [], flags, dir };
+}
 export function parseArgs(args) {
   const words = []; const flags = {};
   for (let i = 0; i < args.length; i++) {
@@ -26,6 +46,7 @@ export function parseArgs(args) {
     }
   }
   if (flags.help || words.length === 0) return { help: true };
+  if (words[0] === 'queue') return queueArgs(words.slice(1), flags);
   const [group, action, ...positionals] = words;
   const simple = ['doctor', 'status', 'sessions'].includes(group) || group === 'machines' && action === undefined;
   const allowed = simple ? [] : commands[group]?.[action];

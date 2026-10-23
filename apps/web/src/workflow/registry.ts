@@ -212,6 +212,8 @@ export function nodeSummary(node: GraphNode): string {
       return `${steps} ${steps === 1 ? 'step' : 'steps'}`;
     }
     case 'merge-queue':
+      // A node naming a project merge queue takes its strategy and method from the project settings.
+      if (typeof c.queue === 'string' && c.queue) return `Project queue ${c.queue}`;
       return `${sentence(String(c.strategy ?? 'serial'))} · ${String(c.method ?? 'squash')}`;
     case 'loop':
       return `Until ${String(c.until ?? 'review-pass').replace(/-/g, ' ')} · max ${String(c.maxIterations ?? '?')}`;

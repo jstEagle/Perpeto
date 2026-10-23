@@ -1,14 +1,7 @@
 import { createHash } from 'node:crypto';
+import { DeliveryError } from './errors.js';
 
-export class DeliveryError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.name = 'DeliveryError';
-    this.code = code;
-    this.statusCode = code === 'IDEMPOTENCY_CONFLICT' || code === 'BUSY' ? 409 : 400;
-  }
-  toJSON() { return { error: { code: this.code, message: this.message } }; }
-}
+export { DeliveryError };
 
 export function requireValue(condition, message, code = 'INVALID_INPUT') {
   if (!condition) throw new DeliveryError(code, message);

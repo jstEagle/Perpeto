@@ -87,8 +87,13 @@ Job          { id, projectId, runId?, workItemId?, repo, revision /* full commit
                machineId?, leaseExpiresAt?, attempt, logRef?, artifacts: ArtifactRef[], configHash }
 JobStep      { name, run: string /* shell command */, timeoutSec? }
 MergeEntry   { id, projectId, queueId, prUrl, headSha, baseBranch, status: 'queued'|'testing'|'merging'|'merged'|'rejected', jobId?, reason?,
-               mergedRevision?, deliveryError?, rejectionKind?: 'conflict'|'ci'|'other' }
+               mergedRevision?, deliveryError?, rejectionKind?: 'conflict'|'ci'|'other',
+               lane?, priority?, cause?: 'ci'|'conflict'|'head-changed'|'timeout'|'manual'|'approvals'|'other' }
 // Speculative merge-queue Jobs also carry delivery: { queueId, mergeEntryIds }.
+MergeQueueConfig { version: 1, queues: QueueConfig[] }   // hub document per project, plus .perpeto/merge-queue.json
+QueueConfig  { name, branches: string[] /* globs */, strategy: 'serial'|'batch'|'speculative', maxBatchSize, depth, requiredChecks: string[],
+               method, publication, lanes: { name, priority, labels[], branches[] }[], defaultLane?, freeze: { windows: ({ cron, durationMinutes } | { start, end })[] },
+               maxInFlight|null, flakyRetries, bisectOnBatchFailure, autoRebaseOnConflict, ejectAfterMinutes|null, requiredApprovals }
 Machine      { id, name, os, arch, labels: string[], providers: string[], capacity: { maxAgents, maxJobs },
                running: { agents, jobs }, status: 'online'|'offline'|'draining', lastHeartbeatAt, version, tokenGeneration, revokedAt? }
 Account      { id, machineId, provider, label, status: 'active'|'cooling'|'disabled'|'invalid', cooldownUntil?, lastUsedAt?, plan?: string,
@@ -206,7 +211,11 @@ All routes are under `/api/v1` and require `Authorization: Bearer <token>`. Owne
 | `GET /assignments/:id` | One assignment, used to follow the workflow architect |
 | `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/log`, `POST /jobs/:id/cancel` | CI jobs |
 | `GET /jobs/:id/bundle?attempt=N` | Git bundle of a hub-hosted job revision for the leasing machine or the owner; jobs with `source: { kind: 'hub-bundle' }` are fetched this way so any enrolled machine can run them. `409 SOURCE_UNAVAILABLE` if the revision is gone |
-| `GET /projects/:id/merge-queue` | Merge queue |
+| `GET /projects/:id/merge-queue` | Merge queue entries (flat list, kept for older clients) |
+| `GET /projects/:id/merge-queues`, `PUT` `{ config, baseVersion? }` | Project merge queue settings: hub document (versioned, `409 VERSION_CONFLICT` on a stale `baseVersion`, `400 INVALID_MERGE_QUEUE_CONFIG` with `error.details[{path,message}]`), the repository file status, the effective config and every queue (named `mqn_…` and workflow-defined `dq_…`); see [merge queues](#merge-queues) |
+| `GET /merge-queues/:id?window=1h|24h|7d` | Live queue: entries in merge order with lane, status and ETA, attempts (batches and speculation), freeze, recent outcomes, metrics |
+| `POST /merge-queues/:id/freeze` `{ reason? }`, `POST /merge-queues/:id/unfreeze` | Manual freeze: no new attempts start and tested work does not publish |
+| `POST /merge-entries/:id/priority` `{ lane?, priority? }`, `/eject` `{ reason? }`, `/requeue` | Owner commands on an open entry; refused (`409`) once it is publishing |
 | `GET /usage?projectId&runId&source=observed|factory&groupBy=provider|model|machine|day|role|source` | Token and agent usage; `source=observed` is usage from operators' own T3 sessions, which has no project |
 | `GET /sessions?machineId&status&provider&since&limit&cursor` | Observed sessions, newest activity first: `{ sessions: Session[], nextCursor? }`; see [observe-only mode](#observe-only-mode) |
 | `GET /sessions/summary?window=1h|24h|7d` | Machines observing, session totals and observed tokens by provider, model, machine and hour |
@@ -284,6 +293,10 @@ PacingAccount  { accountId, machineId, provider, label, plan?, status, state: 'b
 - `PUT /pacing/settings` `{ enabled?, strategy?, targetUsePercent? (50..100), minAgents?, maxAgents? (null clears) }` takes `idempotencyKey` like other mutations, persists in the hub database, and returns the `Pacing` view. Defaults come from the hub config key `pacing` (`enabled: true`, `strategy: 'rotation'`, `targetUsePercent: 95`, burn-rate priors per provider and window kind).
 - While enabled, leases cap each machine's agents per paced provider at the sum of its accounts' `targetAgents`; caps never raise workflow or machine limits. The hub emits `pacing.updated` (provider targets, limits, account states and targets) when the plan changes materially, `pacing.settings-updated`, `account.updated` after `PATCH /accounts/:id`, and `pacing.nudged` when a starved fleet gives an idle keep-open scheduled run one improvement pass ahead of its schedule (at most once per `pacing.nudgeIntervalMs`).
 - Usage samples are stored per account when a fresh reading arrives (its `checkedAt` moves) and expire with `usageRetentionMs`.
+
+### Merge queues
+
+Each project can define named merge queues, one per target branch pattern. Precedence: built-in defaults, then the hub document (`PUT /projects/:id/merge-queues`), then `.perpeto/merge-queue.json` committed on the default branch, matched by queue name with each top-level field in the file replacing the hub's (lanes and freeze windows replace whole). A file that is invalid, alone or combined, is reported and ignored. A workflow `merge-queue` node uses a named queue with `config.queue: '<name>'` instead of inline `strategy`/`method`; inline nodes behave exactly as before. A named queue maps to one delivery queue per base branch and CI recipe, whose policy is reconfigured in place when settings change. Queue behaviour lives in `@perpeto/delivery`: lane priority ordering (FIFO within a lane), manual and cron/date freezes (block new attempts and publication), flaky retries on the same candidate, optional batch bisection, timeouts that eject waiting entries, `maxInFlight`, required approving reviews checked at admission, and speculative attempts stacked on the candidate ahead. Metrics per window: merged per hour (and hourly), median time in queue, failure rate by cause, batch success rate. Events: `merge-queue.config-updated`, `merge-queue.frozen`, `merge-queue.unfrozen`, `merge-entry.prioritized`, `merge-entry.ejected`, `merge-entry.requeued`. CLI: `perpeto queue [projectId]`, `perpeto queue freeze|unfreeze <queueId>`, `perpeto queue config validate <file>`. Example: [config/merge-queue.example.json](../../config/merge-queue.example.json).
 
 ### Observe-only mode
 

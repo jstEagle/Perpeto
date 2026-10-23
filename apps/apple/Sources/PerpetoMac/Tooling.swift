@@ -153,6 +153,7 @@ struct Snapshotter {
             ("\(prefix)run-live-map", { navigator.selectedRunId = DemoFixtures.liveRunId; navigator.route = .project(project, .runs) }),
             ("\(prefix)run-node-selected", { navigator.selectedNodeId = "review" }),
             ("\(prefix)messages", { navigator.route = .project(project, .messages) }),
+            ("\(prefix)merge-queue", { navigator.route = .project(project, .mergeQueue) }),
             ("\(prefix)accounts", { navigator.route = .factory(.accounts) }),
             ("\(prefix)pacing", { navigator.route = .factory(.pacing) }),
             ("\(prefix)usage", { navigator.route = .factory(.usage) }),

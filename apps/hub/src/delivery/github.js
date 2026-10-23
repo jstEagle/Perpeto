@@ -34,7 +34,9 @@ export function githubAdapter(record) {
     async prepare(request) {
       await ready();
       // Fetch immutable observed commits, including a new base after a publication race. Never prune candidate refs.
+      // A speculative base is an earlier candidate that exists only in this mirror, so commits already here are not fetched.
       for (const revision of new Set([request.baseSha, ...request.entries.map(entry => entry.headSha)])) {
+        if ((await commandRunner('git', ['cat-file', '-e', `${revision}^{commit}`], { cwd: repository, env: { GIT_TERMINAL_PROMPT: '0' } })).exitCode === 0) continue;
         await git(['fetch', '--no-tags', '--no-write-fetch-head', 'origin', revision]);
       }
       return candidate.prepare(request);

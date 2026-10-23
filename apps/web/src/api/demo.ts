@@ -2,6 +2,7 @@ import { HubError, OWNER_ROLE_ID } from './hub';
 import type { EventQuery, HubApi, MessageQuery, NewMessage, StreamState, UsageQuery, WorkflowUpdate } from './hub';
 import { createDemoState, DEMO_IDS } from './fixtures';
 import { applyPacingSettings, demoPacing, demoSubscriptions } from './pacing-fixtures';
+import { DemoMergeQueues } from './merge-queue-fixtures';
 import type { DemoState } from './fixtures';
 import { observeAccounts, observeMachines, observePacing, observeSessions, observeSummary } from './observe-fixtures';
 import type {
@@ -10,6 +11,9 @@ import type {
   Assignment,
   Pacing,
   PacingSettings,
+  MergeEntryCommand,
+  MergeQueueConfig,
+  MetricsWindow,
   DraftRequest,
   Goal,
   GoalInput,
@@ -87,10 +91,12 @@ export class DemoHub implements HubApi {
   #listeners = new Set<(event: HubEvent) => void>();
   #ticker: ReturnType<typeof setInterval> | null = null;
   #tick = 0;
+  #queues: DemoMergeQueues;
 
   constructor(now = Date.now(), scenario: DemoScenario = 'full') {
     this.scenario = scenario;
     this.#state = createDemoState(now);
+    this.#queues = new DemoMergeQueues(DEMO_IDS.perpeto, now);
     if (scenario === 'observe') {
       // Observe only: nothing but machines, subscriptions and the sessions they watch.
       Object.assign(this.#state, { projects: [], versions: [], runs: [], workItems: [], assignments: [], jobs: [], jobLogs: {}, mergeQueue: [], usage: [], events: [], channels: {}, messages: [], metrics: {} });
@@ -523,6 +529,39 @@ export class DemoHub implements HubApi {
   async mergeQueue(projectId: string) {
     await latency();
     return clone(this.#state.mergeQueue.filter((m) => m.projectId === projectId));
+  }
+  async mergeQueues(projectId: string) {
+    await latency();
+    this.#project(projectId);
+    return this.#queues.settings(projectId);
+  }
+  async saveMergeQueues(projectId: string, config: MergeQueueConfig, baseVersion: number) {
+    await latency(120);
+    const settings = this.#queues.save(projectId, config, baseVersion);
+    this.#emit('merge-queue.config-updated', { kind: 'merge-queue-config', id: projectId }, { version: settings.version }, { projectId });
+    return settings;
+  }
+  async mergeQueueView(id: string, window: MetricsWindow = '24h') {
+    await latency();
+    return this.#queues.view(id, window);
+  }
+  async freezeMergeQueue(id: string, reason?: string) {
+    await latency(80);
+    const view = this.#queues.freeze(id, reason);
+    this.#emit('merge-queue.frozen', { kind: 'merge-queue', id }, { reason: view.frozen?.reason }, { projectId: view.projectId });
+    return view;
+  }
+  async unfreezeMergeQueue(id: string) {
+    await latency(80);
+    const view = this.#queues.unfreeze(id);
+    this.#emit('merge-queue.unfrozen', { kind: 'merge-queue', id }, {}, { projectId: view.projectId });
+    return view;
+  }
+  async mergeEntryCommand(id: string, command: MergeEntryCommand) {
+    await latency(80);
+    const entry = this.#queues.command(id, command);
+    this.#emit({ priority: 'merge-entry.prioritized', eject: 'merge-entry.ejected', requeue: 'merge-entry.requeued' }[command.action], { kind: 'merge-entry', id }, {}, { projectId: entry.projectId });
+    return entry;
   }
 
   async runMetrics(runId: string): Promise<MetricsSnapshot> {

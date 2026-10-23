@@ -17,6 +17,7 @@ public actor DemoDataSource: FactoryDataSource {
         self.scenario = scenario
         let start = now()
         self.createdAt = start
+        self.mergeQueueDemo = DemoMergeQueues(now: start)
         switch scenario {
         case .full:
             var factory = DemoFixtures.factory(now: start)
@@ -329,6 +330,22 @@ public actor DemoDataSource: FactoryDataSource {
     }
 
     private var pacingSettings = DemoPacing.defaultSettings
+    private var mergeQueueDemo: DemoMergeQueues
+
+    public func mergeQueues(projectId: String) async throws -> MergeQueueSettings? {
+        guard projectId == DemoFixtures.primaryProjectId, scenario == .full else { return nil }
+        return mergeQueueDemo.settings
+    }
+    public func saveMergeQueues(projectId: String, config: MergeQueueConfig, baseVersion: Int) async throws -> MergeQueueSettings {
+        try mergeQueueDemo.save(config, baseVersion: baseVersion)
+    }
+    public func mergeQueueView(id: String, window: MetricsWindow) async throws -> MergeQueueView { try mergeQueueDemo.view(id) }
+    public func setMergeQueueFrozen(id: String, frozen: Bool, reason: String?) async throws -> MergeQueueView {
+        try mergeQueueDemo.setFrozen(id, frozen: frozen, reason: reason)
+    }
+    public func mergeEntryCommand(entryId: String, _ command: MergeEntryCommand) async throws -> MergeEntry {
+        try mergeQueueDemo.command(entryId, command)
+    }
 
     public func updateAccount(id: String, _ patch: AccountPatch) async throws -> Account {
         guard let index = factory.accounts.firstIndex(where: { $0.id == id }) else {

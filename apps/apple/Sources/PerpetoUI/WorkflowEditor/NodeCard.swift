@@ -133,7 +133,9 @@ struct NodeCard: View {
             // The stat line shows concurrency on the live map; here the model is enough.
             return node.harness.map { Format.model($0.model) } ?? node.type.title
         case .ci: return Format.plural(c["steps"]?.arrayValue?.count ?? 0, "step") + ((c["requirements"]?["os"]?.stringValue).map { " on \($0)" } ?? "")
-        case .mergeQueue: return [(c["strategy"]?.stringValue ?? "serial").capitalized, c["method"]?.stringValue].compactMap { $0 }.joined(separator: " · ")
+        case .mergeQueue:
+            if let queue = c["queue"]?.stringValue, !queue.isEmpty { return "Project queue \(queue)" }
+            return [(c["strategy"]?.stringValue ?? "serial").capitalized, c["method"]?.stringValue].compactMap { $0 }.joined(separator: " · ")
         case .loop: return "Up to \(c["maxIterations"]?.intValue ?? 0) rounds"
         case .human: return "Waits for a person"
         case .output: return "Work item finished"

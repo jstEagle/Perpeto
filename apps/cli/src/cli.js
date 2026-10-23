@@ -6,6 +6,7 @@ import { enrollCode, join, owner, request, decide, rotateToken, repin, hubTls } 
 import { exposeTailscale } from './tailscale.js';
 import { doctor } from './doctor.js';
 import { service } from './service.js';
+import { listQueues, freezeQueue, validateConfig } from './queue.js';
 
 export const help = `Usage: perpeto <command> [--dir <data-directory>]
 
@@ -24,6 +25,10 @@ machines
 machines revoke <id>
 service install|uninstall [hub|node] [--dry-run]
 sessions
+queue [projectId]
+queue freeze <queueId> [--reason <text>]
+queue unfreeze <queueId>
+queue config validate <file>
 doctor
 status
 
@@ -90,6 +95,10 @@ export async function main(args, { print = console.log, fetchImpl = fetch } = {}
     const checks = await doctor(dir);
     for (const check of checks) print(`${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
     return checks.some(check => check.status === 'fail') ? 1 : 0;
+  } else if (group === 'queue') {
+    if (action === 'validate') return validateConfig(positionals[0], { print });
+    if (action === 'list') await listQueues(dir, positionals[0], { print, fetchImpl });
+    else await freezeQueue(dir, positionals[0], action === 'freeze', flags.reason, { print, fetchImpl });
   } else if (group === 'sessions') {
     const { url, token, pins } = await owner(dir);
     const summary = await request(url, '/sessions/summary?window=24h', { token, pins, fetchImpl });
